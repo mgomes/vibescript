@@ -336,6 +336,37 @@ func (v Value) TypedHashEntriesInto(buf []TypedHashEntry) []TypedHashEntry {
 	return entries
 }
 
+// OrderedTypedHashEntriesInto is TypedHashEntriesInto in Ruby-style insertion
+// order. TypedHashEntriesInto ranges the entry map, so its order is arbitrary;
+// a caller rebuilding a hash from it — a clone crossing a boundary — would
+// record that arbitrary order in the copy and the copy would iterate
+// differently from its source. It falls back to map order only if the order
+// backing has drifted from the entry set.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func (v Value) OrderedTypedHashEntriesInto(buf []TypedHashEntry) []TypedHashEntry {
+	if v.kind != KindHash {
+		return nil
+	}
+	hd := v.data.(*hashData)
+	if hd.typedEntries == nil {
+		return nil
+	}
+	if len(hd.order) != len(hd.typedEntries) {
+		return v.TypedHashEntriesInto(buf)
+	}
+
+	entries := buf[:0]
+	if cap(entries) < len(hd.typedEntries) {
+		entries = make([]TypedHashEntry, 0, len(hd.typedEntries))
+	}
+	for _, lookupKey := range hd.order {
+		entries = append(entries, TypedHashEntry{LookupKey: lookupKey, Entry: hd.typedEntries[lookupKey]})
+	}
+	return entries
+}
+
 // RangeTypedHashEntries calls visit for each typed entry of v in place, without
 // materializing an intermediate slice. It is a no-op for non-hash values and
 // for hashes still using the legacy string-key map. Callers that only need a

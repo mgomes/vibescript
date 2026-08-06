@@ -485,7 +485,7 @@ func (s *capabilityDataCloneScanner) cloneHash(val Value) (Value, error) {
 	// the boundary.
 	if typed {
 		var entryBuf [smallHashKeyBufferSize]TypedHashEntry
-		for _, typedEntry := range val.TypedHashEntriesInto(entryBuf[:]) {
+		for _, typedEntry := range val.OrderedTypedHashEntriesInto(entryBuf[:]) {
 			clonedKey, err := s.clone(typedEntry.Entry.Key)
 			if err != nil {
 				return NewNil(), err

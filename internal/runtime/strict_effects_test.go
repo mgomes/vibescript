@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"slices"
 	"testing"
 )
 
@@ -393,5 +394,54 @@ func TestCapabilityDataCloneKeepsStoredLookupIdentity(t *testing.T) {
 	}
 	if _, ok, _ := cloned.HashGet(NewArray([]Value{NewInt(2)})); ok {
 		t.Fatal("clone resolves the mutated key, which the source does not")
+	}
+}
+
+// TestBoundaryClonesPreserveTypedHashOrder pins that clones keep Ruby-style
+// insertion order. The typed entry map ranges arbitrarily, so a clone
+// rebuilt from that order would record it and iterate differently from the
+// hash it was copied from.
+func TestBoundaryClonesPreserveTypedHashOrder(t *testing.T) {
+	t.Parallel()
+
+	build := func() Value {
+		h := NewTypedHash(8)
+		for _, name := range []string{"zeta", "alpha", "mike", "bravo", "yankee", "delta", "kilo", "echo"} {
+			if err := hashSet(h, NewSymbol(name), NewInt(1)); err != nil {
+				t.Fatalf("HashSet %s: %v", name, err)
+			}
+		}
+		return h
+	}
+	order := func(v Value) []string {
+		var out []string
+		for _, entry := range v.HashEntries() {
+			out = append(out, entry.Key.String())
+		}
+		return out
+	}
+
+	source := build()
+	want := order(source)
+
+	cloned, err := cloneCapabilityDataOnlyValue("payload", source)
+	if err != nil {
+		t.Fatalf("cloning failed: %v", err)
+	}
+	if got := order(cloned); !slices.Equal(got, want) {
+		t.Fatalf("capability clone iterates %v, want the source order %v", got, want)
+	}
+
+	// The host clone only engages for a graph that needs cloning, so give the
+	// hash a value that forces it.
+	hostSource := build()
+	if err := hashSet(hostSource, NewSymbol("fn"), NewBuiltin("probe", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+		return NewNil(), nil
+	})); err != nil {
+		t.Fatalf("HashSet fn: %v", err)
+	}
+	hostWant := order(hostSource)
+	if got := order(cloneValueForHost(hostSource)); !slices.Equal(got, hostWant) {
+		t.Fatalf("host clone iterates %v, want the source order %v", got, hostWant)
 	}
 }

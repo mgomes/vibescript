@@ -953,7 +953,7 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 	}
 	if !sharedSeen {
 		if typedEntries {
-			for _, typedEntry := range val.TypedHashEntriesInto(nil) {
+			for _, typedEntry := range val.OrderedTypedHashEntriesInto(nil) {
 				clonedKey := cloneValueForHostWithState(typedEntry.Entry.Key, state)
 				clonedValue := cloneValueForHostWithState(typedEntry.Entry.Value, state)
 				setClonedTypedHashEntry(cloned, typedEntry.LookupKey, clonedKey, clonedValue)
