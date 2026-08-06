@@ -11,4 +11,8 @@
   apply; it now finishes in 149ms. The fruitless scans are charged against one
   parse-wide allowance of four times the source length, shared by every lexer
   and sub-parser involved, while a scan that does find its literal stays free --
-  so percent literals of any length and number keep parsing as before.
+  so percent literals of any length and number keep parsing as before. Ordinary
+  modulo on a local (`a %w+ b`) is settled by the existing local-variable
+  suppression before any scanning happens, so it costs nothing, and a source
+  that does outrun the allowance is reported rather than parsed with `%` quietly
+  demoted to modulo.

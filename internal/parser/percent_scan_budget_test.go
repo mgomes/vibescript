@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/mgomes/vibescript/internal/ast"
 )
 
 // deadPercentCandidates builds one string interpolation holding n percent-array
@@ -53,6 +55,80 @@ func TestPercentScanStaysLinearInDeadCandidates(t *testing.T) {
 	if large > small*3 {
 		t.Fatalf("doubling the source walked %d scan bytes against %d -- over 3x, so the speculative percent scan"+
 			" is superlinear in the source size again", large, small)
+	}
+}
+
+// modulusOnLocalSource is a source of nothing but ordinary modulo on declared
+// locals. Each `a %w<d> b` looks exactly like the opening of a percent literal
+// whose delimiter never closes, because every delimiter is distinct and occurs
+// nowhere later in the file. None of them is a candidate -- the callee is a
+// declared local, which suppresses the percent-array reading outright -- so
+// none may charge the allowance, or the `puts %w[p q]` at the end would be
+// declined for want of allowance and read as `puts % w[p, q]` instead.
+func modulusOnLocalSource() string {
+	var sb strings.Builder
+	sb.WriteString("a = 1\nw = 1\nb = 1\n")
+	for i, delim := range []string{"+", "-", "*", "/", "&", "!", "?", ".", ">"} {
+		fmt.Fprintf(&sb, "x%d = a %%w%s b\n", i, delim)
+	}
+	sb.WriteString("puts %w[p q]\n")
+	return sb.String()
+}
+
+// A source that is valid throughout must never have a percent literal quietly
+// re-read as modulo because earlier modulo expressions used up the allowance.
+// The suppression that already governs this shape has to be consulted before
+// the probe rather than after it, so an expression that was never going to be a
+// literal costs nothing.
+func TestValidModulusOnLocalsDoesNotSpendTheBudget(t *testing.T) {
+	t.Parallel()
+
+	src := modulusOnLocalSource()
+	program, errs := Parse(src)
+	if len(errs) > 0 {
+		t.Fatalf("Parse() returned %v", errs[0])
+	}
+
+	last := program.Statements[len(program.Statements)-1]
+	stmt, ok := last.(*ast.ExprStmt)
+	if !ok {
+		t.Fatalf("last statement is %T, want *ast.ExprStmt", last)
+	}
+	call, ok := stmt.Expr.(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("`puts %%w[p q]` parsed as %T; a spent allowance re-read it as modulo", stmt.Expr)
+	}
+	if len(call.Args) != 1 {
+		t.Fatalf("`puts %%w[p q]` parsed with %d arguments, want 1", len(call.Args))
+	}
+	if _, ok := call.Args[0].(*ast.ArrayLiteral); !ok {
+		t.Fatalf("`puts %%w[p q]` passed a %T, want an *ast.ArrayLiteral", call.Args[0])
+	}
+}
+
+// Where the allowance genuinely does run out the parser says so. It stops
+// telling percent literals from modulo at that point, which changes what a
+// later `%w[...]` means, and handing back a program that quietly means
+// something else is worse than refusing it.
+func TestPercentScanExhaustionIsReported(t *testing.T) {
+	t.Parallel()
+
+	// Method callees, which the declared-local suppression does not cover, so
+	// every one of these does have to be probed and does charge.
+	var sb strings.Builder
+	sb.WriteString("def foo()\n  1\nend\ndef w()\n  1\nend\ndef b()\n  1\nend\n")
+	for i, delim := range []string{"+", "-", "*", "/", "&", "!", "?", ".", ">"} {
+		fmt.Fprintf(&sb, "y%d = foo %%w%s b\n", i, delim)
+	}
+	sb.WriteString(strings.Repeat("# padding padding padding padding padding padding\n", 50))
+	sb.WriteString("puts %w[p q]\n")
+
+	_, errs := Parse(sb.String())
+	if len(errs) == 0 {
+		t.Fatal("Parse() reported nothing; a source that outran the allowance must not come back silently")
+	}
+	if got := errs[0].Error(); !strings.Contains(got, "ambiguous") {
+		t.Fatalf("Parse() reported %q, want the exhausted-allowance diagnostic", got)
 	}
 }
 
