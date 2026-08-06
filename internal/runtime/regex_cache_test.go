@@ -223,6 +223,12 @@ func TestRegexCostHandlesRepeatBounds(t *testing.T) {
 			pattern:      "(?:" + strings.Repeat("a{1000}", 101) + "){0}",
 			wantRejected: false,
 		},
+		// Simplify collapses (?:a*)* to a*, so a stack of quantifiers
+		// compiles to one; charging each wrapper saturated the estimate.
+		"nested quantifiers collapse": {
+			pattern:      "(?:" + strings.Repeat("(?:", 101) + "a*" + strings.Repeat(")*", 101) + "){1000}",
+			wantRejected: false,
+		},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {

@@ -129,7 +129,10 @@ func estimateRegexProgramSize(re *syntax.Regexp, budget int) int {
 	case syntax.OpCapture:
 		return clampRegexCost(saturatingAdd(2, estimateRegexProgramSize(re.Sub0[0], budget)), budget)
 	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest:
-		return clampRegexCost(saturatingAdd(1, estimateRegexProgramSize(re.Sub0[0], budget)), budget)
+		// Nested quantifiers collapse: Simplify rewrites (?:a*)* to a*, so a
+		// stack of them compiles to one. Charging each wrapper turned a chain
+		// of them into a saturated estimate and rejected valid patterns.
+		return clampRegexCost(saturatingAdd(1, estimateRegexProgramSize(unwrapNestedQuantifiers(re.Sub0[0]), budget)), budget)
 	case syntax.OpRepeat:
 		// Simplification discards a {0} repeat body and all, so costing the
 		// child would reject valid patterns over a body that never compiles.
@@ -141,7 +144,7 @@ func estimateRegexProgramSize(re *syntax.Regexp, budget int) int {
 		// instruction alongside its copy; omitting those under-counted a
 		// bounded range like a{0,1000} by nearly half. An open upper bound
 		// instead adds a star tail over one more copy.
-		inner := estimateRegexProgramSize(re.Sub0[0], budget)
+		inner := estimateRegexProgramSize(unwrapNestedQuantifiers(re.Sub0[0]), budget)
 		reps := re.Max
 		optional := 0
 		if reps < 0 {
@@ -225,4 +228,20 @@ func (c *regexCache) evictLocked() {
 		delete(c.entries, entry.pattern)
 		c.cost -= entry.cost
 	}
+}
+
+// unwrapNestedQuantifiers collapses a chain of directly nested quantifiers to
+// its innermost operand, mirroring the idempotent-quantifier rewrite Simplify
+// performs before expanding: (?:a*)* compiles as a*, so costing each wrapper
+// separately over-counts a pattern that compiles small.
+func unwrapNestedQuantifiers(re *syntax.Regexp) *syntax.Regexp {
+	for re != nil {
+		switch re.Op {
+		case syntax.OpStar, syntax.OpPlus, syntax.OpQuest:
+			re = re.Sub0[0]
+		default:
+			return re
+		}
+	}
+	return re
 }
