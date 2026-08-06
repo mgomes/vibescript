@@ -54,22 +54,27 @@ type setOpScratch struct {
 }
 
 // newSetOpScratch builds the reservation tracker for a set operation over
-// the given input slices. The inputs are wrapped as extra roots for every
-// validation; the wrappers alias the callers' backings, so an input that is
-// also reachable from an execution root deduplicates rather than
-// double-counting. The wrapper slice is itself a Go-local buffer that grows
-// with the operation's arity, so its backing joins held scratch before it is
-// materialized and is validated immediately: a caller may never reserve
-// anything else (a high-arity union of empty arrays), leaving this the only
-// check that sees the backing.
-func newSetOpScratch(exec *Execution, sources ...[]Value) (setOpScratch, error) {
+// the receiver and the other operand slices. Taking them separately lets a
+// high-arity caller spread its argument slice directly instead of
+// materializing a combined source list, which would itself be an O(arity)
+// Go-local buffer allocated before any reservation. The inputs are wrapped
+// as extra roots for every validation; the wrappers alias the callers'
+// backings, so an input that is also reachable from an execution root
+// deduplicates rather than double-counting. The wrapper slice is itself a
+// Go-local buffer that grows with the operation's arity, so its backing
+// joins held scratch before it is materialized and is validated immediately:
+// a caller may never reserve anything else (a high-arity union of empty
+// arrays), leaving this the only check that sees the backing.
+func newSetOpScratch(exec *Execution, lead []Value, rest ...[]Value) (setOpScratch, error) {
 	s := setOpScratch{exec: exec}
 	if exec == nil || exec.memoryQuota <= 0 {
 		return s, nil
 	}
-	s.held += exec.reserveLoopScratch(valueSliceScratchBytes(len(sources)))
-	s.roots = make([]Value, 0, len(sources))
-	for _, src := range sources {
+	count := len(rest) + 1
+	s.held += exec.reserveLoopScratch(valueSliceScratchBytes(count))
+	s.roots = make([]Value, 0, count)
+	s.roots = append(s.roots, NewArray(lead))
+	for _, src := range rest {
 		s.roots = append(s.roots, NewArray(src))
 	}
 	return s, exec.checkMemoryWith(s.roots...)
@@ -474,10 +479,7 @@ func unionArrayValues(exec *Execution, left []Value, others [][]Value) ([]Value,
 	}
 	var seen valueSet
 	seen.bindMetering(exec)
-	sources := make([][]Value, 0, len(others)+1)
-	sources = append(sources, left)
-	sources = append(sources, others...)
-	scratch, err := newSetOpScratch(exec, sources...)
+	scratch, err := newSetOpScratch(exec, left, others...)
 	defer scratch.release()
 	if err != nil {
 		return nil, err
@@ -541,10 +543,7 @@ func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]V
 	}
 	var removal membershipSet
 	exec.bindEqualityMetering(&removal.equality)
-	sources := make([][]Value, 0, len(others)+1)
-	sources = append(sources, left)
-	sources = append(sources, others...)
-	scratch, err := newSetOpScratch(exec, sources...)
+	scratch, err := newSetOpScratch(exec, left, others...)
 	defer scratch.release()
 	if err != nil {
 		return nil, err
