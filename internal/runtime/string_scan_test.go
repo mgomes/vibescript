@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"unsafe"
@@ -796,7 +797,7 @@ func TestStringScanGuardChargesSliceOverhead(t *testing.T) {
 	text := strings.Repeat("a", runeCount)
 
 	// The slice headers are what push the projection past the cap, so the guard rejects.
-	if err := guardRegexScanIndexFootprint(pattern, text, groups); err == nil {
+	if err := guardRegexScanIndexFootprint(nil, pattern, text, groups); err == nil {
 		t.Fatalf("guard admitted a table whose full footprint %d exceeds the cap %d (slice overhead uncharged?)",
 			projectedRegexSubmatchIndexBytes(maxMatches, groups), maxRegexScanIndexBytes)
 	}
@@ -806,7 +807,7 @@ func TestStringScanGuardChargesSliceOverhead(t *testing.T) {
 	if full := projectedRegexSubmatchIndexBytes(runeCount, groups); full > maxRegexScanIndexBytes {
 		t.Fatalf("full footprint %d for the shorter subject still exceeds the cap %d; the window is too narrow", full, maxRegexScanIndexBytes)
 	}
-	if err := guardRegexScanIndexFootprint(pattern, shorter, groups); err != nil {
+	if err := guardRegexScanIndexFootprint(nil, pattern, shorter, groups); err != nil {
 		t.Fatalf("guard at one rune below the cap = %v, want success", err)
 	}
 }
@@ -1127,5 +1128,108 @@ end`
 	roomy := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: tightest + 1<<20}, source)
 	if _, err := roomy.Call(context.Background(), "run", []Value{subject}, CallOptions{}); err != nil {
 		t.Fatalf("block scan under a roomy quota = %v, want success", err)
+	}
+}
+
+// TestScanTableRespectsMemoryQuota pins that no pattern can make the engine
+// allocate an index table orders of magnitude past the memory quota.
+// FindAllStringSubmatchIndex builds the whole [][]int table before any
+// interpreter accounting runs, so a pattern of thousands of empty groups over
+// a few thousand characters allocated 128 MiB under a 64 KiB quota — the
+// quota error arrived only after the spike (#37).
+//
+// Not parallel: MemStats.TotalAlloc is process-wide.
+func TestScanTableRespectsMemoryQuota(t *testing.T) {
+	const quotaBytes = 64 << 10
+	script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: quotaBytes},
+		"def run(s, p)\n  s.scan(p).length\nend")
+
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	_, err := script.Call(context.Background(), "run",
+		[]Value{NewString(strings.Repeat("a", 4000)), NewString(strings.Repeat("()", 2000))}, CallOptions{})
+	goruntime.ReadMemStats(&after)
+
+	if err == nil {
+		t.Fatal("a scan table far past the memory quota must be rejected")
+	}
+	allocated := after.TotalAlloc - before.TotalAlloc
+	// The unbounded request allocated about 128 MiB; the rest here is script
+	// compilation and the operand strings.
+	if limit := uint64(16 << 20); allocated > limit {
+		t.Fatalf("scan allocated %.2f MiB before failing, want under %.2f MiB",
+			float64(allocated)/(1<<20), float64(limit)/(1<<20))
+	}
+}
+
+// TestScanQuotaBoundKeepsSparsePatternsWorking pins that bounding the request
+// costs nothing to patterns that return few matches. Every case here can match
+// without consuming input, so a guard keyed on that property alone would
+// reject them on a worst case none of them approaches — an anchor matches
+// once, a boundary a handful of times.
+func TestScanQuotaBoundKeepsSparsePatternsWorking(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		subject, pattern string
+		quotaBytes       int
+		wantMatches      string
+	}{
+		"anchor over a large subject":       {strings.Repeat("a", 2000), "^", 64 << 10, "1"},
+		"sparse pattern that never matches": {strings.Repeat("a", 8000), "z", 64 << 10, "0"},
+		"greedy optional":                   {strings.Repeat("a", 2000), "a*", 64 << 10, "1"},
+		"word boundaries":                   {strings.Repeat("hi there ", 50), `\b`, 1 << 20, "200"},
+		"zero-width over a small subject":   {"hello world", "()", 64 << 10, "12"},
+		"ordinary capture groups":           {strings.Repeat("k=v ", 500), `(\w)=(\w)`, 1 << 20, "500"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t,
+				Config{StepQuota: 500_000_000, MemoryQuotaBytes: tc.quotaBytes},
+				"def run(s, p)\n  s.scan(p).length\nend")
+			result, err := script.Call(context.Background(), "run",
+				[]Value{NewString(tc.subject), NewString(tc.pattern)}, CallOptions{})
+			if err != nil {
+				t.Fatalf("scan must still succeed: %v", err)
+			}
+			if got := result.Inspect(); got != tc.wantMatches {
+				t.Fatalf("scan found %s matches, want %s", got, tc.wantMatches)
+			}
+		})
+	}
+}
+
+// TestScanBudgetsRemainingQuotaNotWholeQuota pins that the match request is
+// sized against the quota that is left, not the whole quota. Dividing the
+// whole quota let an execution already holding most of it request nearly
+// another quota's worth of rows, which is exactly the pre-accounting spike
+// this bound exists to stop: the index table coexists with everything already
+// live.
+func TestScanBudgetsRemainingQuotaNotWholeQuota(t *testing.T) {
+	t.Parallel()
+
+	const quotaBytes = 8 << 20
+	exec := &Execution{ctx: context.Background(), memoryQuota: quotaBytes}
+
+	empty, bounded := scanMatchBudget(exec, 0, NewNil(), nil, nil, NewNil())
+	if !bounded {
+		t.Fatal("a finite quota must bound the match request")
+	}
+
+	// The same call, but holding most of the quota in a live argument.
+	held := make([]Value, 40_000)
+	for i := range held {
+		held[i] = NewString(strings.Repeat("x", 96))
+	}
+	loaded, bounded := scanMatchBudget(exec, 0, NewNil(), []Value{NewArray(held)}, nil, NewNil())
+	if !bounded {
+		t.Fatal("a finite quota must bound the match request")
+	}
+
+	if loaded >= empty {
+		t.Fatalf("budget with %.2f MiB live is %d, want well below the empty-execution budget %d",
+			float64(len(held)*(96+48))/(1<<20), loaded, empty)
 	}
 }

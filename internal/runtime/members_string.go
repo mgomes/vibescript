@@ -4060,7 +4060,7 @@ const stringScanInitialCap = 256
 func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	groups := re.NumSubexp()
 
-	if err := guardRegexScanIndexFootprint(pattern, text, groups); err != nil {
+	if err := guardRegexScanIndexFootprint(exec, pattern, text, groups); err != nil {
 		return NewNil(), err
 	}
 
@@ -4075,7 +4075,17 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 		return NewNil(), err
 	}
 
-	allMatches := re.FindAllStringSubmatchIndex(text, -1)
+	// Ask for at most one match beyond what the quota can hold, so the table
+	// the engine allocates is bounded by the quota rather than by the subject.
+	limit := -1
+	budget, bounded := scanMatchBudget(exec, groups, receiver, args, kwargs, block)
+	if bounded {
+		limit = budget + 1
+	}
+	allMatches := re.FindAllStringSubmatchIndex(text, limit)
+	if bounded && len(allMatches) > budget {
+		return NewNil(), exec.memoryQuotaExceededError()
+	}
 
 	if valueBlock(block) != nil {
 		return stringScanBlock(exec, text, groups, allMatches, receiver, args, kwargs, block)
@@ -4191,12 +4201,55 @@ func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]in
 // non-zero-width many-group pattern is no longer rejected on a zero-width worst case
 // it cannot reach. Only patterns that can match the empty string (minRunes == 0) fall
 // back to the runeCount+1 worst case.
-func guardRegexScanIndexFootprint(pattern, text string, groups int) error {
+func guardRegexScanIndexFootprint(exec *Execution, pattern, text string, groups int) error {
 	maxMatches := regexScanMaxMatches(pattern, text)
-	if projectedRegexSubmatchIndexBytes(maxMatches, groups) > maxRegexScanIndexBytes {
+	projected := projectedRegexSubmatchIndexBytes(maxMatches, groups)
+	if projected > maxRegexScanIndexBytes {
 		return guardLimitErrorf("string.scan match table exceeds limit %d bytes", maxRegexScanIndexBytes)
 	}
 	return nil
+}
+
+// scanMatchBudget returns how many matches the index table may hold before it
+// alone would exceed the memory quota, and whether a bound applies at all.
+//
+// Projecting a worst case and rejecting up front cannot work here: the
+// worst case is reachable only by patterns that match densely, and no cheap
+// property distinguishes those. "Can match empty" does not -- ^, \b and a*
+// all can, yet each returns a handful of matches over a large subject, so
+// rejecting on their projection fails ordinary scans.
+//
+// Bounding the request instead needs no prediction. FindAll takes a match
+// limit, so asking for one more than the budget makes the table cost at most
+// one row beyond what the quota allows, and a result that comes back over the
+// budget is exactly the case that could not have fit (#37).
+func scanMatchBudget(exec *Execution, groups int, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, bool) {
+	if exec == nil || exec.memoryQuota <= 0 {
+		return 0, false
+	}
+	// FindAll appends into the outer slice, so its capacity overshoots the
+	// match count -- Go grows a full slice by up to half again, and that slack
+	// is a slice header per unused slot. Charging the logical rows alone let a
+	// scan landing on a growth boundary allocate past the budget, so the
+	// per-match price carries the overshoot the append can leave behind.
+	perMatch := saturatingAdd(
+		projectedRegexSubmatchIndexBytes(1, groups),
+		regexScanOuterSliceGrowthBytes,
+	)
+	if perMatch <= 0 {
+		return 0, false
+	}
+	// Budget the quota that is actually left. Dividing the whole quota would
+	// let an execution already holding most of it request nearly another
+	// quota's worth of rows, which is the pre-accounting spike this bound
+	// exists to stop -- the table coexists with everything already live.
+	remaining := exec.memoryQuota - exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
+	if remaining <= 0 {
+		// Nothing left to spend: a single match is still requested so an
+		// empty result stays legal, and any match at all reports the quota.
+		return 0, true
+	}
+	return remaining / perMatch, true
 }
 
 // regexScanMaxMatches returns an upper bound on the number of non-overlapping
@@ -4300,6 +4353,10 @@ func regexpMinMatchRunes(re *syntax.Regexp) int {
 // the worst-case guard and the accumulator seed -- which share this projection so the
 // up-front rejection and the running budget reserve the same bytes -- honest about
 // the table's true coexisting footprint rather than just its integer payload.
+// regexScanOuterSliceGrowthBytes is the headroom charged per match for the
+// outer [][]int slice's growth capacity (see scanMatchBudget).
+const regexScanOuterSliceGrowthBytes = estimatedSliceBaseBytes
+
 func projectedRegexSubmatchIndexBytes(matchCount, groups int) int {
 	intsPerMatch := saturatingAdd(2, saturatingMul(2, groups))
 	indexBytesPerMatch := saturatingMul(intsPerMatch, estimatedIntBytes)
