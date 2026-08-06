@@ -265,6 +265,12 @@ func TestRegexCostHandlesRepeatBounds(t *testing.T) {
 			pattern:      "(?:" + strings.Repeat("(?:(?:a{1000}){0})*", 34) + "){1000}",
 			wantRejected: false,
 		},
+		// Simplify discards {1} outright, so an operand buried under a stack
+		// of them compiles as if they were never written.
+		"exact-one repeats are transparent": {
+			pattern:      exactOneRepeatWrapPattern(),
+			wantRejected: false,
+		},
 		// An open upper bound emits exactly Min copies with the last one
 		// quantified, so charging Min+1 billed the operand an extra time and
 		// rejected a program inside the cap.
@@ -341,4 +347,14 @@ func emptyMatchQuantifierCyclePattern() string {
 		b.WriteString(ops[i%3])
 	}
 	return "(?:" + b.String() + "){1000}"
+}
+
+// exactOneRepeatWrapPattern wraps a star in 34 layers of {1} repeats and a
+// star each, then applies a counted repeat.
+func exactOneRepeatWrapPattern() string {
+	p := "a*"
+	for range 34 {
+		p = "(?:(?:" + p + "){1})*"
+	}
+	return "(?:" + p + "){1000}"
 }

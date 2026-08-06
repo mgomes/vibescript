@@ -100,6 +100,7 @@ func compiledRegexCost(pattern string) (int, error) {
 // estimateRegexProgramSize returns the estimated instruction count for re,
 // clamped at budget.
 func estimateRegexProgramSize(re *syntax.Regexp, budget int) int {
+	re = skipExactOneRepeats(re)
 	if re == nil {
 		return 0
 	}
@@ -264,7 +265,8 @@ func unwrapIdempotentQuantifiers(parent, re *syntax.Regexp) *syntax.Regexp {
 		return re
 	}
 	nonGreedy := parent.Flags & syntax.NonGreedy
-	for re != nil && repeatAliasOp(re) == parentOp && re.Flags&syntax.NonGreedy == nonGreedy {
+	for re = skipExactOneRepeats(re); re != nil && repeatAliasOp(re) == parentOp &&
+		re.Flags&syntax.NonGreedy == nonGreedy; re = skipExactOneRepeats(re) {
 		re = re.Sub0[0]
 	}
 	return re
@@ -276,7 +278,7 @@ func unwrapIdempotentQuantifiers(parent, re *syntax.Regexp) *syntax.Regexp {
 // greediness, so such a chain compiles to nothing and must not be costed as
 // one wrapper per level.
 func quantifiesEmptyMatch(re *syntax.Regexp) bool {
-	for re != nil {
+	for re = skipExactOneRepeats(re); re != nil; re = skipExactOneRepeats(re) {
 		switch repeatAliasOp(re) {
 		case syntax.OpStar, syntax.OpPlus, syntax.OpQuest:
 			re = re.Sub0[0]
@@ -314,4 +316,15 @@ func repeatAliasOp(re *syntax.Regexp) syntax.Op {
 	default:
 		return syntax.OpRepeat
 	}
+}
+
+// skipExactOneRepeats unwraps {1} repeats. Simplify discards them, so the
+// operand compiles as if the repeat were never written; stopping at one hid
+// the operand from every operator test here and clamped patterns that compile
+// small.
+func skipExactOneRepeats(re *syntax.Regexp) *syntax.Regexp {
+	for re != nil && re.Op == syntax.OpRepeat && re.Min == 1 && re.Max == 1 {
+		re = re.Sub0[0]
+	}
+	return re
 }
