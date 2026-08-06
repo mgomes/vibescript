@@ -265,6 +265,14 @@ func TestRegexCostHandlesRepeatBounds(t *testing.T) {
 			pattern:      "(?:" + strings.Repeat("(?:(?:a{1000}){0})*", 34) + "){1000}",
 			wantRejected: false,
 		},
+		// {0,n} expands to nested quests, so its simplified root is a quest
+		// and an outer ? over it is idempotent. Comparing the repeat's
+		// cost-equivalent operator instead of its expansion root charged
+		// both layers and rejected a program inside the cap.
+		"quest over a bounded repeat collapses": {
+			pattern:      strings.Repeat("(?:(?:(?:a){0,2})?){500}", 34),
+			wantRejected: false,
+		},
 		// Simplify discards {1} outright, so an operand buried under a stack
 		// of them compiles as if they were never written.
 		"exact-one repeats are transparent": {

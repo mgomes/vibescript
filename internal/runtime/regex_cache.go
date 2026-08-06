@@ -153,6 +153,14 @@ func estimateRegexProgramSize(re *syntax.Regexp, budget int) int {
 		if quantifiesEmptyMatch(re) {
 			return clampRegexCost(1, budget)
 		}
+		// A child whose expansion is rooted at this same operator makes this
+		// quantifier idempotent, so Simplify drops it and it costs nothing:
+		// {0,n} expands to nested quests, and an outer ? over one collapses.
+		if child := skipExactOneRepeats(re.Sub0[0]); child != nil &&
+			child.Op == syntax.OpRepeat && simplifiedRootOp(child) == repeatAliasOp(re) &&
+			child.Flags&syntax.NonGreedy == re.Flags&syntax.NonGreedy {
+			return clampRegexCost(estimateRegexProgramSize(child, budget), budget)
+		}
 		operand := unwrapIdempotentQuantifiers(re, re.Sub0[0])
 		if operand == nil {
 			return clampRegexCost(1, budget)
@@ -342,4 +350,27 @@ func skipExactOneRepeats(re *syntax.Regexp) *syntax.Regexp {
 		re = re.Sub0[0]
 	}
 	return re
+}
+
+// simplifiedRootOp reports the operator Simplify's expansion of a counted
+// repeat is rooted at, which is not always the operator the repeat is
+// equivalent to: {0,n} expands to nested quests, so its root is a quest even
+// though its cost is n copies. Collapse decisions compare roots, while cost
+// uses repeatAliasOp.
+func simplifiedRootOp(re *syntax.Regexp) syntax.Op {
+	if re == nil || re.Op != syntax.OpRepeat {
+		return repeatAliasOp(re)
+	}
+	switch {
+	case re.Max == 0:
+		return syntax.OpEmptyMatch
+	case re.Min == 0 && re.Max < 0:
+		return syntax.OpStar
+	case re.Min == 1 && re.Max < 0:
+		return syntax.OpPlus
+	case re.Min == 0:
+		return syntax.OpQuest
+	default:
+		return syntax.OpConcat
+	}
 }
