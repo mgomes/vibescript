@@ -249,6 +249,13 @@ func TestRegexCostHandlesRepeatBounds(t *testing.T) {
 			pattern:      strings.Repeat("(?:(?:a?)*){1000}", 33),
 			wantRejected: true,
 		},
+		// An open upper bound emits exactly Min copies with the last one
+		// quantified, so charging Min+1 billed the operand an extra time and
+		// rejected a program inside the cap.
+		"open-ended repeat charges Min copies": {
+			pattern:      "(?:" + strings.Repeat("a{1000}", 80) + "){1,}",
+			wantRejected: false,
+		},
 		// Quantifiers over an empty match are removed whatever the operator
 		// or greediness, so a deep chain around one compiles to nothing.
 		"quantifier chain over an empty match collapses": {

@@ -161,7 +161,11 @@ func estimateRegexProgramSize(re *syntax.Regexp, budget int) int {
 		reps := re.Max
 		optional := 0
 		if reps < 0 {
-			reps = re.Min + 1
+			// An open upper bound emits exactly Min copies, the last one
+			// quantified; the trailing branch is the +1 charged below.
+			// Charging Min+1 billed the operand an extra time and rejected
+			// programs inside the cap.
+			reps = max(re.Min, 1)
 		} else {
 			optional = reps - re.Min
 		}
