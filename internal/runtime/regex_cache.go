@@ -132,7 +132,7 @@ func estimateRegexProgramSize(re *syntax.Regexp, budget int) int {
 		// Nested quantifiers collapse: Simplify rewrites (?:a*)* to a*, so a
 		// stack of them compiles to one. Charging each wrapper turned a chain
 		// of them into a saturated estimate and rejected valid patterns.
-		return clampRegexCost(saturatingAdd(1, estimateRegexProgramSize(unwrapNestedQuantifiers(re.Sub0[0]), budget)), budget)
+		return clampRegexCost(saturatingAdd(1, estimateRegexProgramSize(unwrapIdempotentQuantifiers(re.Op, re.Sub0[0]), budget)), budget)
 	case syntax.OpRepeat:
 		// Simplification discards a {0} repeat body and all, so costing the
 		// child would reject valid patterns over a body that never compiles.
@@ -144,7 +144,7 @@ func estimateRegexProgramSize(re *syntax.Regexp, budget int) int {
 		// instruction alongside its copy; omitting those under-counted a
 		// bounded range like a{0,1000} by nearly half. An open upper bound
 		// instead adds a star tail over one more copy.
-		inner := estimateRegexProgramSize(unwrapNestedQuantifiers(re.Sub0[0]), budget)
+		inner := estimateRegexProgramSize(re.Sub0[0], budget)
 		reps := re.Max
 		optional := 0
 		if reps < 0 {
@@ -230,18 +230,20 @@ func (c *regexCache) evictLocked() {
 	}
 }
 
-// unwrapNestedQuantifiers collapses a chain of directly nested quantifiers to
-// its innermost operand, mirroring the idempotent-quantifier rewrite Simplify
-// performs before expanding: (?:a*)* compiles as a*, so costing each wrapper
-// separately over-counts a pattern that compiles small.
-func unwrapNestedQuantifiers(re *syntax.Regexp) *syntax.Regexp {
-	for re != nil {
-		switch re.Op {
-		case syntax.OpStar, syntax.OpPlus, syntax.OpQuest:
-			re = re.Sub0[0]
-		default:
-			return re
-		}
+// unwrapIdempotentQuantifiers collapses a chain of nested quantifiers that
+// repeat the SAME operator, which is the only combination Simplify rewrites:
+// (?:a*)* becomes a*, so charging each wrapper over-counts a pattern that
+// compiles small. Mixed quantifiers are left alone — (?:a+)? keeps both
+// instructions, and collapsing them under-counted a program by the number of
+// levels, which is the direction a guard must never be wrong in.
+func unwrapIdempotentQuantifiers(parentOp syntax.Op, re *syntax.Regexp) *syntax.Regexp {
+	switch parentOp {
+	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest:
+	default:
+		return re
+	}
+	for re != nil && re.Op == parentOp {
+		re = re.Sub0[0]
 	}
 	return re
 }

@@ -223,11 +223,19 @@ func TestRegexCostHandlesRepeatBounds(t *testing.T) {
 			pattern:      "(?:" + strings.Repeat("a{1000}", 101) + "){0}",
 			wantRejected: false,
 		},
-		// Simplify collapses (?:a*)* to a*, so a stack of quantifiers
-		// compiles to one; charging each wrapper saturated the estimate.
-		"nested quantifiers collapse": {
+		// Simplify collapses (?:a*)* to a*, so a stack of the same
+		// quantifier compiles to one; charging each wrapper saturated the
+		// estimate and rejected a program of about 2,000 instructions.
+		"identical nested quantifiers collapse": {
 			pattern:      "(?:" + strings.Repeat("(?:", 101) + "a*" + strings.Repeat(")*", 101) + "){1000}",
 			wantRejected: false,
+		},
+		// Mixed quantifiers are not idempotent and Simplify keeps both, so
+		// collapsing them under-counted this program threefold and admitted
+		// a pattern well past the cap.
+		"mixed nested quantifiers are charged": {
+			pattern:      strings.Repeat("(?:(?:a+)?){1000}", 99),
+			wantRejected: true,
 		},
 	}
 	for name, tc := range tests {
