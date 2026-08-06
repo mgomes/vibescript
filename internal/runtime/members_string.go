@@ -4227,7 +4227,15 @@ func scanMatchBudget(exec *Execution, groups int, receiver Value, args []Value, 
 	if exec == nil || exec.memoryQuota <= 0 {
 		return 0, false
 	}
-	perMatch := projectedRegexSubmatchIndexBytes(1, groups)
+	// FindAll appends into the outer slice, so its capacity overshoots the
+	// match count -- Go grows a full slice by up to half again, and that slack
+	// is a slice header per unused slot. Charging the logical rows alone let a
+	// scan landing on a growth boundary allocate past the budget, so the
+	// per-match price carries the overshoot the append can leave behind.
+	perMatch := saturatingAdd(
+		projectedRegexSubmatchIndexBytes(1, groups),
+		regexScanOuterSliceGrowthBytes,
+	)
 	if perMatch <= 0 {
 		return 0, false
 	}
@@ -4345,6 +4353,10 @@ func regexpMinMatchRunes(re *syntax.Regexp) int {
 // the worst-case guard and the accumulator seed -- which share this projection so the
 // up-front rejection and the running budget reserve the same bytes -- honest about
 // the table's true coexisting footprint rather than just its integer payload.
+// regexScanOuterSliceGrowthBytes is the headroom charged per match for the
+// outer [][]int slice's growth capacity (see scanMatchBudget).
+const regexScanOuterSliceGrowthBytes = estimatedSliceBaseBytes
+
 func projectedRegexSubmatchIndexBytes(matchCount, groups int) int {
 	intsPerMatch := saturatingAdd(2, saturatingMul(2, groups))
 	indexBytesPerMatch := saturatingMul(intsPerMatch, estimatedIntBytes)
