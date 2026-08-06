@@ -237,6 +237,24 @@ func TestRegexCostHandlesRepeatBounds(t *testing.T) {
 			pattern:      strings.Repeat("(?:(?:a+)?){1000}", 99),
 			wantRejected: true,
 		},
+		// Simplify collapses only when greediness matches too, so an
+		// alternating greedy/lazy chain keeps every level.
+		"alternating greediness is charged": {
+			pattern:      alternatingGreedinessPattern(),
+			wantRejected: true,
+		},
+		// A star over a nullable operand compiles as (operand+)?, emitting a
+		// second branch that charging one per star missed.
+		"nullable star charges both branches": {
+			pattern:      strings.Repeat("(?:(?:a?)*){1000}", 33),
+			wantRejected: true,
+		},
+		// Quantifiers over an empty match are removed whatever the operator
+		// or greediness, so a deep chain around one compiles to nothing.
+		"quantifier chain over an empty match collapses": {
+			pattern:      emptyMatchQuantifierCyclePattern(),
+			wantRejected: false,
+		},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -267,4 +285,37 @@ func TestRegexCostHandlesRepeatBounds(t *testing.T) {
 			}
 		})
 	}
+}
+
+// alternatingGreedinessPattern builds 101 nested stars that alternate between
+// greedy and lazy, wrapped in a counted repeat.
+func alternatingGreedinessPattern() string {
+	var b strings.Builder
+	for range 101 {
+		b.WriteString("(?:")
+	}
+	b.WriteString("a")
+	for i := range 101 {
+		if i%2 == 0 {
+			b.WriteString(")*")
+		} else {
+			b.WriteString(")*?")
+		}
+	}
+	return "(?:" + b.String() + "){1000}"
+}
+
+// emptyMatchQuantifierCyclePattern builds a deep cycle of *, lazy +, and ?
+// around an empty group, wrapped in a counted repeat.
+func emptyMatchQuantifierCyclePattern() string {
+	var b strings.Builder
+	for range 101 {
+		b.WriteString("(?:")
+	}
+	b.WriteString("(?:)")
+	ops := []string{")*", ")+?", ")?"}
+	for i := range 101 {
+		b.WriteString(ops[i%3])
+	}
+	return "(?:" + b.String() + "){1000}"
 }

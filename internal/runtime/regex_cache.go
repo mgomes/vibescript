@@ -129,10 +129,23 @@ func estimateRegexProgramSize(re *syntax.Regexp, budget int) int {
 	case syntax.OpCapture:
 		return clampRegexCost(saturatingAdd(2, estimateRegexProgramSize(re.Sub0[0], budget)), budget)
 	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest:
-		// Nested quantifiers collapse: Simplify rewrites (?:a*)* to a*, so a
-		// stack of them compiles to one. Charging each wrapper turned a chain
-		// of them into a saturated estimate and rejected valid patterns.
-		return clampRegexCost(saturatingAdd(1, estimateRegexProgramSize(unwrapIdempotentQuantifiers(re.Op, re.Sub0[0]), budget)), budget)
+		// A quantifier over an empty match is removed entirely, whatever the
+		// operator or greediness, so a whole chain of them around one costs
+		// nothing to compile however deep it is.
+		if quantifiesEmptyMatch(re) {
+			return clampRegexCost(1, budget)
+		}
+		operand := unwrapIdempotentQuantifiers(re, re.Sub0[0])
+		if operand == nil {
+			return clampRegexCost(1, budget)
+		}
+		// A star over a nullable operand compiles as (operand+)?, which emits
+		// a second branch. Charging one understated these programs.
+		branches := 1
+		if re.Op == syntax.OpStar && regexpMinMatchRunes(operand) == 0 {
+			branches = 2
+		}
+		return clampRegexCost(saturatingAdd(branches, estimateRegexProgramSize(operand, budget)), budget)
 	case syntax.OpRepeat:
 		// Simplification discards a {0} repeat body and all, so costing the
 		// child would reject valid patterns over a body that never compiles.
@@ -231,19 +244,40 @@ func (c *regexCache) evictLocked() {
 }
 
 // unwrapIdempotentQuantifiers collapses a chain of nested quantifiers that
-// repeat the SAME operator, which is the only combination Simplify rewrites:
-// (?:a*)* becomes a*, so charging each wrapper over-counts a pattern that
-// compiles small. Mixed quantifiers are left alone — (?:a+)? keeps both
-// instructions, and collapsing them under-counted a program by the number of
-// levels, which is the direction a guard must never be wrong in.
-func unwrapIdempotentQuantifiers(parentOp syntax.Op, re *syntax.Regexp) *syntax.Regexp {
-	switch parentOp {
+// Simplify actually rewrites away. That requires both the operator and the
+// greediness to match: (?:a*)* becomes a*, but (?:a*?)* keeps both, and so
+// does a mixed pair like (?:a+)?. Collapsing more than Simplify does
+// understates a program by the number of levels, which is the direction a
+// guard must never be wrong in; collapsing less only over-counts patterns
+// already near the cap.
+func unwrapIdempotentQuantifiers(parent, re *syntax.Regexp) *syntax.Regexp {
+	switch parent.Op {
 	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest:
 	default:
 		return re
 	}
-	for re != nil && re.Op == parentOp {
+	nonGreedy := parent.Flags & syntax.NonGreedy
+	for re != nil && re.Op == parent.Op && re.Flags&syntax.NonGreedy == nonGreedy {
 		re = re.Sub0[0]
 	}
 	return re
+}
+
+// quantifiesEmptyMatch reports whether re is a quantifier whose operand, after
+// descending through any further quantifiers, is an empty match. Simplify
+// removes quantifiers over an empty match regardless of operator or
+// greediness, so such a chain compiles to nothing and must not be costed as
+// one wrapper per level.
+func quantifiesEmptyMatch(re *syntax.Regexp) bool {
+	for re != nil {
+		switch re.Op {
+		case syntax.OpStar, syntax.OpPlus, syntax.OpQuest:
+			re = re.Sub0[0]
+		case syntax.OpEmptyMatch:
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
