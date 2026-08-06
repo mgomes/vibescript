@@ -1879,7 +1879,12 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	c.pinnedInstanceOrigins = nil
 	c.constructorInstanceFacts = nil
 	c.widenedIvarFacts = nil
-	c.instanceIvarFactsDirty = false
+	// The ivar dirty marker describes localTypes, which this reset keeps
+	// (checkNonExecutingDefaultExpression walks a default against the seeded
+	// @ facts): forcing it clean would let an unknown call in the fresh
+	// scope skip widening those facts. Callers that do replace the frames
+	// leave at worst a spuriously dirty marker, which costs one widening
+	// pass over facts that do not exist.
 	c.evaluatedIfClassFacts = nil
 	c.evaluatedBlockValues = nil
 	c.evaluatedHashDefaults = nil

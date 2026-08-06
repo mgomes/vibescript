@@ -10874,3 +10874,30 @@ func initializerIvarSeedMethod(param, value string) string {
   end
 `
 }
+
+// TestFreshInferenceScopeKeepsIvarDirtyMarker pins the dirty marker across
+// withFreshLocalInferenceScope: the reset keeps the local type frames (a
+// non-executing default walk reads the seeded @ facts through it), so the
+// marker describing those frames must survive into the fresh scope and be
+// restored with the other inference facts on exit.
+func TestFreshInferenceScopeKeepsIvarDirtyMarker(t *testing.T) {
+	t.Parallel()
+
+	checker := &scriptChecker{
+		selfClass:  &ClassDef{},
+		localTypes: []checkTypeFrame{{}},
+	}
+	checker.bindLocalTypeInCurrentFrame(ivarFactKey("name"), checkTypeNil)
+	if !checker.instanceIvarFactsDirty {
+		t.Fatal("binding an ivar fact did not mark widening state dirty")
+	}
+	restore := checker.withFreshLocalInferenceScope()
+	if !checker.instanceIvarFactsDirty {
+		t.Fatal("the fresh scope cleared the marker while keeping the local type frames")
+	}
+	checker.instanceIvarFactsDirty = false
+	restore()
+	if !checker.instanceIvarFactsDirty {
+		t.Fatal("the restore did not bring the entry marker back")
+	}
+}
