@@ -394,7 +394,7 @@ func TestRegexSubmatchFromRuneOffsetDoesNotEmbedSubjectPrefix(t *testing.T) {
 	// with the prefix: doing so would blow past the pattern-size guard, spend
 	// seconds compiling, and retain megabytes per distinct text/offset in the
 	// regex cache. Use a fresh cache so the assertion is parallel-safe.
-	cache := newRegexCache(compiledRegexCacheCapacity)
+	cache := newRegexCache(compiledRegexCacheCapacity, compiledRegexCacheInstructionBudget)
 	prefix := strings.Repeat("x", maxRegexPatternSize*4)
 	text := prefix + "needle"
 	offset := utf8.RuneCountInString(prefix)
@@ -427,7 +427,7 @@ func TestRegexSubmatchFromRuneOffsetValidatesPatternRegardlessOfOffset(t *testin
 	// pattern is also never rewritten into the offset wrapper, so nothing oversized
 	// is compiled or cached. Use fresh caches so the assertions are parallel-safe.
 	for _, offset := range []int{3, 99} {
-		cache := newRegexCache(compiledRegexCacheCapacity)
+		cache := newRegexCache(compiledRegexCacheCapacity, compiledRegexCacheInstructionBudget)
 		indices, err := regexSubmatchFromRuneOffsetWithCache(cache, "string.match", "abc", "(", offset)
 		if err == nil {
 			t.Fatalf("offset %d: expected invalid regex error, got indices=%v", offset, indices)
