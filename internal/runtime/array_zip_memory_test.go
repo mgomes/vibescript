@@ -72,3 +72,44 @@ end`)
 		t.Fatalf("zip = %s, want the nil-padded rows", got)
 	}
 }
+
+// TestZipMaterializationStaysLinear pins that the priced build runs as an
+// accumulator-metered section. The per-row step otherwise enters its periodic
+// slow path every 16 rows, and each one re-walks the receiver and argument
+// graph, making a linear materialization quadratic: 8x the input cost 27x the
+// time before this, and a large quota-compliant zip could time out.
+//
+// Counted rather than timed: the estimator's visit counter reports the walks
+// exactly, where a clock resolves them only on an unloaded machine.
+// Not parallel: the counters are process-wide.
+func TestZipMaterializationStaysLinear(t *testing.T) {
+	const src = `def run(base, other)
+  base.zip(other).length
+end`
+	visitsFor := func(n int) uint64 {
+		script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 512 << 20, StepQuota: Unlimited}, src)
+		base := make([]Value, n)
+		other := make([]Value, n)
+		for i := range base {
+			base[i] = NewInt(int64(i))
+			other[i] = NewInt(int64(i))
+		}
+		estimatorVisits.Store(0)
+		estimatorVisitCounting.Store(true)
+		defer estimatorVisitCounting.Store(false)
+		if _, err := script.Call(context.Background(), "run",
+			[]Value{NewArray(base), NewArray(other)}, CallOptions{}); err != nil {
+			t.Fatalf("zip of %d: %v", n, err)
+		}
+		return estimatorVisits.Load()
+	}
+
+	const small, large = 2000, 16000
+	atSmall, atLarge := visitsFor(small), visitsFor(large)
+	// Eight times the input should cost about eight times the visits. The
+	// unsectioned build grew them by more than two orders of magnitude.
+	if limit := atSmall * 32; atLarge > limit {
+		t.Fatalf("zip of %d visited %d estimator nodes and %d visited %d (limit %d): the build is re-walking the graph",
+			small, atSmall, large, atLarge, limit)
+	}
+}

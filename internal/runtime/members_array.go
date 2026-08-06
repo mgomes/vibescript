@@ -4166,6 +4166,13 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if _, err := checkedArrayMaterializationMul("array.zip", len(arr), rowWidth); err != nil {
 				return NewNil(), err
 			}
+			// Blockless build: every row backing is priced below before it is
+			// allocated and the loop cannot re-enter script code, so it runs as
+			// an accumulator-metered section (see
+			// beginAccumulatorMeteredSection). Without it the per-row step's
+			// periodic slow path would re-walk the receiver and argument graph
+			// every 16 rows, making a linear materialization quadratic.
+			defer exec.beginAccumulatorMeteredSection()()
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 			if err := acc.reserveSlots(len(arr)); err != nil {
 				return NewNil(), err
