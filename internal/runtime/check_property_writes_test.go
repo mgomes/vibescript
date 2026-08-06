@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"io"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -2477,6 +2479,107 @@ end
 			t.Fatalf("run() = %v, want 1", got)
 		}
 	})
+}
+
+// wideUnionDestructureSource builds a script that destructures a call whose
+// declared return type is a union of count array arms into count targets. Both
+// counts grow linearly with the source size, so an unbudgeted projection costs
+// their product.
+func wideUnionDestructureSource(count int) string {
+	var b strings.Builder
+	b.WriteString("def source() -> ")
+	for i := range count {
+		if i > 0 {
+			b.WriteString("|")
+		}
+		b.WriteString("array<int>")
+	}
+	b.WriteString("\n  [1]\nend\n\ndef run\n  ")
+	for i := range count {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("a")
+		b.WriteString(strconv.Itoa(i))
+	}
+	b.WriteString(" = source()\n  a0\nend\n")
+	return b.String()
+}
+
+// checkWarningAllocs reports how many heap allocations one CheckWarnings pass
+// performs.
+func checkWarningAllocs(tb testing.TB, script *Script) uint64 {
+	tb.Helper()
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	script.CheckWarnings()
+	runtime.ReadMemStats(&after)
+	return after.Mallocs - before.Mallocs
+}
+
+// A declared annotation is not capped to maxInferredUnionArms, so a wide
+// declared union destructured into many targets makes the projection's cost the
+// product of the arm and target counts: quadratic in the source size, and in a
+// static check that runs outside the runtime's step and memory quotas. Measured
+// unbudgeted at 0.97M allocations for 400 arms over 400 targets, 15.4M for
+// 1600, and 61.6M (2.4 GiB, 4.5s) for 3200 in a 56 KiB script, which
+// extrapolates past the whole heap well inside the default 1 MiB source limit.
+// maxTypedDestructureProjections abandons the projection instead, and the same
+// three scripts cost 2.3K, 7.2K, and 13.6K allocations.
+//
+// Deliberately serial: runtime.MemStats is process-wide, and a concurrent
+// test's allocations would land in the delta.
+func TestCheckTypedDestructureProjectionStaysLinearInSourceSize(t *testing.T) {
+	const (
+		small = 400
+		large = 1600
+		// large is 4x small, so a linear cost grows about 4x while the
+		// unbudgeted quadratic cost grows about 16x.
+		maxGrowth = 8
+	)
+
+	smallAllocs := checkWarningAllocs(t, compileScriptDefault(t, wideUnionDestructureSource(small)))
+	largeAllocs := checkWarningAllocs(t, compileScriptDefault(t, wideUnionDestructureSource(large)))
+	if largeAllocs > smallAllocs*maxGrowth {
+		t.Fatalf(
+			"checking %d union arms over %d targets allocated %d times against %d for %d/%d, want at most %dx growth",
+			large, large, largeAllocs, smallAllocs, small, small, maxGrowth,
+		)
+	}
+}
+
+// The budget must leave ordinary annotations projectable: a handful of arms
+// over a handful of targets stays far below it and still reports the write
+// that contradicts the property contract.
+func TestCheckTypedDestructureProjectionKeepsOrdinaryUnions(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def source() -> array<string>|array<float>|array<bool>|string
+  ["bad"]
+end
+
+class User
+  property a: int
+
+  def initialize
+    @a, b, c, d = source()
+    b
+  end
+end
+
+def run
+  User.new()
+end
+`)
+
+	requireCheckWarningContains(
+		t,
+		script,
+		"write to @a expected int",
+	)
 }
 
 // A short literal right-hand side pads the missing fixed targets with nil at

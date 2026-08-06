@@ -7588,6 +7588,16 @@ func captureTypedDestructureValueFactsWithRoots(
 	return facts, true
 }
 
+// maxTypedDestructureProjections budgets one destructure projection. The
+// projection builds a candidate type for every target from every arm of the
+// value type, so its cost is the product of the two counts. A declared
+// annotation is not capped to maxInferredUnionArms, so a wide declared union
+// destructured into many targets would otherwise make that product quadratic
+// in the source size, outside the runtime's step and memory quotas. Past the
+// budget the projection gives up and the caller falls back to unknown element
+// facts.
+const maxTypedDestructureProjections = 1024
+
 func typedDestructureElementTypes(
 	target *DestructureTarget,
 	valueType *TypeExpr,
@@ -7597,6 +7607,12 @@ func typedDestructureElementTypes(
 	}
 	arms, exact := typeExprArms(valueType, 0)
 	if !exact || len(arms) == 0 {
+		return nil, false
+	}
+	// Divide rather than multiply so a hostile arm count cannot overflow the
+	// product.
+	if len(target.Elements) > 0 &&
+		len(arms) > maxTypedDestructureProjections/len(target.Elements) {
 		return nil, false
 	}
 	options := make([][]*TypeExpr, len(target.Elements))
