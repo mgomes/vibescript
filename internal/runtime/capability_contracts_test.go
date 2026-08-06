@@ -1571,3 +1571,46 @@ end`)
 		t.Fatalf("yielded builtin ran without its contract %d time(s) inside the block", uncontracted)
 	}
 }
+
+// TestCapabilityContractsDoNotClaimNestedScriptYields pins that a yield made
+// by a script helper the block calls is not attributed to the capability. A
+// script call does not change builtin nesting depth, so depth alone cannot
+// tell the capability's own yield from one made by `def relay(v); yield v; end`
+// running inside the block; claiming the latter would attach this
+// capability's validator to an unrelated builtin and take scope ownership
+// from whoever really published it.
+func TestCapabilityContractsDoNotClaimNestedScriptYields(t *testing.T) {
+	t.Parallel()
+
+	uncontracted := 0
+	foreignCalls := 0
+	script := compileScriptDefault(t, `def relay(v)
+  yield v
+end
+
+def run()
+  stolen = nil
+  cap.factory do |fn|
+    relay(other.make()) do |passed|
+      stolen = passed
+    end
+    "fine"
+  end
+  stolen(42)
+end`)
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			yieldFactoryCapability{uncontractedCalls: &uncontracted},
+			foreignFactoryCapability{calls: &foreignCalls},
+		},
+	})
+	if err != nil {
+		t.Fatalf("a nested script yield must not inherit this capability's contract: %v", err)
+	}
+	if result.Kind() != KindString || result.String() != "foreign" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if foreignCalls != 1 {
+		t.Fatalf("foreign builtin ran %d time(s), want 1", foreignCalls)
+	}
+}
