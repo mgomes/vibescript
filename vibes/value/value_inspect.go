@@ -395,7 +395,18 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 	default:
 		// A big integer's projection performs the same superlinear base
 		// conversion the rendering will; charge steps for it up front so the
-		// step quota trips before the conversion runs.
+		// step quota trips before the conversion runs. The length itself is
+		// the allocation-free decimal bound: materializing the decimal here
+		// would allocate the full rendering before any caller reservation
+		// covers it, so sizing must not convert. The bound never falls short,
+		// and callers reserve or pregrow at the projection, so the render
+		// stays within what was validated.
+		if bi, ok := BigIntPayload(v); ok {
+			if err := chargeBigIntRenderSteps(v, step); err != nil {
+				return 0, err
+			}
+			return bigIntDecimalLenUpperBound(bi), nil
+		}
 		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, err
 		}

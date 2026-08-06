@@ -1,6 +1,9 @@
 package value
 
-import "testing"
+import (
+	"math/big"
+	"testing"
+)
 
 // TestEqualityContextDropsOperandRootsAfterCompare pins that a comparison
 // does not outlive its answer inside the context: the runtime pools one
@@ -57,5 +60,30 @@ func TestEqualityContextDropsOversizedTraversalMap(t *testing.T) {
 	}
 	if ctx.state.seen != nil {
 		t.Fatal("a walk past the retain threshold must drop the traversal map")
+	}
+}
+
+// TestInspectSizingUsesDecimalBoundForBigInts pins that display sizing never
+// materializes a big integer's decimal form: the projection must be the
+// allocation-free upper bound, since the sizing pass runs before any caller
+// reservation covers the rendering it projects.
+func TestInspectSizingUsesDecimalBoundForBigInts(t *testing.T) {
+	t.Parallel()
+
+	bi := new(big.Int).Lsh(big.NewInt(1), 1<<16)
+	n, err := NewBigInt(bi).inspectByteLenBoundedWithState(newValueStringState(), func() error { return nil })
+	if err != nil {
+		t.Fatalf("sizing failed: %v", err)
+	}
+	if want := bigIntDecimalLenUpperBound(bi); n != want {
+		t.Fatalf("sizing = %d, want the allocation-free bound %d", n, want)
+	}
+	small := big.NewInt(-1234567890123456789)
+	sized, err := NewBigInt(small).inspectByteLenBoundedWithState(newValueStringState(), func() error { return nil })
+	if err != nil {
+		t.Fatalf("sizing failed: %v", err)
+	}
+	if actual := len(small.String()); sized < actual {
+		t.Fatalf("bound %d falls short of the actual rendering %d", sized, actual)
 	}
 }
