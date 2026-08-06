@@ -2481,10 +2481,31 @@ end
 	})
 }
 
-// wideUnionDestructureSource builds a script that destructures a call whose
-// declared return type is a union of count array arms into count targets. Both
-// counts grow linearly with the source size, so an unbudgeted projection costs
-// their product.
+// appendDestructureTargets closes a script with a destructure of source() into
+// count targets.
+func appendDestructureTargets(b *strings.Builder, count int) {
+	for i := range count {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("a")
+		b.WriteString(strconv.Itoa(i))
+	}
+	b.WriteString(" = source()\n  a0\nend\n")
+}
+
+// appendIntUnion writes count int arms joined into one union.
+func appendIntUnion(b *strings.Builder, count int) {
+	for i := range count {
+		if i > 0 {
+			b.WriteString("|")
+		}
+		b.WriteString("int")
+	}
+}
+
+// wideUnionDestructureSource puts the union at the top of the return type, so
+// every arm is an outer arm the projection iterates.
 func wideUnionDestructureSource(count int) string {
 	var b strings.Builder
 	b.WriteString("def source() -> ")
@@ -2495,20 +2516,51 @@ func wideUnionDestructureSource(count int) string {
 		b.WriteString("array<int>")
 	}
 	b.WriteString("\n  [1]\nend\n\ndef run\n  ")
-	for i := range count {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString("a")
-		b.WriteString(strconv.Itoa(i))
-	}
-	b.WriteString(" = source()\n  a0\nend\n")
+	appendDestructureTargets(&b, count)
 	return b.String()
 }
 
-// checkWarningAllocs reports how many heap allocations one CheckWarnings pass
-// performs.
-func checkWarningAllocs(tb testing.TB, script *Script) uint64 {
+// nestedUnionDestructureSource puts the union inside the array element, so the
+// return type flattens to a single outer arm however wide the union is: an
+// arm-count budget sees one arm, but every target still canonicalizes the whole
+// union when it joins its candidate with nil.
+func nestedUnionDestructureSource(count int) string {
+	var b strings.Builder
+	b.WriteString("def source() -> array<")
+	appendIntUnion(&b, count)
+	b.WriteString(">\n  [1]\nend\n\ndef run\n  ")
+	appendDestructureTargets(&b, count)
+	return b.String()
+}
+
+// deepUnionDestructureSource wraps the union one level deeper, so the projected
+// candidate keeps it whole instead of deduplicating to int|nil. The cost then
+// lands in the bytes each canonicalization builds rather than in the number of
+// allocations, which is why the budget is measured both ways.
+func deepUnionDestructureSource(count int) string {
+	var b strings.Builder
+	b.WriteString("def source() -> array<array<")
+	appendIntUnion(&b, count)
+	b.WriteString(">>\n  [[1]]\nend\n\ndef run\n  ")
+	appendDestructureTargets(&b, count)
+	return b.String()
+}
+
+// Three placements of one wide declared union. Each makes the projection cost
+// the target count times the union's size; only the first also makes it the
+// target count times the outer arm count.
+var typedDestructureBudgetShapes = []struct {
+	name  string
+	build func(count int) string
+}{
+	{name: "union at the top of the return type", build: wideUnionDestructureSource},
+	{name: "union inside the array element", build: nestedUnionDestructureSource},
+	{name: "union below the array element", build: deepUnionDestructureSource},
+}
+
+// checkWarningCost reports the heap allocations and the bytes one CheckWarnings
+// pass performs.
+func checkWarningCost(tb testing.TB, script *Script) (allocs, bytes uint64) {
 	tb.Helper()
 
 	var before, after runtime.MemStats
@@ -2516,18 +2568,19 @@ func checkWarningAllocs(tb testing.TB, script *Script) uint64 {
 	runtime.ReadMemStats(&before)
 	script.CheckWarnings()
 	runtime.ReadMemStats(&after)
-	return after.Mallocs - before.Mallocs
+	return after.Mallocs - before.Mallocs, after.TotalAlloc - before.TotalAlloc
 }
 
-// A declared annotation is not capped to maxInferredUnionArms, so a wide
-// declared union destructured into many targets makes the projection's cost the
-// product of the arm and target counts: quadratic in the source size, and in a
-// static check that runs outside the runtime's step and memory quotas. Measured
-// unbudgeted at 0.97M allocations for 400 arms over 400 targets, 15.4M for
-// 1600, and 61.6M (2.4 GiB, 4.5s) for 3200 in a 56 KiB script, which
-// extrapolates past the whole heap well inside the default 1 MiB source limit.
-// maxTypedDestructureProjections abandons the projection instead, and the same
-// three scripts cost 2.3K, 7.2K, and 13.6K allocations.
+// The projection derives a candidate type per target and joins it, and joining
+// canonicalizes the whole candidate, so its cost is the target count times the
+// value type's size. Declared annotations are capped neither to
+// maxInferredUnionArms nor in nesting, so all three placements below make that
+// product quadratic in the source size, in a static check that runs outside the
+// runtime's step and memory quotas. Measured unbudgeted at 1600 arms over 1600
+// targets: 15.4M allocations and 592 MiB for the top union, 20.0M and 159 MiB
+// for the nested one, and 1.4 GiB for the union below the element, which
+// allocates only 45K times and so escapes an allocation count alone. All three
+// fit in well under 90 KiB of source, far inside the default 1 MiB limit.
 //
 // Deliberately serial: runtime.MemStats is process-wide, and a concurrent
 // test's allocations would land in the delta.
@@ -2535,30 +2588,68 @@ func TestCheckTypedDestructureProjectionStaysLinearInSourceSize(t *testing.T) {
 	const (
 		small = 400
 		large = 1600
-		// large is 4x small, so a linear cost grows about 4x while the
-		// unbudgeted quadratic cost grows about 16x.
+		// large is 4x small in both dimensions, so a linear cost grows about
+		// 4x while the unbudgeted quadratic cost grows about 16x.
 		maxGrowth = 8
 	)
 
-	smallAllocs := checkWarningAllocs(t, compileScriptDefault(t, wideUnionDestructureSource(small)))
-	largeAllocs := checkWarningAllocs(t, compileScriptDefault(t, wideUnionDestructureSource(large)))
-	if largeAllocs > smallAllocs*maxGrowth {
-		t.Fatalf(
-			"checking %d union arms over %d targets allocated %d times against %d for %d/%d, want at most %dx growth",
-			large, large, largeAllocs, smallAllocs, small, small, maxGrowth,
-		)
+	for _, shape := range typedDestructureBudgetShapes {
+		t.Run(shape.name, func(t *testing.T) {
+			smallAllocs, smallBytes := checkWarningCost(t, compileScriptDefault(t, shape.build(small)))
+			largeAllocs, largeBytes := checkWarningCost(t, compileScriptDefault(t, shape.build(large)))
+			if largeAllocs > smallAllocs*maxGrowth {
+				t.Errorf(
+					"checking %d over %d allocated %d times against %d for %d over %d, want at most %dx growth",
+					large, large, largeAllocs, smallAllocs, small, small, maxGrowth,
+				)
+			}
+			if largeBytes > smallBytes*maxGrowth {
+				t.Errorf(
+					"checking %d over %d allocated %d bytes against %d for %d over %d, want at most %dx growth",
+					large, large, largeBytes, smallBytes, small, small, maxGrowth,
+				)
+			}
+		})
 	}
 }
 
-// The budget must leave ordinary annotations projectable: a handful of arms
-// over a handful of targets stays far below it and still reports the write
-// that contradicts the property contract.
+// The budget must leave ordinary annotations projectable, nested ones included:
+// a handful of arms over a handful of targets stays far below it and still
+// reports the write that contradicts the property contract.
 func TestCheckTypedDestructureProjectionKeepsOrdinaryUnions(t *testing.T) {
 	t.Parallel()
 
-	script := compileScriptDefault(t, `
-def source() -> array<string>|array<float>|array<bool>|string
-  ["bad"]
+	for _, tc := range []struct {
+		name       string
+		annotation string
+		body       string
+		want       string
+	}{
+		{
+			name:       "union at the top of the return type",
+			annotation: "array<string>|array<float>|array<bool>|string",
+			body:       `["bad"]`,
+			want:       "write to @a expected int",
+		},
+		{
+			name:       "union inside the array element",
+			annotation: "array<string|float|bool>",
+			body:       `["bad"]`,
+			want:       "write to @a expected int",
+		},
+		{
+			name:       "union below the array element",
+			annotation: "array<array<string|float|bool>>",
+			body:       `[["bad"]]`,
+			want:       "write to @a expected int",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def source() -> `+tc.annotation+`
+  `+tc.body+`
 end
 
 class User
@@ -2575,11 +2666,32 @@ def run
 end
 `)
 
-	requireCheckWarningContains(
-		t,
-		script,
-		"write to @a expected int",
-	)
+			requireCheckWarningContains(t, script, tc.want)
+		})
+	}
+}
+
+// Exceeding the budget must stay a fallback to unknown element facts, never an
+// error and never a warning of its own: the same script is silent past the
+// budget and keeps running, so a host statically gating untrusted scripts sees
+// less inference rather than a rejection.
+func TestCheckTypedDestructureProjectionBudgetFallsBackQuietly(t *testing.T) {
+	t.Parallel()
+
+	var b strings.Builder
+	b.WriteString("def source() -> array<")
+	appendIntUnion(&b, 4096)
+	b.WriteString(">\n  [1]\nend\n\nclass User\n  property a: int\n\n" +
+		"  def initialize\n    @a, b = source()\n    b\n  end\nend\n\n" +
+		"def run\n  User.new()\n  1\nend\n")
+
+	script := compileScriptDefault(t, b.String())
+	requireNoCheckWarnings(t, script)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("run() = %v, want 1", got)
+	}
 }
 
 // A short literal right-hand side pads the missing fixed targets with nil at
