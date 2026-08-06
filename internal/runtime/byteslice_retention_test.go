@@ -117,3 +117,22 @@ end`)
 	}
 	goruntime.KeepAlive(kept)
 }
+
+// TestBytesliceCopyIsPricedBeforeItIsMade pins that the detaching copy is
+// reserved against the memory quota before it is allocated. The copy coexists
+// with the receiver it is taken from, and an ephemeral receiver is live for
+// exactly that window, so neither the pre-call nor the post-call check sees
+// both of them at once.
+func TestBytesliceCopyIsPricedBeforeItIsMade(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: 2 << 20},
+		`def run(seed)
+  s = seed * 200
+  s.reverse.byteslice(0, s.bytesize - 1)
+end`)
+	seed := strings.Repeat("abcdefghij", 500)
+	if _, err := script.Call(context.Background(), "run", []Value{NewString(seed)}, CallOptions{}); err == nil {
+		t.Fatal("a copy that cannot fit beside its receiver must be rejected")
+	}
+}

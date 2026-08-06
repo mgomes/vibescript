@@ -1547,7 +1547,8 @@ func stringRuneRangeSlice(text string, rng Range) (string, bool) {
 // extracted bytes are returned verbatim without UTF-8 normalization, so slicing
 // across a multibyte boundary preserves the raw bytes, mirroring Ruby's
 // byte-oriented semantics.
-func stringByteslice(text string, args []Value) (Value, error) {
+func stringByteslice(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	text := receiver.String()
 	switch len(args) {
 	case 1:
 		if args[0].Kind() == KindRange {
@@ -3604,7 +3605,7 @@ func stringMemberQuery(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.byteslice does not accept keyword arguments")
 			}
-			return stringByteslice(receiver.String(), args)
+			return stringByteslice(exec, receiver, args, kwargs, block)
 		}), nil
 	case "hex":
 		return NewAutoBuiltin("string.hex", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
