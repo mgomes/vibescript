@@ -3812,7 +3812,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := exec.chargeValueElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
+			if err := exec.chargeValueElementKeySteps(receiver.Array(), others...); err != nil {
 				return NewNil(), err
 			}
 			unique, err := unionArrayValues(exec, receiver.Array(), others)
@@ -3839,7 +3839,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 				}
 			}
 			if removalHasScalars {
-				if err := exec.chargeValueElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
+				if err := exec.chargeValueElementKeySteps(receiver.Array(), others...); err != nil {
 					return NewNil(), err
 				}
 			}

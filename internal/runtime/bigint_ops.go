@@ -477,15 +477,18 @@ func (exec *Execution) chargeScalarSetKeySteps(key Value) error {
 }
 
 // chargeValueElementKeySteps charges up front for canonicalizing every
-// element of the given slices as a set key. The set-building helpers (uniq,
-// union, difference, & and array -) canonicalize each element at least once,
-// so their entry points charge the summed big-integer word count and
-// string-like byte count before any conversion runs; slices of compact
-// values charge nothing beyond the scan.
-func (exec *Execution) chargeValueElementKeySteps(slices ...[]Value) error {
+// element of the receiver and the other operand slices as a set key. The
+// set-building helpers (uniq, union, difference, & and array -) canonicalize
+// each element at least once, so their entry points charge the summed
+// big-integer word count and string-like byte count before any conversion
+// runs; slices of compact values charge nothing beyond the scan. The
+// receiver rides separately so a high-arity caller spreads its argument
+// slice directly instead of materializing a combined O(arity) buffer before
+// anything is reserved.
+func (exec *Execution) chargeValueElementKeySteps(lead []Value, rest ...[]Value) error {
 	words := 0
 	bytes := 0
-	for _, values := range slices {
+	tally := func(values []Value) {
 		for _, v := range values {
 			if bi, ok := value.BigIntPayload(v); ok {
 				words += len(bi.Bits())
@@ -495,6 +498,10 @@ func (exec *Execution) chargeValueElementKeySteps(slices ...[]Value) error {
 				bytes = saturatingAdd(bytes, len(v.String()))
 			}
 		}
+	}
+	tally(lead)
+	for _, values := range rest {
+		tally(values)
 	}
 	if words > 0 {
 		if err := exec.stepN(1 + words/bigIntStepWordsPerStep); err != nil {
