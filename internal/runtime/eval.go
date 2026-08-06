@@ -1775,6 +1775,15 @@ func (exec *Execution) callBlockValue(block Value, args []Value, pos Position) (
 	if err := ensureBlock(block, ""); err != nil {
 		return NewNil(), err
 	}
+	exec.recordCapabilityYield(args)
+	// Script code runs next, and nothing it yields is this capability's doing.
+	// A helper the block calls (`def relay(v); yield v; end`) yields through
+	// this same path, and a script call does not change builtinDepth, so depth
+	// alone cannot tell the two apart. Suspending for the body's duration can:
+	// a capability's own yields are made before its block body starts.
+	suspended := exec.capabilityYields
+	exec.capabilityYields = nil
+	defer func() { exec.capabilityYields = suspended }()
 	blk := valueBlock(block)
 	// Capability adapters drive blocks with host-supplied arguments and no
 	// receiver. Those arguments live only on the Go call stack for the duration of

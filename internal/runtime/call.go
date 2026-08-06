@@ -292,9 +292,16 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if savedReturnProof.recorded {
 			exec.capabilityReturnProof = capabilityReturnProof{}
 		}
+		// Values this call yields into a script block are bound as each yield
+		// is made (see capabilityYieldFrame): the block runs while this call
+		// is still on the stack and can invoke what it was just handed, and
+		// whatever it retains outlives every exit path below -- including the
+		// error returns a script can rescue.
+		yieldFrame := exec.pushCapabilityYieldFrame(scope, exec.builtinDepth+1, preCallKnownBuiltins, callAmbientEnvs)
 		exec.builtinDepth++
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		exec.builtinDepth--
+		exec.popCapabilityYieldFrame(yieldFrame)
 		// A capability adapter that ignored a quota error from the exported
 		// Step/CallBlock surface must not decide this call's outcome: a
 		// returned value is rejected (a final-expression adapter call would
@@ -428,6 +435,8 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			if deferredErr == nil {
 				postCallScanner.bindContracts(result, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
+			// Values this call yielded into the block were already bound
+			// above, before any exit path could branch.
 			if receiver.Kind() != KindNil {
 				postCallScanner.bindContracts(receiver, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
