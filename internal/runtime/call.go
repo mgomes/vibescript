@@ -292,24 +292,16 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if savedReturnProof.recorded {
 			exec.capabilityReturnProof = capabilityReturnProof{}
 		}
-		yieldFrame := exec.pushCapabilityYieldFrame(scope, exec.builtinDepth+1)
+		// Values this call yields into a script block are bound as each yield
+		// is made (see capabilityYieldFrame): the block runs while this call
+		// is still on the stack and can invoke what it was just handed, and
+		// whatever it retains outlives every exit path below -- including the
+		// error returns a script can rescue.
+		yieldFrame := exec.pushCapabilityYieldFrame(scope, exec.builtinDepth+1, preCallKnownBuiltins, callAmbientEnvs)
 		exec.builtinDepth++
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		exec.builtinDepth--
 		exec.popCapabilityYieldFrame(yieldFrame)
-		// Bind before any exit below branches. A value the capability yielded
-		// is published the moment the block can see it, so it must carry its
-		// contract however this call ends -- including the error returns
-		// further down, which a script can rescue while keeping whatever the
-		// block retained.
-		if yieldFrame != nil && len(yieldFrame.values) > 0 {
-			yieldScanner := newCapabilityContractScanner()
-			yieldScanner.excluded = preCallKnownBuiltins
-			yieldScanner.ambientEnvs = callAmbientEnvs
-			for _, yielded := range yieldFrame.values {
-				yieldScanner.bindContracts(yielded, scope, exec.capabilityContracts, exec.capabilityContractScopes)
-			}
-		}
 		// A capability adapter that ignored a quota error from the exported
 		// Step/CallBlock surface must not decide this call's outcome: a
 		// returned value is rejected (a final-expression adapter call would

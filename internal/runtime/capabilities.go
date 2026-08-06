@@ -606,20 +606,38 @@ func ambientEnvSet(root *Env) map[*Env]struct{} {
 // depth pins the builtin nesting level of the capability's own Fn, so blocks
 // driven by nested builtins the script calls from inside the yield (an
 // array.map in the block body) record against their own frame or none at all.
+//
+// Binding happens as each yield is made, not after the call returns: the block
+// runs while the capability is still on the stack and can invoke what it was
+// just handed, so a contract attached afterwards would arrive too late for
+// that nested call.
 type capabilityYieldFrame struct {
-	depth  int
-	values []Value
-	prev   *capabilityYieldFrame
+	depth       int
+	scope       *capabilityContractScope
+	excluded    map[*Builtin]struct{}
+	ambientEnvs map[*Env]struct{}
+	prev        *capabilityYieldFrame
 }
 
 // pushCapabilityYieldFrame starts recording the yields of a contracted
 // capability call whose Fn runs at the given builtin depth. It returns nil
 // when there is nothing to record for.
-func (exec *Execution) pushCapabilityYieldFrame(scope *capabilityContractScope, depth int) *capabilityYieldFrame {
+func (exec *Execution) pushCapabilityYieldFrame(
+	scope *capabilityContractScope,
+	depth int,
+	excluded map[*Builtin]struct{},
+	ambientEnvs map[*Env]struct{},
+) *capabilityYieldFrame {
 	if scope == nil || len(scope.contracts) == 0 {
 		return nil
 	}
-	frame := &capabilityYieldFrame{depth: depth, prev: exec.capabilityYields}
+	frame := &capabilityYieldFrame{
+		depth:       depth,
+		scope:       scope,
+		excluded:    excluded,
+		ambientEnvs: ambientEnvs,
+		prev:        exec.capabilityYields,
+	}
 	exec.capabilityYields = frame
 	return frame
 }
@@ -630,18 +648,25 @@ func (exec *Execution) popCapabilityYieldFrame(frame *capabilityYieldFrame) {
 	}
 }
 
-// recordCapabilityYield notes values a capability is handing to a script
-// block. Only yields made directly by the capability's own Fn are recorded;
-// deeper builtin dispatch runs at a different depth.
+// recordCapabilityYield binds contracts to the values a capability is handing
+// to a script block. Only yields made directly by the capability's own Fn are
+// bound; deeper builtin dispatch runs at a different depth.
 func (exec *Execution) recordCapabilityYield(args []Value) {
 	frame := exec.capabilityYields
 	if frame == nil || frame.depth != exec.builtinDepth || len(args) == 0 {
 		return
 	}
+	var scanner *capabilityContractScanner
 	for _, arg := range args {
-		if valueCanContainBuiltins(arg) {
-			frame.values = append(frame.values, arg)
+		if !valueCanContainBuiltins(arg) {
+			continue
 		}
+		if scanner == nil {
+			scanner = newCapabilityContractScanner()
+			scanner.excluded = frame.excluded
+			scanner.ambientEnvs = frame.ambientEnvs
+		}
+		scanner.bindContracts(arg, frame.scope, exec.capabilityContracts, exec.capabilityContractScopes)
 	}
 }
 

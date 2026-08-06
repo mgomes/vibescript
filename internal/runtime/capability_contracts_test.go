@@ -1549,3 +1549,25 @@ end`)
 		t.Fatalf("foreign builtin ran %d time(s), want 1", foreignCalls)
 	}
 }
+
+// TestCapabilityContractsBindYieldsBeforeBlockRuns pins that a yielded
+// builtin carries its contract while the block is still running. The block
+// executes with the capability call still on the stack, so a contract
+// attached only after that call returns arrives too late for a nested
+// invocation made from inside the block.
+func TestCapabilityContractsBindYieldsBeforeBlockRuns(t *testing.T) {
+	t.Parallel()
+
+	uncontracted := 0
+	script := compileScriptDefault(t, `def run()
+  cap.factory do |fn|
+    fn(42)
+  end
+end`)
+	_, err := script.Call(context.Background(), "run", nil,
+		callOptionsWithCapabilities(yieldFactoryCapability{uncontractedCalls: &uncontracted}))
+	requireErrorContains(t, err, "cap.made expects a single string argument")
+	if uncontracted != 0 {
+		t.Fatalf("yielded builtin ran without its contract %d time(s) inside the block", uncontracted)
+	}
+}
