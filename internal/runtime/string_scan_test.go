@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"unsafe"
@@ -796,7 +797,7 @@ func TestStringScanGuardChargesSliceOverhead(t *testing.T) {
 	text := strings.Repeat("a", runeCount)
 
 	// The slice headers are what push the projection past the cap, so the guard rejects.
-	if err := guardRegexScanIndexFootprint(pattern, text, groups); err == nil {
+	if err := guardRegexScanIndexFootprint(nil, pattern, text, groups); err == nil {
 		t.Fatalf("guard admitted a table whose full footprint %d exceeds the cap %d (slice overhead uncharged?)",
 			projectedRegexSubmatchIndexBytes(maxMatches, groups), maxRegexScanIndexBytes)
 	}
@@ -806,7 +807,7 @@ func TestStringScanGuardChargesSliceOverhead(t *testing.T) {
 	if full := projectedRegexSubmatchIndexBytes(runeCount, groups); full > maxRegexScanIndexBytes {
 		t.Fatalf("full footprint %d for the shorter subject still exceeds the cap %d; the window is too narrow", full, maxRegexScanIndexBytes)
 	}
-	if err := guardRegexScanIndexFootprint(pattern, shorter, groups); err != nil {
+	if err := guardRegexScanIndexFootprint(nil, pattern, shorter, groups); err != nil {
 		t.Fatalf("guard at one rune below the cap = %v, want success", err)
 	}
 }
@@ -1127,5 +1128,78 @@ end`
 	roomy := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: tightest + 1<<20}, source)
 	if _, err := roomy.Call(context.Background(), "run", []Value{subject}, CallOptions{}); err != nil {
 		t.Fatalf("block scan under a roomy quota = %v, want success", err)
+	}
+}
+
+// TestScanZeroWidthTableRespectsMemoryQuota pins that a zero-width scan
+// pattern cannot make the engine allocate an index table orders of magnitude
+// past the memory quota. FindAllStringSubmatchIndex builds the whole [][]int
+// table before any interpreter accounting runs, so a pattern of thousands of
+// empty groups over a few thousand characters allocated 128 MiB under a
+// 64 KiB quota — the quota error arrived only after the spike (#37).
+//
+// The check applies to zero-width patterns because they reach the projection
+// rather than merely being bounded by it: matching at every position, the
+// runeCount+1 worst case is what actually gets allocated. Sparse patterns keep
+// the host-cap-only treatment, since applying a worst case they never approach
+// would reject ordinary scans.
+//
+// Not parallel: MemStats.TotalAlloc is process-wide.
+func TestScanZeroWidthTableRespectsMemoryQuota(t *testing.T) {
+	const quotaBytes = 64 << 10
+	script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: quotaBytes},
+		"def run(s, p)\n  s.scan(p).length\nend")
+
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	_, err := script.Call(context.Background(), "run",
+		[]Value{NewString(strings.Repeat("a", 4000)), NewString(strings.Repeat("()", 2000))}, CallOptions{})
+	goruntime.ReadMemStats(&after)
+
+	if err == nil {
+		t.Fatal("a scan table far past the memory quota must be rejected")
+	}
+	allocated := after.TotalAlloc - before.TotalAlloc
+	// The unguarded path allocated about 128 MiB; the rest here is script
+	// compilation and the operand strings.
+	if limit := uint64(16 << 20); allocated > limit {
+		t.Fatalf("scan allocated %.2f MiB before failing, want under %.2f MiB",
+			float64(allocated)/(1<<20), float64(limit)/(1<<20))
+	}
+}
+
+// TestScanQuotaCheckKeepsOrdinaryPatternsWorking pins that the zero-width
+// check does not reintroduce the false rejections the host-cap-only design
+// avoids: a sparse pattern whose real result is empty must still scan under a
+// small quota, and ordinary zero-width scans must keep working.
+func TestScanQuotaCheckKeepsOrdinaryPatternsWorking(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		subject, pattern string
+		quotaBytes       int
+		wantMatches      string
+	}{
+		"sparse pattern that never matches": {strings.Repeat("a", 8000), "z", 64 << 10, "0"},
+		"zero-width over a small subject":   {"hello world", "()", 64 << 10, "12"},
+		"word boundaries":                   {strings.Repeat("hi there ", 50), `\b`, 1 << 20, "200"},
+		"ordinary capture groups":           {strings.Repeat("k=v ", 500), `(\w)=(\w)`, 1 << 20, "500"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t,
+				Config{StepQuota: 500_000_000, MemoryQuotaBytes: tc.quotaBytes},
+				"def run(s, p)\n  s.scan(p).length\nend")
+			result, err := script.Call(context.Background(), "run",
+				[]Value{NewString(tc.subject), NewString(tc.pattern)}, CallOptions{})
+			if err != nil {
+				t.Fatalf("scan must still succeed: %v", err)
+			}
+			if got := result.Inspect(); got != tc.wantMatches {
+				t.Fatalf("scan found %s matches, want %s", got, tc.wantMatches)
+			}
+		})
 	}
 }

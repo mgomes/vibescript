@@ -4060,7 +4060,7 @@ const stringScanInitialCap = 256
 func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	groups := re.NumSubexp()
 
-	if err := guardRegexScanIndexFootprint(pattern, text, groups); err != nil {
+	if err := guardRegexScanIndexFootprint(exec, pattern, text, groups); err != nil {
 		return NewNil(), err
 	}
 
@@ -4191,10 +4191,24 @@ func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]in
 // non-zero-width many-group pattern is no longer rejected on a zero-width worst case
 // it cannot reach. Only patterns that can match the empty string (minRunes == 0) fall
 // back to the runeCount+1 worst case.
-func guardRegexScanIndexFootprint(pattern, text string, groups int) error {
+func guardRegexScanIndexFootprint(exec *Execution, pattern, text string, groups int) error {
 	maxMatches := regexScanMaxMatches(pattern, text)
-	if projectedRegexSubmatchIndexBytes(maxMatches, groups) > maxRegexScanIndexBytes {
+	projected := projectedRegexSubmatchIndexBytes(maxMatches, groups)
+	if projected > maxRegexScanIndexBytes {
 		return guardLimitErrorf("string.scan match table exceeds limit %d bytes", maxRegexScanIndexBytes)
+	}
+	// A zero-width pattern reaches the projection rather than merely being
+	// bounded by it: it matches at every position, so runeCount+1 matches is
+	// what FindAll actually allocates, not a loose ceiling. For that shape the
+	// projection can be charged against the memory quota without the false
+	// rejections the paragraph above avoids -- those come from applying a
+	// worst case to sparse patterns that never approach it. Without this a
+	// script under a 64 KiB quota could make the engine allocate 128 MiB
+	// before the incremental accounting below saw a single element (#37).
+	if exec != nil && exec.memoryQuota > 0 && regexScanMinMatchRunes(pattern) == 0 {
+		if projected > exec.memoryQuota {
+			return exec.memoryQuotaExceededError()
+		}
 	}
 	return nil
 }
