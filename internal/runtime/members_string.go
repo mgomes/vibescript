@@ -52,10 +52,10 @@ func stringMember(str Value, property string) (Value, error) {
 var stringConstantCostMembers = map[string]struct{}{
 	"bytesize": {}, "empty?": {}, "getbyte": {}, "ord": {}, "chr": {},
 	"to_s": {}, "string": {}, "clear": {},
-	// byteslice indexes by byte and returns a substring view, and a symbol
-	// holds the receiver's string header without copying or hashing it, so
-	// none of these touch the receiver's length. slice is charged rather than
-	// exempt because it indexes by rune, which scans to the offset.
+	// byteslice indexes by byte and copies at most what it extracts, and a
+	// symbol holds the receiver's string header without copying or hashing it,
+	// so neither cost grows with the receiver's length. slice is charged
+	// rather than exempt because it indexes by rune, which scans to the offset.
 	"byteslice": {}, "to_sym": {}, "intern": {},
 	// chop inspects only the receiver's final bytes and returns a substring
 	// view, so its cost does not follow the length even when every byte is a
@@ -1554,7 +1554,7 @@ func stringByteslice(text string, args []Value) (Value, error) {
 			if !inRange {
 				return NewNil(), nil
 			}
-			return NewString(substr), nil
+			return NewString(detachedByteslice(text, substr)), nil
 		}
 		index, err := valueToInt(args[0])
 		if err != nil {
@@ -1566,7 +1566,7 @@ func stringByteslice(text string, args []Value) (Value, error) {
 		if index < 0 || index >= len(text) {
 			return NewNil(), nil
 		}
-		return NewString(text[index : index+1]), nil
+		return NewString(detachedByteslice(text, text[index:index+1])), nil
 	case 2:
 		start, err := valueToInt(args[0])
 		if err != nil {
@@ -1591,7 +1591,7 @@ func stringByteslice(text string, args []Value) (Value, error) {
 		if end > len(text) || end < start {
 			end = len(text)
 		}
-		return NewString(text[start:end]), nil
+		return NewString(detachedByteslice(text, text[start:end])), nil
 	default:
 		return NewNil(), fmt.Errorf("string.byteslice expects an index, a range, or a start and length")
 	}
@@ -5148,4 +5148,21 @@ func stringMemberTransforms(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}
+}
+
+// detachedByteslice returns sub without keeping text's backing allocation
+// alive when sub is small enough that sharing would be the wasteful choice.
+//
+// A Go substring holds its whole backing, while the memory estimator prices a
+// string by its own length. A script could therefore keep a one-byte slice of
+// a megabyte string and be charged one byte: 200 such slices retained 192 MiB
+// under an 8 MiB quota (#2). Copying below the halfway point bounds the gap
+// between what a slice is charged and what it holds at two times, and the copy
+// never costs more than the waste it avoids -- so the price and the footprint
+// stay within a constant factor either way.
+func detachedByteslice(text, sub string) string {
+	if len(sub) < len(text)/2 {
+		return strings.Clone(sub)
+	}
+	return sub
 }
