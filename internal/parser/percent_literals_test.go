@@ -832,7 +832,7 @@ func TestScanPercentArrayLiteralHashDelimiterClosesBeforeInterpolation(t *testin
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			kind, entries, endOffset, ok := scanPercentArrayLiteralAt(tc.input, 0)
+			kind, entries, endOffset, ok := scanPercentArrayLiteralAt(tc.input, 0, newPercentScanBudget(len(tc.input)))
 			if !ok {
 				t.Fatalf("scanPercentArrayLiteralAt(%q) ok = false, want true", tc.input)
 			}

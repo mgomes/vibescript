@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/mgomes/vibescript/internal/ast"
@@ -352,11 +353,18 @@ func isParenlessArgumentStart(tt ast.TokenType) bool {
 }
 
 func (p *parser) percentArrayLiteralArgumentAt(pos ast.Position) bool {
+	// The allowance gates the whole probe, not just the scan it ends in:
+	// sourceOffsetForPosition walks the source from the start on every call, so
+	// leaving it outside would keep a source of dead candidates quadratic even
+	// once the scans themselves had stopped running.
+	if p.l.percentScan.spent() {
+		return false
+	}
 	offset, ok := sourceOffsetForPosition(p.l.input, pos)
 	if !ok || !offsetHasLeadingWhitespace(p.l.input, offset) {
 		return false
 	}
-	_, _, _, ok = scanPercentArrayLiteralAt(p.l.input, offset)
+	_, _, _, ok = scanPercentArrayLiteralAt(p.l.input, offset, p.l.percentScan)
 	return ok
 }
 
@@ -688,7 +696,7 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 		return false
 	}
 
-	scan := newLexer(p.l.input)
+	scan := newLexerWithBudget(p.l.input, p.l.percentScan)
 	scan.seek(offset, ast.Token{})
 
 	tok := scan.NextToken()
@@ -947,7 +955,7 @@ func (p *parser) parseInterpolatedStringParts(raw string, pos ast.Position) ([]a
 				parts = append(parts, ast.StringText{Text: decodeDoubleQuotedText(raw[textStart:i])})
 			}
 			exprStart := i + 2
-			exprEnd, ok := findStringInterpolationEnd(raw, exprStart)
+			exprEnd, ok := findStringInterpolationEnd(raw, exprStart, p.l.percentScan)
 			if !ok {
 				p.addParseError(pos, "unterminated string interpolation")
 				return nil, false
@@ -991,11 +999,15 @@ func interpolationMarkerEscaped(raw string, hash int) bool {
 // (for example %W[#{%w[}]}]) does not prematurely close the interpolation, and
 // a bare "%" remains the modulo operator wherever the lexer would treat it as
 // one. It returns false when the body is never closed before the end of raw.
-func findStringInterpolationEnd(raw string, start int) (int, bool) {
+//
+// budget is the enclosing parse's speculative percent-array-literal allowance;
+// the throwaway lexer this drives shares it so scans it starts in turn are
+// metered against the same pool.
+func findStringInterpolationEnd(raw string, start int, budget *percentScanBudget) (int, bool) {
 	if start < 0 || start > len(raw) {
 		return 0, false
 	}
-	lex := newLexer(raw[start:])
+	lex := newLexerWithBudget(raw[start:], budget)
 
 	braceDepth := 0
 	bracketDepth := 0
@@ -1007,7 +1019,7 @@ func findStringInterpolationEnd(raw string, start int) (int, bool) {
 			return 0, false
 		case ast.TokenPercent:
 			percentOffset := start + lex.currentOffset() - 1
-			kind, _, endOffset, ok := scanPercentArrayLiteralAt(raw, percentOffset)
+			kind, _, endOffset, ok := scanPercentArrayLiteralAt(raw, percentOffset, budget)
 			if ok && interpolationPercentArrayArgumentScanCanAdvance(raw, endOffset) {
 				lex.seek(endOffset-start, ast.Token{Type: percentArrayLiteralTokenType(kind)})
 			}
@@ -1070,6 +1082,10 @@ func (p *parser) parseStringInterpolationExpression(raw string, pos ast.Position
 	// inside #{...} as it would inline. The copy keeps the sub-parser's scope
 	// stack independent while sharing the (read-only) name sets.
 	exprParser.localScopes = append([]localScope(nil), p.localScopes...)
+	// The interpolation body is part of the enclosing source, so its
+	// speculative scanning draws on the enclosing parse's allowance rather
+	// than being handed a fresh one per interpolation.
+	exprParser.l.percentScan = p.l.percentScan
 	expr := exprParser.parseLineExpression(lowestPrec)
 	if len(exprParser.errors) > 0 {
 		p.addParseError(pos, fmt.Sprintf("invalid string interpolation: %s", parseErrorMessage(exprParser.errors[0])))
@@ -1234,7 +1250,7 @@ func (p *parser) parsePercentArrayLiteralArgument() ast.Expression {
 	if !ok {
 		return nil
 	}
-	kind, entries, endOffset, ok := scanPercentArrayLiteralAt(p.l.input, offset)
+	kind, entries, endOffset, ok := scanPercentArrayLiteralAt(p.l.input, offset, p.l.percentScan)
 	if !ok {
 		return nil
 	}
@@ -1363,8 +1379,85 @@ func staticStringPart(parts []ast.StringPart) (string, bool) {
 	return "", false
 }
 
-func scanPercentArrayLiteralAt(input string, start int) (rune, []string, int, bool) {
+// percentScanBudgetFactor sets a parse's speculative percent-array-literal
+// allowance as a multiple of the source length. Ordinary sources spend almost
+// none of it: a `%` not followed by w/i/W/I and a percent-literal delimiter is
+// rejected within three runes, and a candidate that does turn out to be a
+// literal is not charged at all. Four times the source is therefore far above
+// anything real code reaches, while a source made entirely of dead candidates
+// stops at five times its own length (the allowance plus the one scan that
+// overruns it) instead of its square.
+const percentScanBudgetFactor = 4
+
+// percentScanCounting and percentScanBytes let a test count the input bytes the
+// speculative percent-array-literal scans walk, which is the work the
+// complexity claim is about. Wall-clock would fold in scheduling and the race
+// and coverage instrumentation this repository runs across three operating
+// systems, and allocated bytes only approximate the walk. Never set outside
+// tests; when off this costs one relaxed load per completed scan.
+var (
+	percentScanCounting atomic.Bool
+	percentScanBytes    atomic.Uint64
+)
+
+// percentScanBudget bounds the input that one parse's speculative
+// percent-array-literal scans may walk without finding a literal.
+//
+// scanPercentArrayLiteralAt second-guesses a `%` the lexer already tokenized as
+// modulo, and it can only report failure by walking to the end of the input,
+// because a delimiter that has not balanced yet may still balance later. Its
+// callers advance a single byte past the `%` afterwards, so a source built from
+// repeated ` %w[` candidates makes every candidate pay for another near-full
+// re-scan. Nested interpolations compound it: each such scan re-enters
+// findStringInterpolationEnd for every `#{` it crosses, and each of those
+// speculates again. Charging the fruitless scans against one shared allowance
+// keeps the total linear in the source size.
+//
+// The allowance is held by pointer and shared with every lexer and sub-parser
+// that takes part in the same parse, including the throwaway ones these scans
+// create. Spend is deliberately not rolled back by parser.restore: a
+// speculative parse that is discarded still did the scanning.
+type percentScanBudget struct {
+	remaining int
+}
+
+func newPercentScanBudget(sourceLen int) *percentScanBudget {
+	return &percentScanBudget{remaining: sourceLen * percentScanBudgetFactor}
+}
+
+// spent reports whether the allowance is gone, in which case no further
+// speculative scan runs and a `%` simply stays modulo. There is no diagnostic
+// for reaching that point: it is not an error in the source so much as the
+// parser declining to keep guessing, and the source that got there is already
+// being rejected for the malformed literals that spent the allowance.
+//
+// A nil budget is unmetered. Nothing in a parse produces one -- every lexer is
+// constructed with an allowance -- so this only covers a direct call to the
+// scan functions from a test.
+func (b *percentScanBudget) spent() bool {
+	return b != nil && b.remaining <= 0
+}
+
+// record accounts for a scan that walked the given number of input bytes. Only
+// a scan that found no literal draws the allowance down: one that did find a
+// literal is productive work whose caller consumes the bytes it covered, so it
+// is bounded by the literal's own length, and charging for it would penalize
+// sources that use percent literals heavily.
+func (b *percentScanBudget) record(walked int, found bool) {
+	if percentScanCounting.Load() {
+		percentScanBytes.Add(uint64(walked))
+	}
+	if b == nil || found {
+		return
+	}
+	b.remaining -= walked
+}
+
+func scanPercentArrayLiteralAt(input string, start int, budget *percentScanBudget) (rune, []string, int, bool) {
 	if start < 0 || start >= len(input) || input[start] != '%' {
+		return 0, nil, 0, false
+	}
+	if budget.spent() {
 		return 0, nil, 0, false
 	}
 	idx := start + 1
@@ -1412,8 +1505,12 @@ func scanPercentArrayLiteralAt(input string, start int) (rune, []string, int, bo
 			raw.WriteRune(r)
 			raw.WriteByte('{')
 			idx++
-			end, ok := findStringInterpolationEnd(input, idx)
+			end, ok := findStringInterpolationEnd(input, idx, budget)
 			if !ok {
+				// An unterminated interpolation is only reported once the lexer
+				// driving it has reached the end of the input, so the walk this
+				// scan is charged for runs to there too.
+				budget.record(len(input)-start, false)
 				return 0, nil, 0, false
 			}
 			raw.WriteString(input[idx : end+1])
@@ -1426,14 +1523,16 @@ func scanPercentArrayLiteralAt(input string, start int) (rune, []string, int, bo
 		if r == close {
 			depth--
 			if depth == 0 {
+				budget.record(idx-start, true)
 				if interpolating {
-					return kind, splitInterpolatedPercentLiteralWords(raw.String()), idx, true
+					return kind, splitInterpolatedPercentLiteralWords(raw.String(), budget), idx, true
 				}
 				return kind, splitPercentLiteralWords(raw.String(), open, close), idx, true
 			}
 		}
 		raw.WriteRune(r)
 	}
+	budget.record(len(input)-start, false)
 	return 0, nil, 0, false
 }
 
