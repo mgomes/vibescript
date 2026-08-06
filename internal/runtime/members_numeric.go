@@ -43,10 +43,10 @@ var (
 		"to_s", "string", "to_i", "to_f",
 		"inspect",
 	}
-	intBuiltinMembers       = newMemberTable(intBuiltinMemberNames)
-	floatBuiltinMembers     = newMemberTable(floatMemberNames)
+	intBuiltinMembers       = newTypedMemberTable(intBuiltinMemberNames, KindInt)
+	floatBuiltinMembers     = newTypedMemberTable(floatMemberNames, KindFloat)
 	moneyBuiltinMemberNames = []string{"format", "between?"}
-	moneyBuiltinMembers     = newMemberTable(moneyBuiltinMemberNames)
+	moneyBuiltinMembers     = newTypedMemberTable(moneyBuiltinMemberNames, KindMoney)
 )
 
 func (exec *Execution) intMember(obj Value, property string, pos Position) (Value, error) {

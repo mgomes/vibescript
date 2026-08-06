@@ -15,7 +15,7 @@ var regexMemberNames = []string{
 	"inspect",
 }
 
-var regexBuiltinMembers = newMemberTable(regexMemberNames)
+var regexBuiltinMembers = newTypedMemberTable(regexMemberNames, KindRegex)
 
 // regexDecoratedPattern returns the Go RE2 pattern a regex value's flags
 // resolve to: Ruby's i flag is RE2's case-insensitive (?i) and Ruby's m flag

@@ -31,7 +31,7 @@ var stringMemberNames = []string{
 	"to_sym", "intern", "to_s", "string", "to_i", "to_f",
 }
 
-var stringBuiltinMembers = newMemberTable(stringMemberNames)
+var stringBuiltinMembers = newTypedMemberTable(stringMemberNames, KindString)
 
 func stringMember(str Value, property string) (Value, error) {
 	if member, ok := stringBuiltinMembers.lookup(property, stringMemberBuiltin); ok {

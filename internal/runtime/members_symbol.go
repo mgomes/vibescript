@@ -8,7 +8,7 @@ import "fmt"
 // name resolves.
 var (
 	symbolMemberNames    = []string{"inspect", "id2name", "to_s", "string", "to_sym"}
-	symbolBuiltinMembers = newMemberTable(symbolMemberNames)
+	symbolBuiltinMembers = newTypedMemberTable(symbolMemberNames, KindSymbol)
 )
 
 func (exec *Execution) symbolMember(obj Value, property string, pos Position) (Value, error) {
