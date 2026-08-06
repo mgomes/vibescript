@@ -1256,8 +1256,13 @@ func TestInvalidUTF8SearchIsLinear(t *testing.T) {
 	// the position scan would run for a quarter of an hour and the test would
 	// time out instead of reporting. At 16 KiB it finishes in about two seconds
 	// and still sits far above linear.
-	const repeats = 100
-	elapsed := func(n int) time.Duration {
+	// Repeat until the baseline is comfortably above the clock's resolution
+	// rather than a fixed count: a Windows runner ticks at about 15ms, and a
+	// fixed 100 repeats of the 1 KiB search still measured 0s there, making the
+	// ratio +Inf and failing a linear implementation. Calibrating on the small
+	// size and reusing that count for the large one keeps the ratio meaningful.
+	const minMeasurable = 20 * time.Millisecond
+	elapsed := func(n, repeats int) time.Duration {
 		hay := strings.Repeat("a", n) + "\xff"
 		needle := strings.Repeat("a", n/2) + "b"
 		best := time.Hour
@@ -1272,7 +1277,16 @@ func TestInvalidUTF8SearchIsLinear(t *testing.T) {
 		}
 		return best
 	}
-	small, large := elapsed(1024), elapsed(16384)
+	repeats := 100
+	small := elapsed(1024, repeats)
+	// Cap the growth so a pathologically coarse clock cannot spin here; the
+	// quadratic signal is orders of magnitude wide, so even a marginal
+	// baseline still separates it from linear.
+	for small < minMeasurable && repeats < 100_000 {
+		repeats *= 4
+		small = elapsed(1024, repeats)
+	}
+	large := elapsed(16384, repeats)
 	if large > small*64 {
 		t.Errorf("searching 1 KiB %d times took %v and 16 KiB took %v, a %.1fx rise for "+
 			"sixteen times the input; linear is about 16x and testing every candidate "+
