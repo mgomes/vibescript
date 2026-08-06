@@ -867,6 +867,12 @@ func cloneEnvForHost(env *Env, state hostValueCloneState) *Env {
 	clone.assignBoundary = env.assignBoundary
 	clone.rebindOuter = env.rebindOuter
 	clone.callRoot = env.callRoot
+	// A class body stops the constant-shaped lookup that walks out of it, so
+	// the marker has to survive cloning: without it a class-body closure that
+	// crosses the host boundary resolves past its own class into the enclosing
+	// frames, and a same-named outer local shadows the class constant that
+	// should have won (#24).
+	clone.classBody = env.classBody
 	state.envs[env] = clone
 	clone.parent = cloneEnvForHost(env.parent, state)
 	env.rangeDynamicBindings(func(name string, val Value) {

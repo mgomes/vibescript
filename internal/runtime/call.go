@@ -1059,6 +1059,10 @@ func (r *callFunctionRebinder) rebindCapturedEnv(env *Env) *Env {
 	clone := newEnvWithCapacity(nil, env.dynamicLen())
 	clone.assignBoundary = env.assignBoundary
 	clone.rebindOuter = env.rebindOuter
+	// See cloneEnvForHost: the class-body marker bounds constant lookup, so a
+	// re-entering closure that lost it resolves past its class into the
+	// rebound outer frames.
+	clone.classBody = env.classBody
 	if r.seenEnvs == nil {
 		r.seenEnvs = make(map[*Env]*Env)
 	}
