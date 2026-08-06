@@ -7,6 +7,54 @@ import (
 	"testing"
 )
 
+func TestWidenUnsetInstanceIvarFactsSkipsCleanState(t *testing.T) {
+	t.Parallel()
+
+	checker := &scriptChecker{
+		selfClass:  &ClassDef{},
+		localTypes: []checkTypeFrame{{}},
+	}
+	checker.bindLocalTypeInCurrentFrame(ivarFactKey("name"), checkTypeNil)
+	if !checker.instanceIvarFactsDirty {
+		t.Fatal("binding an ivar fact did not mark widening state dirty")
+	}
+
+	checker.widenUnsetInstanceIvarFacts()
+	if checker.instanceIvarFactsDirty {
+		t.Fatal("full-class widening did not mark ivar facts clean")
+	}
+	checker.widenUnsetInstanceIvarFacts()
+	if checker.instanceIvarFactsDirty {
+		t.Fatal("repeated widening changed clean ivar state")
+	}
+}
+
+// TestWidenUnsetInstanceIvarFactsSurviveLambdaBodyWalks pins the dirty
+// marker across a lambda body's speculative walk: a widening inside the body
+// clears the marker for facts the walk then rolls back, so without restoring
+// it the outer unknown call would skip widening the restored pre-lambda
+// facts and @b's unset fact would survive to the final write.
+func TestWidenUnsetInstanceIvarFactsSurviveLambdaBodyWalks(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    callback = -> { send(:seed) }
+    send(:seed)
+    @a = @b
+  end
+
+  def seed
+    @b = 1
+  end
+end
+`))
+}
+
 // The checker seeds instance-method analysis with the contracts of typed
 // accessor-backed instance variables and rejects direct writes whose known
 // value is provably incompatible; unknown values pass and rely on the
@@ -10825,4 +10873,31 @@ func initializerIvarSeedMethod(param, value string) string {
     @b = ` + value + `
   end
 `
+}
+
+// TestFreshInferenceScopeKeepsIvarDirtyMarker pins the dirty marker across
+// withFreshLocalInferenceScope: the reset keeps the local type frames (a
+// non-executing default walk reads the seeded @ facts through it), so the
+// marker describing those frames must survive into the fresh scope and be
+// restored with the other inference facts on exit.
+func TestFreshInferenceScopeKeepsIvarDirtyMarker(t *testing.T) {
+	t.Parallel()
+
+	checker := &scriptChecker{
+		selfClass:  &ClassDef{},
+		localTypes: []checkTypeFrame{{}},
+	}
+	checker.bindLocalTypeInCurrentFrame(ivarFactKey("name"), checkTypeNil)
+	if !checker.instanceIvarFactsDirty {
+		t.Fatal("binding an ivar fact did not mark widening state dirty")
+	}
+	restore := checker.withFreshLocalInferenceScope()
+	if !checker.instanceIvarFactsDirty {
+		t.Fatal("the fresh scope cleared the marker while keeping the local type frames")
+	}
+	checker.instanceIvarFactsDirty = false
+	restore()
+	if !checker.instanceIvarFactsDirty {
+		t.Fatal("the restore did not bring the entry marker back")
+	}
 }
