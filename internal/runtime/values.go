@@ -76,6 +76,24 @@ func hashScanIdentity(val Value) uintptr {
 	return reflect.ValueOf(val.Hash()).Pointer()
 }
 
+// anyTypedHashKey reports whether pred holds for any key a typed hash carries.
+// Only typed hashes have keys worth walking: a legacy hash keys on plain
+// strings, which nest nothing. Array keys do nest arbitrarily, so a traversal
+// that bounds recursion depth must count them — the values alone are not the
+// whole graph a boundary walks.
+func anyTypedHashKey(val Value, pred func(Value) bool) bool {
+	if !hashHasTypedEntries(val) {
+		return false
+	}
+	var entryBuf [smallHashKeyBufferSize]HashEntry
+	for _, entry := range val.HashEntriesInto(entryBuf[:]) {
+		if pred(entry.Key) {
+			return true
+		}
+	}
+	return false
+}
+
 // anyHashValue reports whether pred holds for any value a hash or object
 // carries, reading typed entries directly when present.
 //

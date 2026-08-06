@@ -303,3 +303,60 @@ func TestCapabilityDataCloneKeepsCollidingTypedEntries(t *testing.T) {
 		t.Fatalf("clone lost the string-keyed entry: %#v (found=%v, err=%v)", got, ok, err)
 	}
 }
+
+// TestCapabilityDataCloneKeepsTypedEntriesWithDefaults pins that attaching
+// cloned defaults preserves the typed clone: rebuilding the wrapper from the
+// display-key map discarded every entry the typed clone had written into the
+// wrapper's typed table, so a populated Hash.new(0) crossed the boundary
+// empty.
+func TestCapabilityDataCloneKeepsTypedEntriesWithDefaults(t *testing.T) {
+	t.Parallel()
+
+	h := NewTypedHash(2)
+	if err := hashSet(h, NewSymbol("x"), NewInt(1)); err != nil {
+		t.Fatalf("HashSet symbol key: %v", err)
+	}
+	if err := hashSet(h, NewString("x"), NewInt(2)); err != nil {
+		t.Fatalf("HashSet string key: %v", err)
+	}
+	h.SetHashDefaults(NewInt(0), NewNil())
+
+	cloned, err := cloneCapabilityDataOnlyValue("payload", h)
+	if err != nil {
+		t.Fatalf("cloning a data-only hash with defaults failed: %v", err)
+	}
+	if cloned.HashLen() != 2 {
+		t.Fatalf("clone holds %d entries, want both entries preserved alongside the default", cloned.HashLen())
+	}
+	got, ok, err := cloned.HashGet(NewSymbol("x"))
+	if err != nil || !ok || got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("clone lost the symbol-keyed entry: %#v (found=%v, err=%v)", got, ok, err)
+	}
+	if def := hashDefaultValue(cloned); def.Kind() != KindInt || def.Int() != 0 {
+		t.Fatalf("clone lost its default value: %#v", def)
+	}
+}
+
+// TestCapabilityDepthGuardCountsTypedKeys pins that the traversal depth guard
+// walks typed keys. Array keys nest arbitrarily and the clone recurses
+// through them, so a key nested past the limit must be rejected by the guard
+// rather than reached by an unbounded clone.
+func TestCapabilityDepthGuardCountsTypedKeys(t *testing.T) {
+	t.Parallel()
+
+	key := NewArray([]Value{NewInt(1)})
+	for range maxCapabilityDataOnlyDepth + 8 {
+		key = NewArray([]Value{key})
+	}
+	h := NewTypedHash(1)
+	if err := hashSet(h, key, NewInt(1)); err != nil {
+		t.Skipf("deeply nested array keys are rejected earlier: %v", err)
+	}
+
+	if err := validateCapabilityTraversalDepth("payload", h); err == nil {
+		t.Fatal("depth guard admitted a typed key nested past the limit")
+	}
+	if _, err := cloneCapabilityDataOnlyValue("payload", h); err == nil {
+		t.Fatal("clone accepted a typed key nested past the depth limit")
+	}
+}

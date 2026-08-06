@@ -513,15 +513,14 @@ func (s *capabilityDataCloneScanner) cloneHash(val Value) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	if defaultValue.IsNil() && defaultProc.IsNil() {
-		if ptr != 0 {
-			delete(s.visitingMaps, ptr)
-		}
-		return cloned, nil
+	if !defaultValue.IsNil() || !defaultProc.IsNil() {
+		// The defaults attach to the wrapper already populated above. Rebuilding
+		// one from clonedEntries would discard everything a typed clone wrote —
+		// those entries live in the wrapper's typed table, not in that map — and
+		// would also swap out the wrapper already registered for cycle reuse.
+		cloned.SetHashDefaults(defaultValue, defaultProc)
 	}
-	cloned = NewHashWithDefault(clonedEntries, defaultValue, defaultProc)
 	if ptr != 0 {
-		s.clonedMaps[ptr] = cloned
 		delete(s.visitingMaps, ptr)
 	}
 	return cloned, nil
@@ -688,6 +687,17 @@ func (s *capabilityTraversalDepthScanner) check(label string, val Value, depth i
 		}
 		s.visitingMaps[ptr] = struct{}{}
 		var entryErr error
+		// A typed hash's keys are part of the graph a boundary walks: an array
+		// key nests arbitrarily and the clone recurses through it, so the depth
+		// guard has to count keys too or a deeply nested one is admitted and
+		// then cloned without a bound.
+		anyTypedHashKey(val, func(key Value) bool {
+			entryErr = s.check(label, key, depth+1)
+			return entryErr != nil
+		})
+		if entryErr != nil {
+			return entryErr
+		}
 		anyHashValue(val, func(item Value) bool {
 			entryErr = s.check(label, item, depth+1)
 			return entryErr != nil
