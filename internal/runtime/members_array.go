@@ -4152,8 +4152,33 @@ func arrayMemberTransforms(property string) (Value, error) {
 				others[i] = arg.Array()
 			}
 			arr := receiver.Array()
+			// The result is O(len(receiver) * len(args)) while the inputs are
+			// only O(len(receiver) + len(args)), so the pre-call check on the
+			// operands says nothing about it and the post-call check runs after
+			// it is already built. A wrapper with many array parameters can
+			// therefore multiply a quota-sized receiver into a result many
+			// times the quota. Price the whole result — the row slice and every
+			// row backing — before allocating any of it (#44).
+			rowWidth, err := checkedArrayMaterializationAdd("array.zip", len(args), 1)
+			if err != nil {
+				return NewNil(), err
+			}
+			slots, err := checkedArrayMaterializationMul("array.zip", len(arr), rowWidth)
+			if err != nil {
+				return NewNil(), err
+			}
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			if err := acc.reserveSlots(len(arr)); err != nil {
+				return NewNil(), err
+			}
+			if err := acc.checkRetainedPayloadBytes(slots, arrayTupleRowBackingBytes(len(arr), rowWidth)); err != nil {
+				return NewNil(), err
+			}
 			rows := make([]Value, len(arr))
 			for i := range arr {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				row := make([]Value, len(args)+1)
 				row[0] = arr[i]
 				for j, other := range others {
