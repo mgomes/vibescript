@@ -484,17 +484,17 @@ func (s *capabilityDataCloneScanner) cloneHash(val Value) (Value, error) {
 	// another's (`:x` beside `"x"`), silently changing the data that crosses
 	// the boundary.
 	if typed {
-		var entryBuf [smallHashKeyBufferSize]HashEntry
-		for _, entry := range val.HashEntriesInto(entryBuf[:]) {
-			clonedKey, err := s.clone(entry.Key)
+		var entryBuf [smallHashKeyBufferSize]TypedHashEntry
+		for _, typedEntry := range val.TypedHashEntriesInto(entryBuf[:]) {
+			clonedKey, err := s.clone(typedEntry.Entry.Key)
 			if err != nil {
 				return NewNil(), err
 			}
-			clonedItem, err := s.clone(entry.Value)
+			clonedItem, err := s.clone(typedEntry.Entry.Value)
 			if err != nil {
 				return NewNil(), err
 			}
-			setClonedHashEntry(cloned, clonedKey, clonedItem)
+			setClonedTypedHashEntry(cloned, typedEntry.LookupKey, clonedKey, clonedItem)
 		}
 	} else {
 		for key, item := range entries {

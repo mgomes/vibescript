@@ -410,7 +410,24 @@ func (v Value) HashSetUnpublished(key, val Value) error {
 	return v.hashSetInternal(key, val, false)
 }
 
+// HashSetPreservingLookupKey stores an entry under a lookup identity computed
+// earlier instead of recomputing one from key's current contents. A hash keeps
+// resolving an array key by the identity it had at insertion, so an array
+// mutated afterwards still answers to what it was; a copy that rehashed the
+// mutated key would answer to something else, and the copy would resolve
+// differently from the hash it was made from. Callers copying entries out of a
+// typed hash pass the stored identity from TypedHashEntriesInto through.
+// It is intended for the interpreter's internal use; hosts should not call it,
+// and it carries no compatibility promise (see docs/embedding-api-stability.md).
+func (v Value) HashSetPreservingLookupKey(lookupKey HashLookupKey, key, val Value) error {
+	return v.hashSetWithLookupKey(&lookupKey, key, val, true)
+}
+
 func (v Value) hashSetInternal(key, val Value, bump bool) error {
+	return v.hashSetWithLookupKey(nil, key, val, bump)
+}
+
+func (v Value) hashSetWithLookupKey(precomputed *HashLookupKey, key, val Value, bump bool) error {
 	switch v.kind {
 	case KindHash:
 		hd := v.data.(*hashData)
@@ -451,9 +468,15 @@ func (v Value) hashSetInternal(key, val Value, bump bool) error {
 				return cmp.Compare(a.text, b.text)
 			})
 		}
-		canonical, err := NewHashLookupKey(key)
-		if err != nil {
-			return err
+		var canonical HashLookupKey
+		if precomputed != nil {
+			canonical = *precomputed
+		} else {
+			var err error
+			canonical, err = NewHashLookupKey(key)
+			if err != nil {
+				return err
+			}
 		}
 		if _, exists := hd.typedEntries[canonical]; !exists {
 			hd.order = append(hd.order, canonical)

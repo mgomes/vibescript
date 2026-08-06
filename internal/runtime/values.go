@@ -132,6 +132,17 @@ func setClonedHashEntry(hash, key, val Value) {
 	}
 }
 
+// setClonedTypedHashEntry copies a typed entry into a clone under the lookup
+// identity the source stored, rather than one recomputed from the cloned key.
+// An array key mutated after insertion still resolves in the source by what it
+// was, so rehashing here would make the clone resolve by what the array now
+// is — the copy answering to a different key than the hash it came from.
+func setClonedTypedHashEntry(hash Value, lookupKey HashLookupKey, key, val Value) {
+	if err := hash.HashSetPreservingLookupKey(lookupKey, key, val); err != nil {
+		panic(fmt.Sprintf("clone valid typed hash entry: %v", err))
+	}
+}
+
 func valueToInt(val Value) (int, error) {
 	switch val.Kind() {
 	case KindInt:

@@ -360,3 +360,38 @@ func TestCapabilityDepthGuardCountsTypedKeys(t *testing.T) {
 		t.Fatal("clone accepted a typed key nested past the depth limit")
 	}
 }
+
+// TestCapabilityDataCloneKeepsStoredLookupIdentity pins that a typed clone
+// carries each entry's stored lookup identity. A hash resolves an array key
+// by the identity it had at insertion, so an array mutated afterwards still
+// answers to what it was; rehashing the mutated key while cloning made the
+// clone answer to what the array now is, resolving differently from the hash
+// it was copied from.
+func TestCapabilityDataCloneKeepsStoredLookupIdentity(t *testing.T) {
+	t.Parallel()
+
+	keyElems := []Value{NewInt(1)}
+	key := NewArray(keyElems)
+	h := NewTypedHash(1)
+	if err := hashSet(h, key, NewString("stored")); err != nil {
+		t.Fatalf("HashSet array key: %v", err)
+	}
+	setArrayElems(key, []Value{NewInt(2)})
+
+	// The source still answers to the identity captured at insertion.
+	if _, ok, err := h.HashGet(NewArray([]Value{NewInt(1)})); err != nil || !ok {
+		t.Skipf("source no longer resolves the pre-mutation key (found=%v, err=%v)", ok, err)
+	}
+
+	cloned, err := cloneCapabilityDataOnlyValue("payload", h)
+	if err != nil {
+		t.Fatalf("cloning a data-only hash failed: %v", err)
+	}
+	got, ok, err := cloned.HashGet(NewArray([]Value{NewInt(1)}))
+	if err != nil || !ok || got.Kind() != KindString || got.String() != "stored" {
+		t.Fatalf("clone lost the stored lookup identity: %#v (found=%v, err=%v)", got, ok, err)
+	}
+	if _, ok, _ := cloned.HashGet(NewArray([]Value{NewInt(2)})); ok {
+		t.Fatal("clone resolves the mutated key, which the source does not")
+	}
+}
