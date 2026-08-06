@@ -453,10 +453,17 @@ func (s *capabilityDataCloneScanner) cloneArray(val Value) (Value, error) {
 }
 
 func (s *capabilityDataCloneScanner) cloneHash(val Value) (Value, error) {
-	entries := val.Hash()
+	// A typed hash is walked through its entries, so its lossy display-key
+	// view is never materialized here — building it would allocate a map and
+	// bump the mutation epoch for a view this clone does not read.
+	typed := hashHasTypedEntries(val)
+	var entries map[string]Value
 	ptr := hashIdentity(val)
-	if ptr == 0 {
-		ptr = reflect.ValueOf(entries).Pointer()
+	if !typed {
+		entries = val.Hash()
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 	}
 	if ptr != 0 {
 		if _, visiting := s.visitingMaps[ptr]; visiting {
@@ -467,17 +474,36 @@ func (s *capabilityDataCloneScanner) cloneHash(val Value) (Value, error) {
 		}
 		s.visitingMaps[ptr] = struct{}{}
 	}
-	clonedEntries := make(map[string]Value, len(entries))
+	clonedEntries := make(map[string]Value, val.HashLen())
 	cloned := NewHash(clonedEntries)
 	if ptr != 0 {
 		s.clonedMaps[ptr] = cloned
 	}
-	for key, item := range entries {
-		clonedItem, err := s.clone(item)
-		if err != nil {
-			return NewNil(), err
+	// A typed hash clones entry by entry with its original keys: rebuilding
+	// from the display-key view would drop every entry whose key renders like
+	// another's (`:x` beside `"x"`), silently changing the data that crosses
+	// the boundary.
+	if typed {
+		var entryBuf [smallHashKeyBufferSize]TypedHashEntry
+		for _, typedEntry := range val.OrderedTypedHashEntriesInto(entryBuf[:]) {
+			clonedKey, err := s.clone(typedEntry.Entry.Key)
+			if err != nil {
+				return NewNil(), err
+			}
+			clonedItem, err := s.clone(typedEntry.Entry.Value)
+			if err != nil {
+				return NewNil(), err
+			}
+			setClonedTypedHashEntry(cloned, typedEntry.LookupKey, clonedKey, clonedItem)
 		}
-		clonedEntries[key] = clonedItem
+	} else {
+		for key, item := range entries {
+			clonedItem, err := s.clone(item)
+			if err != nil {
+				return NewNil(), err
+			}
+			clonedEntries[key] = clonedItem
+		}
 	}
 	defaultValue, err := s.clone(hashDefaultValue(val))
 	if err != nil {
@@ -487,15 +513,14 @@ func (s *capabilityDataCloneScanner) cloneHash(val Value) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	if defaultValue.IsNil() && defaultProc.IsNil() {
-		if ptr != 0 {
-			delete(s.visitingMaps, ptr)
-		}
-		return cloned, nil
+	if !defaultValue.IsNil() || !defaultProc.IsNil() {
+		// The defaults attach to the wrapper already populated above. Rebuilding
+		// one from clonedEntries would discard everything a typed clone wrote —
+		// those entries live in the wrapper's typed table, not in that map — and
+		// would also swap out the wrapper already registered for cycle reuse.
+		cloned.SetHashDefaults(defaultValue, defaultProc)
 	}
-	cloned = NewHashWithDefault(clonedEntries, defaultValue, defaultProc)
 	if ptr != 0 {
-		s.clonedMaps[ptr] = cloned
 		delete(s.visitingMaps, ptr)
 	}
 	return cloned, nil
@@ -653,11 +678,7 @@ func (s *capabilityTraversalDepthScanner) check(label string, val Value, depth i
 			s.seenArrays[id] = remainingDepth
 		}
 	case KindHash, KindObject:
-		entries := val.Hash()
-		ptr := hashIdentity(val)
-		if ptr == 0 {
-			ptr = reflect.ValueOf(entries).Pointer()
-		}
+		ptr := hashScanIdentity(val)
 		if seenRemaining, seen := s.seenMaps[ptr]; seen && seenRemaining <= remainingDepth {
 			return nil
 		}
@@ -665,10 +686,24 @@ func (s *capabilityTraversalDepthScanner) check(label string, val Value, depth i
 			return nil
 		}
 		s.visitingMaps[ptr] = struct{}{}
-		for _, item := range entries {
-			if err := s.check(label, item, depth+1); err != nil {
-				return err
-			}
+		var entryErr error
+		// A typed hash's keys are part of the graph a boundary walks: an array
+		// key nests arbitrarily and the clone recurses through it, so the depth
+		// guard has to count keys too or a deeply nested one is admitted and
+		// then cloned without a bound.
+		anyTypedHashKey(val, func(key Value) bool {
+			entryErr = s.check(label, key, depth+1)
+			return entryErr != nil
+		})
+		if entryErr != nil {
+			return entryErr
+		}
+		anyHashValue(val, func(item Value) bool {
+			entryErr = s.check(label, item, depth+1)
+			return entryErr != nil
+		})
+		if entryErr != nil {
+			return entryErr
 		}
 		if err := s.check(label, hashDefaultValue(val), depth+1); err != nil {
 			return err
@@ -747,16 +782,12 @@ func (s *capabilityCycleScanner) containsCycle(val Value) bool {
 		s.seenArrays[id] = struct{}{}
 		return false
 	case KindHash, KindObject:
-		entries := val.Hash()
 		// Key on the whole hash wrapper (or the entry-map pointer for objects,
 		// which never carry defaults) so two wrappers sharing one entry map but
 		// carrying distinct defaults are each walked: a second wrapper's default
 		// is not skipped at the seen check, and a data-only diamond of shared-map
 		// wrappers is not mistaken for a cycle.
-		ptr := hashIdentity(val)
-		if ptr == 0 {
-			ptr = reflect.ValueOf(entries).Pointer()
-		}
+		ptr := hashScanIdentity(val)
 		if _, seen := s.seenMaps[ptr]; seen {
 			return false
 		}
@@ -764,10 +795,8 @@ func (s *capabilityCycleScanner) containsCycle(val Value) bool {
 			return true
 		}
 		s.visitingMaps[ptr] = struct{}{}
-		for _, item := range entries {
-			if s.containsCycle(item) {
-				return true
-			}
+		if anyHashValue(val, s.containsCycle) {
+			return true
 		}
 		// A KindHash's default value/proc are reachable hash state and may
 		// themselves nest collections, so walk them for cycles too. They share
@@ -801,25 +830,19 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 		s.seenArrays[id] = struct{}{}
 		return slices.ContainsFunc(values, s.containsCallable)
 	case KindHash, KindObject:
-		entries := val.Hash()
 		// A KindHash's default metadata lives outside its entry map, so two
 		// wrappers can share one map yet carry different defaults. Key the
 		// seen-set on the whole hash wrapper (falling back to the entry-map
 		// pointer for objects, which never carry defaults) so a second wrapper's
 		// callable default is not hidden by an earlier plain wrapper marking the
 		// shared map seen.
-		ptr := hashIdentity(val)
-		if ptr == 0 {
-			ptr = reflect.ValueOf(entries).Pointer()
-		}
+		ptr := hashScanIdentity(val)
 		if _, seen := s.seenMaps[ptr]; seen {
 			return false
 		}
 		s.seenMaps[ptr] = struct{}{}
-		for _, item := range entries {
-			if s.containsCallable(item) {
-				return true
-			}
+		if anyHashValue(val, s.containsCallable) {
+			return true
 		}
 		// A KindHash may carry Ruby-style default metadata outside its entry
 		// map: a default value (itself possibly a callable or a collection of
@@ -1206,15 +1229,11 @@ func (s *strictGlobalsScanner) containsCallable(val Value) bool {
 		defer delete(s.stackArrays, id)
 		return slices.ContainsFunc(values, s.containsCallable)
 	case KindHash, KindObject:
-		entries := val.Hash()
 		// Key the seen-set on the whole hash wrapper (or the entry-map pointer for
 		// objects, which never carry defaults) so a second wrapper sharing the
 		// same entry map but carrying a callable default is still scanned rather
 		// than skipped at the seen check.
-		ptr := hashIdentity(val)
-		if ptr == 0 {
-			ptr = reflect.ValueOf(entries).Pointer()
-		}
+		ptr := hashScanIdentity(val)
 		if _, seen := s.seenMaps[ptr]; seen {
 			if _, cyclic := s.stackMaps[ptr]; cyclic {
 				return true
@@ -1224,10 +1243,8 @@ func (s *strictGlobalsScanner) containsCallable(val Value) bool {
 		s.seenMaps[ptr] = struct{}{}
 		s.stackMaps[ptr] = struct{}{}
 		defer delete(s.stackMaps, ptr)
-		for _, item := range entries {
-			if s.containsCallable(item) {
-				return true
-			}
+		if anyHashValue(val, s.containsCallable) {
+			return true
 		}
 		// A KindHash may carry Ruby-style default metadata outside its entry
 		// map: a default value and a default proc (a KindBlock callable). A
