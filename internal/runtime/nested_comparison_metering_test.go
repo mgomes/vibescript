@@ -178,6 +178,34 @@ func TestSetOpsReserveTheRootWrapperSlice(t *testing.T) {
 	}
 }
 
+// TestSetOpsReserveTheHintedScalarMap pins the up-front scalar-map
+// reservation: make preallocates the whole hinted bucket array, so an input
+// whose distinct scalars would individually fit the quota must still fail
+// before the buckets are allocated when the hinted capacity does not.
+func TestSetOpsReserveTheHintedScalarMap(t *testing.T) {
+	t.Parallel()
+
+	// 4096 elements cycling ten distinct values: the old per-entry
+	// accounting reserved ten entries while make silently allocated the
+	// full 4096-capacity bucket array.
+	values := make([]Value, 4096)
+	for i := range values {
+		values[i] = NewInt(int64(i % 10))
+	}
+	exec := &Execution{ctx: context.Background(), memoryQuota: 64 << 10}
+	if _, err := uniqueValuesMetered(values, nil, nil, exec); err == nil {
+		t.Fatal("the hinted scalar map must be reserved before it is allocated")
+	}
+	exec = &Execution{ctx: context.Background(), memoryQuota: 8 << 20}
+	unique, err := uniqueValuesMetered(values, nil, nil, exec)
+	if err != nil {
+		t.Fatalf("a quota covering the hinted map must pass: %v", err)
+	}
+	if len(unique) != 10 {
+		t.Fatalf("uniq kept %d values, want 10", len(unique))
+	}
+}
+
 // TestEqualityScanStopsAfterStickyError pins the scan abort: once a probe
 // records a sticky charge failure, the remaining candidates must not be
 // visited — every later probe answers false in O(1), so finishing the scan

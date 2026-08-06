@@ -51,6 +51,9 @@ type setOpScratch struct {
 	held         int
 	resultCap    int
 	compositeCap int
+	// scalarCap counts the scalar-map entries covered by the up-front
+	// hinted-capacity reservation; entries beyond it reserve individually.
+	scalarCap int
 }
 
 // newSetOpScratch builds the reservation tracker for a set operation over
@@ -114,7 +117,25 @@ func (s *setOpScratch) reserveCompositeSlot(length int) error {
 	return s.reserve(extra)
 }
 
-func (s *setOpScratch) reserveScalarEntry() error {
+// reserveScalarMapCap reserves the hinted scalar map's initial backing before
+// it is allocated: make preallocates the whole bucket array for the hinted
+// capacity, so a receiver near the quota must fail this validation instead of
+// allocating the buckets first and being rejected 160 bytes at a time later.
+func (s *setOpScratch) reserveScalarMapCap(capacity int) error {
+	if capacity <= s.scalarCap {
+		return nil
+	}
+	extra := (capacity - s.scalarCap) * estimatedScalarSetEntryBytes
+	s.scalarCap = capacity
+	return s.reserve(extra)
+}
+
+// reserveScalarEntry reserves one scalar-map entry past the hinted-capacity
+// reservation; existing is the map's current entry count.
+func (s *setOpScratch) reserveScalarEntry(existing int) error {
+	if existing < s.scalarCap {
+		return nil
+	}
 	return s.reserve(estimatedScalarSetEntryBytes)
 }
 
@@ -239,13 +260,19 @@ func (s *valueSet) addCounted(v Value, hint int) (bool, int) {
 	}
 	if key, ok := scalarValueKey(v); ok {
 		if s.scalars == nil {
+			if s.scratch != nil {
+				if err := s.scratch.reserveScalarMapCap(boundedSetCap(hint)); err != nil {
+					s.scratchErr = err
+					return false, 0
+				}
+			}
 			s.scalars = make(map[scalarValueSetKey]struct{}, boundedSetCap(hint))
 		}
 		if _, found := s.scalars[key]; found {
 			return false, 0
 		}
 		if s.scratch != nil {
-			if err := s.scratch.reserveScalarEntry(); err != nil {
+			if err := s.scratch.reserveScalarEntry(len(s.scalars)); err != nil {
 				s.scratchErr = err
 				return false, 0
 			}
@@ -395,13 +422,19 @@ func (s *membershipSet) addSource(values []Value, hint int) {
 			continue
 		}
 		if s.scalars == nil {
+			if s.scratch != nil {
+				if err := s.scratch.reserveScalarMapCap(boundedSetCap(hint)); err != nil {
+					s.scratchErr = err
+					return
+				}
+			}
 			s.scalars = make(map[scalarValueSetKey]struct{}, boundedSetCap(hint))
 		}
 		if _, found := s.scalars[key]; found {
 			continue
 		}
 		if s.scratch != nil {
-			if err := s.scratch.reserveScalarEntry(); err != nil {
+			if err := s.scratch.reserveScalarEntry(len(s.scalars)); err != nil {
 				s.scratchErr = err
 				return
 			}
