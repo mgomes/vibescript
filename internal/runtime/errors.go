@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/mgomes/vibescript/internal/ast"
-	"github.com/mgomes/vibescript/vibes/source"
 )
 
 var _ error = (*RuntimeError)(nil)
@@ -413,7 +412,7 @@ func (exec *Execution) newRuntimeErrorWithType(kind, message string, pos Positio
 		sourceScript = exec.callStack[len(exec.callStack)-1].functionScript
 	}
 	if sourceScript != nil {
-		codeFrame = source.FormatCodeFrame(sourceScript.source, pos)
+		codeFrame = sourceScript.codeFrameFormatter().Format(pos)
 	}
 	return &RuntimeError{Type: kind, Message: message, CodeFrame: codeFrame, Frames: frames}
 }
