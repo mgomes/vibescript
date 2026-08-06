@@ -108,7 +108,10 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 		return NewArray(nil), nil
 	}
 
-	group := newTaskGroup(exec, max, false)
+	// Reserve for the work that exists, not the ceiling requested: map knows
+	// its item count up front, and a slot held by a worker that will never get
+	// a job is a slot a nested group cannot have.
+	group := newTaskGroup(exec, min(max, len(items)), false)
 	exec.pushTaskGroup(group)
 	defer exec.popTaskGroup()
 	defer group.releaseRetainedResults()

@@ -155,3 +155,84 @@ end`)
 		t.Fatal("a starved group ran its task during spawn, so a block that acts after spawn would deadlock")
 	}
 }
+
+// TestMapReservesOnlyForItsItems pins that a map reserves for the work it has
+// rather than the ceiling it was allowed. A slot held by a worker that will
+// never receive a job is a slot a nested group cannot have, and a starved
+// nested group defers its child until a wait -- so a parent that blocks on a
+// signal the child produces never reaches the wait that would run it.
+//
+// The parent here waits on the gate before awaiting the handle, which is the
+// shape that deadlocks when the nested group gets no worker.
+func TestMapReservesOnlyForItsItems(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MaxTaskConcurrency: 2}, `def opener(n)
+  probe.open_gate()
+  n
+end
+
+def nested(n)
+  Tasks.run(max: 1) do |tasks|
+    a = tasks.spawn(:opener, 1)
+    probe.await_gate()
+    a.value
+  end
+end
+
+def run()
+  Tasks.map([1], max: 2, with: :nested)
+end`)
+
+	var starved atomic.Bool
+	done := make(chan error, 1)
+	go func() {
+		_, err := script.Call(context.Background(), "run", nil,
+			callOptionsWithCapabilities(blockingGateCapability{gate: make(chan struct{}), starved: &starved}))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("nested tasks failed: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("deadlock: the nested group was starved by an idle sibling slot, so its child never ran")
+	}
+	if starved.Load() {
+		t.Fatal("the parent waited out its timeout: the nested group was starved by an idle sibling slot")
+	}
+}
+
+// blockingGateCapability makes await_gate genuinely wait, so a child that is
+// never scheduled deadlocks its parent rather than silently proceeding. The
+// wait is bounded so a regression fails the test instead of hanging the suite.
+type blockingGateCapability struct {
+	gate    chan struct{}
+	starved *atomic.Bool
+}
+
+func (c blockingGateCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	gate, starved := c.gate, c.starved
+	return map[string]Value{
+		"probe": NewObject(map[string]Value{
+			"open_gate": NewBuiltin("probe.open_gate", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+				select {
+				case <-gate:
+				default:
+					close(gate)
+				}
+				return NewNil(), nil
+			}),
+			"await_gate": NewBuiltin("probe.await_gate", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+				select {
+				case <-gate:
+				case <-time.After(15 * time.Second):
+					// The child never ran, so it never opened the gate.
+					starved.Store(true)
+				}
+				return NewNil(), nil
+			}),
+		}),
+	}, nil
+}
