@@ -4075,7 +4075,17 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 		return NewNil(), err
 	}
 
-	allMatches := re.FindAllStringSubmatchIndex(text, -1)
+	// Ask for at most one match beyond what the quota can hold, so the table
+	// the engine allocates is bounded by the quota rather than by the subject.
+	limit := -1
+	budget, bounded := scanMatchBudget(exec, groups)
+	if bounded {
+		limit = budget + 1
+	}
+	allMatches := re.FindAllStringSubmatchIndex(text, limit)
+	if bounded && len(allMatches) > budget {
+		return NewNil(), exec.memoryQuotaExceededError()
+	}
 
 	if valueBlock(block) != nil {
 		return stringScanBlock(exec, text, groups, allMatches, receiver, args, kwargs, block)
@@ -4197,20 +4207,31 @@ func guardRegexScanIndexFootprint(exec *Execution, pattern, text string, groups 
 	if projected > maxRegexScanIndexBytes {
 		return guardLimitErrorf("string.scan match table exceeds limit %d bytes", maxRegexScanIndexBytes)
 	}
-	// A zero-width pattern reaches the projection rather than merely being
-	// bounded by it: it matches at every position, so runeCount+1 matches is
-	// what FindAll actually allocates, not a loose ceiling. For that shape the
-	// projection can be charged against the memory quota without the false
-	// rejections the paragraph above avoids -- those come from applying a
-	// worst case to sparse patterns that never approach it. Without this a
-	// script under a 64 KiB quota could make the engine allocate 128 MiB
-	// before the incremental accounting below saw a single element (#37).
-	if exec != nil && exec.memoryQuota > 0 && regexScanMinMatchRunes(pattern) == 0 {
-		if projected > exec.memoryQuota {
-			return exec.memoryQuotaExceededError()
-		}
-	}
 	return nil
+}
+
+// scanMatchBudget returns how many matches the index table may hold before it
+// alone would exceed the memory quota, and whether a bound applies at all.
+//
+// Projecting a worst case and rejecting up front cannot work here: the
+// worst case is reachable only by patterns that match densely, and no cheap
+// property distinguishes those. "Can match empty" does not -- ^, \b and a*
+// all can, yet each returns a handful of matches over a large subject, so
+// rejecting on their projection fails ordinary scans.
+//
+// Bounding the request instead needs no prediction. FindAll takes a match
+// limit, so asking for one more than the budget makes the table cost at most
+// one row beyond what the quota allows, and a result that comes back over the
+// budget is exactly the case that could not have fit (#37).
+func scanMatchBudget(exec *Execution, groups int) (int, bool) {
+	if exec == nil || exec.memoryQuota <= 0 {
+		return 0, false
+	}
+	perMatch := projectedRegexSubmatchIndexBytes(1, groups)
+	if perMatch <= 0 {
+		return 0, false
+	}
+	return exec.memoryQuota / perMatch, true
 }
 
 // regexScanMaxMatches returns an upper bound on the number of non-overlapping

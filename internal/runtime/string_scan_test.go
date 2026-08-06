@@ -1131,21 +1131,15 @@ end`
 	}
 }
 
-// TestScanZeroWidthTableRespectsMemoryQuota pins that a zero-width scan
-// pattern cannot make the engine allocate an index table orders of magnitude
-// past the memory quota. FindAllStringSubmatchIndex builds the whole [][]int
-// table before any interpreter accounting runs, so a pattern of thousands of
-// empty groups over a few thousand characters allocated 128 MiB under a
-// 64 KiB quota — the quota error arrived only after the spike (#37).
-//
-// The check applies to zero-width patterns because they reach the projection
-// rather than merely being bounded by it: matching at every position, the
-// runeCount+1 worst case is what actually gets allocated. Sparse patterns keep
-// the host-cap-only treatment, since applying a worst case they never approach
-// would reject ordinary scans.
+// TestScanTableRespectsMemoryQuota pins that no pattern can make the engine
+// allocate an index table orders of magnitude past the memory quota.
+// FindAllStringSubmatchIndex builds the whole [][]int table before any
+// interpreter accounting runs, so a pattern of thousands of empty groups over
+// a few thousand characters allocated 128 MiB under a 64 KiB quota — the
+// quota error arrived only after the spike (#37).
 //
 // Not parallel: MemStats.TotalAlloc is process-wide.
-func TestScanZeroWidthTableRespectsMemoryQuota(t *testing.T) {
+func TestScanTableRespectsMemoryQuota(t *testing.T) {
 	const quotaBytes = 64 << 10
 	script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: quotaBytes},
 		"def run(s, p)\n  s.scan(p).length\nend")
@@ -1161,7 +1155,7 @@ func TestScanZeroWidthTableRespectsMemoryQuota(t *testing.T) {
 		t.Fatal("a scan table far past the memory quota must be rejected")
 	}
 	allocated := after.TotalAlloc - before.TotalAlloc
-	// The unguarded path allocated about 128 MiB; the rest here is script
+	// The unbounded request allocated about 128 MiB; the rest here is script
 	// compilation and the operand strings.
 	if limit := uint64(16 << 20); allocated > limit {
 		t.Fatalf("scan allocated %.2f MiB before failing, want under %.2f MiB",
@@ -1169,11 +1163,12 @@ func TestScanZeroWidthTableRespectsMemoryQuota(t *testing.T) {
 	}
 }
 
-// TestScanQuotaCheckKeepsOrdinaryPatternsWorking pins that the zero-width
-// check does not reintroduce the false rejections the host-cap-only design
-// avoids: a sparse pattern whose real result is empty must still scan under a
-// small quota, and ordinary zero-width scans must keep working.
-func TestScanQuotaCheckKeepsOrdinaryPatternsWorking(t *testing.T) {
+// TestScanQuotaBoundKeepsSparsePatternsWorking pins that bounding the request
+// costs nothing to patterns that return few matches. Every case here can match
+// without consuming input, so a guard keyed on that property alone would
+// reject them on a worst case none of them approaches — an anchor matches
+// once, a boundary a handful of times.
+func TestScanQuotaBoundKeepsSparsePatternsWorking(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
@@ -1181,9 +1176,11 @@ func TestScanQuotaCheckKeepsOrdinaryPatternsWorking(t *testing.T) {
 		quotaBytes       int
 		wantMatches      string
 	}{
+		"anchor over a large subject":       {strings.Repeat("a", 2000), "^", 64 << 10, "1"},
 		"sparse pattern that never matches": {strings.Repeat("a", 8000), "z", 64 << 10, "0"},
-		"zero-width over a small subject":   {"hello world", "()", 64 << 10, "12"},
+		"greedy optional":                   {strings.Repeat("a", 2000), "a*", 64 << 10, "1"},
 		"word boundaries":                   {strings.Repeat("hi there ", 50), `\b`, 1 << 20, "200"},
+		"zero-width over a small subject":   {"hello world", "()", 64 << 10, "12"},
 		"ordinary capture groups":           {strings.Repeat("k=v ", 500), `(\w)=(\w)`, 1 << 20, "500"},
 	}
 	for name, tc := range tests {
