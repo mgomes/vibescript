@@ -1452,6 +1452,11 @@ func (c *EqualityContext) Equal(v, other Value) bool {
 	c.state.rootLeft, c.state.rootRight = v, other
 	eq := valuesEqual(v, other, &c.state)
 	flushEqualityCharge(&c.state)
+	// The operand roots are read only by the scratch validator during the
+	// walk. A context that outlives the comparison (the runtime pools one
+	// per execution and embeds them in set helpers) must not keep the
+	// compared graphs reachable past its answer.
+	c.state.rootLeft, c.state.rootRight = Value{}, Value{}
 	if c.state.err != nil {
 		return false
 	}
@@ -1469,6 +1474,8 @@ func (c *EqualityContext) Eql(v, other Value) bool {
 	c.state.rootLeft, c.state.rootRight = v, other
 	eq := valuesEqualWithKinds(v, other, &c.state, true)
 	flushEqualityCharge(&c.state)
+	// See Equal: reused contexts must not retain the compared graphs.
+	c.state.rootLeft, c.state.rootRight = Value{}, Value{}
 	if c.state.err != nil {
 		return false
 	}
