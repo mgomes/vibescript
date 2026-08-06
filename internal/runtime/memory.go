@@ -2987,7 +2987,17 @@ func (est *memoryEstimator) value(val Value) int {
 		// procs minted in a loop stay inside the quota.
 		size += est.value(blk.forward)
 	case KindFunction:
-		// Functions are compile-time/static artifacts for memory quotas.
+		// The compiled body is a static artifact, but the captured environment
+		// is not. A module that exports any function retains its whole module
+		// env through that closure, and a closure minted in a loop retains its
+		// frame; treating the whole value as static let those drop out of the
+		// quota once initialization returned, so requiring many modules
+		// accumulated unbounded memory (#48). The block arm above charges
+		// est.env for exactly this reason. Env dedup keeps an env reachable
+		// from both the env stack and a function value charged once.
+		if fn := valueFunction(val); fn != nil {
+			size += est.env(fn.Env)
+		}
 	case KindBuiltin:
 		// Static stdlib builtins are singletons reachable once, so they stay
 		// free. A builtin that closes over runtime values, though, is a
