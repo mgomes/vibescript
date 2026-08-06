@@ -150,9 +150,9 @@ func universalValueMember(obj Value, property string) (Value, bool) {
 		// naturally (for example "int.nil? does not take arguments").
 		return newNilPredicateBuiltin(obj.Kind().String()), true
 	case "eql?":
-		return bindEqualityPredicate("eql?", obj, Value.Eql), true
+		return bindEqualityPredicate("eql?", obj, meteredEqlCompare), true
 	case "equal?":
-		return bindEqualityPredicate("equal?", obj, Value.Identical), true
+		return bindEqualityPredicate("equal?", obj, identicalCompare), true
 	case "send":
 		return newUniversalSendBuiltin("send", true), true
 	case "public_send":
@@ -366,33 +366,81 @@ type boundReceiver struct {
 // against itself and still reports identity rather than against the stale value.
 // Third, the cell is mutable so the clone can be registered before its receiver
 // is resolved, keeping recursive receiver graphs deduplicated to one clone.
-func bindEqualityPredicate(property string, receiver Value, compare func(Value, Value) bool) Value {
+func bindEqualityPredicate(property string, receiver Value, compare equalityCompare) Value {
 	cell := &boundReceiver{value: receiver}
 	return newBoundEqualityPredicate(property, cell, compare)
+}
+
+// equalityCompare is the comparison behind a bound eql?/equal? predicate. It
+// receives the execution so the walk can charge the string bytes it reads; a
+// nil execution compares unmetered (host-side dispatch).
+type equalityCompare func(exec *Execution, left, right Value) (bool, error)
+
+// meteredEqlCompare backs eql?: the kind-strict recursive comparison, charging
+// nested string payloads at the leaf like `==` does (#1135).
+func meteredEqlCompare(exec *Execution, left, right Value) (bool, error) {
+	ctx := exec.meteredEquality()
+	eq := ctx.Eql(left, right)
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return eq, nil
+}
+
+// identicalCompare backs equal?. Identity never recurses into composites —
+// arrays, hashes, and objects compare by backing storage — but it does read
+// scalar string payloads, so the top-level charge stays here. Equality
+// answers from a length mismatch without reading either payload, so only
+// operands of the same kind and the same length are charged.
+func identicalCompare(exec *Execution, left, right Value) (bool, error) {
+	if exec != nil && left.Kind() == right.Kind() {
+		switch {
+		case stringLikeOperand(left) && len(left.String()) == len(right.String()):
+			if err := exec.chargeStringScan(len(left.String())); err != nil {
+				return false, err
+			}
+		case left.Kind() == KindRegex:
+			// Regex identity falls back to source and flag equality, which
+			// reads the strings under the same length screen; Flags is an
+			// exported, unrestricted string a host can size at will. A
+			// source mismatch answers false without the flags ever being
+			// read, so their charge lands only after the sources compare
+			// equal — the precheck read plus the delegated comparison's
+			// re-read are both billed.
+			lr, rr := left.Regex(), right.Regex()
+			if len(lr.Source) != len(rr.Source) {
+				break
+			}
+			if err := exec.chargeStringScan(2 * len(lr.Source)); err != nil {
+				return false, err
+			}
+			if lr.Source != rr.Source {
+				break
+			}
+			if len(lr.Flags) == len(rr.Flags) {
+				if err := exec.chargeStringScan(len(lr.Flags)); err != nil {
+					return false, err
+				}
+			}
+		}
+	}
+	return left.Identical(right), nil
 }
 
 // newBoundEqualityPredicate builds the bound predicate builtin around an existing
 // receiver cell. The builtin's BoundReceiver hook exposes a two-phase clone that
 // the host clone and inbound rebind walks use to deduplicate recursive aliases.
-func newBoundEqualityPredicate(property string, cell *boundReceiver, compare func(Value, Value) bool) Value {
+func newBoundEqualityPredicate(property string, cell *boundReceiver, compare equalityCompare) Value {
 	name := fmt.Sprintf("%s.%s", cell.value.Kind(), property)
 	val := NewCapturingBuiltin(name, func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if err := requireEqualityPredicateCall(name, args, kwargs, block); err != nil {
 			return NewNil(), err
 		}
-		// Comparing two strings reads their bytes, and this predicate is not a
-		// string member, so it never passed through the string call charge.
-		// Symbols compare by their name and converting to one is exempt, so
-		// they belong here as much as strings do. Equality answers from a
-		// length mismatch without reading either payload, so only operands of
-		// the same kind and the same length are charged.
-		if exec != nil && cell.value.Kind() == args[0].Kind() && stringLikeOperand(cell.value) &&
-			len(cell.value.String()) == len(args[0].String()) {
-			if err := exec.chargeStringScan(len(cell.value.String())); err != nil {
-				return NewNil(), err
-			}
+		eq, err := compare(exec, cell.value, args[0])
+		if err != nil {
+			return NewNil(), err
 		}
-		return NewBool(compare(cell.value, args[0])), nil
+		return NewBool(eq), nil
 	}, cell.value)
 	builtin := valueBuiltin(val)
 	builtin.BoundReceiver = &boundReceiverClone{

@@ -289,14 +289,31 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 	}
 	switch v.kind {
 	case KindString:
-		return quotedStringByteLen(v.data.(string)), nil
+		str := v.data.(string)
+		if state.chargeBytes != nil {
+			if err := state.chargeBytes(len(str)); err != nil {
+				return 0, err
+			}
+		}
+		return quotedStringByteLen(str), nil
 	case KindSymbol:
-		return inspectSymbolByteLen(v.data.(string)), nil
+		sym := v.data.(string)
+		if state.chargeBytes != nil {
+			if err := state.chargeBytes(len(sym)); err != nil {
+				return 0, err
+			}
+		}
+		return inspectSymbolByteLen(sym), nil
 	case KindRegex:
 		// See Value.StringByteLen: sizing a regex must not render it, and
 		// inspect renders one exactly as String does. The source walk StringLen
 		// performs is charged before it runs -- the single per-node step above
 		// does not cover a scan proportional to the source.
+		if state.chargeBytes != nil {
+			if err := state.chargeBytes(len(v.data.(Regex).Source)); err != nil {
+				return 0, err
+			}
+		}
 		if err := chargeRegexSourceSteps(v, step); err != nil {
 			return 0, err
 		}
@@ -362,6 +379,11 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 		total := len(hashOpen) + len(hashClose)
 		total += separatorBytes(len(entries))
 		for k, val := range entries {
+			if state.chargeBytes != nil {
+				if err := state.chargeBytes(len(k)); err != nil {
+					return 0, err
+				}
+			}
 			total += inspectHashKeyByteLen(k) + len(keyValueSeparator)
 			n, err := val.inspectByteLenBoundedWithState(state, step)
 			if err != nil {
@@ -373,7 +395,18 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 	default:
 		// A big integer's projection performs the same superlinear base
 		// conversion the rendering will; charge steps for it up front so the
-		// step quota trips before the conversion runs.
+		// step quota trips before the conversion runs. The length itself is
+		// the allocation-free decimal bound: materializing the decimal here
+		// would allocate the full rendering before any caller reservation
+		// covers it, so sizing must not convert. The bound never falls short,
+		// and callers reserve or pregrow at the projection, so the render
+		// stays within what was validated.
+		if bi, ok := BigIntPayload(v); ok {
+			if err := chargeBigIntRenderSteps(v, step); err != nil {
+				return 0, err
+			}
+			return bigIntDecimalLenUpperBound(bi), nil
+		}
 		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, err
 		}

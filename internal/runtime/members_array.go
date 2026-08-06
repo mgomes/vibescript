@@ -313,7 +313,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				if err := exec.chargeBigIntKeySteps(groupValue); err != nil {
+				if err := exec.chargeValueKeySteps(groupValue); err != nil {
 					return NewNil(), err
 				}
 				key, err := newHashAggregationKey(groupValue)
@@ -402,7 +402,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				if err := exec.chargeBigIntKeySteps(groupValue); err != nil {
+				if err := exec.chargeValueKeySteps(groupValue); err != nil {
 					return NewNil(), err
 				}
 				key, err := newHashAggregationKey(groupValue)
@@ -452,8 +452,13 @@ func arrayMemberGrouping(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			hasBlock := valueBlock(block) != nil
-			initialCapacity, err := arrayTallyInitialCapacity(arr, hasBlock)
+			initialCapacity, precharged, err := arrayTallyInitialCapacity(exec, arr, hasBlock)
 			if err != nil {
+				// Sampling's key charge surfaces quota errors as themselves;
+				// only canonicalization failures take the unsupported-key label.
+				if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) {
+					return NewNil(), err
+				}
 				return NewNil(), fmt.Errorf("array.tally value is unsupported hash key: %w", err)
 			}
 			scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
@@ -503,8 +508,12 @@ func arrayMemberGrouping(property string) (Value, error) {
 					}
 					keyValue = mapped
 				}
-				if err := exec.chargeBigIntKeySteps(keyValue); err != nil {
-					return NewNil(), err
+				// The capacity sampler already billed the leading elements it
+				// canonicalized.
+				if i >= precharged || hasBlock {
+					if err := exec.chargeValueKeySteps(keyValue); err != nil {
+						return NewNil(), err
+					}
 				}
 				key, err := newHashAggregationKey(keyValue)
 				if err != nil {
@@ -908,13 +917,17 @@ func newHashAggregationKey(val Value) (hashAggregationKey, error) {
 	}
 }
 
-func arrayTallyInitialCapacity(arr []Value, hasBlock bool) (int, error) {
+// arrayTallyInitialCapacity sizes the tally's maps, sampling the first
+// elements of a large blockless receiver. precharged reports how many leading
+// elements had their key cost billed during sampling, so the main loop does
+// not charge them again.
+func arrayTallyInitialCapacity(exec *Execution, arr []Value, hasBlock bool) (capacity, precharged int, err error) {
 	length := len(arr)
 	if length <= 256 {
-		return length, nil
+		return length, 0, nil
 	}
 	if hasBlock {
-		return 256, nil
+		return 256, 0, nil
 	}
 
 	// Sample direct values only; blocks may be expensive or effectful, so
@@ -923,9 +936,14 @@ func arrayTallyInitialCapacity(arr []Value, hasBlock bool) (int, error) {
 	var keys [sampleLimit]hashAggregationKey
 	distinct := 0
 	for _, item := range arr[:sampleLimit] {
+		// Sampling canonicalizes the key exactly as the main loop will;
+		// charge before that work, not after.
+		if err := exec.chargeValueKeySteps(item); err != nil {
+			return 0, 0, err
+		}
 		key, err := newHashAggregationKey(item)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		found := false
 		for i := range distinct {
@@ -940,12 +958,12 @@ func arrayTallyInitialCapacity(arr []Value, hasBlock bool) (int, error) {
 		}
 	}
 	if distinct == sampleLimit {
-		return length, nil
+		return length, sampleLimit, nil
 	}
 	if distinct <= 8 {
-		return 16, nil
+		return 16, sampleLimit, nil
 	}
-	return 256, nil
+	return 256, sampleLimit, nil
 }
 
 // arrayPositiveSliceSize validates the single argument shared by each_slice as a
@@ -1626,12 +1644,16 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("array.include? expects exactly one value")
 			}
+			equality := exec.meteredEquality()
 			for _, item := range receiver.Array() {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
-				if item.Equal(args[0]) {
+				if equality.Equal(item, args[0]) {
 					return NewBool(true), nil
+				}
+				if err := equality.Err(); err != nil {
+					return NewNil(), err
 				}
 			}
 			return NewBool(false), nil
@@ -1791,10 +1813,19 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) == 1 {
 				// A value argument takes precedence and any attached block is
 				// ignored, matching Ruby's Array#count(value) { ... }.
+				// Each probe charges a step and its string bytes: the scan
+				// used to be free, so the quota never bounded it (#1135).
+				equality := exec.meteredEquality()
 				total := int64(0)
 				for _, item := range arr {
-					if item.Equal(args[0]) {
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
+					if equality.Equal(item, args[0]) {
 						total++
+					}
+					if err := equality.Err(); err != nil {
+						return NewNil(), err
 					}
 				}
 				return NewInt(total), nil
@@ -2015,7 +2046,7 @@ func arrayPredicate(exec *Execution, receiver Value, args []Value, kwargs map[st
 	if len(args) == 1 {
 		pattern := args[0]
 		return arrayPredicateResult(kind, arr, func(item Value) (bool, error) {
-			return caseCandidateMatches(item, pattern)
+			return caseCandidateMatches(exec, item, pattern)
 		})
 	}
 	if valueBlock(block) != nil {
@@ -2124,12 +2155,16 @@ func arrayForwardIndex(exec *Execution, receiver Value, args []Value, block Valu
 		offset = n
 	}
 	arr := receiver.Array()
+	equality := exec.meteredEquality()
 	for idx := offset; idx < len(arr); idx++ {
 		if err := exec.step(); err != nil {
 			return NewNil(), err
 		}
-		if arr[idx].Equal(args[0]) {
+		if equality.Equal(arr[idx], args[0]) {
 			return NewInt(int64(idx)), nil
+		}
+		if err := equality.Err(); err != nil {
+			return NewNil(), err
 		}
 	}
 	return NewNil(), nil
@@ -2187,12 +2222,16 @@ func arrayReverseIndex(exec *Execution, receiver Value, args []Value, block Valu
 	if offset < 0 || offset >= len(arr) {
 		offset = len(arr) - 1
 	}
+	equality := exec.meteredEquality()
 	for idx := offset; idx >= 0; idx-- {
 		if err := exec.step(); err != nil {
 			return NewNil(), err
 		}
-		if arr[idx].Equal(args[0]) {
+		if equality.Equal(arr[idx], args[0]) {
 			return NewInt(int64(idx)), nil
+		}
+		if err := equality.Err(); err != nil {
+			return NewNil(), err
 		}
 	}
 	return NewNil(), nil
@@ -2659,14 +2698,14 @@ func reduceOperationName(v Value) (string, bool) {
 // as methods on its numeric and collection types; Vibescript implements them as
 // operators, so the symbol shorthand routes through the same helpers the `+`,
 // `-`, `*`, `/`, `%`, and `**` operators use.
-var reduceArithmeticOps = map[string]func(left, right Value) (Value, error){
-	"+":  addValues,
+var reduceArithmeticOps = map[string]func(exec *Execution, left, right Value) (Value, error){
+	"+":  func(_ *Execution, l, r Value) (Value, error) { return addValues(l, r) },
 	"-":  subtractValues,
-	"*":  multiplyValues,
-	"/":  divideValues,
-	"%":  moduloValues,
-	"**": powerValues,
-	"<<": shovelValues,
+	"*":  func(_ *Execution, l, r Value) (Value, error) { return multiplyValues(l, r) },
+	"/":  func(_ *Execution, l, r Value) (Value, error) { return divideValues(l, r) },
+	"%":  func(_ *Execution, l, r Value) (Value, error) { return moduloValues(l, r) },
+	"**": func(_ *Execution, l, r Value) (Value, error) { return powerValues(l, r) },
+	"<<": func(_ *Execution, l, r Value) (Value, error) { return shovelValues(l, r) },
 	"&":  intersectValues,
 }
 
@@ -2697,7 +2736,7 @@ func (exec *Execution) reduceSendOperation(accumulator Value, operation string, 
 				}
 			}
 		}
-		return op(accumulator, item)
+		return op(exec, accumulator, item)
 	}
 	member, err := exec.getPublicMember(accumulator, operation, Position{})
 	if err != nil {
@@ -2735,7 +2774,7 @@ func arrayMemberGrep(property string) (Value, error) {
 		out := make([]Value, 0, len(arr))
 		var blockArg [1]Value
 		for _, item := range arr {
-			matched, err := caseCandidateMatches(item, pattern)
+			matched, err := caseCandidateMatches(exec, item, pattern)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -2789,10 +2828,10 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		}
 		// Deduplication canonicalizes every element as a set key; charge big
 		// elements' words before the build.
-		if err := exec.chargeBigIntElementKeySteps(arr); err != nil {
+		if err := exec.chargeValueElementKeySteps(arr); err != nil {
 			return NewNil(), false, err
 		}
-		unique, err := uniqueValuesMetered(arr, exec.checkContext, exec.chargeScanSteps)
+		unique, err := uniqueValuesMetered(arr, exec.checkContext, exec.chargeScanSteps, exec)
 		if err != nil {
 			return NewNil(), false, err
 		}
@@ -2810,6 +2849,7 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	}
 	out := make([]Value, 0, initialCap)
 	var seen valueSet
+	seen.bindMetering(exec)
 	var blockArg [1]Value
 	changed := false
 	for _, item := range arr {
@@ -2821,10 +2861,19 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		if err != nil {
 			return NewNil(), false, err
 		}
+		// A scalar key is hashed into the set's Go map in full — twice on a
+		// miss — so its payload is charged first, like every other
+		// key-canonicalization site.
+		if err := exec.chargeScalarSetKeySteps(key); err != nil {
+			return NewNil(), false, err
+		}
 		// A composite key is matched by scanning every distinct composite key
 		// already seen, so charge that scan; a per-element step alone would let
 		// n distinct composite keys cost n(n-1)/2 unmetered comparisons.
 		seenKey, probes := seen.containsCounted(key)
+		if err := seen.chargeErr(); err != nil {
+			return NewNil(), false, err
+		}
 		if err := exec.chargeScanSteps(probes); err != nil {
 			return NewNil(), false, err
 		}
@@ -2844,6 +2893,9 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		}
 		// add rescans the composites to find its insertion point.
 		_, addProbes := seen.addCounted(key, len(arr))
+		if err := seen.chargeErr(); err != nil {
+			return NewNil(), false, err
+		}
 		if err := exec.chargeScanSteps(addProbes); err != nil {
 			return NewNil(), false, err
 		}
@@ -3050,6 +3102,7 @@ func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 	}
 	var blockArg [1]Value
 	var currentKey Value
+	chunkEquality := exec.meteredEquality()
 	active := false
 	start := 0
 	emit := func(key Value, begin, end int) error {
@@ -3111,7 +3164,11 @@ func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 			active = true
 			continue
 		}
-		if !key.Equal(currentKey) {
+		sameGroup := chunkEquality.Equal(key, currentKey)
+		if err := chunkEquality.Err(); err != nil {
+			return NewNil(), err
+		}
+		if !sameGroup {
 			if err := emit(currentKey, start, i); err != nil {
 				return NewNil(), err
 			}
@@ -3287,7 +3344,7 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		if len(elements) != 2 {
 			return NewNil(), fmt.Errorf("array.to_h pair must have exactly two elements")
 		}
-		if err := exec.chargeBigIntKeySteps(elements[0]); err != nil {
+		if err := exec.chargeValueKeySteps(elements[0]); err != nil {
 			return NewNil(), err
 		}
 		key, err := canonicalHashKey(elements[0])
@@ -3755,10 +3812,14 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := exec.chargeBigIntElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
+			if err := exec.chargeValueElementKeySteps(receiver.Array(), others...); err != nil {
 				return NewNil(), err
 			}
-			return NewArray(unionArrayValues(receiver.Array(), others)), nil
+			unique, err := unionArrayValues(exec, receiver.Array(), others)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewArray(unique), nil
 		}), nil
 	case "difference":
 		return NewAutoBuiltin("array.difference", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -3766,10 +3827,27 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := exec.chargeBigIntElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
+			// With no scalar removal keys the receiver's scalars are never
+			// hashed — an empty removal side only shallow-copies, and an
+			// all-composite one probes through metered equality instead —
+			// so there is nothing to precharge.
+			removalHasScalars := false
+			for _, other := range others {
+				if anyScalarSetKey(other) {
+					removalHasScalars = true
+					break
+				}
+			}
+			if removalHasScalars {
+				if err := exec.chargeValueElementKeySteps(receiver.Array(), others...); err != nil {
+					return NewNil(), err
+				}
+			}
+			out, err := differenceArrayValues(exec, receiver.Array(), others)
+			if err != nil {
 				return NewNil(), err
 			}
-			return NewArray(differenceArrayValues(receiver.Array(), others)), nil
+			return NewArray(out), nil
 		}), nil
 	case "sample":
 		return NewAutoBuiltin("array.sample", arraySample), nil
@@ -4204,11 +4282,16 @@ func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	out := make([]Value, 0)
 	found := false
 	var matched Value
+	equality := exec.meteredEquality()
 	for _, item := range arr {
 		if err := exec.step(); err != nil {
 			return NewNil(), err
 		}
-		if item.Equal(target) {
+		isMatch := equality.Equal(item, target)
+		if err := equality.Err(); err != nil {
+			return NewNil(), err
+		}
+		if isMatch {
 			found = true
 			// Track the matched element itself so the result reports the stored
 			// object rather than the caller's search argument. Ruby's Array#delete

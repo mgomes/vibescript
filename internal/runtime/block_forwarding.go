@@ -72,7 +72,7 @@ func (exec *Execution) sendSymbolProcMember(receiver Value, name string, rest []
 		if len(rest) != 1 {
 			return NewNil(), fmt.Errorf("&:%s expects exactly one argument, got %d", name, len(rest))
 		}
-		return op(receiver, rest[0])
+		return op(exec, receiver, rest[0])
 	}
 	member, err := exec.getPublicMember(receiver, name, pos)
 	if err != nil {

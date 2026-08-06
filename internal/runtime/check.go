@@ -16878,7 +16878,7 @@ func staticCaseExpressionResult(expr *CaseExpr) (Expression, bool) {
 			matched := value.Truthy()
 			if expr.Target != nil {
 				var err error
-				matched, err = caseCandidateMatches(target, value)
+				matched, err = caseCandidateMatches(nil, target, value)
 				if err != nil {
 					return nil, false
 				}
@@ -16920,7 +16920,7 @@ func (c *scriptChecker) inferredCaseExpressionResult(expr *CaseExpr) (Expression
 				if !static {
 					return nil, false
 				}
-				candidateMatched, err := caseCandidateMatches(target, value)
+				candidateMatched, err := caseCandidateMatches(nil, target, value)
 				if err != nil {
 					return nil, false
 				}

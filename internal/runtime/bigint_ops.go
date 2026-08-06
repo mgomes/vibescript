@@ -346,35 +346,167 @@ func bigIntDecimalDigitsUpperBound(bi *big.Int) int {
 	return digits
 }
 
-// chargeBigIntKeySteps scales the step cost of canonicalizing one hash key
-// with the key's word count when it carries a big payload (hash set/get/
-// delete, membership probes, aggregation keys), matching the arithmetic
-// convention of 1 + words/8. The canonical hex conversion is linear in words,
-// so the charge bounds its CPU under the step quota; compact keys are a no-op.
-func (exec *Execution) chargeBigIntKeySteps(key Value) error {
-	bi, ok := value.BigIntPayload(key)
-	if !ok {
-		return nil
+// chargeValueKeySteps scales the step cost of canonicalizing one hash key
+// with the payload the conversion reads (hash set/get/delete, membership
+// probes, aggregation keys). A big-integer key charges its word count at the
+// arithmetic convention of 1 + words/8: the canonical hex conversion is
+// linear in words. A string or symbol key charges its bytes at the
+// string-scan rate: building the canonical form copies the text, and the map
+// insert or lookup hashes all of it, work that was unmetered before #1135.
+// An array key recurses the way HashKey's canonicalization does — its nested
+// strings and big integers are copied into the canonical form once per
+// occurrence, shared subtrees included, so the charge follows the same
+// traversal with the same stack-scoped cycle guard rather than a permanent
+// visited set (which billed a shared DAG once while canonicalization copied
+// it exponentially). The walk carries a node budget so computing the charge
+// cannot itself become the unbounded work: past the budget the remaining
+// cost saturates, which trips any bounded step quota. Compact scalar keys
+// are a no-op.
+func (exec *Execution) chargeValueKeySteps(key Value) error {
+	budget := valueKeyCostNodeBudget
+	words, charge, _, _ := valueKeyCanonicalizationCost(key, nil, &budget)
+	if words > 0 {
+		if err := exec.stepN(1 + words/bigIntStepWordsPerStep); err != nil {
+			return err
+		}
 	}
-	return exec.stepN(1 + len(bi.Bits())/bigIntStepWordsPerStep)
+	return exec.chargeStringScan(charge)
 }
 
-// chargeBigIntElementKeySteps charges up front for canonicalizing every
-// big-integer element of the given slices. The set-building helpers (uniq,
-// union, difference, & and array -) canonicalize each element at least once,
-// so their entry points charge the summed word count before any conversion
-// runs; slices of compact values charge nothing beyond the scan.
-func (exec *Execution) chargeBigIntElementKeySteps(slices ...[]Value) error {
+// valueKeyCostNodeBudget bounds the canonicalization-cost walk. A shared DAG
+// is charged per occurrence like HashKey copies it, so the walk is
+// exponential in principle; once the budget is spent the cost saturates
+// instead of being computed exactly.
+const valueKeyCostNodeBudget = 1 << 16
+
+// valueKeyCanonicalizationCost models the work HashKey performs for key,
+// per occurrence and in element order. Each array level builds its own
+// canonical string by copying every child's complete encoding, so a depth-d
+// chain around one string costs Θ(d·len): the walk returns both the bytes
+// charged so far and the subtree's encoding size, and every array node
+// re-charges its children's encodings for the copy it performs. onPath
+// carries the slice headers of the active recursion path with HashKey's own
+// identity (pointer, length, capacity), removed on unwind so shared aliases
+// are charged each time they are canonicalized. walkable reports whether
+// canonicalization would read past this node — an unsupported element, a NaN
+// float, or a cycle stops HashKey immediately, so only the prefix already
+// read is charged — and a spent node budget stops the walk with the cost
+// saturated.
+func valueKeyCanonicalizationCost(key Value, onPath map[value.SliceIdentity]struct{}, budget *int) (words, charge, enc int, walkable bool) {
+	if *budget <= 0 {
+		return 0, math.MaxInt / 2, math.MaxInt / 2, false
+	}
+	*budget--
+	if bi, ok := value.BigIntPayload(key); ok {
+		// The hex encoding ancestors will copy runs ~16 characters per
+		// 64-bit word; the conversion itself is charged in words.
+		return len(bi.Bits()), 0, saturatingMul(len(bi.Bits()), 16), true
+	}
+	if stringLikeOperand(key) {
+		// The canonical encoding wraps the payload in kind-and-length
+		// framing ("string:0:" for an empty string), which ancestors copy
+		// and hash like payload bytes; without it, a key holding thousands
+		// of empty strings canonicalized substantial framing for free.
+		n := len(key.String())
+		return 0, n, saturatingAdd(n, 16), true
+	}
+	switch key.Kind() {
+	case KindNil, KindBool, KindInt, KindRange:
+		return 0, 0, 16, true
+	case KindFloat:
+		// A NaN key is rejected before anything after it is read.
+		return 0, 0, 16, !math.IsNaN(key.Float())
+	case KindArray:
+	default:
+		return 0, 0, 0, false
+	}
+	elems := key.Array()
+	id := value.SliceIdentity{Ptr: sliceBackingIdentity(elems), Len: len(elems), Cap: cap(elems)}
+	if id.Ptr != 0 {
+		if _, ok := onPath[id]; ok {
+			// A cyclic key is rejected at the revisit.
+			return 0, 0, 0, false
+		}
+		if onPath == nil {
+			onPath = make(map[value.SliceIdentity]struct{})
+		}
+		onPath[id] = struct{}{}
+	}
+	walkable = true
+	childEnc := 0
+	for _, elem := range elems {
+		w, c, e, ok := valueKeyCanonicalizationCost(elem, onPath, budget)
+		words = saturatingAdd(words, w)
+		charge = saturatingAdd(charge, c)
+		childEnc = saturatingAdd(childEnc, e)
+		if !ok {
+			walkable = false
+			break
+		}
+	}
+	if id.Ptr != 0 {
+		delete(onPath, id)
+	}
+	if !walkable {
+		// HashKey stops at the failing element, so this level's canonical
+		// string is never built: the prefix work already charged stands, but
+		// no copy happens here and no encoding reaches an ancestor. Billing
+		// the partial encoding up the chain would grow the charge with
+		// nesting depth for work never performed, letting a quota sized for
+		// the real cost replace the expected unsupported-key error.
+		return words, charge, 0, false
+	}
+	// This level's canonical string copies every child encoding once more.
+	charge = saturatingAdd(charge, childEnc)
+	return words, charge, saturatingAdd(childEnc, 16), walkable
+}
+
+// chargeScalarSetKeySteps bills a scalar set key's payload before it is
+// hashed into a Go map (the whole payload, twice on a miss): big-integer
+// words at the arithmetic rate and string-like bytes at the scan rate.
+// Composite keys are free here — the sets probe them through metered
+// equality instead, so charging their contents would double-bill.
+func (exec *Execution) chargeScalarSetKeySteps(key Value) error {
+	if bi, ok := value.BigIntPayload(key); ok {
+		return exec.stepN(1 + len(bi.Bits())/bigIntStepWordsPerStep)
+	}
+	if stringLikeOperand(key) {
+		return exec.chargeStringScan(len(key.String()))
+	}
+	return nil
+}
+
+// chargeValueElementKeySteps charges up front for canonicalizing every
+// element of the receiver and the other operand slices as a set key. The
+// set-building helpers (uniq, union, difference, & and array -) canonicalize
+// each element at least once, so their entry points charge the summed
+// big-integer word count and string-like byte count before any conversion
+// runs; slices of compact values charge nothing beyond the scan. The
+// receiver rides separately so a high-arity caller spreads its argument
+// slice directly instead of materializing a combined O(arity) buffer before
+// anything is reserved.
+func (exec *Execution) chargeValueElementKeySteps(lead []Value, rest ...[]Value) error {
 	words := 0
-	for _, values := range slices {
+	bytes := 0
+	tally := func(values []Value) {
 		for _, v := range values {
 			if bi, ok := value.BigIntPayload(v); ok {
 				words += len(bi.Bits())
+				continue
+			}
+			if stringLikeOperand(v) {
+				bytes = saturatingAdd(bytes, len(v.String()))
 			}
 		}
 	}
-	if words == 0 {
-		return nil
+	tally(lead)
+	for _, values := range rest {
+		tally(values)
 	}
-	return exec.stepN(1 + words/bigIntStepWordsPerStep)
+	if words > 0 {
+		if err := exec.stepN(1 + words/bigIntStepWordsPerStep); err != nil {
+			return err
+		}
+	}
+	return exec.chargeStringScan(bytes)
 }

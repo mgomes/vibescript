@@ -123,7 +123,7 @@ func (exec *Execution) digPath(name string, current Value, args []Value) (Value,
 	for _, arg := range args {
 		switch current.Kind() {
 		case KindHash, KindObject:
-			if err := exec.chargeBigIntKeySteps(arg); err != nil {
+			if err := exec.chargeValueKeySteps(arg); err != nil {
 				return NewNil(), err
 			}
 			next, ok, err := hashGet(current, arg)
@@ -848,15 +848,33 @@ func shovelValues(left, right Value) (Value, error) {
 
 // intersectValues implements the array intersection operator `array & other`,
 // returning the elements common to both arrays with duplicates removed and the
-// left array's order preserved, mirroring Ruby's Array#&.
-func intersectValues(left, right Value) (Value, error) {
+// left array's order preserved, mirroring Ruby's Array#&. exec meters the
+// composite membership probes; nil compares unmetered.
+func intersectValues(exec *Execution, left, right Value) (Value, error) {
 	if left.Kind() != KindArray || right.Kind() != KindArray {
 		return NewNil(), fmt.Errorf("unsupported intersection operands")
 	}
-	return NewArray(intersectArrayValues(left.Array(), right.Array())), nil
+	// The scalar element precharge lives here rather than at the operator
+	// site so reduce(:&) and symbol-proc forwarding pay it too. An empty
+	// side means no element is ever canonicalized or probed — the result is
+	// empty without building a set — so nothing is billed, and a lookup side
+	// without scalar keys never hashes the other side's scalars either.
+	if len(left.Array()) == 0 || len(right.Array()) == 0 {
+		return NewArray(nil), nil
+	}
+	if exec != nil && anyScalarSetKey(right.Array()) {
+		if err := exec.chargeValueElementKeySteps(left.Array(), right.Array()); err != nil {
+			return NewNil(), err
+		}
+	}
+	out, err := intersectArrayValues(exec, left.Array(), right.Array())
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewArray(out), nil
 }
 
-func subtractValues(left, right Value) (Value, error) {
+func subtractValues(exec *Execution, left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
 		if l, lok := left.CompactInt(); lok {
@@ -904,9 +922,26 @@ func subtractValues(left, right Value) (Value, error) {
 		}
 		return NewDuration(durationFromSeconds(diff)), nil
 	case left.Kind() == KindArray && right.Kind() == KindArray:
-		lArr := left.Array()
-		rArr := right.Array()
-		return NewArray(subtractArrayValues(lArr, rArr)), nil
+		// The scalar element precharge lives here rather than at the operator
+		// site so reduce(:-) and symbol-proc forwarding pay it too. An empty
+		// removal side only shallow-copies the receiver: no element is
+		// canonicalized or probed, so nothing is billed, and a removal side
+		// without scalar keys never hashes the receiver's scalars either.
+		if len(right.Array()) == 0 {
+			out := make([]Value, len(left.Array()))
+			copy(out, left.Array())
+			return NewArray(out), nil
+		}
+		if exec != nil && anyScalarSetKey(right.Array()) {
+			if err := exec.chargeValueElementKeySteps(left.Array(), right.Array()); err != nil {
+				return NewNil(), err
+			}
+		}
+		out, err := subtractArrayValues(exec, left.Array(), right.Array())
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewArray(out), nil
 	case left.Kind() == KindMoney && right.Kind() == KindMoney:
 		diff, err := left.Money().Sub(right.Money())
 		if err != nil {

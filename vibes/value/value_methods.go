@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/big"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -254,6 +255,13 @@ func (v Value) StringBounded(limit int) (string, error) {
 type valueStringState struct {
 	arrays map[SliceIdentity]struct{}
 	maps   map[uintptr]struct{}
+	// chargeBytes, when set, is invoked with each scalar payload's byte
+	// length before the sizing walk scans it (escape counting reads the
+	// whole payload), so a caller's byte budget can interrupt the sizing
+	// pass instead of only being billed after it completes. nil leaves
+	// sizing unmetered, as the rendering guards that charge separately
+	// expect.
+	chargeBytes func(bytes int) error
 }
 
 func newValueStringState() *valueStringState {
@@ -1266,10 +1274,7 @@ func (v Value) Eql(other Value) bool {
 		return false
 	}
 	var ctx EqualityContext
-	if ctx.seen != nil {
-		clear(ctx.seen)
-	}
-	return valuesEqualWithKinds(v, other, &ctx.seen, true)
+	return ctx.Eql(v, other)
 }
 
 // Identical reports whether v and other refer to the same object, backing the
@@ -1378,13 +1383,56 @@ func (v Value) Identical(other Value) bool {
 	}
 }
 
-// EqualityContext reuses the cycle-detection scratch used by Value equality.
-// The zero value is ready to use. It is not safe for concurrent use.
-// It is intended for the interpreter's internal use; hosts should not rely
-// on it, and it carries no compatibility promise (see
-// docs/embedding-api-stability.md).
+// EqualityContext reuses the cycle-detection scratch used by Value equality
+// and optionally carries a byte charge for the string payloads a comparison
+// reads (see SetCharge). The zero value is ready to use and compares
+// unmetered. It is not safe for concurrent use. It is intended for the
+// interpreter's internal use; hosts should not rely on it, and it carries no
+// compatibility promise (see docs/embedding-api-stability.md).
 type EqualityContext struct {
+	state equalityState
+}
+
+// equalityState threads the cycle-detection scratch, the optional byte
+// charge, and the first charge failure through a recursive equality walk.
+// The seen set inserts and never deletes within one comparison, so each
+// distinct composite pair is walked — and its scalar payloads charged — once,
+// which keeps shared DAGs linear with or without metering.
+type equalityState struct {
 	seen map[valueEqualityPair]struct{}
+	// charge bills the bytes a scalar comparison is about to read. nil means
+	// unmetered: hosts, tests, and Value.Equal keep their existing behavior.
+	charge func(bytes int) error
+	// reserveScratch validates the walk's cumulative transient scratch — the
+	// key slices deterministic traversal sorts and the display renderings —
+	// against the caller's memory budget before each allocation, together
+	// with the top-level operands of the active comparison: the operands can
+	// be temporaries no other root reaches, and the scratch coexists with
+	// both compared graphs at its peak. nil means unvalidated.
+	reserveScratch func(bytes int, left, right Value) error
+	// rootLeft and rootRight are the active comparison's top-level operands,
+	// handed to reserveScratch with every validation.
+	rootLeft  Value
+	rootRight Value
+	// roundScratchAlloc maps a requested scratch allocation to the capacity
+	// the allocator actually reserves for it (size-class rounding), so a
+	// rendered display key is validated at its realized backing size. nil
+	// reserves requests at their exact size.
+	roundScratchAlloc func(bytes int) int
+	// scratchHeld accumulates the scratch bytes this walk has allocated, so
+	// nested map traversals validate their combined footprint.
+	scratchHeld int
+	// pendingCharge accumulates leaf bytes not yet handed to charge. The
+	// walk flushes in batches and Equal/Eql settle the tail, so a caller
+	// whose charge function rounds each invocation down (the runtime bills
+	// whole 64-byte steps) cannot be walked past with many sub-granularity
+	// reads: the aggregate is billed even when every leaf alone is free.
+	pendingCharge int
+	// err records the first charge failure. It is sticky: every comparison
+	// after it returns false immediately, so a caller looping over many Equal
+	// calls does O(1) work per call once the quota is gone and surfaces the
+	// error via Err.
+	err error
 }
 
 // Equal reports whether v and other hold the same kind and value.
@@ -1393,12 +1441,104 @@ func (v Value) Equal(other Value) bool {
 	return ctx.Equal(v, other)
 }
 
+// equalitySeenRetainEntries bounds the traversal-map capacity a context keeps
+// between comparisons. The map is cleared per comparison, but clearing keeps
+// its buckets: a context that outlives one walk (the runtime pools one per
+// execution and embeds them in set helpers) would otherwise retain an
+// arbitrarily large backing from a single deep comparison, invisible to any
+// memory accounting.
+const equalitySeenRetainEntries = 64
+
+// releaseOversizedSeen drops the cycle-detection map when the walk that just
+// finished grew it past the pooling threshold, so a reused context retains at
+// most a few kilobytes of traversal scratch.
+func releaseOversizedSeen(state *equalityState) {
+	if len(state.seen) > equalitySeenRetainEntries {
+		state.seen = nil
+	}
+}
+
 // Equal reports whether v and other hold the same kind and value.
 func (c *EqualityContext) Equal(v, other Value) bool {
-	if c.seen != nil {
-		clear(c.seen)
+	if c.state.seen != nil {
+		clear(c.state.seen)
 	}
-	return valuesEqual(v, other, &c.seen)
+	// Scratch from prior walks on a reused context is dead; the validator
+	// must see each walk's own footprint, not a scan's lifetime total.
+	c.state.scratchHeld = 0
+	c.state.rootLeft, c.state.rootRight = v, other
+	eq := valuesEqual(v, other, &c.state)
+	flushEqualityCharge(&c.state)
+	// The operand roots are read only by the scratch validator during the
+	// walk. A context that outlives the comparison (the runtime pools one
+	// per execution and embeds them in set helpers) must not keep the
+	// compared graphs reachable past its answer.
+	c.state.rootLeft, c.state.rootRight = Value{}, Value{}
+	releaseOversizedSeen(&c.state)
+	if c.state.err != nil {
+		return false
+	}
+	return eq
+}
+
+// Eql reports whether v and other are equal under hash-key semantics: kinds
+// must match at every level (see Value.Eql). It shares the context's scratch,
+// charge hook, and sticky error with Equal.
+func (c *EqualityContext) Eql(v, other Value) bool {
+	if c.state.seen != nil {
+		clear(c.state.seen)
+	}
+	c.state.scratchHeld = 0
+	c.state.rootLeft, c.state.rootRight = v, other
+	eq := valuesEqualWithKinds(v, other, &c.state, true)
+	flushEqualityCharge(&c.state)
+	// See Equal: reused contexts must not retain the compared graphs.
+	c.state.rootLeft, c.state.rootRight = Value{}, Value{}
+	releaseOversizedSeen(&c.state)
+	if c.state.err != nil {
+		return false
+	}
+	return eq
+}
+
+// SetScratchReserver installs a validator for the walk's transient scratch
+// allocations (the key slices deterministic map traversal sorts and the
+// rendered display keys): it is invoked with the walk's cumulative scratch
+// bytes and the active comparison's top-level operands before each
+// allocation, and an error aborts the comparison like a charge failure. The
+// operands accompany every validation because they can be temporaries no
+// other root reaches, and the scratch coexists with both compared graphs at
+// its peak. A nil reserver leaves allocations unvalidated.
+func (c *EqualityContext) SetScratchReserver(reserve func(bytes int, left, right Value) error) {
+	c.state.reserveScratch = reserve
+}
+
+// SetScratchAllocRounder installs the allocator projection applied when the
+// walk reserves an allocation of known size — the rendered display key of a
+// composite hash key: round receives the requested byte size and returns the
+// capacity the allocator will actually reserve for it. Reserving the
+// unrounded request would let a budget that sits between the request and the
+// realized size-class capacity admit an allocation exceeding it. A nil
+// rounder reserves requests at their exact size.
+func (c *EqualityContext) SetScratchAllocRounder(round func(bytes int) int) {
+	c.state.roundScratchAlloc = round
+}
+
+// SetCharge installs a byte charge invoked for the string and symbol payloads
+// a comparison reads: scalar leaves that pass the length screen, and
+// string-like hash keys whose text is hashed or compared. A charge failure
+// makes the current and every subsequent comparison on this context answer
+// false; callers observe the failure through Err. A nil charge restores
+// unmetered comparison.
+func (c *EqualityContext) SetCharge(charge func(bytes int) error) {
+	c.state.charge = charge
+}
+
+// Err returns the first charge failure recorded on this context, or nil. Once
+// non-nil, comparison answers from this context are meaningless and the
+// caller must surface the error instead.
+func (c *EqualityContext) Err() error {
+	return c.state.err
 }
 
 type valueEqualityPair struct {
@@ -1442,20 +1582,211 @@ func numericCrossKindEqual(v, other Value) bool {
 	return new(big.Float).SetInt64(intVal.Int()).Cmp(exactFloat) == 0
 }
 
-func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
-	return valuesEqualWithKinds(v, other, seen, false)
+func valuesEqual(v, other Value, state *equalityState) bool {
+	return valuesEqualWithKinds(v, other, state, false)
 }
 
-// valuesEqualWithKinds compares two values, optionally requiring their kinds
-// to match at every level.
-//
-// strictKinds is what separates eql? from ==. == compares an int against a
-// float numerically, and that has to hold wherever the pair appears, so a
-// nested [1] == [1.0] is true. eql? is the kind-strict predicate, and its
-// strictness has to hold just as recursively: checking only the outermost
-// kind made [1].eql?([1.0]) true, because the elements went through the
-// widened comparison.
-func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
+// equalityChargeBatchBytes is the flush threshold for accumulated leaf
+// charges: large enough to amortize the charge call, small enough that a
+// spent quota stops the walk within one batch.
+const equalityChargeBatchBytes = 4096
+
+// chargeEqualityBytes accumulates n bytes of read work and invokes the
+// installed charge in batches. Charging each leaf separately let a
+// per-invocation rounding in the charge function (the runtime bills whole
+// 64-byte steps) scan arbitrarily many short payloads for free; batching
+// preserves the sub-granularity remainders across the walk. A failure is
+// sticky, like a direct charge's.
+func chargeEqualityBytes(state *equalityState, n int) bool {
+	if state.charge == nil || n <= 0 {
+		return true
+	}
+	state.pendingCharge += n
+	if state.pendingCharge < equalityChargeBatchBytes {
+		return true
+	}
+	pending := state.pendingCharge
+	state.pendingCharge = 0
+	if err := state.charge(pending); err != nil {
+		state.err = err
+		return false
+	}
+	return true
+}
+
+// flushEqualityCharge settles the pending tail at the end of a top-level
+// comparison, so every call's charged total is byte-exact.
+func flushEqualityCharge(state *equalityState) {
+	pending := state.pendingCharge
+	state.pendingCharge = 0
+	if state.charge == nil || pending <= 0 || state.err != nil {
+		return
+	}
+	if err := state.charge(pending); err != nil {
+		state.err = err
+	}
+}
+
+// chargeEqualityKeyText bills the text a hash key contributes to an equality
+// walk, reporting whether the walk may continue. A string-like key bills its
+// payload. An array key recurses: the typed-hash equality paths canonicalize
+// it through NewHashLookupKey, which copies every nested string once per
+// occurrence — shared subtrees included — so the charge follows the same
+// traversal with a stack-scoped cycle guard, and carries a node budget so
+// computing the charge cannot itself become the unbounded work (past the
+// budget the cost saturates, tripping any bounded quota). Other kinds and
+// unmetered walks are free.
+func chargeEqualityKeyText(state *equalityState, key Value) bool {
+	if state.charge == nil {
+		return true
+	}
+	budget := equalityKeyCostNodeBudget
+	bytes, _, _ := equalityKeyTextBytes(key, nil, &budget)
+	return chargeEqualityBytes(state, bytes)
+}
+
+// equalityKeyCostNodeBudget bounds the key-cost walk; see chargeEqualityKeyText.
+const equalityKeyCostNodeBudget = 1 << 16
+
+// chargeDisplayKeyRender bills a composite key's rendered Inspect length,
+// reporting the projected byte count for the caller's reservation and
+// pregrown render. The display path writes each descendant payload once,
+// unlike lookup-key canonicalization's per-level copies, so billing the
+// canonical model here overcharged deeply nested singleton keys —
+// Θ(depth·payload) for Θ(rendered) work — into spurious quota errors.
+func chargeDisplayKeyRender(state *equalityState, key Value) (projected int, ok bool) {
+	// The sizing pass itself scans every scalar payload (escape counting)
+	// and visits every node, so it is billed from inside the walk: leaf
+	// bytes through the sizing state's charge hook and a small structural
+	// constant per node, letting a spent budget interrupt the sizing
+	// instead of only being billed after it completes. The rendering pass
+	// that follows re-reads everything it writes, billed as the projection
+	// below.
+	sizing := newValueStringState()
+	sizing.chargeBytes = func(n int) error {
+		if state.err != nil {
+			return state.err
+		}
+		if !chargeEqualityBytes(state, n) {
+			return state.err
+		}
+		return nil
+	}
+	projected, err := key.inspectByteLenBoundedWithState(sizing, func() error {
+		if state.err != nil {
+			return state.err
+		}
+		if !chargeEqualityBytes(state, displayKeyNodeBytes) {
+			return state.err
+		}
+		return nil
+	})
+	if err != nil {
+		if state.err == nil {
+			state.err = err
+		}
+		return 0, false
+	}
+	return projected, chargeEqualityBytes(state, projected)
+}
+
+// displayKeyNodeBytes is the structural charge per node the display-key
+// sizing walk visits, so composites of many payload-free nodes stay bounded
+// by the byte budget too.
+const displayKeyNodeBytes = 2
+
+// equalityKeyTextBytes models the bytes NewHashLookupKey's canonicalization
+// reads for key, in element order: each array level copies every child's
+// complete encoding into its own canonical string, so a depth-d chain around
+// one string costs Θ(d·len). It returns the bytes to charge and the
+// subtree's encoding size; walkable reports whether canonicalization would
+// read past this node (an unsupported element, a NaN float, or a cycle stops
+// it immediately), and a spent node budget stops the walk with the cost
+// saturated.
+func equalityKeyTextBytes(key Value, onPath map[SliceIdentity]struct{}, budget *int) (int, int, bool) {
+	if *budget <= 0 {
+		return math.MaxInt / 2, math.MaxInt / 2, false
+	}
+	*budget--
+	switch key.kind {
+	case KindString, KindSymbol:
+		// The canonical encoding wraps the payload in kind-and-length
+		// framing, which ancestors copy like payload bytes; see the
+		// runtime-side cost model for why empty strings must not encode
+		// to zero.
+		n := len(key.data.(string))
+		enc := n + 16
+		if enc < 0 {
+			enc = math.MaxInt / 2
+		}
+		return n, enc, true
+	case KindNil, KindBool, KindInt, KindRange:
+		return 0, 16, true
+	case KindFloat:
+		return 0, 16, !math.IsNaN(key.Float())
+	case KindArray:
+		elems := key.Array()
+		// Full slice-header identity, as HashKey's cycle guard uses:
+		// overlapping reslices share a pointer but are distinct keys read in
+		// full, so a pointer-only guard misread them as cycles.
+		var id SliceIdentity
+		if cap(elems) > 0 {
+			id = SliceIdentity{Ptr: reflect.ValueOf(elems).Pointer(), Len: len(elems), Cap: cap(elems)}
+		}
+		if id.Ptr != 0 {
+			if _, ok := onPath[id]; ok {
+				return 0, 0, false
+			}
+			if onPath == nil {
+				onPath = make(map[SliceIdentity]struct{})
+			}
+			onPath[id] = struct{}{}
+		}
+		charge, childEnc := 0, 0
+		walkable := true
+		for _, elem := range elems {
+			c, e, ok := equalityKeyTextBytes(elem, onPath, budget)
+			if charge += c; charge < 0 {
+				charge = math.MaxInt / 2
+			}
+			if childEnc += e; childEnc < 0 {
+				childEnc = math.MaxInt / 2
+			}
+			if !ok {
+				walkable = false
+				break
+			}
+		}
+		if id.Ptr != 0 {
+			delete(onPath, id)
+		}
+		if !walkable {
+			// Canonicalization stops at the failing element, so this level's
+			// string is never built: the prefix work already charged stands,
+			// but no copy happens here and no encoding reaches an ancestor.
+			// Propagating the partial encoding would grow the charge with
+			// nesting depth for work never performed, turning the ordinary
+			// unequal answer into a spurious quota error.
+			return charge, 0, false
+		}
+		// This level's canonical string copies every child encoding again.
+		if charge += childEnc; charge < 0 {
+			charge = math.MaxInt / 2
+		}
+		enc := childEnc + 16
+		if enc < 0 {
+			enc = math.MaxInt / 2
+		}
+		return charge, enc, walkable
+	default:
+		return 0, 0, false
+	}
+}
+
+func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool) bool {
+	if state.err != nil {
+		return false
+	}
 	if v.kind != other.kind {
 		// eql? is kind-strict at every level, not only at the outermost one:
 		// checking the kinds once and then delegating here made
@@ -1489,7 +1820,18 @@ func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, 
 	case KindFloat:
 		return v.Float() == other.Float()
 	case KindString, KindSymbol:
-		return v.data.(string) == other.data.(string)
+		left := v.data.(string)
+		right := other.data.(string)
+		// A length mismatch answers without reading either payload, so only
+		// equal-length pairs are charged — the same rule the operator-level
+		// charge applies, and the same work Go's == performs.
+		if len(left) != len(right) {
+			return false
+		}
+		if !chargeEqualityBytes(state, len(left)) {
+			return false
+		}
+		return left == right
 	case KindMoney:
 		return v.data.(Money) == other.data.(Money)
 	case KindDuration:
@@ -1502,9 +1844,29 @@ func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, 
 		// Two regex values are equal when they were written the same way:
 		// same pattern source and same flags, mirroring Ruby's Regexp#==.
 		// The compiled program is derived from those and does not participate.
+		// The source comparison reads its bytes like a string leaf, with the
+		// same length screen.
 		left := v.data.(Regex)
 		right := other.data.(Regex)
-		return left.Source == right.Source && left.Flags == right.Flags
+		if len(left.Source) != len(right.Source) {
+			return false
+		}
+		if !chargeEqualityBytes(state, len(left.Source)) {
+			return false
+		}
+		if left.Source != right.Source {
+			return false
+		}
+		// Flags is an exported, unrestricted string a host can size at
+		// will; its comparison reads it like the source, under the same
+		// length screen.
+		if len(left.Flags) != len(right.Flags) {
+			return false
+		}
+		if !chargeEqualityBytes(state, len(left.Flags)) {
+			return false
+		}
+		return left.Flags == right.Flags
 	case KindArray:
 		left := v.Array()
 		right := other.Array()
@@ -1532,12 +1894,12 @@ func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, 
 			rightLen: len(right),
 		}
 		if pair.leftPtr != 0 || pair.rightPtr != 0 {
-			if equalityPairSeen(seen, pair) {
+			if equalityPairSeen(state, pair) {
 				return true
 			}
 		}
 		for i := range left {
-			if !valuesEqualWithKinds(left[i], right[i], seen, strictKinds) {
+			if !valuesEqualWithKinds(left[i], right[i], state, strictKinds) {
 				return false
 			}
 		}
@@ -1561,28 +1923,44 @@ func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, 
 			rightLen: rightLen,
 		}
 		if pair.leftPtr != 0 || pair.rightPtr != 0 {
-			if equalityPairSeen(seen, pair) {
+			if equalityPairSeen(state, pair) {
 				return true
 			}
 		}
 		leftTyped := v.HashHasTypedEntries()
 		rightTyped := other.HashHasTypedEntries()
 		if !leftTyped && !rightTyped {
-			return hashMapsEqual(v.Hash(), other.Hash(), seen, strictKinds)
+			return hashMapsEqual(v.Hash(), other.Hash(), state, strictKinds)
+		}
+		// HashEntries materializes a fresh entry slice per side, live for
+		// the whole comparison; on a metered walk both copies are validated
+		// before they exist, like every other scratch the walk allocates.
+		if state.charge != nil && state.reserveScratch != nil {
+			entryCopies := (v.HashLen() + other.HashLen()) * hashEntrySliceEntryBytes
+			state.scratchHeld += entryCopies
+			defer releaseScratchBytes(state, entryCopies)
+			if err := state.reserveScratch(state.scratchHeld, state.rootLeft, state.rootRight); err != nil {
+				state.err = err
+				return false
+			}
 		}
 		left := v.HashEntries()
 		right := other.HashEntries()
 		if !leftTyped || !rightTyped {
-			return hashEntriesEqualByDisplayKey(left, right, seen, strictKinds)
+			return hashEntriesEqualByDisplayKey(left, right, state, strictKinds)
 		}
 		if len(right) <= smallHashEqualityEntryLimit {
-			return hashEntriesEqualByLookupKeyLinear(left, right, seen, strictKinds)
+			return hashEntriesEqualByLookupKeyLinear(left, right, state, strictKinds)
 		}
-		rightByKey, ok := hashEntriesByLookupKey(right)
+		rightByKey, heldRight, ok := hashEntriesByLookupKey(right, state)
+		defer releaseScratchBytes(state, heldRight)
 		if !ok {
 			return false
 		}
 		for _, leftEntry := range left {
+			if !chargeEqualityKeyText(state, leftEntry.Key) {
+				return false
+			}
 			key, err := NewHashLookupKey(leftEntry.Key)
 			if err != nil {
 				return false
@@ -1591,7 +1969,7 @@ func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, 
 			if !ok {
 				return false
 			}
-			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
+			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, state, strictKinds) {
 				return false
 			}
 		}
@@ -1615,16 +1993,33 @@ func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, 
 			rightLen: len(right),
 		}
 		if pair.leftPtr != 0 || pair.rightPtr != 0 {
-			if equalityPairSeen(seen, pair) {
+			if equalityPairSeen(state, pair) {
 				return true
 			}
 		}
-		for key, leftValue := range left {
+		if state.charge == nil {
+			for key, leftValue := range left {
+				rightValue, ok := right[key]
+				if !ok {
+					return false
+				}
+				if !valuesEqualWithKinds(leftValue, rightValue, state, strictKinds) {
+					return false
+				}
+			}
+			return true
+		}
+		keys, chargeOK := meteredMapKeys(left, state)
+		if !chargeOK {
+			return false
+		}
+		defer releaseKeySortScratch(state, len(keys))
+		for _, key := range keys {
 			rightValue, ok := right[key]
 			if !ok {
 				return false
 			}
-			if !valuesEqualWithKinds(leftValue, rightValue, seen, strictKinds) {
+			if !valuesEqualWithKinds(left[key], rightValue, state, strictKinds) {
 				return false
 			}
 		}
@@ -1639,16 +2034,146 @@ func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, 
 	}
 }
 
-func hashMapsEqual(left, right map[string]Value, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
+// keySortScratchEntryBytes approximates one entry of the key-sorting scratch
+// slice: a string header plus slice-slot overhead.
+const keySortScratchEntryBytes = 24
+
+// releaseKeySortScratch retires a completed map traversal's contribution to
+// the walk's live scratch accounting: a sibling map compared later must be
+// validated against the slices actually alive, not every slice the walk ever
+// allocated.
+func releaseKeySortScratch(state *equalityState, entries int) {
+	state.scratchHeld -= entries * keySortScratchEntryBytes
+	if state.scratchHeld < 0 {
+		state.scratchHeld = 0
+	}
+}
+
+// equalitySortAbort sentinels the panic that stops a metered key sort once
+// its quota charge fails: slices.SortFunc has no error path, and finishing
+// the sort after the quota fired would be O(n log n) post-quota comparisons
+// whose order the caller discards with the sticky error anyway.
+type equalitySortAbort struct{}
+
+// sortedMapKeys returns a map's keys in sorted order, validating the scratch
+// slice against the caller's budget first. Metered equality must traverse
+// deterministically: with Go's randomized map iteration, identical unequal
+// inputs under the same quota alternated between answering false (the
+// mismatch visited first) and raising a limit error (a long equal entry
+// charged first). Callers whose keys are not yet billed use meteredMapKeys,
+// which additionally charges every key's bytes before the sort reads them.
+func sortedMapKeys[V any](m map[string]V, state *equalityState) ([]string, bool) {
+	if state.reserveScratch != nil {
+		state.scratchHeld += len(m) * keySortScratchEntryBytes
+		if err := state.reserveScratch(state.scratchHeld, state.rootLeft, state.rootRight); err != nil {
+			state.err = err
+			return nil, false
+		}
+	}
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	if state.charge == nil {
+		slices.Sort(keys)
+		return keys, true
+	}
+	// The sort rereads common prefixes Θ(log n) times per key, past what the
+	// single linear key charge covers; measure the exact bytes each
+	// comparison reads and bill them in batches from inside the comparator.
+	// A failed charge aborts the sort itself — the partial order is
+	// discarded with the error, so a spent quota buys no further
+	// comparisons.
+	const sortChargeBatchBytes = 4096
+	pending := 0
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if _, ok := r.(equalitySortAbort); !ok {
+					panic(r)
+				}
+			}
+		}()
+		slices.SortFunc(keys, func(a, b string) int {
+			n := min(len(a), len(b))
+			i := 0
+			for i < n && a[i] == b[i] {
+				i++
+			}
+			read := i + 1
+			if read > n {
+				read = n
+			}
+			if pending += read; pending >= sortChargeBatchBytes {
+				if !chargeEqualityBytes(state, pending) {
+					panic(equalitySortAbort{})
+				}
+				pending = 0
+			}
+			if i < n {
+				if a[i] < b[i] {
+					return -1
+				}
+				return 1
+			}
+			return len(a) - len(b)
+		})
+	}()
+	if state.err != nil {
+		return nil, false
+	}
+	if pending > 0 {
+		if !chargeEqualityBytes(state, pending) {
+			return nil, false
+		}
+	}
+	return keys, true
+}
+
+// meteredMapKeys is sortedMapKeys with the keys' total bytes billed up front:
+// the lexicographic sort scans common prefixes repeatedly and the walk's
+// later map probes hash the same payloads, so one total, charged before any
+// of that work runs, covers the traversal proportionally.
+func meteredMapKeys[V any](m map[string]V, state *equalityState) ([]string, bool) {
+	total := 0
+	for key := range m {
+		total += len(key)
+	}
+	if !chargeEqualityBytes(state, total) {
+		return nil, false
+	}
+	return sortedMapKeys(m, state)
+}
+
+func hashMapsEqual(left, right map[string]Value, state *equalityState, strictKinds bool) bool {
 	if len(left) != len(right) {
 		return false
 	}
-	for key, leftValue := range left {
+	// Unmetered comparison keeps the host API's allocation-free direct scan:
+	// with no charges in play, traversal order cannot change the outcome.
+	if state.charge == nil {
+		for key, leftValue := range left {
+			rightValue, ok := right[key]
+			if !ok {
+				return false
+			}
+			if !valuesEqualWithKinds(leftValue, rightValue, state, strictKinds) {
+				return false
+			}
+		}
+		return true
+	}
+	keys, ok := meteredMapKeys(left, state)
+	if !ok {
+		return false
+	}
+	defer releaseKeySortScratch(state, len(keys))
+	for _, key := range keys {
 		rightValue, ok := right[key]
 		if !ok {
 			return false
 		}
-		if !valuesEqualWithKinds(leftValue, rightValue, seen, strictKinds) {
+		if !valuesEqualWithKinds(left[key], rightValue, state, strictKinds) {
 			return false
 		}
 	}
@@ -1657,56 +2182,263 @@ func hashMapsEqual(left, right map[string]Value, seen *map[valueEqualityPair]str
 
 const smallHashEqualityEntryLimit = 8
 
-func equalityPairSeen(seen *map[valueEqualityPair]struct{}, pair valueEqualityPair) bool {
-	if *seen == nil {
-		*seen = make(map[valueEqualityPair]struct{})
+func equalityPairSeen(state *equalityState, pair valueEqualityPair) bool {
+	if state.seen == nil {
+		state.seen = make(map[valueEqualityPair]struct{})
 	}
-	if _, ok := (*seen)[pair]; ok {
+	if _, ok := state.seen[pair]; ok {
 		return true
 	}
-	(*seen)[pair] = struct{}{}
+	state.seen[pair] = struct{}{}
 	return false
 }
 
-func hashEntriesEqualByDisplayKey(left, right []HashEntry, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
+func hashEntriesEqualByDisplayKey(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
 	if len(right) <= smallHashEqualityEntryLimit {
-		return hashEntriesEqualByDisplayKeyLinear(left, right, seen, strictKinds)
+		return hashEntriesEqualByDisplayKeyLinear(left, right, state, strictKinds)
 	}
-	leftByKey, ok := hashEntriesByDisplayKey(left)
+	leftByKey, heldLeft, ok := hashEntriesByDisplayKey(left, state)
+	defer releaseScratchBytes(state, heldLeft)
 	if !ok {
 		return false
 	}
-	rightByKey, ok := hashEntriesByDisplayKey(right)
+	rightByKey, heldRight, ok := hashEntriesByDisplayKey(right, state)
+	defer releaseScratchBytes(state, heldRight)
 	if !ok {
 		return false
 	}
 	if len(leftByKey) != len(rightByKey) {
 		return false
 	}
-	for key, leftEntry := range leftByKey {
+	if state.charge == nil {
+		for key, leftEntry := range leftByKey {
+			rightEntry, ok := rightByKey[key]
+			if !ok {
+				return false
+			}
+			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, state, strictKinds) {
+				return false
+			}
+		}
+		return true
+	}
+	// The display keys were billed while the maps were built; the sort
+	// re-reads already-charged payloads only.
+	displayKeys, chargeOK := sortedMapKeys(leftByKey, state)
+	if !chargeOK {
+		return false
+	}
+	defer releaseKeySortScratch(state, len(displayKeys))
+	for _, key := range displayKeys {
 		rightEntry, ok := rightByKey[key]
 		if !ok {
 			return false
 		}
-		if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
+		if !valuesEqualWithKinds(leftByKey[key].Value, rightEntry.Value, state, strictKinds) {
 			return false
 		}
 	}
 	return true
 }
 
-func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
-	if hashEntriesHaveDuplicateDisplayKey(left) || hashEntriesHaveDuplicateDisplayKey(right) {
+// sortedEntryScratchBytes approximates one entry's structural share of the
+// mixed-path sort scratch: a keyedHashEntry slot (string header, rendered
+// flag, and the HashEntry copy), with slack for alignment. Rendered display
+// strings are reserved separately at their realized capacity.
+const sortedEntryScratchBytes = 128
+
+// hashEntrySliceEntryBytes approximates one slot of the entry slices
+// HashEntries materializes for a typed or mixed comparison: two Value
+// structs per HashEntry.
+const hashEntrySliceEntryBytes = 64
+
+// releaseScratchBytes retires n bytes of walk scratch accounting.
+func releaseScratchBytes(state *equalityState, n int) {
+	state.scratchHeld -= n
+	if state.scratchHeld < 0 {
+		state.scratchHeld = 0
+	}
+}
+
+// scratchAllocCapacity projects the bytes the allocator will actually
+// reserve for a scratch allocation of the requested size. Without an
+// installed rounder the request itself is the projection.
+func (s *equalityState) scratchAllocCapacity(bytes int) int {
+	if s.roundScratchAlloc == nil {
+		return bytes
+	}
+	return s.roundScratchAlloc(bytes)
+}
+
+// renderDisplayKeyPregrown renders key's Inspect form into a builder pregrown
+// to the projected length, so the rendering takes exactly one allocation of
+// the capacity the caller reserved instead of a doubling growth that retains
+// — and transiently allocates — more than was validated. projected must come
+// from InspectByteLenBounded.
+func renderDisplayKeyPregrown(key Value, projected int) string {
+	var rendered strings.Builder
+	rendered.Grow(projected)
+	key.WriteInspectTo(&rendered)
+	return rendered.String()
+}
+
+// keyedHashEntry pairs a hash entry with its rendered display key. The
+// metered mixed-hash walk renders every key up front — under reservation —
+// and reuses the rendering for the duplicate screen and each comparison; the
+// unmetered walk leaves entries unrendered and renders on first use.
+type keyedHashEntry struct {
+	display  string
+	rendered bool
+	entry    HashEntry
+}
+
+func (k *keyedHashEntry) displayKey() string {
+	if !k.rendered {
+		k.display = HashDisplayKey(k.entry.Key)
+		k.rendered = true
+	}
+	return k.display
+}
+
+// sortEntriesForMeteredWalk returns entries paired with their rendered
+// display keys, ordered by that key when the walk is metered: a legacy hash
+// materializes its entries in randomized map order, and a charged linear
+// walk must not let iteration order decide between an answer and a quota
+// error. Keys are billed as they render, the full live footprint — the pair
+// slice and each rendering at its realized backing capacity — is validated
+// as scratch, and the sort's comparisons charge in batches like the key
+// sorter's. held reports the scratch bytes still accounted; the caller
+// releases them when its walk over the returned slice finishes, since the
+// renderings and slice stay live that long. The unmetered path returns the
+// entries unsorted and unrendered.
+func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) (keyed []keyedHashEntry, held int, ok bool) {
+	if state.charge == nil {
+		keyed = make([]keyedHashEntry, len(entries))
+		for i, entry := range entries {
+			keyed[i].entry = entry
+		}
+		return keyed, 0, true
+	}
+	reserve := func(delta int) bool {
+		if state.reserveScratch == nil {
+			return true
+		}
+		state.scratchHeld += delta
+		held += delta
+		if err := state.reserveScratch(state.scratchHeld, state.rootLeft, state.rootRight); err != nil {
+			state.err = err
+			return false
+		}
+		return true
+	}
+	if !reserve(len(entries) * sortedEntryScratchBytes) {
+		return nil, held, false
+	}
+	keyed = make([]keyedHashEntry, len(entries))
+	for i, entry := range entries {
+		display := ""
+		switch entry.Key.Kind() {
+		case KindString, KindSymbol:
+			// HashDisplayKey aliases the key's own payload, which the
+			// memory estimator already counts; only the string header is
+			// new, covered by the structural share. The sort and probes
+			// read the text, so its bytes are billed.
+			display = HashDisplayKey(entry.Key)
+			if !chargeEqualityBytes(state, len(display)) {
+				return nil, held, false
+			}
+		default:
+			// A composite key renders through Inspect, which can be
+			// arbitrarily large; preflight the size, bill the rendered
+			// length (see chargeDisplayKeyRender), and reserve the
+			// rendering's realized capacity before it is built, not
+			// after.
+			projected, ok := chargeDisplayKeyRender(state, entry.Key)
+			if !ok {
+				return nil, held, false
+			}
+			if !reserve(state.scratchAllocCapacity(projected)) {
+				return nil, held, false
+			}
+			display = renderDisplayKeyPregrown(entry.Key, projected)
+		}
+		keyed[i] = keyedHashEntry{display: display, rendered: true, entry: entry}
+	}
+	const sortChargeBatchBytes = 4096
+	pending := 0
+	slices.SortFunc(keyed, func(a, b keyedHashEntry) int {
+		if state.err != nil {
+			return len(a.display) - len(b.display)
+		}
+		n := min(len(a.display), len(b.display))
+		i := 0
+		for i < n && a.display[i] == b.display[i] {
+			i++
+		}
+		read := i + 1
+		if read > n {
+			read = n
+		}
+		if pending += read; pending >= sortChargeBatchBytes {
+			chargeEqualityBytes(state, pending)
+			pending = 0
+		}
+		if i < n {
+			if a.display[i] < b.display[i] {
+				return -1
+			}
+			return 1
+		}
+		return len(a.display) - len(b.display)
+	})
+	if state.err != nil {
+		return nil, held, false
+	}
+	if pending > 0 {
+		if !chargeEqualityBytes(state, pending) {
+			return nil, held, false
+		}
+	}
+	return keyed, held, true
+}
+
+func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
+	sortedLeft, heldLeft, ok := sortEntriesForMeteredWalk(left, state)
+	defer releaseScratchBytes(state, heldLeft)
+	if !ok {
 		return false
 	}
-	for _, leftEntry := range left {
-		key := HashDisplayKey(leftEntry.Key)
+	sortedRight, heldRight, ok := sortEntriesForMeteredWalk(right, state)
+	defer releaseScratchBytes(state, heldRight)
+	if !ok {
+		return false
+	}
+	return hashEntriesEqualByDisplayKeyLinearOrdered(sortedLeft, sortedRight, state, strictKinds)
+}
+
+func hashEntriesEqualByDisplayKeyLinearOrdered(left, right []keyedHashEntry, state *equalityState, strictKinds bool) bool {
+	if hashEntriesHaveDuplicateDisplayKey(left, state) || hashEntriesHaveDuplicateDisplayKey(right, state) {
+		return false
+	}
+	for l := range left {
+		leftEntry := &left[l]
+		key := leftEntry.displayKey()
+		if !chargeEqualityBytes(state, len(key)) {
+			return false
+		}
 		found := false
-		for _, rightEntry := range right {
-			if HashDisplayKey(rightEntry.Key) != key {
+		for r := range right {
+			rightEntry := &right[r]
+			// Each probe compares rendered display strings; bill the probed
+			// key's text. The metered walk pre-rendered every display key,
+			// so reading its length performs no new work.
+			if !chargeEqualityBytes(state, len(rightEntry.displayKey())) {
+				return false
+			}
+			if rightEntry.displayKey() != key {
 				continue
 			}
-			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
+			if !valuesEqualWithKinds(leftEntry.entry.Value, rightEntry.entry.Value, state, strictKinds) {
 				return false
 			}
 			found = true
@@ -1719,11 +2451,20 @@ func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, seen *map[value
 	return true
 }
 
-func hashEntriesHaveDuplicateDisplayKey(entries []HashEntry) bool {
-	for i, entry := range entries {
-		key := HashDisplayKey(entry.Key)
-		for _, other := range entries[i+1:] {
-			if HashDisplayKey(other.Key) == key {
+func hashEntriesHaveDuplicateDisplayKey(entries []keyedHashEntry, state *equalityState) bool {
+	for i := range entries {
+		key := entries[i].displayKey()
+		if !chargeEqualityBytes(state, len(key)) {
+			return false
+		}
+		for j := i + 1; j < len(entries); j++ {
+			// The metered walk rendered every display key under reservation
+			// before the entries arrived here; each pairwise probe reads the
+			// rendered text, so its length is billed.
+			if !chargeEqualityBytes(state, len(entries[j].displayKey())) {
+				return false
+			}
+			if entries[j].displayKey() == key {
 				return true
 			}
 		}
@@ -1731,14 +2472,20 @@ func hashEntriesHaveDuplicateDisplayKey(entries []HashEntry) bool {
 	return false
 }
 
-func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
+func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
 	for _, leftEntry := range left {
+		if !chargeEqualityKeyText(state, leftEntry.Key) {
+			return false
+		}
 		leftKey, err := NewHashLookupKey(leftEntry.Key)
 		if err != nil {
 			return false
 		}
 		found := false
 		for _, rightEntry := range right {
+			if !chargeEqualityKeyText(state, rightEntry.Key) {
+				return false
+			}
 			rightKey, err := NewHashLookupKey(rightEntry.Key)
 			if err != nil {
 				return false
@@ -1746,7 +2493,7 @@ func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, seen *map[valueE
 			if rightKey != leftKey {
 				continue
 			}
-			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
+			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, state, strictKinds) {
 				return false
 			}
 			found = true
@@ -1759,26 +2506,95 @@ func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, seen *map[valueE
 	return true
 }
 
-func hashEntriesByDisplayKey(entries []HashEntry) (map[string]HashEntry, bool) {
-	byKey := make(map[string]HashEntry, len(entries))
-	for _, entry := range entries {
-		key := HashDisplayKey(entry.Key)
-		if _, exists := byKey[key]; exists {
-			return nil, false
-		}
-		byKey[key] = entry
+// displayKeyIndexEntryBytes approximates one slot of a display-key index
+// map: the string-header key, the HashEntry copy, and a bucket share.
+// Rendered composite key strings are reserved separately at their realized
+// capacity.
+const displayKeyIndexEntryBytes = 128
+
+// lookupKeyIndexEntryBytes approximates one slot of a lookup-key index map:
+// the HashLookupKey struct, the HashEntry copy, and a bucket share. Canonical
+// key text retained by array and big-integer keys is reserved separately.
+const lookupKeyIndexEntryBytes = 160
+
+// reserveHeldEqualityScratch adds delta to the walk's cumulative scratch and
+// validates it, accumulating into held so the caller can release the bytes
+// when it drops the structure they back.
+func reserveHeldEqualityScratch(state *equalityState, held *int, delta int) bool {
+	if state.reserveScratch == nil {
+		return true
 	}
-	return byKey, true
+	state.scratchHeld += delta
+	*held += delta
+	if err := state.reserveScratch(state.scratchHeld, state.rootLeft, state.rootRight); err != nil {
+		state.err = err
+		return false
+	}
+	return true
 }
 
-func hashEntriesByLookupKey(entries []HashEntry) (map[HashLookupKey]HashEntry, bool) {
-	byKey := make(map[HashLookupKey]HashEntry, len(entries))
+// hashEntriesByDisplayKey indexes entries by rendered display key. On a
+// metered walk the map's own backing is reserved before it is allocated and
+// each composite key's rendering is reserved at its realized capacity before
+// it is built, since the map retains both for the caller's whole comparison;
+// held reports the bytes still accounted, which the caller releases when it
+// drops the map.
+func hashEntriesByDisplayKey(entries []HashEntry, state *equalityState) (byKey map[string]HashEntry, held int, ok bool) {
+	reserve := func(delta int) bool {
+		return reserveHeldEqualityScratch(state, &held, delta)
+	}
+	if !reserve(len(entries) * displayKeyIndexEntryBytes) {
+		return nil, held, false
+	}
+	byKey = make(map[string]HashEntry, len(entries))
 	for _, entry := range entries {
-		key, err := NewHashLookupKey(entry.Key)
-		if err != nil {
-			return nil, false
+		key := ""
+		if state.charge == nil || entry.Key.Kind() == KindString || entry.Key.Kind() == KindSymbol {
+			key = HashDisplayKey(entry.Key)
+			// Building the map hashes the key text; bill its bytes.
+			if !chargeEqualityBytes(state, len(key)) {
+				return nil, held, false
+			}
+		} else {
+			projected, ok := chargeDisplayKeyRender(state, entry.Key)
+			if !ok {
+				return nil, held, false
+			}
+			if !reserve(state.scratchAllocCapacity(projected)) {
+				return nil, held, false
+			}
+			key = renderDisplayKeyPregrown(entry.Key, projected)
+		}
+		if _, exists := byKey[key]; exists {
+			return nil, held, false
 		}
 		byKey[key] = entry
 	}
-	return byKey, true
+	return byKey, held, true
+}
+
+// hashEntriesByLookupKey indexes entries by canonical lookup key. On a
+// metered walk the map's backing and the canonical key text array and
+// big-integer keys retain are reserved before they are materialized, since
+// both stay live until the caller's scan finishes; held reports the bytes
+// still accounted, which the caller releases when it drops the map.
+func hashEntriesByLookupKey(entries []HashEntry, state *equalityState) (byKey map[HashLookupKey]HashEntry, held int, ok bool) {
+	if !reserveHeldEqualityScratch(state, &held, len(entries)*lookupKeyIndexEntryBytes) {
+		return nil, held, false
+	}
+	byKey = make(map[HashLookupKey]HashEntry, len(entries))
+	for _, entry := range entries {
+		if !chargeEqualityKeyText(state, entry.Key) {
+			return nil, held, false
+		}
+		key, err := NewHashLookupKey(entry.Key)
+		if err != nil {
+			return nil, held, false
+		}
+		if !reserveHeldEqualityScratch(state, &held, key.ExtraPayloadBytes()) {
+			return nil, held, false
+		}
+		byKey[key] = entry
+	}
+	return byKey, held, true
 }

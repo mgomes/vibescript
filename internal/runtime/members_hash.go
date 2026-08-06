@@ -487,7 +487,7 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 					exec.releaseLoopScratch(prefixDelta)
 					return NewNil(), err
 				}
-				if err := exec.chargeBigIntKeySteps(nextKeyValue); err != nil {
+				if err := exec.chargeValueKeySteps(nextKeyValue); err != nil {
 					exec.releaseLoopScratch(prefixDelta)
 					return NewNil(), err
 				}
@@ -557,7 +557,7 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 				exec.releaseLoopScratch(prefixDelta)
 				return NewNil(), err
 			}
-			if err := exec.chargeBigIntKeySteps(nextKeyValue); err != nil {
+			if err := exec.chargeValueKeySteps(nextKeyValue); err != nil {
 				exec.releaseLoopScratch(prefixDelta)
 				return NewNil(), err
 			}
@@ -664,7 +664,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("hash.%s expects exactly one key", name)
 			}
-			if err := exec.chargeBigIntKeySteps(args[0]); err != nil {
+			if err := exec.chargeValueKeySteps(args[0]); err != nil {
 				return NewNil(), err
 			}
 			_, ok, err := hashGet(receiver, args[0])
@@ -707,19 +707,101 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("hash.%s expects exactly one value", name)
 			}
 			// Ruby compares the candidate against each stored value with ==.
-			// Vibescript mirrors this with Value.Equal so deep collection and
-			// scalar equality match Ruby's hash value membership semantics.
+			// Vibescript mirrors this with metered equality so deep collection
+			// and scalar equality match Ruby's hash value membership semantics
+			// while each probe charges a step and its string bytes — the scan
+			// used to be free, so the quota never bounded it (#1135).
+			equality := exec.meteredEquality()
 			if hashHasTypedEntries(receiver) {
 				for _, entry := range receiver.HashEntries() {
-					if entry.Value.Equal(args[0]) {
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
+					if equality.Equal(entry.Value, args[0]) {
 						return NewBool(true), nil
+					}
+					if err := equality.Err(); err != nil {
+						return NewNil(), err
 					}
 				}
 				return NewBool(false), nil
 			}
-			for _, stored := range receiver.Hash() {
-				if stored.Equal(args[0]) {
+			// Deterministic traversal: with randomized map iteration a quota
+			// that covers one metered comparison but not two alternated
+			// between a result and an error on identical inputs. Sorting
+			// reads the keys, so their bytes are billed first.
+			entries := receiver.Hash()
+			// The key slice is a transient the estimator never sees; reserve
+			// it for the scan's whole duration — nested equality validators
+			// include held reservations through the scalar base — and check
+			// the quota before allocating, with the builtin's call roots: a
+			// host-returned receiver or argument lives only in Go locals,
+			// invisible to the base walk, yet coexists with the slice.
+			outerDelta := exec.reserveLoopScratch(len(entries) * hashKeySortScratchEntryBytes)
+			defer exec.releaseLoopScratch(outerDelta)
+			if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			keyBytes := 0
+			keys := make([]string, 0, len(entries))
+			for k := range entries {
+				keys = append(keys, k)
+				keyBytes += len(k)
+			}
+			if err := exec.chargeStringScan(keyBytes); err != nil {
+				return NewNil(), err
+			}
+			// The sort rereads common prefixes past the linear charge above;
+			// measure the exact bytes each comparison reads and bill them in
+			// batches from inside the comparator, as the equality sorter
+			// does. A failed charge aborts the sort itself — the partial
+			// order is discarded with the error, so a spent quota buys no
+			// further comparisons.
+			const sortChargeBatchBytes = 4096
+			pending := 0
+			var sortChargeErr error
+			abortableKeySort(keys, func(a, b string) (int, bool) {
+				n := min(len(a), len(b))
+				i := 0
+				for i < n && a[i] == b[i] {
+					i++
+				}
+				read := i + 1
+				if read > n {
+					read = n
+				}
+				if pending += read; pending >= sortChargeBatchBytes {
+					if err := exec.chargeStringScan(pending); err != nil {
+						sortChargeErr = err
+						return 0, false
+					}
+					pending = 0
+				}
+				if i < n {
+					if a[i] < b[i] {
+						return -1, true
+					}
+					return 1, true
+				}
+				return len(a) - len(b), true
+			})
+			if sortChargeErr != nil {
+				return NewNil(), sortChargeErr
+			}
+			if pending > 0 {
+				if err := exec.chargeStringScan(pending); err != nil {
+					return NewNil(), err
+				}
+			}
+			for _, k := range keys {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				if equality.Equal(entries[k], args[0]) {
 					return NewBool(true), nil
+				}
+				if err := equality.Err(); err != nil {
+					return NewNil(), err
 				}
 			}
 			return NewBool(false), nil
@@ -843,7 +925,7 @@ func hashMemberQuery(property string) (Value, error) {
 			}
 			out := make([]Value, len(args))
 			for i, arg := range args {
-				if err := exec.chargeBigIntKeySteps(arg); err != nil {
+				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
 				}
 				value, ok, err := hashGet(receiver, arg)
@@ -872,7 +954,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("hash.fetch expects key and optional default")
 			}
-			if err := exec.chargeBigIntKeySteps(args[0]); err != nil {
+			if err := exec.chargeValueKeySteps(args[0]); err != nil {
 				return NewNil(), err
 			}
 			value, ok, err := hashGet(receiver, args[0])
@@ -898,7 +980,7 @@ func hashMemberQuery(property string) (Value, error) {
 		return NewAutoBuiltin("hash.fetch_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			out := make([]Value, len(args))
 			for i, arg := range args {
-				if err := exec.chargeBigIntKeySteps(arg); err != nil {
+				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
 				}
 				value, ok, err := hashGet(receiver, arg)
@@ -1479,6 +1561,10 @@ func mergedKeyCount(exec *Execution, base map[string]Value, args []Value, limit 
 				if err := exec.step(); err != nil {
 					return count, err
 				}
+				// The base probe hashes the whole key text.
+				if err := exec.chargeStringScan(len(key)); err != nil {
+					return count, err
+				}
 				if _, inBase := base[key]; inBase {
 					continue
 				}
@@ -1494,6 +1580,9 @@ func mergedKeyCount(exec *Execution, base map[string]Value, args []Value, limit 
 	for _, arg := range args {
 		for key := range arg.Hash() {
 			if err := exec.step(); err != nil {
+				return count, err
+			}
+			if err := exec.chargeStringScan(len(key)); err != nil {
 				return count, err
 			}
 			if _, inBase := base[key]; inBase {
@@ -1535,6 +1624,11 @@ func typedMergedKeyCount(exec *Execution, receiver Value, args []Value, limit in
 		if err := exec.step(); err != nil {
 			return count, err
 		}
+		// The exact-union preflight canonicalizes every key; charge before
+		// the copy, like every other canonicalization site.
+		if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+			return count, err
+		}
 		key, err := canonicalHashKey(entry.Key)
 		if err != nil {
 			return count, err
@@ -1544,6 +1638,9 @@ func typedMergedKeyCount(exec *Execution, receiver Value, args []Value, limit in
 	for _, arg := range args {
 		for _, entry := range arg.HashEntries() {
 			if err := exec.step(); err != nil {
+				return count, err
+			}
+			if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 				return count, err
 			}
 			key, err := canonicalHashKey(entry.Key)
@@ -1709,7 +1806,7 @@ func hashMergeInPlace(exec *Execution, receiver Value, args []Value, kwargs map[
 			if err := exec.step(); err != nil {
 				return NewNil(), err
 			}
-			if err := exec.chargeBigIntKeySteps(entry.Key); err != nil {
+			if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 				return NewNil(), err
 			}
 			val := entry.Value
@@ -1839,6 +1936,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
+					// The copy canonicalizes each receiver key into the output
+					// hash; charge it exactly as the argument-entry loop does.
+					if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+						return NewNil(), err
+					}
 					if err := hashSet(out, entry.Key, entry.Value); err != nil {
 						return NewNil(), err
 					}
@@ -1855,7 +1957,7 @@ func hashMemberTransforms(property string) (Value, error) {
 						if err := exec.step(); err != nil {
 							return NewNil(), err
 						}
-						if err := exec.chargeBigIntKeySteps(entry.Key); err != nil {
+						if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 							return NewNil(), err
 						}
 						oldValue, conflict, err := hashGet(out, entry.Key)
@@ -2127,6 +2229,11 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
+				// Adopting an entry canonicalizes its key; bill the payload
+				// before the walk.
+				if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+					return NewNil(), err
+				}
 				if err := hashSet(receiver, entry.Key, entry.Value); err != nil {
 					return NewNil(), err
 				}
@@ -2172,7 +2279,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) != 2 {
 				return NewNil(), fmt.Errorf("hash.store expects a key and a value")
 			}
-			if err := exec.chargeBigIntKeySteps(args[0]); err != nil {
+			if err := exec.chargeValueKeySteps(args[0]); err != nil {
 				return NewNil(), err
 			}
 			if _, err := canonicalHashKey(args[0]); err != nil {
@@ -2204,7 +2311,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("hash.delete expects a key")
 			}
-			if err := exec.chargeBigIntKeySteps(args[0]); err != nil {
+			if err := exec.chargeValueKeySteps(args[0]); err != nil {
 				return NewNil(), err
 			}
 			if _, err := canonicalHashKey(args[0]); err != nil {
@@ -2266,7 +2373,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
-					if err := exec.chargeBigIntKeySteps(arg); err != nil {
+					if err := exec.chargeValueKeySteps(arg); err != nil {
 						return NewNil(), err
 					}
 					value, ok, err := hashGet(receiver, arg)
@@ -2296,6 +2403,11 @@ func hashMemberTransforms(property string) (Value, error) {
 				// Charge a step per requested key so slicing with many candidate
 				// keys participates in the step quota and honors cancellation.
 				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				// The candidate probe canonicalizes the argument even when it
+				// can never match; bill its payload like the typed path does.
+				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
 				}
 				// Vibescript hash keys are only symbols or strings, so an
@@ -2335,7 +2447,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
-					if err := exec.chargeBigIntKeySteps(arg); err != nil {
+					if err := exec.chargeValueKeySteps(arg); err != nil {
 						return NewNil(), err
 					}
 					if _, ok, err := hashGet(receiver, arg); err != nil || !ok {
@@ -2365,6 +2477,11 @@ func hashMemberTransforms(property string) (Value, error) {
 				out := newTypedResultHash(count)
 				for _, entry := range receiver.HashEntries() {
 					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
+					// The exclusion probe and the retained copy both canonicalize
+					// the receiver key; bill its payload before the first walk.
+					if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 						return NewNil(), err
 					}
 					key, err := hashLookupKey(entry.Key)
@@ -2407,6 +2524,11 @@ func hashMemberTransforms(property string) (Value, error) {
 			var excluded map[string]struct{}
 			for _, arg := range args {
 				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				// The candidate probe canonicalizes the argument even when it
+				// can never match; bill its payload like the typed path does.
+				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
 				}
 				// Vibescript hash keys are only symbols or strings, so an
@@ -2482,6 +2604,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					}
 					if include.Truthy() {
 						if !deferBuild {
+							// Copying a kept entry canonicalizes its key; bill
+							// the payload before the walk.
+							if err := exec.chargeValueKeySteps(ordered[i].Key); err != nil {
+								return NewNil(), err
+							}
 							if err := hashSet(out, ordered[i].Key, ordered[i].Value); err != nil {
 								return NewNil(), err
 							}
@@ -2493,6 +2620,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				if deferBuild {
 					for _, entry := range ordered[:kept] {
+						if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+							return NewNil(), err
+						}
 						if err := hashSet(out, entry.Key, entry.Value); err != nil {
 							return NewNil(), err
 						}
@@ -2596,6 +2726,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					}
 					if !exclude.Truthy() {
 						if !deferBuild {
+							// Copying a kept entry canonicalizes its key; bill
+							// the payload before the walk.
+							if err := exec.chargeValueKeySteps(ordered[i].Key); err != nil {
+								return NewNil(), err
+							}
 							if err := hashSet(out, ordered[i].Key, ordered[i].Value); err != nil {
 								return NewNil(), err
 							}
@@ -2607,6 +2742,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				if deferBuild {
 					for _, entry := range ordered[:kept] {
+						if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+							return NewNil(), err
+						}
 						if err := hashSet(out, entry.Key, entry.Value); err != nil {
 							return NewNil(), err
 						}
@@ -2999,7 +3137,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.checkContext(); err != nil {
 						return NewNil(), err
 					}
-					if err := exec.chargeBigIntKeySteps(nextKey); err != nil {
+					if err := exec.chargeValueKeySteps(nextKey); err != nil {
 						return NewNil(), err
 					}
 					// Validation stays inline so an unsupported key still fails at the
@@ -3145,7 +3283,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.checkContext(); err != nil {
 					return NewNil(), err
 				}
-				if err := exec.chargeBigIntKeySteps(nextKey); err != nil {
+				if err := exec.chargeValueKeySteps(nextKey); err != nil {
 					return NewNil(), err
 				}
 				// Validation stays inline so an unsupported key still fails at the
@@ -3213,10 +3351,15 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
+					// The mapping lookup and the fallback copy both canonicalize
+					// the original key; bill its payload before the first walk.
+					if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+						return NewNil(), err
+					}
 					if mapped, ok, err := hashGet(args[0], entry.Key); err != nil {
 						return NewNil(), fmt.Errorf("hash.remap_keys mapping key is unsupported hash key: %w", err)
 					} else if ok {
-						if err := exec.chargeBigIntKeySteps(mapped); err != nil {
+						if err := exec.chargeValueKeySteps(mapped); err != nil {
 							return NewNil(), err
 						}
 						if _, err := valueToHashKey(mapped); err != nil {
@@ -3251,7 +3394,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				value := entries[key]
 				if mapped, ok := mapping[key]; ok {
-					if err := exec.chargeBigIntKeySteps(mapped); err != nil {
+					if err := exec.chargeValueKeySteps(mapped); err != nil {
 						return NewNil(), err
 					}
 					if _, err := valueToHashKey(mapped); err != nil {
@@ -3321,6 +3464,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					}
 					ordered[i].Value = nextValue
 					if !deferBuild {
+						// Copying the entry canonicalizes its key; bill the
+						// payload before the walk.
+						if err := exec.chargeValueKeySteps(ordered[i].Key); err != nil {
+							return NewNil(), err
+						}
 						if err := hashSet(out, ordered[i].Key, nextValue); err != nil {
 							return NewNil(), err
 						}
@@ -3331,6 +3479,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				if deferBuild {
 					for _, entry := range ordered {
+						if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+							return NewNil(), err
+						}
 						if err := hashSet(out, entry.Key, entry.Value); err != nil {
 							return NewNil(), err
 						}
@@ -3421,6 +3572,11 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					if entry.Value.Kind() != KindNil {
+						// Copying a kept entry canonicalizes its key; bill the
+						// payload before the walk.
+						if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+							return NewNil(), err
+						}
 						if err := hashSet(out, entry.Key, entry.Value); err != nil {
 							return NewNil(), err
 						}
@@ -3459,4 +3615,29 @@ func hashEntryCount(receiver Value) int {
 		return receiver.HashLen()
 	}
 	return len(receiver.Hash())
+}
+
+// sortQuotaAbort sentinels the panic that stops a metered key sort once its
+// quota charge fails: slices.SortFunc has no error path, and finishing the
+// sort after the quota fired would be O(n log n) post-quota comparisons whose
+// order the caller discards with the error anyway.
+type sortQuotaAbort struct{}
+
+// abortableKeySort sorts keys with cmp until cmp reports false, then abandons
+// the sort immediately, leaving keys in unspecified order.
+func abortableKeySort(keys []string, cmp func(a, b string) (int, bool)) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(sortQuotaAbort); !ok {
+				panic(r)
+			}
+		}
+	}()
+	slices.SortFunc(keys, func(a, b string) int {
+		c, ok := cmp(a, b)
+		if !ok {
+			panic(sortQuotaAbort{})
+		}
+		return c
+	})
 }

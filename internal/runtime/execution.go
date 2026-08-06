@@ -107,6 +107,21 @@ type Execution struct {
 	memoryEst                 memoryEstimator
 	reservedScratchBytes      int
 
+	// stringScanCharge caches chargeEqualityScanBytes as a bound function for
+	// the equality byte charge (see stringScanChargeFunc), so metered
+	// comparisons do not allocate a method value each. Lazily initialized.
+	stringScanCharge func(int) error
+	// equalityScanResidue carries the sub-step remainder of equality byte
+	// charges across comparisons (see chargeEqualityScanBytes).
+	equalityScanResidue int
+	// equalityScratchCheck caches the equality scratch validator closure
+	// (see equalityScratchValidatorFunc). Lazily initialized.
+	equalityScratchCheck func(int, Value, Value) error
+	// equalityCtx pools the metered comparison context behind `==` (see
+	// equalValues). Lazily initialized; nil while a comparison is running or
+	// after one failed.
+	equalityCtx *EqualityContext
+
 	// baseWalkCache memoizes the reachable-graph portion of the memory
 	// estimator's base walk (see beginBaseWalk). It is allocated lazily on the
 	// first memoizable check, so executions that never reach one — no memory
