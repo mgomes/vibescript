@@ -203,3 +203,103 @@ func TestDataOnlyScanSharedEntryMapDistinctDefaults(t *testing.T) {
 		}
 	})
 }
+
+// buildCollidingTypedHash returns a typed hash holding two entries whose
+// distinct keys (`:x` and `"x"`) render to the same display key, with the
+// callable stored under the symbol key. Value.Hash() collapses the pair into
+// one map slot, so a boundary scan reading that view sees only the data entry
+// while the callable stays reachable through typed lookup and iteration.
+func buildCollidingTypedHash(t *testing.T, callable Value) Value {
+	t.Helper()
+
+	h := NewTypedHash(2)
+	if err := hashSet(h, NewSymbol("x"), callable); err != nil {
+		t.Fatalf("HashSet symbol key: %v", err)
+	}
+	if err := hashSet(h, NewString("x"), NewInt(0)); err != nil {
+		t.Fatalf("HashSet string key: %v", err)
+	}
+	if h.HashLen() != 2 {
+		t.Fatalf("typed hash holds %d entries, want the colliding pair", h.HashLen())
+	}
+	if len(h.Hash()) != 1 {
+		t.Skip("display keys no longer collide; the smuggling shape this pins is gone")
+	}
+	return h
+}
+
+// TestBoundaryScansSeeCollidingTypedEntries pins that the data-only
+// boundaries scan typed entries rather than the lossy display-key view. A
+// hash carrying a callable under `:x` beside data under `"x"` presents an
+// entry map holding only the data, so a scan that walks Value.Hash() clears
+// it and the callable crosses a boundary meant to reject callables (#28).
+func TestBoundaryScansSeeCollidingTypedEntries(t *testing.T) {
+	t.Parallel()
+
+	callable := NewBuiltin("danger", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+		return NewNil(), nil
+	})
+
+	t.Run("capability_data_only", func(t *testing.T) {
+		t.Parallel()
+		smuggled := buildCollidingTypedHash(t, callable)
+		if err := validateCapabilityDataOnlyValue("payload", smuggled); err == nil {
+			t.Fatal("data-only validation admitted a hash holding a callable under a colliding typed key")
+		}
+	})
+
+	t.Run("strict_globals", func(t *testing.T) {
+		t.Parallel()
+		smuggled := buildCollidingTypedHash(t, callable)
+		err := validateStrictGlobals(map[string]Value{"payload": smuggled})
+		requireErrorContains(t, err, "must be data-only")
+	})
+
+	t.Run("nested_in_array", func(t *testing.T) {
+		t.Parallel()
+		smuggled := NewArray([]Value{buildCollidingTypedHash(t, callable)})
+		if err := validateCapabilityDataOnlyValue("payload", smuggled); err == nil {
+			t.Fatal("data-only validation admitted a nested hash holding a smuggled callable")
+		}
+	})
+
+	t.Run("host_clone_detection", func(t *testing.T) {
+		t.Parallel()
+		smuggled := buildCollidingTypedHash(t, callable)
+		if !valueNeedsHostClone(smuggled) {
+			t.Fatal("host-clone detection missed a callable held under a colliding typed key")
+		}
+	})
+}
+
+// TestCapabilityDataCloneKeepsCollidingTypedEntries pins that the capability
+// data clone rebuilds typed hashes entry by entry: rebuilding from the
+// display-key view silently dropped whichever colliding entry lost the map
+// slot, changing the data the adapter receives.
+func TestCapabilityDataCloneKeepsCollidingTypedEntries(t *testing.T) {
+	t.Parallel()
+
+	h := NewTypedHash(2)
+	if err := hashSet(h, NewSymbol("x"), NewInt(1)); err != nil {
+		t.Fatalf("HashSet symbol key: %v", err)
+	}
+	if err := hashSet(h, NewString("x"), NewInt(2)); err != nil {
+		t.Fatalf("HashSet string key: %v", err)
+	}
+
+	cloned, err := cloneCapabilityDataOnlyValue("payload", h)
+	if err != nil {
+		t.Fatalf("cloning a data-only hash failed: %v", err)
+	}
+	if cloned.HashLen() != 2 {
+		t.Fatalf("clone holds %d entries, want both colliding keys preserved", cloned.HashLen())
+	}
+	got, ok, err := cloned.HashGet(NewSymbol("x"))
+	if err != nil || !ok || got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("clone lost the symbol-keyed entry: %#v (found=%v, err=%v)", got, ok, err)
+	}
+	got, ok, err = cloned.HashGet(NewString("x"))
+	if err != nil || !ok || got.Kind() != KindInt || got.Int() != 2 {
+		t.Fatalf("clone lost the string-keyed entry: %#v (found=%v, err=%v)", got, ok, err)
+	}
+}

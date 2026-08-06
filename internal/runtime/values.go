@@ -63,6 +63,51 @@ func hashHasTypedEntries(val Value) bool {
 	return val.HashHasTypedEntries()
 }
 
+// hashScanIdentity returns the identity a scan's seen-set should key a hash or
+// object on: the hash wrapper when it has one (so two wrappers sharing an
+// entry map but carrying distinct defaults are each walked), otherwise the
+// entry map. Objects, which have no hash wrapper, fall back to the map. The
+// fallback is taken only when needed, so a typed hash is never forced to
+// materialize its display-key view merely to be keyed.
+func hashScanIdentity(val Value) uintptr {
+	if ptr := hashIdentity(val); ptr != 0 {
+		return ptr
+	}
+	return reflect.ValueOf(val.Hash()).Pointer()
+}
+
+// anyHashValue reports whether pred holds for any value a hash or object
+// carries, reading typed entries directly when present.
+//
+// Security scans must reach every entry through this rather than ranging over
+// Value.Hash(): that compatibility view is keyed by display key, so entries
+// whose distinct keys render alike — `:x` and `"x"` — collapse into one map
+// slot and the loser vanishes from the scan while staying reachable through
+// typed lookup and iteration. A scan that walks the lossy view therefore
+// clears a hash that still holds a callable (#28). Values alone are complete:
+// key canonicalization admits only scalars and arrays of scalars, so no key
+// can hide one.
+//
+// It also avoids materializing the legacy view for a typed hash, which is a
+// map allocation and a mutation-epoch bump on what callers treat as a read.
+func anyHashValue(val Value, pred func(Value) bool) bool {
+	if hashHasTypedEntries(val) {
+		var entryBuf [smallHashKeyBufferSize]HashEntry
+		for _, entry := range val.HashEntriesInto(entryBuf[:]) {
+			if pred(entry.Value) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, item := range val.Hash() {
+		if pred(item) {
+			return true
+		}
+	}
+	return false
+}
+
 func setClonedHashEntry(hash, key, val Value) {
 	if err := hashSet(hash, key, val); err != nil {
 		panic(fmt.Sprintf("clone valid hash entry: %v", err))

@@ -539,17 +539,24 @@ func compositeValueNeedsHostClone(val Value) bool {
 				return valueNeedsHostCloneWithFreshState(val)
 			}
 		}
-		entries := val.Hash()
-		if len(entries) == 0 {
+		if val.HashLen() == 0 {
 			return false
 		}
-		for _, item := range entries {
+		escalate := false
+		if anyHashValue(val, func(item Value) bool {
 			if itemDirectlyNeedsHostClone(item) {
 				return true
 			}
 			if itemCanContainHostClone(item) {
+				escalate = true
+				return true
+			}
+			return false
+		}) {
+			if escalate {
 				return valueNeedsHostCloneWithFreshState(val)
 			}
+			return true
 		}
 		return false
 	default:
@@ -620,15 +627,11 @@ func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
 		}
 		return false
 	case KindHash, KindObject:
-		entries := val.Hash()
 		// Key on the whole hash wrapper (or the entry-map pointer for objects) so
 		// two wrappers sharing an entry map but carrying distinct defaults are each
 		// scanned: a second wrapper's clone-needing default is not skipped, and a
 		// default cycling back to this wrapper terminates at the seen check.
-		ptr := hashIdentity(val)
-		if ptr == 0 {
-			ptr = reflect.ValueOf(entries).Pointer()
-		}
+		ptr := hashScanIdentity(val)
 		if ptr != 0 {
 			if _, ok := state.maps[ptr]; ok {
 				return false
@@ -642,12 +645,9 @@ func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
 		if val.Kind() == KindHash && hashDefaultNeedsHostClone(val, state) {
 			return true
 		}
-		for _, item := range entries {
-			if valueNeedsHostCloneWithState(item, state) {
-				return true
-			}
-		}
-		return false
+		return anyHashValue(val, func(item Value) bool {
+			return valueNeedsHostCloneWithState(item, state)
+		})
 	default:
 		return false
 	}
