@@ -1338,3 +1338,127 @@ func TestAmbientCollectStopsInsideCapturedEnvironments(t *testing.T) {
 			ambientCollectNodeBudget*16, large, small, ambientCollectNodeBudget*2)
 	}
 }
+
+// yieldFactoryCapability yields a freshly created, contract-covered builtin
+// to a script block. cap.factory itself declares a return validator that
+// rejects non-strings, so a block that breaks with the yielded builtin makes
+// the call fail while the script keeps a reference to what was yielded.
+type yieldFactoryCapability struct {
+	uncontractedCalls *int
+}
+
+func (c yieldFactoryCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	uncontracted := c.uncontractedCalls
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"factory": NewBuiltin("cap.factory", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				made := NewBuiltin("cap.made", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+					if len(args) > 0 && args[0].Kind() != KindString {
+						*uncontracted = *uncontracted + 1
+					}
+					return NewString("invoked"), nil
+				})
+				if block.IsNil() {
+					return made, nil
+				}
+				return exec.callBlockValue(block, []Value{made}, Position{})
+			}),
+		}),
+	}, nil
+}
+
+func (c yieldFactoryCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"cap.factory": {
+			ValidateReturn: func(result Value) error {
+				if result.Kind() != KindString {
+					return fmt.Errorf("cap.factory must return string")
+				}
+				return nil
+			},
+		},
+		"cap.made": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindString {
+					return fmt.Errorf("cap.made expects a single string argument")
+				}
+				return nil
+			},
+		},
+	}
+}
+
+// TestCapabilityContractsBindBuiltinsRetainedByBlocks pins that a builtin a
+// capability yields to a script block keeps its contract when the block
+// retains it in an enclosing local. The block's captured environment is the
+// one place a published builtin can survive that the receiver, capability
+// roots, arguments, and result do not reach — and when the block breaks with
+// the value, the return validator rejects it, so the result sweep is skipped
+// entirely and rescuing the error left the retained builtin uncontracted.
+func TestCapabilityContractsBindBuiltinsRetainedByBlocks(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"rejected break": `def run()
+  leaked = nil
+  begin
+    cap.factory do |fn|
+      leaked = fn
+      break fn
+    end
+  rescue
+    nil
+  end
+  leaked(42)
+end`,
+		"plain yield": `def run()
+  leaked = nil
+  cap.factory do |fn|
+    leaked = fn
+    "fine"
+  end
+  leaked(42)
+end`,
+	}
+	for name, src := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			uncontracted := 0
+			script := compileScriptDefault(t, src)
+			_, err := script.Call(context.Background(), "run", nil,
+				callOptionsWithCapabilities(yieldFactoryCapability{uncontractedCalls: &uncontracted}))
+			requireErrorContains(t, err, "cap.made expects a single string argument")
+			if uncontracted != 0 {
+				t.Fatalf("retained builtin ran without its contract %d time(s)", uncontracted)
+			}
+		})
+	}
+}
+
+// TestCapabilityYieldedBuiltinStaysUsableUnderContract pins the other side of
+// the binding: attaching the contract must not break the legitimate use, so a
+// conforming call through the retained reference still succeeds.
+func TestCapabilityYieldedBuiltinStaysUsableUnderContract(t *testing.T) {
+	t.Parallel()
+
+	uncontracted := 0
+	script := compileScriptDefault(t, `def run()
+  leaked = nil
+  cap.factory do |fn|
+    leaked = fn
+    "fine"
+  end
+  leaked("ok")
+end`)
+	result, err := script.Call(context.Background(), "run", nil,
+		callOptionsWithCapabilities(yieldFactoryCapability{uncontractedCalls: &uncontracted}))
+	if err != nil {
+		t.Fatalf("a conforming call through the retained builtin must succeed: %v", err)
+	}
+	if result.Kind() != KindString || result.String() != "invoked" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if uncontracted != 0 {
+		t.Fatalf("contract counted %d uncontracted calls", uncontracted)
+	}
+}

@@ -428,6 +428,21 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			if deferredErr == nil {
 				postCallScanner.bindContracts(result, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
+			// A capability publishes into the script-supplied block every
+			// value it yields, and the block can retain one in an enclosing
+			// local — `cap.factory { |fn| leaked = fn }` — reaching it long
+			// after this call. That local lives in the block's captured
+			// environment, which none of the other sweeps reach: the result
+			// is a different value (and is skipped entirely when the return
+			// is rejected, so rescuing the error kept the retained builtin
+			// uncontracted), and the receiver, roots, and arguments never
+			// held it. Scanning the block closes that path. Over-binding is
+			// bounded by preCallKnownBuiltins, which snapshots what the block
+			// and the ambient globals already held before dispatch, so only
+			// builtins this call actually published are bound here.
+			if valueCanContainBuiltins(block) {
+				postCallScanner.bindContracts(block, scope, exec.capabilityContracts, exec.capabilityContractScopes)
+			}
 			if receiver.Kind() != KindNil {
 				postCallScanner.bindContracts(receiver, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
