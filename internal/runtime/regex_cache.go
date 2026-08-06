@@ -99,6 +99,21 @@ func compiledRegexCost(pattern string) (int, error) {
 
 // estimateRegexProgramSize returns the estimated instruction count for re,
 // clamped at budget.
+//
+// This models what Simplify and the compiler do, so it can be wrong in two
+// ways, and they are not equally bad. Under-counting admits a program past
+// the cap, which is the hole this guard exists to close. Over-counting only
+// rejects a pattern near a cap that real ones sit three orders of magnitude
+// below. When a rule is uncertain, charge more.
+//
+// The rules that were learned the hard way, each from a pattern that slipped
+// through or was wrongly rejected: counted repeats alias the simple operators
+// and must be normalized before any operator test (repeatAliasOp), {1} is
+// discarded entirely (skipExactOneRepeats), collapsing nested quantifiers
+// requires the operator AND greediness to match, a star over a nullable
+// operand compiles two branches, and an open upper bound emits Min copies
+// rather than Min+1. TestRegexCostHandlesRepeatBounds pins each against the
+// real compiled size; extend it before changing anything here.
 func estimateRegexProgramSize(re *syntax.Regexp, budget int) int {
 	re = skipExactOneRepeats(re)
 	if re == nil {
