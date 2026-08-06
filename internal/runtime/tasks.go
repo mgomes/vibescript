@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"sync/atomic"
 )
 
 func registerTaskBuiltins(engine *Engine) {
@@ -151,6 +152,10 @@ type taskGroup struct {
 	detachedGlobals      bool
 	inheritedLazyGlobals *taskLazyGlobals
 	jobs                 chan *taskJob
+	// budget and reserved return this group's worker allotment to the call
+	// tree's shared pool when the group shuts down.
+	budget   *taskConcurrencyBudget
+	reserved int
 
 	tasks   sync.WaitGroup
 	workers sync.WaitGroup
@@ -200,6 +205,19 @@ func newTaskGroup(exec *Execution, max int, detachRootGlobals bool) *taskGroup {
 			detachedGlobals = true
 		}
 	}
+	// Every group in a call tree draws its workers from one pool. A group
+	// validates its own max against the host limit, but nothing bounded the
+	// tree: each nested task runs through Script.Call, which starts a fresh
+	// group with a fresh allowance, so concurrency compounded as max^depth --
+	// four levels of max:4 peaked at 144 workers against a host cap of 64,
+	// each child also holding a full step and memory quota (#54). Sharing the
+	// pool through the group context caps the whole tree instead.
+	budget := taskBudgetFromContext(exec.Context())
+	if budget == nil {
+		budget = newTaskConcurrencyBudget(exec.hostTaskConcurrencyLimit())
+	}
+	reserved := budget.reserve(max)
+	ctx = contextWithTaskBudget(ctx, budget)
 	group := &taskGroup{
 		script:               taskScript(exec),
 		ctx:                  ctx,
@@ -209,11 +227,82 @@ func newTaskGroup(exec *Execution, max int, detachRootGlobals bool) *taskGroup {
 		detachedGlobals:      detachedGlobals,
 		inheritedLazyGlobals: inheritedLazyGlobals,
 		jobs:                 make(chan *taskJob, max),
+		budget:               budget,
+		reserved:             reserved,
 	}
-	for range max {
+	for range reserved {
 		group.workers.Go(group.worker)
 	}
 	return group
+}
+
+// taskConcurrencyBudget is the worker allotment one call tree shares. Nested
+// groups draw from the same pool, so a script cannot multiply its concurrency
+// by nesting Tasks calls inside task functions.
+type taskConcurrencyBudget struct {
+	remaining atomic.Int64
+}
+
+func newTaskConcurrencyBudget(limit int) *taskConcurrencyBudget {
+	budget := &taskConcurrencyBudget{}
+	budget.remaining.Store(int64(max(limit, 1)))
+	return budget
+}
+
+// reserve takes up to want workers from the pool, and may grant none when the
+// tree has spent its allowance. A group with no worker runs its jobs inline on
+// the submitting goroutine (see enqueue), so a starved nesting level degrades
+// to serial execution instead of deadlocking on a jobs channel nothing drains
+// -- and the pool stays a hard cap rather than one the deepest levels can
+// creep past a worker at a time.
+func (b *taskConcurrencyBudget) reserve(want int) int {
+	if want < 1 {
+		want = 1
+	}
+	for {
+		remaining := b.remaining.Load()
+		grant := min(int64(want), remaining)
+		if grant < 0 {
+			grant = 0
+		}
+		if b.remaining.CompareAndSwap(remaining, remaining-grant) {
+			return int(grant)
+		}
+	}
+}
+
+func (b *taskConcurrencyBudget) release(n int) {
+	if n > 0 {
+		b.remaining.Add(int64(n))
+	}
+}
+
+type taskBudgetKey struct{}
+
+// contextWithTaskBudget publishes the pool to everything the group drives.
+// It rides as a context value rather than a wrapper type so it survives the
+// cancel contexts nested calls layer on top.
+func contextWithTaskBudget(ctx context.Context, budget *taskConcurrencyBudget) context.Context {
+	if budget == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, taskBudgetKey{}, budget)
+}
+
+func taskBudgetFromContext(ctx context.Context) *taskConcurrencyBudget {
+	if ctx == nil {
+		return nil
+	}
+	budget, _ := ctx.Value(taskBudgetKey{}).(*taskConcurrencyBudget)
+	return budget
+}
+
+// hostTaskConcurrencyLimit reports the ceiling a whole call tree shares.
+func (exec *Execution) hostTaskConcurrencyLimit() int {
+	if exec == nil || exec.engine == nil {
+		return defaultMaxTaskConcurrency
+	}
+	return exec.engine.config.MaxTaskConcurrency
 }
 
 func taskScript(exec *Execution) *Script {
@@ -366,6 +455,13 @@ func (group *taskGroup) enqueue(exec *Execution, functionName string, taskArgs [
 	}
 
 	group.tasks.Add(1)
+	// A group the shared pool could not staff runs its work inline: serial
+	// execution is a valid schedule for tasks, and it keeps a starved nesting
+	// level from blocking forever on a channel with no worker behind it.
+	if group.reserved == 0 {
+		group.runJob(job)
+		return handle, nil
+	}
 	select {
 	case group.jobs <- job:
 		return handle, nil
@@ -468,6 +564,10 @@ func (group *taskGroup) closeAndWait() error {
 	group.tasks.Wait()
 	group.workers.Wait()
 	group.cancel()
+	if group.budget != nil {
+		group.budget.release(group.reserved)
+		group.reserved = 0
+	}
 	return group.err()
 }
 
