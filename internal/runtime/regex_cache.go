@@ -103,7 +103,7 @@ func estimateRegexProgramSize(re *syntax.Regexp, budget int) int {
 	if re == nil {
 		return 0
 	}
-	switch re.Op {
+	switch repeatAliasOp(re) {
 	case syntax.OpLiteral:
 		// One instruction per rune, and at least one for an empty literal.
 		return clampRegexCost(max(len(re.Rune), 1), budget)
@@ -128,6 +128,8 @@ func estimateRegexProgramSize(re *syntax.Regexp, budget int) int {
 		return clampRegexCost(max(total, 1), budget)
 	case syntax.OpCapture:
 		return clampRegexCost(saturatingAdd(2, estimateRegexProgramSize(re.Sub0[0], budget)), budget)
+	case syntax.OpEmptyMatch:
+		return clampRegexCost(1, budget)
 	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest:
 		// A quantifier over an empty match is removed entirely, whatever the
 		// operator or greediness, so a whole chain of them around one costs
@@ -142,7 +144,7 @@ func estimateRegexProgramSize(re *syntax.Regexp, budget int) int {
 		// A star over a nullable operand compiles as (operand+)?, which emits
 		// a second branch. Charging one understated these programs.
 		branches := 1
-		if re.Op == syntax.OpStar && regexpMinMatchRunes(operand) == 0 {
+		if repeatAliasOp(re) == syntax.OpStar && regexpMinMatchRunes(operand) == 0 {
 			branches = 2
 		}
 		return clampRegexCost(saturatingAdd(branches, estimateRegexProgramSize(operand, budget)), budget)
@@ -255,13 +257,14 @@ func (c *regexCache) evictLocked() {
 // guard must never be wrong in; collapsing less only over-counts patterns
 // already near the cap.
 func unwrapIdempotentQuantifiers(parent, re *syntax.Regexp) *syntax.Regexp {
-	switch parent.Op {
+	parentOp := repeatAliasOp(parent)
+	switch parentOp {
 	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest:
 	default:
 		return re
 	}
 	nonGreedy := parent.Flags & syntax.NonGreedy
-	for re != nil && re.Op == parent.Op && re.Flags&syntax.NonGreedy == nonGreedy {
+	for re != nil && repeatAliasOp(re) == parentOp && re.Flags&syntax.NonGreedy == nonGreedy {
 		re = re.Sub0[0]
 	}
 	return re
@@ -274,7 +277,7 @@ func unwrapIdempotentQuantifiers(parent, re *syntax.Regexp) *syntax.Regexp {
 // one wrapper per level.
 func quantifiesEmptyMatch(re *syntax.Regexp) bool {
 	for re != nil {
-		switch re.Op {
+		switch repeatAliasOp(re) {
 		case syntax.OpStar, syntax.OpPlus, syntax.OpQuest:
 			re = re.Sub0[0]
 		case syntax.OpEmptyMatch:
@@ -284,4 +287,31 @@ func quantifiesEmptyMatch(re *syntax.Regexp) bool {
 		}
 	}
 	return false
+}
+
+// repeatAliasOp reports the simple operator a counted repeat is equivalent to.
+// Simplify rewrites {0,} to *, {1,} to +, {0,1} to ?, and drops a {0} body
+// entirely before compiling, so every operator test here has to see through
+// the counted spelling: checking re.Op directly missed the rewrite and got
+// both the nullable-star branch charge and the idempotent collapse wrong.
+// A repeat with no simple equivalent reports OpRepeat unchanged.
+func repeatAliasOp(re *syntax.Regexp) syntax.Op {
+	if re == nil || re.Op != syntax.OpRepeat {
+		if re == nil {
+			return syntax.OpNoMatch
+		}
+		return re.Op
+	}
+	switch {
+	case re.Max == 0:
+		return syntax.OpEmptyMatch
+	case re.Min == 0 && re.Max < 0:
+		return syntax.OpStar
+	case re.Min == 1 && re.Max < 0:
+		return syntax.OpPlus
+	case re.Min == 0 && re.Max == 1:
+		return syntax.OpQuest
+	default:
+		return syntax.OpRepeat
+	}
 }

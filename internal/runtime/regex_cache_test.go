@@ -249,6 +249,22 @@ func TestRegexCostHandlesRepeatBounds(t *testing.T) {
 			pattern:      strings.Repeat("(?:(?:a?)*){1000}", 33),
 			wantRejected: true,
 		},
+		// Counted syntax aliases the simple operators: {0,} is a star, so a
+		// nullable operand needs the two-branch charge; {0,} nested in a star
+		// is an idempotent pair that collapses; and {0} discards its body.
+		// Testing re.Op directly missed all three rewrites.
+		"counted star alias charges both branches": {
+			pattern:      strings.Repeat("(?:(?:a?){0,}){1000}", 33),
+			wantRejected: true,
+		},
+		"counted star alias collapses": {
+			pattern:      strings.Repeat("(?:(?:a{0,})*){1000}", 26),
+			wantRejected: false,
+		},
+		"counted zero operand is an empty match": {
+			pattern:      "(?:" + strings.Repeat("(?:(?:a{1000}){0})*", 34) + "){1000}",
+			wantRejected: false,
+		},
 		// An open upper bound emits exactly Min copies with the last one
 		// quantified, so charging Min+1 billed the operand an extra time and
 		// rejected a program inside the cap.
