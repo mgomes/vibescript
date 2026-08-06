@@ -4078,7 +4078,7 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 	// Ask for at most one match beyond what the quota can hold, so the table
 	// the engine allocates is bounded by the quota rather than by the subject.
 	limit := -1
-	budget, bounded := scanMatchBudget(exec, groups)
+	budget, bounded := scanMatchBudget(exec, groups, receiver, args, kwargs, block)
 	if bounded {
 		limit = budget + 1
 	}
@@ -4223,7 +4223,7 @@ func guardRegexScanIndexFootprint(exec *Execution, pattern, text string, groups 
 // limit, so asking for one more than the budget makes the table cost at most
 // one row beyond what the quota allows, and a result that comes back over the
 // budget is exactly the case that could not have fit (#37).
-func scanMatchBudget(exec *Execution, groups int) (int, bool) {
+func scanMatchBudget(exec *Execution, groups int, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, bool) {
 	if exec == nil || exec.memoryQuota <= 0 {
 		return 0, false
 	}
@@ -4231,7 +4231,17 @@ func scanMatchBudget(exec *Execution, groups int) (int, bool) {
 	if perMatch <= 0 {
 		return 0, false
 	}
-	return exec.memoryQuota / perMatch, true
+	// Budget the quota that is actually left. Dividing the whole quota would
+	// let an execution already holding most of it request nearly another
+	// quota's worth of rows, which is the pre-accounting spike this bound
+	// exists to stop -- the table coexists with everything already live.
+	remaining := exec.memoryQuota - exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
+	if remaining <= 0 {
+		// Nothing left to spend: a single match is still requested so an
+		// empty result stays legal, and any match at all reports the quota.
+		return 0, true
+	}
+	return remaining / perMatch, true
 }
 
 // regexScanMaxMatches returns an upper bound on the number of non-overlapping

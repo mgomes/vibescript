@@ -1200,3 +1200,36 @@ func TestScanQuotaBoundKeepsSparsePatternsWorking(t *testing.T) {
 		})
 	}
 }
+
+// TestScanBudgetsRemainingQuotaNotWholeQuota pins that the match request is
+// sized against the quota that is left, not the whole quota. Dividing the
+// whole quota let an execution already holding most of it request nearly
+// another quota's worth of rows, which is exactly the pre-accounting spike
+// this bound exists to stop: the index table coexists with everything already
+// live.
+func TestScanBudgetsRemainingQuotaNotWholeQuota(t *testing.T) {
+	t.Parallel()
+
+	const quotaBytes = 8 << 20
+	exec := &Execution{ctx: context.Background(), memoryQuota: quotaBytes}
+
+	empty, bounded := scanMatchBudget(exec, 0, NewNil(), nil, nil, NewNil())
+	if !bounded {
+		t.Fatal("a finite quota must bound the match request")
+	}
+
+	// The same call, but holding most of the quota in a live argument.
+	held := make([]Value, 40_000)
+	for i := range held {
+		held[i] = NewString(strings.Repeat("x", 96))
+	}
+	loaded, bounded := scanMatchBudget(exec, 0, NewNil(), []Value{NewArray(held)}, nil, NewNil())
+	if !bounded {
+		t.Fatal("a finite quota must bound the match request")
+	}
+
+	if loaded >= empty {
+		t.Fatalf("budget with %.2f MiB live is %d, want well below the empty-execution budget %d",
+			float64(len(held)*(96+48))/(1<<20), loaded, empty)
+	}
+}
