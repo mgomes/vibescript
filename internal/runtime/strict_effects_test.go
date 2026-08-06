@@ -414,8 +414,9 @@ func TestBoundaryClonesPreserveTypedHashOrder(t *testing.T) {
 		return h
 	}
 	order := func(v Value) []string {
-		var out []string
-		for _, entry := range v.HashEntries() {
+		entries := v.HashEntries()
+		out := make([]string, 0, len(entries))
+		for _, entry := range entries {
 			out = append(out, entry.Key.String())
 		}
 		return out
