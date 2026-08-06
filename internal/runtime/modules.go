@@ -619,30 +619,62 @@ func (e *Engine) cachedModuleCandidatesUnderRoot(root string) []string {
 func (e *Engine) moduleCandidatesUnderRoot(root string) []string {
 	cleanRoot := filepath.Clean(root)
 	names := make([]string, 0, 16)
-	visited := 0
-	_ = filepath.WalkDir(cleanRoot, func(fullPath string, entry fs.DirEntry, err error) error {
+	remaining := moduleSuggestWalkLimit
+	// Walked by hand rather than with filepath.WalkDir: WalkDir reads and
+	// sorts each directory in full before the callback can stop it, so a
+	// visited counter cannot bound the work a single huge directory does.
+	// Suggestions are built off a failed require, outside the step and memory
+	// quotas, so a tenant able to grow a module directory could make a typoed
+	// require read it whole (#53).
+	dirs := []string{cleanRoot}
+	for len(dirs) > 0 && remaining > 0 {
+		dir := dirs[0]
+		dirs = dirs[1:]
+		entries, err := readDirBounded(dir, remaining)
 		if err != nil {
-			return nil
+			continue
 		}
-		visited++
-		if visited > moduleSuggestWalkLimit {
-			return fs.SkipAll
+		for _, entry := range entries {
+			remaining--
+			fullPath := filepath.Join(dir, entry.Name())
+			if entry.IsDir() {
+				dirs = append(dirs, fullPath)
+				continue
+			}
+			if filepath.Ext(entry.Name()) != ".vibe" {
+				continue
+			}
+			// Mirror the loader's realpath containment so symlinks that
+			// escape the module root are never suggested (the loader would
+			// reject them, and suggesting them leaks paths outside the
+			// allowed module set).
+			relative, relErr := moduleRelativePath(cleanRoot, fullPath)
+			if relErr != nil || e.enforceModulePolicy(relative) != nil {
+				continue
+			}
+			names = append(names, moduleDisplayFromRelative(relative))
 		}
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".vibe" {
-			return nil
-		}
-		// Mirror the loader's realpath containment so symlinks that
-		// escape the module root are never suggested (the loader would
-		// reject them, and suggesting them leaks paths outside the
-		// allowed module set).
-		relative, relErr := moduleRelativePath(cleanRoot, fullPath)
-		if relErr != nil || e.enforceModulePolicy(relative) != nil {
-			return nil
-		}
-		names = append(names, moduleDisplayFromRelative(relative))
-		return nil
-	})
+	}
 	return names
+}
+
+// readDirBounded reads at most limit entries from dir. os.ReadDir reads the
+// whole directory and sorts it before returning, which is the cost this
+// bounds; File.ReadDir stops at the requested count and does not sort.
+func readDirBounded(dir string, limit int) ([]fs.DirEntry, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	entries, err := f.ReadDir(limit)
+	if err != nil && len(entries) == 0 {
+		return nil, err
+	}
+	return entries, nil
 }
 
 // relativeModuleSuggestion renders a did-you-mean suffix for a relative
@@ -651,7 +683,9 @@ func (e *Engine) moduleCandidatesUnderRoot(root string) []string {
 // directory prefix the script used so suggestions can be copied verbatim.
 func (e *Engine) relativeModuleSuggestion(request moduleRequest, caller moduleContext, missing string) string {
 	dir := filepath.Dir(missing)
-	entries, err := os.ReadDir(dir)
+	// Bounded for the same reason as the root walk: os.ReadDir would read and
+	// sort the whole directory before any candidate filtering runs.
+	entries, err := readDirBounded(dir, moduleSuggestWalkLimit)
 	if err != nil {
 		return ""
 	}
