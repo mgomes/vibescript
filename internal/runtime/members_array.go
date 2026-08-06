@@ -4163,15 +4163,18 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			slots, err := checkedArrayMaterializationMul("array.zip", len(arr), rowWidth)
-			if err != nil {
+			if _, err := checkedArrayMaterializationMul("array.zip", len(arr), rowWidth); err != nil {
 				return NewNil(), err
 			}
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 			if err := acc.reserveSlots(len(arr)); err != nil {
 				return NewNil(), err
 			}
-			if err := acc.checkRetainedPayloadBytes(slots, arrayTupleRowBackingBytes(len(arr), rowWidth)); err != nil {
+			// The projection prices the outer row slice, so it takes the row
+			// count; the row backings are priced separately as payload. Passing
+			// the total slot count for both would charge the inner slots twice
+			// and reject zips that fit.
+			if err := acc.checkRetainedPayloadBytes(len(arr), arrayTupleRowBackingBytes(len(arr), rowWidth)); err != nil {
 				return NewNil(), err
 			}
 			rows := make([]Value, len(arr))

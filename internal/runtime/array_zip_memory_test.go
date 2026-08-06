@@ -15,9 +15,9 @@ import (
 // with many array parameters could therefore multiply a quota-sized receiver
 // into a result many times the quota, and the quota error arrived only after
 // the spike: this case allocated 26 MiB against a 4 MiB quota (#44).
+// Not parallel: MemStats.TotalAlloc is process-wide, so a concurrent test's
+// allocations would land between the two snapshots and be attributed here.
 func TestZipPricesItsResultBeforeBuilding(t *testing.T) {
-	t.Parallel()
-
 	const args = 400
 	var src strings.Builder
 	params := make([]string, args)
