@@ -75,20 +75,82 @@ func compileCachedRegex(pattern string) (*regexp.Regexp, error) {
 	return compiledRegexps.compile(pattern)
 }
 
-// compiledRegexCost reports how many program instructions pattern compiles to,
-// without building the regexp itself. Sizing first lets an oversized pattern be
-// rejected before its program is ever materialized, so the guard bounds the
-// peak rather than only what is retained afterwards.
+// compiledRegexCost estimates how many program instructions pattern would
+// compile to, from the parsed syntax alone.
+//
+// Parsing keeps a counted repeat as a single node with its bounds; expansion
+// into the repeated concatenation happens in Simplify, and materializing the
+// program happens in Compile. Both are the work this guard exists to prevent,
+// so neither may run before the limit is enforced — estimating from the parse
+// tree bounds the peak rather than measuring a program already built.
+//
+// The estimate walks the tree, multiplying a subtree's cost by its repeat
+// bounds, and saturates at budget so a deeply nested repeat stops the walk
+// instead of computing an enormous exact total. It over-approximates rather
+// than under: every node is charged at least one instruction, which is the
+// safe direction for a guard.
 func compiledRegexCost(pattern string) (int, error) {
 	parsed, err := syntax.Parse(pattern, syntax.Perl)
 	if err != nil {
 		return 0, err
 	}
-	prog, err := syntax.Compile(parsed.Simplify())
-	if err != nil {
-		return 0, err
+	return estimateRegexProgramSize(parsed, maxCompiledRegexInstructions+1), nil
+}
+
+// estimateRegexProgramSize returns the estimated instruction count for re,
+// clamped at budget.
+func estimateRegexProgramSize(re *syntax.Regexp, budget int) int {
+	if re == nil {
+		return 0
 	}
-	return len(prog.Inst), nil
+	switch re.Op {
+	case syntax.OpLiteral:
+		// One instruction per rune, and at least one for an empty literal.
+		return clampRegexCost(max(len(re.Rune), 1), budget)
+	case syntax.OpConcat:
+		total := 0
+		for _, sub := range re.Sub {
+			total = saturatingAdd(total, estimateRegexProgramSize(sub, budget))
+			if total >= budget {
+				return budget
+			}
+		}
+		return clampRegexCost(max(total, 1), budget)
+	case syntax.OpAlternate:
+		// Each arm plus a branch instruction per arm.
+		total := len(re.Sub)
+		for _, sub := range re.Sub {
+			total = saturatingAdd(total, estimateRegexProgramSize(sub, budget))
+			if total >= budget {
+				return budget
+			}
+		}
+		return clampRegexCost(max(total, 1), budget)
+	case syntax.OpCapture:
+		return clampRegexCost(saturatingAdd(2, estimateRegexProgramSize(re.Sub0[0], budget)), budget)
+	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest:
+		return clampRegexCost(saturatingAdd(1, estimateRegexProgramSize(re.Sub0[0], budget)), budget)
+	case syntax.OpRepeat:
+		// The expansion repeats the subtree once per bound; an open upper
+		// bound adds a star tail over one more copy.
+		inner := estimateRegexProgramSize(re.Sub0[0], budget)
+		reps := re.Max
+		if reps < 0 {
+			reps = re.Min + 1
+		}
+		return clampRegexCost(saturatingAdd(1, saturatingMul(inner, max(reps, 1))), budget)
+	default:
+		// Character classes, anchors, empty and no-match nodes are all a
+		// single instruction.
+		return clampRegexCost(1, budget)
+	}
+}
+
+func clampRegexCost(cost, budget int) int {
+	if cost > budget {
+		return budget
+	}
+	return cost
 }
 
 func (c *regexCache) compile(pattern string) (*regexp.Regexp, error) {

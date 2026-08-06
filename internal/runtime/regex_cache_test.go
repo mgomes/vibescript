@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"fmt"
+	"regexp/syntax"
+	goruntime "runtime"
 	"strings"
 	"testing"
 )
@@ -132,5 +134,69 @@ func TestRegexCacheKeepsOrdinaryPatterns(t *testing.T) {
 	cache.mu.Unlock()
 	if entries != compiledRegexCacheCapacity {
 		t.Fatalf("cache kept %d ordinary patterns, want all %d", entries, compiledRegexCacheCapacity)
+	}
+}
+
+// TestRegexSizingDoesNotExpandThePattern pins that the guard bounds the work
+// it is guarding against. Sizing by compiling first builds the very program
+// the limit exists to prevent: for this pattern the compile allocates about
+// 258 MiB and takes tens of milliseconds, all before the limit could reject
+// it, so repeated cache misses would exhaust the host regardless of what the
+// cache retains. Estimating from the parse tree costs about a megabyte.
+func TestRegexSizingDoesNotExpandThePattern(t *testing.T) {
+	// Not parallel: MemStats.TotalAlloc is process-wide, so a concurrent
+	// test's allocations would be attributed to the sizing pass.
+	oversized := "(?:" + strings.Repeat("a?", 2000) + "){300}"
+
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	cost, err := compiledRegexCost(oversized)
+	goruntime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatalf("sizing a valid pattern failed: %v", err)
+	}
+	if cost <= maxCompiledRegexInstructions {
+		t.Fatalf("cost = %d, want the estimate to exceed the cap %d", cost, maxCompiledRegexInstructions)
+	}
+	allocated := after.TotalAlloc - before.TotalAlloc
+	// The expansion this replaces allocates hundreds of megabytes.
+	if limit := uint64(16 << 20); allocated > limit {
+		t.Fatalf("sizing allocated %.2f MiB, want under %.2f MiB — it is expanding the pattern",
+			float64(allocated)/(1<<20), float64(limit)/(1<<20))
+	}
+}
+
+// TestRegexCostTracksCompiledSize pins that the estimate stays close to the
+// program it predicts for the shapes that matter. It is an approximation, so
+// what is pinned is the absence of a large multiplicative under-estimate: a
+// pattern that expands must be predicted as expanding.
+func TestRegexCostTracksCompiledSize(t *testing.T) {
+	t.Parallel()
+
+	for _, pattern := range []string{
+		`^[a-z]+@[a-z]+\.[a-z]{2,}$`,
+		strings.Repeat("(a|b)", 300),
+		`a{5}b{10}`,
+		"(?:" + strings.Repeat("a?", 200) + "){50}",
+		"(?:" + strings.Repeat("a?", 500) + "){80}",
+	} {
+		parsed, err := syntax.Parse(pattern, syntax.Perl)
+		if err != nil {
+			t.Fatalf("parse %.20q: %v", pattern, err)
+		}
+		prog, err := syntax.Compile(parsed.Simplify())
+		if err != nil {
+			t.Fatalf("compile %.20q: %v", pattern, err)
+		}
+		estimated, err := compiledRegexCost(pattern)
+		if err != nil {
+			t.Fatalf("size %.20q: %v", pattern, err)
+		}
+		actual := len(prog.Inst)
+		if estimated < actual/2 {
+			t.Errorf("estimate %d for %.20q under-predicts the actual %d by more than half",
+				estimated, pattern, actual)
+		}
 	}
 }
