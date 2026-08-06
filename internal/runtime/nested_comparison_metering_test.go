@@ -608,6 +608,30 @@ func TestSharedDAGEqualityWithChargingStaysLinear(t *testing.T) {
 // A metered legacy value? scan must be deterministic: under a quota covering
 // one long comparison but not two, randomized map iteration alternated
 // between a result and a quota error on identical inputs.
+// TestAbortableKeySortStopsOnFailedCharge pins the sort abort: once the
+// comparator reports a failed charge, slices.SortFunc must not keep
+// comparing — finishing the sort would be O(n log n) post-quota work whose
+// order the caller discards with the error.
+func TestAbortableKeySortStopsOnFailedCharge(t *testing.T) {
+	t.Parallel()
+
+	keys := make([]string, 1024)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("%08d", i)
+	}
+	calls := 0
+	abortableKeySort(keys, func(a, b string) (int, bool) {
+		calls++
+		if calls >= 5 {
+			return 0, false
+		}
+		return strings.Compare(a, b), true
+	})
+	if calls != 5 {
+		t.Fatalf("comparator ran %d times, want the abort to stop it at 5", calls)
+	}
+}
+
 func TestLegacyHashValueScanIsDeterministic(t *testing.T) {
 	t.Parallel()
 

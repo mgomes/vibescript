@@ -746,14 +746,13 @@ func hashMemberQuery(property string) (Value, error) {
 			// The sort rereads common prefixes past the linear charge above;
 			// measure the exact bytes each comparison reads and bill them in
 			// batches from inside the comparator, as the equality sorter
-			// does, so a spent quota stops the scan within one batch.
+			// does. A failed charge aborts the sort itself — the partial
+			// order is discarded with the error, so a spent quota buys no
+			// further comparisons.
 			const sortChargeBatchBytes = 4096
 			pending := 0
 			var sortChargeErr error
-			slices.SortFunc(keys, func(a, b string) int {
-				if sortChargeErr != nil {
-					return len(a) - len(b)
-				}
+			abortableKeySort(keys, func(a, b string) (int, bool) {
 				n := min(len(a), len(b))
 				i := 0
 				for i < n && a[i] == b[i] {
@@ -766,16 +765,17 @@ func hashMemberQuery(property string) (Value, error) {
 				if pending += read; pending >= sortChargeBatchBytes {
 					if err := exec.chargeStringScan(pending); err != nil {
 						sortChargeErr = err
+						return 0, false
 					}
 					pending = 0
 				}
 				if i < n {
 					if a[i] < b[i] {
-						return -1
+						return -1, true
 					}
-					return 1
+					return 1, true
 				}
-				return len(a) - len(b)
+				return len(a) - len(b), true
 			})
 			if sortChargeErr != nil {
 				return NewNil(), sortChargeErr
@@ -3607,4 +3607,29 @@ func hashEntryCount(receiver Value) int {
 		return receiver.HashLen()
 	}
 	return len(receiver.Hash())
+}
+
+// sortQuotaAbort sentinels the panic that stops a metered key sort once its
+// quota charge fails: slices.SortFunc has no error path, and finishing the
+// sort after the quota fired would be O(n log n) post-quota comparisons whose
+// order the caller discards with the error anyway.
+type sortQuotaAbort struct{}
+
+// abortableKeySort sorts keys with cmp until cmp reports false, then abandons
+// the sort immediately, leaving keys in unspecified order.
+func abortableKeySort(keys []string, cmp func(a, b string) (int, bool)) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(sortQuotaAbort); !ok {
+				panic(r)
+			}
+		}
+	}()
+	slices.SortFunc(keys, func(a, b string) int {
+		c, ok := cmp(a, b)
+		if !ok {
+			panic(sortQuotaAbort{})
+		}
+		return c
+	})
 }

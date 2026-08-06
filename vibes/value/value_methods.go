@@ -2023,6 +2023,12 @@ func releaseKeySortScratch(state *equalityState, entries int) {
 	}
 }
 
+// equalitySortAbort sentinels the panic that stops a metered key sort once
+// its quota charge fails: slices.SortFunc has no error path, and finishing
+// the sort after the quota fired would be O(n log n) post-quota comparisons
+// whose order the caller discards with the sticky error anyway.
+type equalitySortAbort struct{}
+
 // sortedMapKeys returns a map's keys in sorted order, validating the scratch
 // slice against the caller's budget first. Metered equality must traverse
 // deterministically: with Go's randomized map iteration, identical unequal
@@ -2048,37 +2054,45 @@ func sortedMapKeys[V any](m map[string]V, state *equalityState) ([]string, bool)
 	}
 	// The sort rereads common prefixes Θ(log n) times per key, past what the
 	// single linear key charge covers; measure the exact bytes each
-	// comparison reads and bill them in batches from inside the comparator,
-	// so a spent quota stops the scan within one batch of work — after a
-	// charge failure the remaining comparisons decide on lengths alone, and
-	// the garbage order is discarded with the error.
+	// comparison reads and bill them in batches from inside the comparator.
+	// A failed charge aborts the sort itself — the partial order is
+	// discarded with the error, so a spent quota buys no further
+	// comparisons.
 	const sortChargeBatchBytes = 4096
 	pending := 0
-	slices.SortFunc(keys, func(a, b string) int {
-		if state.err != nil {
-			return len(a) - len(b)
-		}
-		n := min(len(a), len(b))
-		i := 0
-		for i < n && a[i] == b[i] {
-			i++
-		}
-		read := i + 1
-		if read > n {
-			read = n
-		}
-		if pending += read; pending >= sortChargeBatchBytes {
-			chargeEqualityBytes(state, pending)
-			pending = 0
-		}
-		if i < n {
-			if a[i] < b[i] {
-				return -1
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if _, ok := r.(equalitySortAbort); !ok {
+					panic(r)
+				}
 			}
-			return 1
-		}
-		return len(a) - len(b)
-	})
+		}()
+		slices.SortFunc(keys, func(a, b string) int {
+			n := min(len(a), len(b))
+			i := 0
+			for i < n && a[i] == b[i] {
+				i++
+			}
+			read := i + 1
+			if read > n {
+				read = n
+			}
+			if pending += read; pending >= sortChargeBatchBytes {
+				if !chargeEqualityBytes(state, pending) {
+					panic(equalitySortAbort{})
+				}
+				pending = 0
+			}
+			if i < n {
+				if a[i] < b[i] {
+					return -1
+				}
+				return 1
+			}
+			return len(a) - len(b)
+		})
+	}()
 	if state.err != nil {
 		return nil, false
 	}
