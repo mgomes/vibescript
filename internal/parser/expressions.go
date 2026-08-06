@@ -320,7 +320,7 @@ func isParenlessCallCallee(expr ast.Expression) bool {
 }
 
 func (p *parser) peekStartsPercentArrayArgument(callee ast.Expression) bool {
-	if p.peekToken.Type != ast.TokenPercent || !p.percentArrayLiteralArgumentAt(p.peekToken.Pos) {
+	if p.peekToken.Type != ast.TokenPercent {
 		return false
 	}
 	// Only explicitly declared locals suppress the percent-array argument
@@ -329,10 +329,17 @@ func (p *parser) peekStartsPercentArrayArgument(callee ast.Expression) bool {
 	// (the implicit-`it` candidate does not make `it` a modulo operand
 	// here), and a class constant callee keeps the argument reading it has
 	// always had rather than flipping to modulo.
+	//
+	// This is settled before the probe runs, not after. A modulo on a local
+	// such as `a %w+ b` is not a percent-literal candidate at all, so probing
+	// it would scan to the end of the source and charge the speculative-scan
+	// allowance for a shape that could never have been a literal -- enough of
+	// them and a later genuine `%w[...]` would be declined for want of
+	// allowance and silently read as modulo instead.
 	if ident, ok := callee.(*ast.Identifier); ok && p.isDeclaredLocal(ident.Name) {
 		return false
 	}
-	return true
+	return p.percentArrayLiteralArgumentAt(p.peekToken.Pos)
 }
 
 func isParenlessArgumentStart(tt ast.TokenType) bool {
@@ -358,6 +365,7 @@ func (p *parser) percentArrayLiteralArgumentAt(pos ast.Position) bool {
 	// leaving it outside would keep a source of dead candidates quadratic even
 	// once the scans themselves had stopped running.
 	if p.l.percentScan.spent() {
+		p.l.percentScan.noteDeclined(pos)
 		return false
 	}
 	offset, ok := sourceOffsetForPosition(p.l.input, pos)
@@ -1417,8 +1425,17 @@ var (
 // that takes part in the same parse, including the throwaway ones these scans
 // create. Spend is deliberately not rolled back by parser.restore: a
 // speculative parse that is discarded still did the scanning.
+//
+// Running out is reported rather than absorbed. Past that point the parser
+// stops second-guessing `%`, so a later `foo %w[a b]` reads as modulo instead
+// of a literal argument -- a different program, not a slower parse. See
+// parser.addPercentScanExhaustedError.
 type percentScanBudget struct {
 	remaining int
+
+	// declinedAt is where the exhausted allowance first turned a probe away,
+	// so the diagnostic can point at the source rather than at end of file.
+	declinedAt ast.Position
 }
 
 func newPercentScanBudget(sourceLen int) *percentScanBudget {
@@ -1426,16 +1443,24 @@ func newPercentScanBudget(sourceLen int) *percentScanBudget {
 }
 
 // spent reports whether the allowance is gone, in which case no further
-// speculative scan runs and a `%` simply stays modulo. There is no diagnostic
-// for reaching that point: it is not an error in the source so much as the
-// parser declining to keep guessing, and the source that got there is already
-// being rejected for the malformed literals that spent the allowance.
+// speculative scan runs and a `%` stays modulo.
 //
 // A nil budget is unmetered. Nothing in a parse produces one -- every lexer is
 // constructed with an allowance -- so this only covers a direct call to the
 // scan functions from a test.
 func (b *percentScanBudget) spent() bool {
 	return b != nil && b.remaining <= 0
+}
+
+// noteDeclined records where an exhausted allowance first turned a probe away.
+// Only the first is kept: it is the earliest point from which a percent literal
+// could have been misread, and the diagnostic wants to name that, not the last
+// place the parser happened to look.
+func (b *percentScanBudget) noteDeclined(pos ast.Position) {
+	if b == nil || b.declinedAt != (ast.Position{}) {
+		return
+	}
+	b.declinedAt = pos
 }
 
 // record accounts for a scan that walked the given number of input bytes. Only
