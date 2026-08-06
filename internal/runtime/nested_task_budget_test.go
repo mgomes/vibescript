@@ -83,3 +83,75 @@ end`)
 			workers, defaultMaxTaskConcurrency)
 	}
 }
+
+// gateProbeCapability records whether the spawned task observed the gate as
+// already open. open_gate is what the spawning block performs right after
+// spawn; await_gate is what the spawned task calls first.
+type gateProbeCapability struct {
+	gate     chan struct{}
+	ranEarly *atomic.Bool
+}
+
+func (c gateProbeCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	gate, ranEarly := c.gate, c.ranEarly
+	return map[string]Value{
+		"probe": NewObject(map[string]Value{
+			"open_gate": NewBuiltin("probe.open_gate", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+				select {
+				case <-gate:
+				default:
+					close(gate)
+				}
+				return NewNil(), nil
+			}),
+			"await_gate": NewBuiltin("probe.await_gate", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+				select {
+				case <-gate:
+				default:
+					// The block has not reached open_gate yet, so this task
+					// was run during spawn rather than deferred to a wait.
+					ranEarly.Store(true)
+				}
+				return NewNil(), nil
+			}),
+		}),
+	}, nil
+}
+
+// TestStarvedTaskGroupKeepsSpawnNonblocking pins that a group the shared
+// budget could not staff still returns from spawn before running the task.
+// Running it at spawn time would deadlock any block that performs a host
+// action the task waits on, which is the common shape: spawn, then set
+// something up, then await the handle.
+//
+// The budget is 1, so the outer group takes it and the nested group is
+// starved — that is the path under test.
+func TestStarvedTaskGroupKeepsSpawnNonblocking(t *testing.T) {
+	t.Parallel()
+
+	var ranEarly atomic.Bool
+	script := compileScriptWithConfig(t, Config{MaxTaskConcurrency: 1}, `def worker(n)
+  probe.await_gate()
+  n
+end
+
+def nested(n)
+  Tasks.run(max: 1) do |tasks|
+    a = tasks.spawn(:worker, 1)
+    probe.open_gate()
+    a.value
+  end
+end
+
+def run()
+  Tasks.map([1], max: 1, with: :nested)
+end`)
+
+	if _, err := script.Call(context.Background(), "run", nil,
+		callOptionsWithCapabilities(gateProbeCapability{gate: make(chan struct{}), ranEarly: &ranEarly})); err != nil {
+		t.Fatalf("nested tasks failed: %v", err)
+	}
+	if ranEarly.Load() {
+		t.Fatal("a starved group ran its task during spawn, so a block that acts after spawn would deadlock")
+	}
+}

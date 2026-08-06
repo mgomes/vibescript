@@ -156,6 +156,12 @@ type taskGroup struct {
 	// tree's shared pool when the group shuts down.
 	budget   *taskConcurrencyBudget
 	reserved int
+	// deferred holds jobs for a group the shared pool could not staff. They
+	// run inline when something waits on them (see drainDeferred), not when
+	// they are spawned: spawning must stay nonblocking, or a block that
+	// performs a host action right after spawn would never reach it while the
+	// task waiting on that action ran first.
+	deferred []*taskJob
 
 	tasks   sync.WaitGroup
 	workers sync.WaitGroup
@@ -455,11 +461,13 @@ func (group *taskGroup) enqueue(exec *Execution, functionName string, taskArgs [
 	}
 
 	group.tasks.Add(1)
-	// A group the shared pool could not staff runs its work inline: serial
-	// execution is a valid schedule for tasks, and it keeps a starved nesting
-	// level from blocking forever on a channel with no worker behind it.
+	// A group the shared pool could not staff defers its work rather than
+	// queueing it for workers that do not exist. The job runs inline at the
+	// next wait; spawning stays nonblocking either way.
 	if group.reserved == 0 {
-		group.runJob(job)
+		group.mu.Lock()
+		group.deferred = append(group.deferred, job)
+		group.mu.Unlock()
 		return handle, nil
 	}
 	select {
@@ -548,12 +556,32 @@ func (group *taskGroup) lazyGlobalsForJob() *taskLazyGlobals {
 	return newTaskLazyGlobals(group.globals, false, group.detachedGlobals)
 }
 
+// drainDeferred runs the jobs a starved group could not hand to a worker, on
+// the goroutine that is waiting for them. Serial execution is a valid schedule
+// for tasks, and running them here rather than at spawn keeps the shared pool
+// a hard cap without making spawn block.
+func (group *taskGroup) drainDeferred() {
+	for {
+		group.mu.Lock()
+		if len(group.deferred) == 0 {
+			group.mu.Unlock()
+			return
+		}
+		job := group.deferred[0]
+		group.deferred = group.deferred[1:]
+		group.mu.Unlock()
+		group.runJob(job)
+	}
+}
+
 func (group *taskGroup) wait() error {
+	group.drainDeferred()
 	group.tasks.Wait()
 	return group.err()
 }
 
 func (group *taskGroup) closeAndWait() error {
+	group.drainDeferred()
 	group.mu.Lock()
 	if !group.closed {
 		group.closed = true
@@ -740,6 +768,7 @@ func (handle *taskHandle) substituteRootCause(err error) error {
 }
 
 func (handle *taskHandle) wait(ctx context.Context) (Value, error) {
+	handle.group.drainDeferred()
 	select {
 	case <-handle.done:
 		return handle.result()
@@ -749,6 +778,7 @@ func (handle *taskHandle) wait(ctx context.Context) (Value, error) {
 }
 
 func (handle *taskHandle) result() (Value, error) {
+	handle.group.drainDeferred()
 	<-handle.done
 	return handle.value, handle.err
 }
