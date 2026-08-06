@@ -52,11 +52,12 @@ func stringMember(str Value, property string) (Value, error) {
 var stringConstantCostMembers = map[string]struct{}{
 	"bytesize": {}, "empty?": {}, "getbyte": {}, "ord": {}, "chr": {},
 	"to_s": {}, "string": {}, "clear": {},
-	// byteslice indexes by byte and copies at most what it extracts, and a
-	// symbol holds the receiver's string header without copying or hashing it,
-	// so neither cost grows with the receiver's length. slice is charged
-	// rather than exempt because it indexes by rune, which scans to the offset.
-	"byteslice": {}, "to_sym": {}, "intern": {},
+	// A symbol holds the receiver's string header without copying or hashing
+	// it, so it does not touch the receiver's length. slice is charged rather
+	// than exempt because it indexes by rune, which scans to the offset, and
+	// byteslice is charged because it copies what it extracts to avoid
+	// retaining the receiver's backing (see detachedByteslice).
+	"to_sym": {}, "intern": {},
 	// chop inspects only the receiver's final bytes and returns a substring
 	// view, so its cost does not follow the length even when every byte is a
 	// candidate: flat from 64 KiB to 2 MiB on an all-newline receiver. strip,
@@ -5151,18 +5152,27 @@ func stringMemberTransforms(property string) (Value, error) {
 }
 
 // detachedByteslice returns sub without keeping text's backing allocation
-// alive when sub is small enough that sharing would be the wasteful choice.
+// alive.
 //
 // A Go substring holds its whole backing, while the memory estimator prices a
 // string by its own length. A script could therefore keep a one-byte slice of
 // a megabyte string and be charged one byte: 200 such slices retained 192 MiB
-// under an 8 MiB quota (#2). Copying below the halfway point bounds the gap
-// between what a slice is charged and what it holds at two times, and the copy
-// never costs more than the waste it avoids -- so the price and the footprint
-// stay within a constant factor either way.
+// under an 8 MiB quota (#2).
+//
+// Every proper slice is copied, not just a small one. A threshold looks
+// tempting -- a slice keeping most of its source wastes little -- but the
+// waste composes: `s = s.byteslice(0, s.bytesize / 2)` repeated keeps at least
+// half each time and so never trips a threshold, while every intermediate
+// result still points at the original allocation. Copying unconditionally is
+// what makes a string's footprint equal its length, which is the property the
+// estimator prices against.
+//
+// The copy is why byteslice is no longer exempt from the per-byte scan charge:
+// it costs what it extracts, so it is billed like the other methods that build
+// a result.
 func detachedByteslice(text, sub string) string {
-	if len(sub) < len(text)/2 {
-		return strings.Clone(sub)
+	if len(sub) == len(text) {
+		return sub
 	}
-	return sub
+	return strings.Clone(sub)
 }

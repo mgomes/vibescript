@@ -69,3 +69,51 @@ end`)
 		t.Fatalf("byteslice = %s, want %s", got.Inspect(), want)
 	}
 }
+
+// TestChainedByteslicesDoNotRetainTheOriginal pins that repeatedly slicing a
+// string down cannot keep the first allocation alive.
+//
+// Copying only slices below some fraction of their source looks sufficient
+// until the waste composes: halving keeps at least half every time, so no
+// single step trips a threshold, yet every intermediate result still points
+// at the original allocation and the last one is charged a byte for it.
+//
+// Not parallel: it measures process-wide heap.
+func TestChainedByteslicesDoNotRetainTheOriginal(t *testing.T) {
+	script := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: 64 << 20},
+		`def run(seed)
+  kept = []
+  i = 0
+  while i < 40
+    s = seed * 200
+    while s.bytesize > 1
+      s = s.byteslice(0, (s.bytesize + 1) / 2)
+    end
+    kept.push(s)
+    i = i + 1
+  end
+  kept
+end`)
+	seed := strings.Repeat("abcdefghij", 500)
+
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	kept, err := script.Call(context.Background(), "run", []Value{NewString(seed)}, CallOptions{})
+	goruntime.GC()
+	goruntime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatalf("chained slicing failed: %v", err)
+	}
+	if kept.Kind() != KindArray || len(kept.Array()) != 40 {
+		t.Fatalf("expected 40 retained slices, got %#v", kept)
+	}
+
+	held := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	// Forty one-byte results each pinning a megabyte would be about 40 MiB.
+	if limit := int64(8 << 20); held > limit {
+		t.Fatalf("40 chained one-byte slices retain %.2f MiB, want under %.2f MiB",
+			float64(held)/(1<<20), float64(limit)/(1<<20))
+	}
+	goruntime.KeepAlive(kept)
+}
