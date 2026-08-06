@@ -52,12 +52,14 @@ func stringMember(str Value, property string) (Value, error) {
 var stringConstantCostMembers = map[string]struct{}{
 	"bytesize": {}, "empty?": {}, "getbyte": {}, "ord": {}, "chr": {},
 	"to_s": {}, "string": {}, "clear": {},
-	// A symbol holds the receiver's string header without copying or hashing
-	// it, so it does not touch the receiver's length. slice is charged rather
-	// than exempt because it indexes by rune, which scans to the offset, and
-	// byteslice is charged because it copies what it extracts to avoid
-	// retaining the receiver's backing (see detachedByteslice).
-	"to_sym": {}, "intern": {},
+	// byteslice indexes by byte, and a symbol holds the receiver's string
+	// header without copying or hashing it, so neither reads the receiver's
+	// length. slice is charged rather than exempt because it indexes by rune,
+	// which scans to the offset. byteslice does copy what it extracts, but
+	// that costs the result rather than the receiver, so it bills those bytes
+	// itself (see detachedByteslice) instead of being charged for a receiver
+	// it never reads.
+	"byteslice": {}, "to_sym": {}, "intern": {},
 	// chop inspects only the receiver's final bytes and returns a substring
 	// view, so its cost does not follow the length even when every byte is a
 	// candidate: flat from 64 KiB to 2 MiB on an all-newline receiver. strip,
@@ -5168,9 +5170,9 @@ func stringMemberTransforms(property string) (Value, error) {
 // what makes a string's footprint equal its length, which is the property the
 // estimator prices against.
 //
-// The copy is why byteslice is no longer exempt from the per-byte scan charge:
-// it costs what it extracts, so it is billed like the other methods that build
-// a result.
+// The copy bills the bytes it writes rather than the bytes it was taken from.
+// Charging by the receiver would make a one-byte slice of a large host string
+// cost the whole string, which is work byteslice never does.
 func detachedByteslice(text, sub string) string {
 	if len(sub) == len(text) {
 		return sub

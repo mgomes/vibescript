@@ -136,3 +136,27 @@ end`)
 		t.Fatal("a copy that cannot fit beside its receiver must be rejected")
 	}
 }
+
+// TestBytesliceChargesTheBytesItCopies pins that the copy is billed by what it
+// extracts rather than by the string it came from. Charging the receiver would
+// make a one-byte slice of a large host string cost the whole string, which is
+// work byteslice never does; charging nothing would let an unmetered copy run
+// in a loop.
+func TestBytesliceChargesTheBytesItCopies(t *testing.T) {
+	t.Parallel()
+
+	// A one-byte slice must cost the same regardless of receiver size.
+	small := minStepsForStringOp(t, "s.byteslice(0, 1)", 8<<10)
+	large := minStepsForStringOp(t, "s.byteslice(0, 1)", 64<<10)
+	if small != large {
+		t.Fatalf("a one-byte slice cost %d steps over 8 KiB and %d over 64 KiB; the charge must "+
+			"follow the copy, not the receiver", small, large)
+	}
+
+	// A slice that copies most of its receiver must cost more than that.
+	wide := minStepsForStringOp(t, "s.byteslice(0, s.bytesize - 1)", 64<<10)
+	if wide <= large {
+		t.Fatalf("a near-whole slice cost %d steps and a one-byte slice %d; copying more must cost more",
+			wide, large)
+	}
+}
