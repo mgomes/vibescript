@@ -159,3 +159,41 @@ end
 		t.Fatalf("expected f to summarize as int, got %v", warnings)
 	}
 }
+
+// TestCheckWarningsSelfInvokedLambdaScanTerminates covers the namespace effect
+// scan. An array element resolves to an exact lambda value, so a lambda that
+// calls its own array slot made the scan walk the same body again for every
+// nested call and never return (#12).
+func TestCheckWarningsSelfInvokedLambdaScanTerminates(t *testing.T) {
+	t.Parallel()
+
+	const source = `
+def main()
+  fns = [-> { fns[0].call }]
+  h = -> { fns[0].call }
+  h.call
+  0
+end
+`
+	script := compileScript(t, source)
+	if warnings := checkWarningsWithin(t, script, "a self-invoking projected lambda"); len(warnings) != 0 {
+		t.Fatalf("expected no warnings for a self-invoking projected lambda, got %v", warnings)
+	}
+
+	diagnosed := compileScript(t, `
+def main()
+  fns = [-> {
+    fns[0].call
+    missing
+  }]
+  h = -> { fns[0].call }
+  h.call
+  0
+end
+`)
+	requireOnlyUndefinedMissingWarning(
+		t,
+		checkWarningsWithin(t, diagnosed, "a self-invoking projected lambda with a bad body"),
+		"self-invoking projected lambda",
+	)
+}

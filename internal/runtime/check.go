@@ -18333,6 +18333,7 @@ type namespaceMutationScan struct {
 	functions        map[string]*ScriptFunction
 	classes          map[string]*ClassDef
 	active           map[*ScriptFunction]struct{}
+	activeLambdas    map[*BlockLiteral]struct{}
 	activeDefaults   map[*ScriptFunction]map[int]struct{}
 	methodClasses    map[*ScriptFunction]*ClassDef
 	classMethodFns   map[*ScriptFunction]struct{}
@@ -18366,6 +18367,7 @@ func (c *scriptChecker) newNamespaceMutationScan() *namespaceMutationScan {
 		functions:                c.script.functions,
 		classes:                  c.script.classes,
 		active:                   make(map[*ScriptFunction]struct{}),
+		activeLambdas:            make(map[*BlockLiteral]struct{}),
 		activeDefaults:           make(map[*ScriptFunction]map[int]struct{}),
 		methodClasses:            c.selfScopeFnClasses,
 		classMethodFns:           c.selfScopeClassFns,
@@ -19150,10 +19152,21 @@ func (s *namespaceMutationScan) withCallableParamShadows(params []Param, walk fu
 	walk()
 }
 
+// scanLambdaBlock unions in the writes of a lambda body the scanned code can
+// run. A body already on the scan collects the same writes from its outer
+// frame, so re-entering it adds nothing; without that guard a lambda reachable
+// from itself through an exact static value (`fns = [-> { fns[0].call }]`)
+// makes the scan descend forever (#12), mirroring how active bounds recursive
+// function scans.
 func (s *namespaceMutationScan) scanLambdaBlock(block *BlockLiteral) {
 	if block == nil {
 		return
 	}
+	if _, active := s.activeLambdas[block]; active {
+		return
+	}
+	s.activeLambdas[block] = struct{}{}
+	defer delete(s.activeLambdas, block)
 	previousFunction := s.currentFunction
 	s.currentFunction = nil
 	defer func() { s.currentFunction = previousFunction }()
