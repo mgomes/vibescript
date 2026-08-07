@@ -3180,7 +3180,7 @@ func (exec *Execution) evalDirectStringSliceCall(call *CallExpr, receiver Value,
 	if err := checkDirectStringMemberCallRoots(exec, receiver, first, second, len(call.Args) == 2); err != nil {
 		return NewNil(), true, err
 	}
-	result, err := stringSliceResult(receiver, first, second, len(call.Args) == 2)
+	result, err := stringSliceResult(exec, receiver, first, second, len(call.Args) == 2)
 	if err != nil {
 		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}

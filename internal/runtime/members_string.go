@@ -1411,49 +1411,73 @@ func stringSlice(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	if len(args) == 2 {
 		second = args[1]
 	}
-	return stringSliceResult(receiver, args[0], second, len(args) == 2)
+	return stringSliceResult(exec, receiver, args[0], second, len(args) == 2)
 }
 
-func stringSliceResult(receiver, first, second Value, hasLength bool) (Value, error) {
+// stringSliceResult builds String#slice's value, detaching it from the
+// receiver's backing.
+//
+// slice built its result from []rune until it moved to byte-offset slicing, and
+// normalizeInvalidUTF8 hands valid UTF-8 straight back, so the result aliased
+// the receiver again: 200 one-character slices of a megabyte held 192 MiB under
+// an 8 MiB quota (#50).
+//
+// The copy takes no charge of its own. chargeStringScanBeforeCall already
+// billed slice for its receiver's length, and a slice of the receiver can never
+// exceed it, so charging the copy on top would bill the same bytes twice.
+func stringSliceResult(exec *Execution, receiver, first, second Value, hasLength bool) (Value, error) {
 	text := receiver.String()
+	if !hasLength && first.Kind() == KindString {
+		// A substring selector yields the argument itself rather than a window
+		// into the receiver, so there is no backing to detach from.
+		if strings.Contains(text, first.String()) {
+			return NewString(first.String()), nil
+		}
+		return NewNil(), nil
+	}
+	substr, ok, err := stringSliceWindow(text, first, second, hasLength)
+	if err != nil || !ok {
+		return NewNil(), err
+	}
+	args := [2]Value{first, second}
+	count := 1
+	if hasLength {
+		count = 2
+	}
+	detached, err := detachedSubstring(exec, text, substr, receiver, args[:count], nil, NewNil())
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewString(detached), nil
+}
+
+// stringSliceWindow resolves String#slice's integer, start/length and range
+// selectors against text and returns the substring they select. ok is false for
+// the out-of-range selections that yield nil. The substring selector is handled
+// by the caller because it returns its argument rather than a window.
+func stringSliceWindow(text string, first, second Value, hasLength bool) (string, bool, error) {
 	if hasLength {
 		start, err := valueToInt(first)
 		if err != nil {
-			return NewNil(), fmt.Errorf("string.slice index must be integer")
+			return "", false, fmt.Errorf("string.slice index must be integer")
 		}
 		length, err := valueToInt(second)
 		if err != nil {
-			return NewNil(), fmt.Errorf("string.slice length must be integer")
+			return "", false, fmt.Errorf("string.slice length must be integer")
 		}
 		substr, ok := stringRuneSlice(text, start, length)
-		if !ok {
-			return NewNil(), nil
-		}
-		return NewString(substr), nil
+		return substr, ok, nil
 	}
-	switch arg := first; arg.Kind() {
-	case KindRange:
-		substr, ok := stringRuneRangeSlice(text, arg.Range())
-		if !ok {
-			return NewNil(), nil
-		}
-		return NewString(substr), nil
-	case KindString:
-		if strings.Contains(text, arg.String()) {
-			return NewString(arg.String()), nil
-		}
-		return NewNil(), nil
-	default:
-		index, err := valueToInt(arg)
-		if err != nil {
-			return NewNil(), fmt.Errorf("string.slice index must be an integer, range, or substring")
-		}
-		substr, ok := stringSliceCharAt(text, index)
-		if !ok {
-			return NewNil(), nil
-		}
-		return NewString(substr), nil
+	if first.Kind() == KindRange {
+		substr, ok := stringRuneRangeSlice(text, first.Range())
+		return substr, ok, nil
 	}
+	index, err := valueToInt(first)
+	if err != nil {
+		return "", false, fmt.Errorf("string.slice index must be an integer, range, or substring")
+	}
+	substr, ok := stringSliceCharAt(text, index)
+	return substr, ok, nil
 }
 
 // stringSliceCharAt returns the single-character slice for String#slice(index).
