@@ -1111,6 +1111,50 @@ func (exec *Execution) valueReachableFromLiveBase(value, block Value) bool {
 	return reachable
 }
 
+// valueMarginalOverLiveBase prices what value adds beyond exec's reachable
+// roots: ~0 when the graph already holds it, its full footprint when it lives
+// only on a Go frame. It is the marginal newBlockBindCharge takes for a call
+// root (ephemeralRootBytes), measured at the moment a value is retained rather
+// than once at bind time.
+func (exec *Execution) valueMarginalOverLiveBase(value, block Value) int {
+	if exec.memoryQuota <= 0 || value.Kind() == KindNil {
+		return 0
+	}
+	s := exec.beginBaseWalk()
+	if !block.IsNil() {
+		s.est.value(block)
+	}
+	marginal := s.est.probe(value)
+	s.close()
+	return marginal
+}
+
+// retainedOutputDelta prices what a newly retained result adds to the scratch a
+// driver holds for its Go-local output. charged is what the build accumulator
+// billed for the value.
+//
+// The reservation exists only to show the checks inside the next block call
+// what they cannot walk to on their own. A result the graph already holds --
+// the memoizing `Hash.new { |h, k| h[k] = v }` idiom stores its result in the
+// receiver -- is one the walk visits anyway, so reserving its payload counted
+// the same bytes twice and rejected an idiomatic memoized lookup at about half
+// the real limit. Pricing it at its marginal drops that second copy.
+//
+// Taking the smaller of the two, rather than the marginal alone, keeps a result
+// the accumulator has already billed from being reserved again when a later
+// call returns the same object, while a result the graph cannot reach stays
+// fully reserved -- which is the accumulation the reservation was added to
+// bound.
+func (exec *Execution) retainedOutputDelta(charged int, value, block Value) int {
+	if charged <= 0 {
+		return 0
+	}
+	if marginal := exec.valueMarginalOverLiveBase(value, block); marginal < charged {
+		return marginal
+	}
+	return charged
+}
+
 func (exec *Execution) checkCollapsedPairBytesWithLiveBase(receiver, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil

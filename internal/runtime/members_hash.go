@@ -923,7 +923,24 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.values_at does not accept keyword arguments")
 			}
+			// Built before the reservation below so its baseline snapshots
+			// exec.reservedScratchBytes without the output backing, which the
+			// reservation would otherwise charge a second time.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			if err := acc.reserveSlots(len(args)); err != nil {
+				return NewNil(), err
+			}
 			out := make([]Value, len(args))
+			// A default proc is script code that can return a fresh value per
+			// miss, and those results stay in the Go-local out slice that the
+			// memory checks inside the next proc call cannot reach. Reserving the
+			// retained output as scratch puts it in every in-proc baseline, so a
+			// run of near-quota defaults trips during accumulation rather than
+			// only at the post-call check (#43).
+			retained := newRetainedOutputScratch(exec)
+			defer retained.release()
+			retainedBytes := 0
+			retained.reserve(arraySlotBackingBytes(len(out)))
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -933,6 +950,9 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.values_at key is unsupported hash key: %w", err)
 				}
 				if ok {
+					// A present value aliases memory the accumulator's baseline
+					// already counts through the receiver, so charging it would
+					// bill the receiver's payload a second time.
 					out[i] = value
 					continue
 				}
@@ -940,11 +960,31 @@ func hashMemberQuery(property string) (Value, error) {
 				// default (a default value, or a default proc invoked with the
 				// hash and key, which may store) rather than filling nil, matching
 				// MRI's Hash#values_at.
+				ranProc := !hashDefaultProc(receiver).IsNil()
 				resolved, err := exec.hashDefaultForKey(receiver, arg)
 				if err != nil {
 					return NewNil(), err
 				}
 				out[i] = resolved
+				// The conservative charge skips baseline deduplication so a proc
+				// that grows a receiver-owned container in place stays visible to
+				// the quota. A static default runs no script code at all, so there
+				// is nothing to catch, and pricing it that way billed the one
+				// default object again on top of the receiver that already holds
+				// it -- a 400KB default charged 800KB and rejected a values_at
+				// that fit its real footprint by a wide margin.
+				charged := acc.retainedPayloadBytes()
+				if ranProc {
+					err = acc.addConservative(resolved, len(out))
+				} else {
+					err = acc.add(resolved, len(out))
+				}
+				if err != nil {
+					return NewNil(), err
+				}
+				retainedBytes = saturatingAdd(retainedBytes,
+					exec.retainedOutputDelta(acc.retainedPayloadBytes()-charged, resolved, block))
+				retained.reserve(saturatingAdd(retainedBytes, arraySlotBackingBytes(len(out))))
 			}
 			return NewArray(out), nil
 		}), nil
@@ -978,7 +1018,26 @@ func hashMemberQuery(property string) (Value, error) {
 		}), nil
 	case "fetch_values":
 		return NewAutoBuiltin("hash.fetch_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			// Built before the reservation below so its baseline snapshots
+			// exec.reservedScratchBytes without the output backing, which the
+			// reservation would otherwise charge a second time.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			if err := acc.reserveSlots(len(args)); err != nil {
+				return NewNil(), err
+			}
 			out := make([]Value, len(args))
+			// The block runs once per missing key and every result stays in the
+			// Go-local out slice, which the memory checks inside the next block
+			// call cannot reach. A block returning an individually quota-sized
+			// value therefore passed its own check each time while out still held
+			// all the earlier ones, and only the post-call check ever saw the
+			// pile -- after the spike had already happened. Reserving the retained
+			// output as scratch puts it in every in-block baseline, so the quota
+			// trips during accumulation instead (#43).
+			retained := newRetainedOutputScratch(exec)
+			defer retained.release()
+			retainedBytes := 0
+			retained.reserve(arraySlotBackingBytes(len(out)))
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -988,6 +1047,9 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.fetch_values key is unsupported hash key: %w", err)
 				}
 				if ok {
+					// A present value aliases memory the accumulator's baseline
+					// already counts through the receiver, so charging it would
+					// bill the receiver's payload a second time.
 					out[i] = value
 					continue
 				}
@@ -1000,6 +1062,13 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out[i] = blockValue
+				charged := acc.retainedPayloadBytes()
+				if err := acc.addConservative(blockValue, len(out)); err != nil {
+					return NewNil(), err
+				}
+				retainedBytes = saturatingAdd(retainedBytes,
+					exec.retainedOutputDelta(acc.retainedPayloadBytes()-charged, blockValue, block))
+				retained.reserve(saturatingAdd(retainedBytes, arraySlotBackingBytes(len(out))))
 			}
 			return NewArray(out), nil
 		}), nil

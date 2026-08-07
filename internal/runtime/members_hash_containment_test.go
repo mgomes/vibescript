@@ -4291,3 +4291,217 @@ func TestHashFlattenRejectsHugeExpansionEarly(t *testing.T) {
 		t.Fatalf("hash.flatten allocated %d cumulative bytes before rejecting; want it bounded by the quota, not the full result", allocated)
 	}
 }
+
+// fetchValuesKeyList renders count missing symbol keys as a fetch_values
+// argument list, so the block runs once per key in the order given.
+func fetchValuesKeyList(count int) string {
+	keys := make([]string, count)
+	for i := range keys {
+		keys[i] = fmt.Sprintf(":m%03d", i)
+	}
+	return strings.Join(keys, ", ")
+}
+
+// A block result stays in the Go-local out slice, which no memory check inside
+// a later block call can reach: the earlier results and an in-block temporary
+// passed their checks separately though they coexist. Here the 29 retained
+// 20KB results and the final 600KB temporary each fit the 1MB quota alone, and
+// the returned array is small enough for the post-call check, so only a
+// reservation covering the retained output can reject the combined peak.
+func TestHashFetchValuesChargesRetainedOutputDuringBlockCalls(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run(h)
+      h.fetch_values(`+fetchValuesKeyList(30)+`) { |k|
+        if k == :m029
+          ("y" * 600000).length
+        else
+          "x" * 20000
+        end
+      }
+    end
+    `)
+	if _, err := script.Call(context.Background(), "run", []Value{NewHash(map[string]Value{})}, CallOptions{}); err == nil {
+		t.Fatalf("retained fetch_values output plus an in-block temporary exceeded the quota but was accepted")
+	}
+}
+
+// The reservation is released when the builtin returns, so a fetch_values that
+// fits is still answered with the values Ruby's Hash#fetch_values returns.
+func TestHashFetchValuesDoesNotOverReserve(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run(h)
+      h.fetch_values(:a, :b, `+fetchValuesKeyList(30)+`) { |k| "x" * 20000 }
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", []Value{NewHash(map[string]Value{
+		"a": NewInt(1),
+		"b": NewInt(2),
+	})}, CallOptions{})
+	if err != nil {
+		t.Fatalf("a fetch_values that fits the quota was rejected: %v", err)
+	}
+	want := make([]Value, 0, 32)
+	want = append(want, NewInt(1), NewInt(2))
+	for range 30 {
+		want = append(want, NewString(strings.Repeat("x", 20000)))
+	}
+	compareArrays(t, got, want)
+}
+
+// A default proc is script code, so values_at has the same shape as
+// fetch_values: each miss can resolve to a fresh near-quota value that lives
+// only in the Go-local out slice. The 29 retained 20KB defaults and the final
+// 600KB temporary each fit the 1MB quota alone, and the returned array is small
+// enough for the post-call check.
+func TestHashValuesAtChargesRetainedOutputDuringDefaultProcs(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run()
+      h = Hash.new { |hash, k|
+        if k == :m029
+          ("y" * 600000).length
+        else
+          "x" * 20000
+        end
+      }
+      h.values_at(`+fetchValuesKeyList(30)+`)
+    end
+    `)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("retained values_at output plus an in-proc temporary exceeded the quota but was accepted")
+	}
+}
+
+// The reservation is released when the builtin returns, so a values_at that
+// fits still resolves present keys and default-proc misses alike.
+func TestHashValuesAtDoesNotOverReserve(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run()
+      h = Hash.new { |hash, k| "x" * 20000 }
+      h[:a] = 1
+      h[:b] = 2
+      h.values_at(:a, :b, `+fetchValuesKeyList(30)+`)
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("a values_at that fits the quota was rejected: %v", err)
+	}
+	want := make([]Value, 0, 32)
+	want = append(want, NewInt(1), NewInt(2))
+	for range 30 {
+		want = append(want, NewString(strings.Repeat("x", 20000)))
+	}
+	compareArrays(t, got, want)
+}
+
+// The conservative charge that keeps a default proc's in-place mutations
+// visible skips baseline deduplication, so applying it to a static default
+// billed the one default object again on top of the receiver that already
+// holds it. The quota here sits far above the call's real footprint and far
+// below the doubled estimate, so only the deduplicating charge admits it.
+func TestHashValuesAtDoesNotDoubleChargeAStaticDefault(t *testing.T) {
+	t.Parallel()
+
+	const defaultBytes = 400 * 1024
+	const missing = 30
+
+	defaultValue := NewString(strings.Repeat("d", defaultBytes))
+	receiver := NewHashWithDefault(map[string]Value{"a": NewInt(1)}, defaultValue, NewNil())
+
+	args := make([]Value, 0, missing+1)
+	args = append(args, NewSymbol("a"))
+	for i := range missing {
+		args = append(args, NewSymbol(fmt.Sprintf("m%03d", i)))
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
+	footprint := base + arraySlotBackingBytes(len(args))
+
+	// Half a default's worth of headroom: ample for the real build, nowhere
+	// near enough to absorb a second copy of the default's payload.
+	quota := footprint + defaultBytes/2
+	if quota <= footprint || quota >= footprint+defaultBytes {
+		t.Fatalf("quota %d must fit the real footprint %d and reject the doubled charge %d", quota, footprint, footprint+defaultBytes)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "values_at", args, NewNil())
+	if err != nil {
+		t.Fatalf("a values_at that fits its real footprint under quota %d was rejected: %v", quota, err)
+	}
+	want := make([]Value, 0, missing+1)
+	want = append(want, NewInt(1))
+	for range missing {
+		want = append(want, defaultValue)
+	}
+	compareArrays(t, got, want)
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("values_at leaked %d scratch bytes after success", exec.reservedScratchBytes)
+	}
+}
+
+// The memoizing `Hash.new { |h, k| h[k] = v }` idiom stores each result in the
+// receiver, so the walk inside the next proc call already visits it. Reserving
+// its payload as well counted the same bytes twice and rejected the call at
+// roughly half the real limit. The quota here holds one copy of the memoized
+// payload with room to spare and less than two, so only marginal pricing
+// admits it.
+func TestHashValuesAtDoesNotDoubleChargeAMemoizingDefaultProc(t *testing.T) {
+	t.Parallel()
+
+	const per = 20000
+	const keys = 30
+	const memoized = per * keys
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: memoized + memoized/2}, `
+    def run()
+      h = Hash.new { |hash, k| hash[k] = "x" * `+fmt.Sprint(per)+` }
+      h.values_at(`+fetchValuesKeyList(keys)+`)
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("a memoizing values_at that fits one copy of its payload was rejected: %v", err)
+	}
+	want := make([]Value, 0, keys)
+	for range keys {
+		want = append(want, NewString(strings.Repeat("x", per)))
+	}
+	compareArrays(t, got, want)
+}
+
+// fetch_values has the same shape: a block that memoizes into a hash it can
+// reach makes each result visible to the walk, so the reservation must not
+// charge it again.
+func TestHashFetchValuesDoesNotDoubleChargeAMemoizingBlock(t *testing.T) {
+	t.Parallel()
+
+	const per = 20000
+	const keys = 30
+	const memoized = per * keys
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: memoized + memoized/2}, `
+    def run()
+      h = { a: 1 }
+      h.fetch_values(`+fetchValuesKeyList(keys)+`) { |k| h[k] = "x" * `+fmt.Sprint(per)+` }
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("a memoizing fetch_values that fits one copy of its payload was rejected: %v", err)
+	}
+	want := make([]Value, 0, keys)
+	for range keys {
+		want = append(want, NewString(strings.Repeat("x", per)))
+	}
+	compareArrays(t, got, want)
+}
