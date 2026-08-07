@@ -182,6 +182,7 @@ type scriptChecker struct {
 	pinnedInstanceOrigins      map[Expression]checkInstanceOriginsCapture
 	constructorInstanceFacts   map[Expression]checkInstanceClassFact
 	constructorIvarFacts       map[Expression]map[string]*TypeExpr
+	repeatedRegionBlocksInWalk map[*BlockLiteral]struct{}
 	widenedIvarFacts           map[string]struct{}
 	instanceIvarFactsDirty     bool
 	assignmentReceiverCapture  *checkAssignmentReceiverCapture

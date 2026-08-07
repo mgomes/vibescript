@@ -5171,6 +5171,12 @@ func collectRegionIvarWriteTargets(target Expression, effects *regionIvarEffects
 	}
 }
 
+// collectRepeatedRegionIvarEffectsFromBlock unions in the ivar effects a
+// lambda body can produce each time the region repeats. A body reachable from
+// itself (`h = -> { h.call }; h.call`) would otherwise re-enter its own
+// statements once per nested call and never finish, so a body already on the
+// walk widens every unset ivar instead of descending again: the checker cannot
+// bound how often such a region runs, so it keeps no exact fact.
 func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromBlock(
 	block *BlockLiteral,
 	effects *regionIvarEffects,
@@ -5178,6 +5184,15 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromBlock(
 	if block == nil {
 		return
 	}
+	if _, walking := c.repeatedRegionBlocksInWalk[block]; walking {
+		effects.unknown = true
+		return
+	}
+	if c.repeatedRegionBlocksInWalk == nil {
+		c.repeatedRegionBlocksInWalk = make(map[*BlockLiteral]struct{})
+	}
+	c.repeatedRegionBlocksInWalk[block] = struct{}{}
+	defer delete(c.repeatedRegionBlocksInWalk, block)
 	popScope := c.pushBlockCheckScope(block)
 	defer popScope()
 	for _, name := range block.ImplicitParams {
