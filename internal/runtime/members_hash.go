@@ -923,7 +923,23 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.values_at does not accept keyword arguments")
 			}
+			// Built before the reservation below so its baseline snapshots
+			// exec.reservedScratchBytes without the output backing, which the
+			// reservation would otherwise charge a second time.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			if err := acc.reserveSlots(len(args)); err != nil {
+				return NewNil(), err
+			}
 			out := make([]Value, len(args))
+			// A default proc is script code that can return a fresh value per
+			// miss, and those results stay in the Go-local out slice that the
+			// memory checks inside the next proc call cannot reach. Reserving the
+			// retained output as scratch puts it in every in-proc baseline, so a
+			// run of near-quota defaults trips during accumulation rather than
+			// only at the post-call check (#43).
+			retained := newRetainedOutputScratch(exec)
+			defer retained.release()
+			retained.reserve(acc.accumulatedBytes(len(out)))
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -933,6 +949,9 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.values_at key is unsupported hash key: %w", err)
 				}
 				if ok {
+					// A present value aliases memory the accumulator's baseline
+					// already counts through the receiver, so charging it would
+					// bill the receiver's payload a second time.
 					out[i] = value
 					continue
 				}
@@ -945,6 +964,10 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out[i] = resolved
+				if err := acc.addConservative(resolved, len(out)); err != nil {
+					return NewNil(), err
+				}
+				retained.reserve(acc.accumulatedBytes(len(out)))
 			}
 			return NewArray(out), nil
 		}), nil
