@@ -57,6 +57,13 @@ type lexer struct {
 	// deep-copy the slice so a rolled-back speculation cannot leak pushes or pops
 	// into the live lexer.
 	ternaryStack []ternaryFrame
+
+	// percentScan is the parse-wide allowance for the speculative
+	// percent-array-literal scans this lexer's interpolation handling starts.
+	// Every lexer taking part in one parse -- including the throwaway ones the
+	// scans themselves create -- shares the same allowance, so the total work
+	// stays bounded no matter how the source nests strings and literals.
+	percentScan *percentScanBudget
 }
 
 type ternaryFrame struct {
@@ -70,7 +77,16 @@ type bracketFrame struct {
 }
 
 func newLexer(input string) *lexer {
-	l := &lexer{input: input, line: 1, column: 0}
+	return newLexerWithBudget(input, newPercentScanBudget(len(input)))
+}
+
+// newLexerWithBudget returns a lexer that draws on an in-progress parse's
+// speculative percent-array-literal allowance instead of opening a fresh one.
+// Every throwaway lexer run over source the parse is already working through
+// has to use this: a per-lexer allowance would reset on each one and so would
+// bound nothing.
+func newLexerWithBudget(input string, budget *percentScanBudget) *lexer {
+	l := &lexer{input: input, line: 1, column: 0, percentScan: budget}
 	l.readRune()
 	return l
 }
@@ -589,7 +605,7 @@ func (l *lexer) seek(offset int, last ast.Token) {
 	if start, ok := sourceOffsetForPosition(l.input, last.Pos); ok && start < offset {
 		structuralOffset = start
 	}
-	bracketDepth, bracketStack, ternaryStack := lexerStructuralStateBefore(l.input, structuralOffset)
+	bracketDepth, bracketStack, ternaryStack := lexerStructuralStateBefore(l.input, structuralOffset, l.percentScan)
 
 	l.offset = 0
 	l.width = 0
@@ -610,8 +626,8 @@ func (l *lexer) seek(offset int, last ast.Token) {
 	l.lastToken = last
 }
 
-func lexerStructuralStateBefore(input string, offset int) (int, []bracketFrame, []ternaryFrame) {
-	scan := newLexer(input)
+func lexerStructuralStateBefore(input string, offset int, budget *percentScanBudget) (int, []bracketFrame, []ternaryFrame) {
+	scan := newLexerWithBudget(input, budget)
 	for scan.ch != 0 {
 		if _, ok := scan.skipWhitespaceAndComments(); ok {
 			continue
@@ -1259,7 +1275,7 @@ func (l *lexer) consumeInterpolation(raw *strings.Builder) string {
 // (possibly multiline) span. It reports whether the interpolation closed before
 // the end of input.
 func (l *lexer) copyInterpolationBody(raw *strings.Builder) bool {
-	end, ok := findStringInterpolationEnd(l.input, l.offset)
+	end, ok := findStringInterpolationEnd(l.input, l.offset, l.percentScan)
 	if !ok {
 		return false
 	}
@@ -1371,7 +1387,7 @@ func (l *lexer) readPercentArrayLiteral(interpolating bool) ([]string, string) {
 		}
 		l.readRune()
 		if interpolating {
-			return splitInterpolatedPercentLiteralWords(raw.String()), true
+			return splitInterpolatedPercentLiteralWords(raw.String(), l.percentScan), true
 		}
 		return splitPercentLiteralWords(raw.String(), open, close), true
 	}
@@ -1879,7 +1895,7 @@ func isPercentWordEscapable(r, open, close rune) bool {
 // Interpolation spans are scanned with the same string-aware logic the parser
 // uses (findStringInterpolationEnd) so quotes and nested braces inside #{...}
 // do not prematurely terminate a word.
-func splitInterpolatedPercentLiteralWords(raw string) []string {
+func splitInterpolatedPercentLiteralWords(raw string, budget *percentScanBudget) []string {
 	var words []string
 	var sb strings.Builder
 	inWord := false
@@ -1905,7 +1921,7 @@ func splitInterpolatedPercentLiteralWords(raw string) []string {
 			}
 			inWord = true
 		case raw[i] == '#' && i+1 < len(raw) && raw[i+1] == '{':
-			end, ok := findStringInterpolationEnd(raw, i+2)
+			end, ok := findStringInterpolationEnd(raw, i+2, budget)
 			if !ok {
 				// Unterminated interpolation: copy the rest verbatim and let
 				// the parser report the error against the full entry.
