@@ -286,6 +286,29 @@ var subsecUnitNanos = map[string]int64{
 	"nsec":        1,
 }
 
+// maxUnitRenderBytes caps how much of a rejected Time.at unit is echoed back in
+// the error text.
+const maxUnitRenderBytes = 64
+
+// unexpectedUnitError reports a Time.at unit Vibescript does not recognize.
+// Ruby spells the message with the unit's own to_s ("unexpected unit: usec"),
+// so the rendering is kept, but only under a byte budget. Value.String walks a
+// composite without any quota, and it expands shared structure rather than
+// noting it, so a script that evaluates a = [a, a] thirty times and then calls
+// Time.at(0, 1, a) holds a value graph small enough to pass every memory check
+// yet renders a gigabyte of text while the error is being built, hanging the
+// host before the call can return (#39). The same budget refuses the
+// superlinear base conversion a huge big-integer unit would trigger. A unit
+// that does not fit the budget is named by type, which is the more useful
+// diagnostic for a composite anyway.
+func unexpectedUnitError(unitVal Value) error {
+	rendered, err := unitVal.StringBounded(maxUnitRenderBytes)
+	if err != nil {
+		return fmt.Errorf("unexpected unit of type %s", unitVal.Kind())
+	}
+	return fmt.Errorf("unexpected unit: %s", rendered)
+}
+
 // TimeFromEpochParts converts Ruby-style Time.at arguments into a time.Time
 // anchored to the supplied (or local) location.
 //
@@ -310,11 +333,11 @@ func TimeFromEpochParts(secVal Value, subsecVal, unitVal *Value, loc *time.Locat
 		unitNanos := int64(1_000)
 		if unitVal != nil {
 			if unitVal.Kind() != KindSymbol {
-				return time.Time{}, fmt.Errorf("unexpected unit: %s", unitVal.String())
+				return time.Time{}, unexpectedUnitError(*unitVal)
 			}
 			factor, ok := subsecUnitNanos[unitVal.String()]
 			if !ok {
-				return time.Time{}, fmt.Errorf("unexpected unit: %s", unitVal.String())
+				return time.Time{}, unexpectedUnitError(*unitVal)
 			}
 			unitNanos = factor
 		}
