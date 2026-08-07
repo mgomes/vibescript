@@ -1,9 +1,11 @@
 package source
 
 import (
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 func TestCodeFrameFormatterReusesSourceLines(t *testing.T) {
@@ -62,4 +64,57 @@ func allocBytes(t *testing.T, fn func()) uint64 {
 	var after runtime.MemStats
 	runtime.ReadMemStats(&after)
 	return after.TotalAlloc - before.TotalAlloc
+}
+
+// TestFormatterRetentionIsSparse pins that the retained line index stays a
+// small fraction of the source. The formatter is held for as long as the
+// compiled script is, and a long-lived engine caches many scripts, so an
+// index proportional to the line count (one string header each) let a
+// mostly-newline source near the size limit retain many times its own length.
+func TestFormatterRetentionIsSparse(t *testing.T) {
+	t.Parallel()
+
+	// A 1 MiB mostly-newline source, the worst case for a per-line index.
+	src := strings.Repeat("\n", 1<<20)
+	formatter := NewCodeFrameFormatter(src)
+
+	// One dense header per line would be ~16 MiB here.
+	retained := len(formatter.checkpoints) * int(unsafe.Sizeof(int(0)))
+	if limit := len(src) / 4; retained > limit {
+		t.Fatalf("index retains %d bytes for a %d byte source, want under %d", retained, len(src), limit)
+	}
+}
+
+// TestFormatterFindsLinesPastACheckpoint pins that the sparse lookup returns
+// the right line at, before, and after a checkpoint boundary.
+func TestFormatterFindsLinesPastACheckpoint(t *testing.T) {
+	t.Parallel()
+
+	var b strings.Builder
+	const lines = codeFrameCheckpointStride*3 + 7
+	for i := 1; i <= lines; i++ {
+		fmt.Fprintf(&b, "line%d\n", i)
+	}
+	formatter := NewCodeFrameFormatter(b.String())
+
+	probes := []int{
+		1,
+		codeFrameCheckpointStride - 1,
+		codeFrameCheckpointStride,
+		codeFrameCheckpointStride + 1,
+		codeFrameCheckpointStride * 2,
+		lines,
+	}
+	for _, line := range probes {
+		got, ok := formatter.lineText(line)
+		if !ok {
+			t.Fatalf("line %d not found", line)
+		}
+		if want := fmt.Sprintf("line%d", line); got != want {
+			t.Fatalf("line %d = %q, want %q", line, got, want)
+		}
+	}
+	if _, ok := formatter.lineText(lines + 100); ok {
+		t.Fatal("a line past the end must not resolve")
+	}
 }

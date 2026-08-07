@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"sync"
+
+	"github.com/mgomes/vibescript/vibes/source"
 )
 
 type functionAccessorKind uint8
@@ -52,9 +55,19 @@ type Script struct {
 	enums               map[string]*EnumDef
 	symbolLiterals      map[*SymbolLiteral]Value
 	source              string
-	moduleKey           string
-	modulePath          string
-	moduleRoot          string
+	// codeFrames lazily splits source into lines for error code frames.
+	// FormatCodeFrame rebuilt that split on every error, and member lookups
+	// construct errors on paths that discard them -- respond_to? probes the
+	// typed table before falling back to the universal helper -- so a loop
+	// over `"x".respond_to?(:missing)` re-split the whole source per
+	// iteration: 200 calls allocated 127 MiB on a 240 KB source, none of it
+	// visible to the script's memory quota (#5). One split per script makes
+	// every later frame cost the frame rather than the file.
+	codeFrames     *source.CodeFrameFormatter
+	codeFramesOnce sync.Once
+	moduleKey      string
+	modulePath     string
+	moduleRoot     string
 }
 
 // CallOptions configures globals, capabilities, and other settings for a script invocation.
@@ -579,4 +592,13 @@ func (exec *Execution) Context() context.Context {
 // long-running host callbacks honor the same budget as in-script work.
 func (exec *Execution) Step() error {
 	return exec.step()
+}
+
+// codeFrameFormatter returns the script's line index, building it once. The
+// formatter is read-only after construction, so concurrent calls share it.
+func (s *Script) codeFrameFormatter() *source.CodeFrameFormatter {
+	s.codeFramesOnce.Do(func() {
+		s.codeFrames = source.NewCodeFrameFormatter(s.source)
+	})
+	return s.codeFrames
 }
