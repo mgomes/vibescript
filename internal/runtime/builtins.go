@@ -508,10 +508,14 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 	if args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("%s expects a string format", name)
 	}
-	values, err := exec.formatStringConversionValues(args[1:])
+	values, releaseConverted, err := exec.formatStringConversionValues(args[1:], receiver, args, kwargs, block)
 	if err != nil {
 		return NewNil(), err
 	}
+	// Held until the render is done: the converted strings stay live through
+	// projection and rendering, and the checks in there measure the original
+	// arguments rather than what to_s returned.
+	defer releaseConverted()
 	return exec.formatStringValues(args[0].String(), values, receiver, args, kwargs, block)
 }
 
@@ -528,15 +532,39 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 // they must agree or the reservation the quota approved is not the one built.
 // It is safe for the numeric verbs because an instance is not a valid operand
 // for any of them either way.
-func (exec *Execution) formatStringConversionValues(values []Value) ([]Value, error) {
+//
+// Every argument is converted, including ones the pattern never uses, so a
+// script-defined to_s runs once per operand before the pattern has been looked
+// at. What it returns lands in a Go-local slice the estimator cannot reach:
+// each result passed its own check while the ones before it were invisible, and
+// a pattern that fails validation -- format("", *instances) -- returned the
+// error before any output check ran at all. Many instances whose to_s returns
+// an individually quota-sized string therefore accumulated unseen (#4).
+//
+// The conversions are reserved as they accumulate, so the quota fires during
+// the loop rather than after it, and the reservation is held until the render
+// is done because the strings stay live that whole time. The caller releases
+// it.
+func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, func(), error) {
+	scratch := newRetainedOutputScratch(exec)
+	reserved := 0
 	var converted []Value
 	for i, val := range values {
 		rendered, substituted, err := exec.instanceStringValue(val, Position{})
 		if err != nil {
-			return nil, err
+			scratch.release()
+			return nil, nil, err
 		}
 		if !substituted {
 			continue
+		}
+		// Only a substituted value is new memory. An argument passed straight
+		// through is the caller's own, already counted through args.
+		reserved = saturatingAdd(reserved, len(rendered.String()))
+		scratch.reserve(reserved)
+		if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+			scratch.release()
+			return nil, nil, err
 		}
 		if converted == nil {
 			converted = make([]Value, len(values))
@@ -545,9 +573,10 @@ func (exec *Execution) formatStringConversionValues(values []Value) ([]Value, er
 		converted[i] = rendered
 	}
 	if converted == nil {
-		return values, nil
+		scratch.release()
+		return values, func() {}, nil
 	}
-	return converted, nil
+	return converted, scratch.release, nil
 }
 
 func formatStringValues(pattern string, values []Value) (Value, error) {
