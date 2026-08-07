@@ -4448,3 +4448,60 @@ func TestHashValuesAtDoesNotDoubleChargeAStaticDefault(t *testing.T) {
 		t.Fatalf("values_at leaked %d scratch bytes after success", exec.reservedScratchBytes)
 	}
 }
+
+// The memoizing `Hash.new { |h, k| h[k] = v }` idiom stores each result in the
+// receiver, so the walk inside the next proc call already visits it. Reserving
+// its payload as well counted the same bytes twice and rejected the call at
+// roughly half the real limit. The quota here holds one copy of the memoized
+// payload with room to spare and less than two, so only marginal pricing
+// admits it.
+func TestHashValuesAtDoesNotDoubleChargeAMemoizingDefaultProc(t *testing.T) {
+	t.Parallel()
+
+	const per = 20000
+	const keys = 30
+	const memoized = per * keys
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: memoized + memoized/2}, `
+    def run()
+      h = Hash.new { |hash, k| hash[k] = "x" * `+fmt.Sprint(per)+` }
+      h.values_at(`+fetchValuesKeyList(keys)+`)
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("a memoizing values_at that fits one copy of its payload was rejected: %v", err)
+	}
+	want := make([]Value, 0, keys)
+	for range keys {
+		want = append(want, NewString(strings.Repeat("x", per)))
+	}
+	compareArrays(t, got, want)
+}
+
+// fetch_values has the same shape: a block that memoizes into a hash it can
+// reach makes each result visible to the walk, so the reservation must not
+// charge it again.
+func TestHashFetchValuesDoesNotDoubleChargeAMemoizingBlock(t *testing.T) {
+	t.Parallel()
+
+	const per = 20000
+	const keys = 30
+	const memoized = per * keys
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: memoized + memoized/2}, `
+    def run()
+      h = { a: 1 }
+      h.fetch_values(`+fetchValuesKeyList(keys)+`) { |k| h[k] = "x" * `+fmt.Sprint(per)+` }
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("a memoizing fetch_values that fits one copy of its payload was rejected: %v", err)
+	}
+	want := make([]Value, 0, keys)
+	for range keys {
+		want = append(want, NewString(strings.Repeat("x", per)))
+	}
+	compareArrays(t, got, want)
+}
