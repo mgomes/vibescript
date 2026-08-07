@@ -3475,7 +3475,7 @@ func (exec *Execution) evalWhileLoop(stmt *WhileStmt, env *Env, mode loopResultM
 	}()
 
 	if stmt.BodyFirst {
-		predeclareLocalBindingsFromStatements(stmt.Body, env)
+		exec.predeclareLocalBindingsFromStatements(stmt.Body, env)
 	}
 	last := NewNil()
 	for {
@@ -3498,7 +3498,7 @@ func (exec *Execution) evalWhileLoop(stmt *WhileStmt, env *Env, mode loopResultM
 				return loopBreakResult(err, mode, last)
 			}
 			if errors.Is(err, errLoopNext) {
-				predeclareLocalBindingsFromStatements(stmt.Body, env)
+				exec.predeclareLocalBindingsFromStatements(stmt.Body, env)
 				continue
 			}
 			return NewNil(), false, err
@@ -3525,7 +3525,7 @@ func (exec *Execution) evalUntilLoop(stmt *UntilStmt, env *Env, mode loopResultM
 	}()
 
 	if stmt.BodyFirst {
-		predeclareLocalBindingsFromStatements(stmt.Body, env)
+		exec.predeclareLocalBindingsFromStatements(stmt.Body, env)
 	}
 	last := NewNil()
 	for {
@@ -3548,7 +3548,7 @@ func (exec *Execution) evalUntilLoop(stmt *UntilStmt, env *Env, mode loopResultM
 				return loopBreakResult(err, mode, last)
 			}
 			if errors.Is(err, errLoopNext) {
-				predeclareLocalBindingsFromStatements(stmt.Body, env)
+				exec.predeclareLocalBindingsFromStatements(stmt.Body, env)
 				continue
 			}
 			return NewNil(), false, err
@@ -3571,14 +3571,14 @@ func predeclareStatementLocalBindings(stmt Statement, env *Env) {
 	}
 }
 
-func predeclareStatementPostLocalBindings(stmt Statement, env *Env) {
+func (exec *Execution) predeclareStatementPostLocalBindings(stmt Statement, env *Env) {
 	if !statementCanPostPredeclareLocalBindings(stmt) {
 		return
 	}
-	predeclareLocalBindingsFromStatements([]Statement{stmt}, env)
+	exec.predeclareLocalBindingsFromStatements([]Statement{stmt}, env)
 }
 
-func predeclareLocalBindingsFromStatements(stmts []Statement, env *Env) {
+func (exec *Execution) predeclareLocalBindingsFromStatements(stmts []Statement, env *Env) {
 	var collector localBindingCollector
 	collectLocalBindingNames(stmts, &collector)
 	for _, name := range collector.names {
@@ -3587,6 +3587,43 @@ func predeclareLocalBindingsFromStatements(stmts []Statement, env *Env) {
 		}
 		env.PredeclareAssignmentLocal(name)
 	}
+	exec.chargePredeclareScan(collector.visited)
+}
+
+// predeclareScanStatementsPerStep amortizes a predeclaration scan over the
+// statements it walks. A body of a few statements stays free, which is what
+// ordinary code costs today.
+const predeclareScanStatementsPerStep = 64
+
+// chargePredeclareScan bills the statements a predeclaration scan walked.
+//
+// The walk is Go-side work the per-statement charge never sees, and it is not
+// proportional to what ran: a compound statement rescans its entire subtree
+// after each nested statement completes, and a branch that was not taken is
+// scanned every time its enclosing statement finishes. Nested conditionals
+// therefore cost O(n^2) host CPU against a quota that only counted the O(n)
+// statements executed, and a loop over a large dead branch rescanned it every
+// iteration for one step (#27).
+//
+// The charge lands after the walk because its size is not known before it; a
+// single walk is bounded by the compiled source, and it is the repetition that
+// the quota now sees.
+//
+// It latches rather than returning an error, because several of these scans
+// run while an error is already propagating -- a loop unwinding a next, a try
+// body about to select a rescue clause -- and replacing that error with a
+// quota error there would change which clause runs. The latch leaves the
+// in-flight error alone and still ends the execution: step returns the latched
+// error before charging anything else.
+func (exec *Execution) chargePredeclareScan(visited int) {
+	if exec == nil {
+		return
+	}
+	steps := visited / predeclareScanStatementsPerStep
+	if steps <= 0 {
+		return
+	}
+	_ = exec.stepN(steps)
 }
 
 func statementCanPostPredeclareLocalBindings(stmt Statement) bool {
@@ -3609,6 +3646,9 @@ func predeclareAssignmentLocalBindings(stmt *AssignStmt, env *Env) {
 type localBindingCollector struct {
 	names []string
 	seen  map[string]struct{}
+	// visited counts the statements the walk touched, which is what the scan
+	// costs; the name count is what it produced (see chargePredeclareScan).
+	visited int
 }
 
 func (c *localBindingCollector) add(name string) {
@@ -3624,6 +3664,7 @@ func (c *localBindingCollector) add(name string) {
 
 func collectLocalBindingNames(stmts []Statement, collector *localBindingCollector) {
 	for _, stmt := range stmts {
+		collector.visited++
 		switch s := stmt.(type) {
 		case *AssignStmt:
 			collectTargetBindingNames(s.Target, collector)
@@ -4370,7 +4411,7 @@ func (exec *Execution) evalStatementWithLocalBindings(stmt Statement, env *Env) 
 	if err != nil {
 		return val, returned, err
 	}
-	predeclareStatementPostLocalBindings(stmt, env)
+	exec.predeclareStatementPostLocalBindings(stmt, env)
 	return val, returned, nil
 }
 
@@ -4577,8 +4618,8 @@ func (exec *Execution) evalIfStatementExpression(stmt *IfStmt, env *Env) (Value,
 
 func (exec *Execution) evalIfStatement(stmt *IfStmt, env *Env) (Value, bool, error) {
 	if stmt.ModifierBodyFirst {
-		predeclareLocalBindingsFromStatements(stmt.Consequent, env)
-		predeclareLocalBindingsFromStatements(stmt.Alternate, env)
+		exec.predeclareLocalBindingsFromStatements(stmt.Consequent, env)
+		exec.predeclareLocalBindingsFromStatements(stmt.Alternate, env)
 	}
 	val, err := exec.evalExpression(stmt.Condition, env)
 	if returnVal, ok := functionReturnValue(err); ok {
@@ -4592,12 +4633,12 @@ func (exec *Execution) evalIfStatement(stmt *IfStmt, env *Env) (Value, bool, err
 	}
 	if val.Truthy() {
 		if stmt.AlternateFirst {
-			predeclareLocalBindingsFromStatements(stmt.Alternate, env)
+			exec.predeclareLocalBindingsFromStatements(stmt.Alternate, env)
 		}
 		return exec.evalStatements(stmt.Consequent, env)
 	}
 	if !stmt.AlternateFirst {
-		predeclareLocalBindingsFromStatements(stmt.Consequent, env)
+		exec.predeclareLocalBindingsFromStatements(stmt.Consequent, env)
 	}
 	for _, clause := range stmt.ElseIf {
 		condVal, err := exec.evalExpression(clause.Condition, env)
@@ -4613,7 +4654,7 @@ func (exec *Execution) evalIfStatement(stmt *IfStmt, env *Env) (Value, bool, err
 		if condVal.Truthy() {
 			return exec.evalStatements(clause.Consequent, env)
 		}
-		predeclareLocalBindingsFromStatements(clause.Consequent, env)
+		exec.predeclareLocalBindingsFromStatements(clause.Consequent, env)
 	}
 	if len(stmt.Alternate) > 0 {
 		return exec.evalStatements(stmt.Alternate, env)
@@ -4862,7 +4903,7 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 	for {
 		val, returned, err := exec.evalStatements(stmt.Body, env)
 		runElse := err == nil && !returned
-		predeclareLocalBindingsFromStatements(stmt.Body, env)
+		exec.predeclareLocalBindingsFromStatements(stmt.Body, env)
 
 		retried := false
 		if err != nil {
@@ -4879,7 +4920,7 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 					// later handler runs: the parser treated its assignments as
 					// surrounding-scope locals, so a matching clause reading such a
 					// name sees the same nil it would after the block.
-					predeclareRescueClauseLocalBindings(clause, env)
+					exec.predeclareRescueClauseLocalBindings(clause, env)
 					continue
 				}
 				if len(clause.Body) == 0 {
@@ -4896,7 +4937,7 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 				exec.rescueDepth--
 				exec.popRescuedError()
 				if rescueEnv != env {
-					copyRescueLocalAssignments(clause, rescueEnv, env)
+					exec.copyRescueLocalAssignments(clause, rescueEnv, env)
 				}
 				if isRescueRetrySignal(rescueErr) {
 					retried = true
@@ -4923,12 +4964,12 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 			}
 			continue
 		}
-		predeclareRescueLocalBindings(stmt, env)
+		exec.predeclareRescueLocalBindings(stmt, env)
 
 		if runElse && len(stmt.Else) > 0 {
 			val, returned, err = exec.evalStatements(stmt.Else, env)
 		}
-		predeclareLocalBindingsFromStatements(stmt.Else, env)
+		exec.predeclareLocalBindingsFromStatements(stmt.Else, env)
 
 		if len(stmt.Ensure) > 0 {
 			latchedBeforeEnsure := exec.exhausted != nil
@@ -4958,7 +4999,7 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 	}
 }
 
-func copyRescueLocalAssignments(clause *RescueClause, from, to *Env) {
+func (exec *Execution) copyRescueLocalAssignments(clause *RescueClause, from, to *Env) {
 	var collector localBindingCollector
 	collectLocalBindingNames(clause.Body, &collector)
 	for _, name := range collector.names {
@@ -4972,15 +5013,16 @@ func copyRescueLocalAssignments(clause *RescueClause, from, to *Env) {
 		to.PredeclareLocal(name)
 		to.Assign(name, val)
 	}
+	exec.chargePredeclareScan(collector.visited)
 }
 
-func predeclareRescueLocalBindings(stmt *TryStmt, env *Env) {
+func (exec *Execution) predeclareRescueLocalBindings(stmt *TryStmt, env *Env) {
 	for i := range stmt.Rescues {
-		predeclareRescueClauseLocalBindings(&stmt.Rescues[i], env)
+		exec.predeclareRescueClauseLocalBindings(&stmt.Rescues[i], env)
 	}
 }
 
-func predeclareRescueClauseLocalBindings(clause *RescueClause, env *Env) {
+func (exec *Execution) predeclareRescueClauseLocalBindings(clause *RescueClause, env *Env) {
 	var collector localBindingCollector
 	collectLocalBindingNames(clause.Body, &collector)
 	for _, name := range collector.names {
@@ -4989,6 +5031,7 @@ func predeclareRescueClauseLocalBindings(clause *RescueClause, env *Env) {
 		}
 		env.PredeclareLocal(name)
 	}
+	exec.chargePredeclareScan(collector.visited)
 }
 
 func rescuedErrorValue(err error) Value {
