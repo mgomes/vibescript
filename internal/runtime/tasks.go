@@ -709,36 +709,57 @@ func (group *taskGroup) lazyGlobalsForJob() *taskLazyGlobals {
 	return newTaskLazyGlobals(group.globals, false, group.detachedGlobals)
 }
 
-// drainDeferred runs the jobs a starved group could not hand to a worker, on
-// the goroutine that is waiting for them. Serial execution is a valid schedule
-// for tasks, and running them here rather than at spawn keeps the shared pool
-// a hard cap without making spawn block.
-func (group *taskGroup) drainDeferred() {
+// drainDeferred runs the jobs a starved group could not put on a slot, on the
+// goroutine that is waiting for them, and stops as soon as done is closed. A
+// nil done drains everything, which is what closing the scope wants.
+//
+// Stopping at done matters because a waiter is only entitled to the work it is
+// waiting for: running the rest would trap a parent inside an unrelated job
+// that is itself waiting on a host action the parent performs once this wait
+// returns.
+//
+// Only a group with nothing on a slot needs this. A group that has a job
+// running works through its queue on that slot, and running one here as well
+// would put more script on the CPU at once than the pool allowed.
+func (group *taskGroup) drainDeferred(done <-chan struct{}) {
 	for {
+		if done != nil {
+			select {
+			case <-done:
+				return
+			default:
+			}
+		}
 		group.mu.Lock()
-		// Only a group with nothing running needs a waiter to run its work.
-		// A group that has a job on a slot runs its queue on that slot,
-		// and running one here as well would put more script on the CPU at once
-		// than the pool allowed -- which is the whole point of the pool.
 		if len(group.deferred) == 0 || group.running > 0 {
 			group.mu.Unlock()
 			return
 		}
 		job := group.deferred[0]
 		group.deferred = group.deferred[1:]
+		// Counted while it runs, even though it is on a borrowed goroutine: a
+		// slot released elsewhere would otherwise see room in this group and
+		// hand it a second job to run beside this one, past the max the group
+		// was given.
+		group.running++
 		group.mu.Unlock()
+
 		group.runJob(job)
+
+		group.mu.Lock()
+		group.running--
+		group.mu.Unlock()
 	}
 }
 
 func (group *taskGroup) wait() error {
-	group.drainDeferred()
+	group.drainDeferred(nil)
 	group.tasks.Wait()
 	return group.err()
 }
 
 func (group *taskGroup) closeAndWait() error {
-	group.drainDeferred()
+	group.drainDeferred(nil)
 	group.mu.Lock()
 	group.closed = true
 	group.mu.Unlock()
@@ -920,7 +941,7 @@ func (handle *taskHandle) substituteRootCause(err error) error {
 }
 
 func (handle *taskHandle) wait(ctx context.Context) (Value, error) {
-	handle.group.drainDeferred()
+	handle.group.drainDeferred(handle.done)
 	select {
 	case <-handle.done:
 		return handle.result()
@@ -930,7 +951,7 @@ func (handle *taskHandle) wait(ctx context.Context) (Value, error) {
 }
 
 func (handle *taskHandle) result() (Value, error) {
-	handle.group.drainDeferred()
+	handle.group.drainDeferred(handle.done)
 	<-handle.done
 	return handle.value, handle.err
 }

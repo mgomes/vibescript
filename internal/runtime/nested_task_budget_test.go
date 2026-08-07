@@ -438,3 +438,156 @@ func (c blockingGateCapability) Bind(binding CapabilityBinding) (map[string]Valu
 		}),
 	}, nil
 }
+
+// TestWaitingOnOneHandleDoesNotRunUnrelatedWork pins that a waiter runs only
+// the work it is waiting for.
+//
+// A starved group runs its queue on whatever waits for it. Draining the whole
+// queue there trapped the parent inside a later job: if that job waits on a
+// host action the parent performs once the first result is in hand, the parent
+// never returns to perform it.
+func TestWaitingOnOneHandleDoesNotRunUnrelatedWork(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MaxTaskConcurrency: 2}, `def quick(n)
+  n
+end
+
+def waiter(n)
+  probe.await_gate(n)
+  n
+end
+
+def nested(n)
+  Tasks.run(max: 2) do |tasks|
+    a = tasks.spawn(:quick, 1)
+    b = tasks.spawn(:waiter, 7)
+    a.value
+    probe.open_gate(7)
+    b.value
+  end
+end
+
+def run()
+  Tasks.map([1, 2], max: 2, with: :nested)
+end`)
+
+	assertTaskTreeMakesProgress(t, script,
+		"awaiting the first handle ran the second job, so the gate it waits on was never opened")
+}
+
+// TestInlineWorkCountsAgainstTheGroupMax pins that a job run inline on a
+// waiter still occupies its group's concurrency, so a slot freed elsewhere
+// cannot start a second job beside it.
+//
+// The starved group here is max:1 and holds two jobs, so its parent runs the
+// first inline. A sibling finishing at that moment returns its slot, and if the
+// inline job is not counted the group looks idle and takes that slot for its
+// second job, running two tasks at once in a group whose max says one.
+func TestInlineWorkCountsAgainstTheGroupMax(t *testing.T) {
+	t.Parallel()
+
+	var peak, running atomic.Int64
+	// Only the starved group's tasks touch the probe, so what it counts is that
+	// group's concurrency rather than the tree's.
+	script := compileScriptWithConfig(t, Config{MaxTaskConcurrency: 2}, `def busy(n)
+  probe.enter(n)
+  probe.leave(n)
+  n
+end
+
+def nested(n)
+  Tasks.run(max: 1) do |tasks|
+    a = tasks.spawn(:busy, 1)
+    b = tasks.spawn(:busy, 2)
+    a.value
+    b.value
+  end
+end
+
+def holder(n)
+  probe.await_started()
+  n
+end
+
+def fanout(n)
+  if n == 1
+    nested(n)
+  else
+    holder(n)
+  end
+end
+
+def run()
+  Tasks.map([1, 2], max: 2, with: :fanout)
+end`)
+
+	// The sibling holds its slot until the inline job is running, so the slot
+	// it returns lands exactly while that job is in flight. Without it the
+	// sibling finishes first, the group is never starved, and the path under
+	// test is not reached at all.
+	probe := concurrencyProbeCapability{
+		peak: &peak, running: &running,
+		started: make(chan struct{}), mu: &sync.Mutex{},
+	}
+	if _, err := script.Call(context.Background(), "run", nil,
+		callOptionsWithCapabilities(probe)); err != nil {
+		t.Fatalf("nested tasks failed: %v", err)
+	}
+	if got := peak.Load(); got > 1 {
+		t.Fatalf("a max:1 group ran %d tasks at once; inline work must count against the max", got)
+	}
+}
+
+// concurrencyProbeCapability records how many tasks are inside the probe at
+// once, which is what a group's max bounds, and lets one task wait until
+// another has entered.
+type concurrencyProbeCapability struct {
+	peak    *atomic.Int64
+	running *atomic.Int64
+	started chan struct{}
+	mu      *sync.Mutex
+}
+
+func (c concurrencyProbeCapability) markStarted() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	select {
+	case <-c.started:
+	default:
+		close(c.started)
+	}
+}
+
+func (c concurrencyProbeCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	peak, running := c.peak, c.running
+	return map[string]Value{
+		"probe": NewObject(map[string]Value{
+			"enter": NewBuiltin("probe.enter", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+				now := running.Add(1)
+				for {
+					seen := peak.Load()
+					if now <= seen || peak.CompareAndSwap(seen, now) {
+						break
+					}
+				}
+				c.markStarted()
+				// Long enough for a slot returned meanwhile to be handed on and
+				// overlap this task, which is the race under test.
+				time.Sleep(50 * time.Millisecond)
+				return NewNil(), nil
+			}),
+			"leave": NewBuiltin("probe.leave", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+				running.Add(-1)
+				return NewNil(), nil
+			}),
+			"await_started": NewBuiltin("probe.await_started", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+				select {
+				case <-c.started:
+				case <-time.After(15 * time.Second):
+				}
+				return NewNil(), nil
+			}),
+		}),
+	}, nil
+}
