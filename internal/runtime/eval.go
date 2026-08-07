@@ -3590,12 +3590,12 @@ func (exec *Execution) predeclareLocalBindingsFromStatements(stmts []Statement, 
 	exec.chargePredeclareScan(collector.visited)
 }
 
-// predeclareScanStatementsPerStep amortizes a predeclaration scan over the
-// statements it walks. A body of a few statements stays free, which is what
-// ordinary code costs today.
-const predeclareScanStatementsPerStep = 64
+// predeclareScanNodesPerStep amortizes a predeclaration scan over the nodes it
+// walks: statements, and the assignment targets inside them. A body of a few
+// statements stays free, which is what ordinary code costs today.
+const predeclareScanNodesPerStep = 64
 
-// chargePredeclareScan bills the statements a predeclaration scan walked.
+// chargePredeclareScan bills the nodes a predeclaration scan walked.
 //
 // The walk is Go-side work the per-statement charge never sees, and it is not
 // proportional to what ran: a compound statement rescans its entire subtree
@@ -3619,7 +3619,7 @@ func (exec *Execution) chargePredeclareScan(visited int) {
 	if exec == nil {
 		return
 	}
-	steps := visited / predeclareScanStatementsPerStep
+	steps := visited / predeclareScanNodesPerStep
 	if steps <= 0 {
 		return
 	}
@@ -3693,6 +3693,11 @@ func collectLocalBindingNames(stmts []Statement, collector *localBindingCollecto
 }
 
 func collectTargetBindingNames(target Expression, collector *localBindingCollector) {
+	// A destructuring target is one statement but arbitrarily many names, and
+	// walking it is the same per-name work as walking that many statements.
+	// Counting only statements left `a0, a1, ... = value` free however wide it
+	// was, so a loop could rescan a source-limit-sized target for nothing.
+	collector.visited++
 	switch t := target.(type) {
 	case *Identifier:
 		collector.add(t.Name)
