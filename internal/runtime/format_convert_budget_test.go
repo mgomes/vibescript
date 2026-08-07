@@ -89,3 +89,45 @@ end`, size)
 		t.Fatalf("formatted length = %d, want %d", got.Int(), want)
 	}
 }
+
+// aliasToStringClass returns an instance field from to_s, which is the common
+// shape: the string handed back is one the argument already holds.
+const aliasToStringClass = `
+class Alias
+  def initialize(n)
+    @text = "x" * n
+  end
+  def to_s
+    @text
+  end
+end
+`
+
+// TestFormatDoesNotChargeConversionsTheArgumentsAlreadyHold pins that a
+// conversion is charged for what it adds, not for what it hands back.
+//
+// A to_s that returns an instance field produces no new memory, and several
+// arguments can return the same backing. Charging each by its length billed
+// memory the arguments were already counted for, which rejects a call whose
+// real footprint fits.
+func TestFormatDoesNotChargeConversionsTheArgumentsAlreadyHold(t *testing.T) {
+	t.Parallel()
+
+	const size = 200 << 10
+	src := aliasToStringClass + fmt.Sprintf(`
+def run()
+  a = Alias.new(%d)
+  format("%%s %%s %%s %%s", a, a, a, a).bytesize
+end`, size)
+	// One 200 KiB payload, aliased four times. The output is charged either
+	// way; what the quota catches is the extra 600 KiB of aliases billed as
+	// though each conversion were fresh.
+	script := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: 1300 << 10}, src)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("aliased conversions must not be charged as fresh memory: %v", err)
+	}
+	if want := int64(4*size + 3); got.Int() != want {
+		t.Fatalf("formatted length = %d, want %d", got.Int(), want)
+	}
+}

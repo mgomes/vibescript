@@ -546,8 +546,11 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 // is done because the strings stay live that whole time. The caller releases
 // it.
 func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, func(), error) {
+	// Built before the reservation so its baseline snapshots the scratch
+	// without the conversions, which the reservation would otherwise charge a
+	// second time.
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	scratch := newRetainedOutputScratch(exec)
-	reserved := 0
 	var converted []Value
 	for i, val := range values {
 		rendered, substituted, err := exec.instanceStringValue(val, Position{})
@@ -558,10 +561,17 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 		if !substituted {
 			continue
 		}
-		// Only a substituted value is new memory. An argument passed straight
-		// through is the caller's own, already counted through args.
-		reserved = saturatingAdd(reserved, len(rendered.String()))
-		scratch.reserve(reserved)
+		// Charged against the baseline rather than by length, because a
+		// substituted value need not be new memory: a to_s that returns an
+		// instance field hands back a string the arguments already hold, and
+		// several arguments can hand back the same one. The estimator has seen
+		// those through args, so it prices them at nothing and only a freshly
+		// built string costs what it is.
+		if err := acc.add(rendered, 0); err != nil {
+			scratch.release()
+			return nil, nil, err
+		}
+		scratch.reserve(acc.accumulatedBytes(0))
 		if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
 			scratch.release()
 			return nil, nil, err
