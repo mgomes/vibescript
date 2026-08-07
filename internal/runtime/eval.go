@@ -3293,6 +3293,17 @@ func (exec *Execution) evalForLoop(stmt *ForStmt, env *Env, mode loopResultMode)
 
 	switch iterable.Kind() {
 	case KindArray:
+		// `for x in a` walks the header captured here while its body runs
+		// arbitrary script, which is what a block-driving builtin does, so it
+		// takes the same claim on the backing (see array_shrink.go). The claim
+		// carries the current builtin depth rather than a depth of its own:
+		// the loop body runs at that depth, and a shrink is always a builtin
+		// dispatched from the body, so it is strictly deeper -- the same
+		// enclosing-frame relation a dispatch claim expresses. That holds
+		// however far the body wanders, since a script function call in
+		// between leaves the builtin depth alone.
+		heldBacking := exec.holdArrayBacking(iterable)
+		defer exec.releaseArrayBacking(heldBacking)
 		for _, item := range iterable.Array() {
 			if err := exec.step(); err != nil {
 				return NewNil(), false, exec.wrapError(err, stmt.Pos())

@@ -7,14 +7,19 @@ import (
 )
 
 // TestArrayShrinkDuringIterationKeepsSnapshot pins that an in-place shrink made
-// from inside a block cannot alter what the driver still has to yield.
+// from inside a driver's body cannot alter what the driver still has to yield.
 //
-// Array drivers snapshot receiver.Array() before the first yield and walk that
-// header while the block runs (see TestArrayMutationDuringIteration), so a
-// shrink that zeroes a slot the driver has not reached yet would hand the block
-// a nil that was never in the array. pop clears from the tail, which a forward
+// A driver snapshots the element header before it runs any script and walks
+// that header while the script runs (see TestArrayMutationDuringIteration), so
+// a shrink that zeroes a slot the driver has not reached yet would hand it a
+// nil that was never in the array. pop clears from the tail, which a forward
 // driver has not reached; shift clears from the head, which a reverse driver
 // has not reached.
+//
+// The cases cover both kinds of driver: the block-driving member functions, and
+// the evaluator's `for x in a`, which never reaches builtin dispatch. The
+// for-loop cases also run the shrink from inside a script function, since the
+// claim has to outlast a call that leaves the builtin depth alone.
 func TestArrayShrinkDuringIterationKeepsSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -66,6 +71,62 @@ def shift_during_each()
     a.shift
   end
   seen
+end
+
+def drain(z)
+  z.pop
+end
+
+def pop_during_for_in()
+  a = [1, 2, 3]
+  seen = []
+  for x in a
+    seen.push(x)
+    a.pop
+  end
+  seen
+end
+
+def pop_count_during_for_in()
+  a = [1, 2, 3, 4]
+  seen = []
+  for x in a
+    seen.push(x)
+    a.pop(1)
+  end
+  seen
+end
+
+def shift_during_for_in()
+  a = [1, 2, 3]
+  seen = []
+  for x in a
+    seen.push(x)
+    a.shift
+  end
+  seen
+end
+
+def pop_during_for_in_via_function()
+  a = [1, 2, 3]
+  seen = []
+  for x in a
+    seen.push(x)
+    drain(a)
+  end
+  seen
+end
+
+def pop_during_for_in_inside_each()
+  a = [1, 2, 3]
+  seen = []
+  a.each do |x|
+    for y in a
+      seen.push(y)
+      a.pop
+    end
+  end
+  seen
 end`)
 
 	cases := []struct {
@@ -77,6 +138,11 @@ end`)
 		{"shift_during_reverse_each", `[3, 2, 1]`},
 		{"shift_count_during_reverse_each", `[4, 3, 2, 1]`},
 		{"shift_during_each", `[1, 2, 3]`},
+		{"pop_during_for_in", `[1, 2, 3]`},
+		{"pop_count_during_for_in", `[1, 2, 3, 4]`},
+		{"shift_during_for_in", `[1, 2, 3]`},
+		{"pop_during_for_in_via_function", `[1, 2, 3]`},
+		{"pop_during_for_in_inside_each", `[1, 2, 3]`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.function, func(t *testing.T) {
@@ -93,9 +159,10 @@ end`)
 	}
 }
 
-// minStepsToDrainDuringEach returns the smallest step quota that lets a
-// block-driven pop drain of an n-element array run to completion.
-func minStepsToDrainDuringEach(t *testing.T, n int) int {
+// minStepsToDrainInside returns the smallest step quota that lets a pop drain
+// of an n-element array run to completion inside the given driver, whose body
+// is the single statement `a.pop`.
+func minStepsToDrainInside(t *testing.T, driver string, n int) int {
 	t.Helper()
 
 	src := fmt.Sprintf(`def run()
@@ -105,11 +172,9 @@ func minStepsToDrainDuringEach(t *testing.T, n int) int {
     a.push(i)
     i = i + 1
   end
-  a.each do |x|
-    a.pop
-  end
+  %s
   a.size
-end`, n)
+end`, n, driver)
 
 	lo, hi := 1, n*n
 	for lo < hi {
@@ -124,8 +189,8 @@ end`, n)
 	return lo
 }
 
-// TestShrinkDuringIterationStaysLinear pins that only the first shrink inside
-// an iteration copies. The copy leaves the driver's captured header alone by
+// TestShrinkDuringIterationStaysLinear pins that only the first shrink inside a
+// driver's body copies. The copy leaves the driver's captured header alone by
 // giving the receiver a new backing, which the driver is not walking, so every
 // later shrink can go back to zeroing in place. Copying on every shrink would
 // be just as correct and would make this drain quadratic, so the step cost of
@@ -133,12 +198,27 @@ end`, n)
 func TestShrinkDuringIterationStaysLinear(t *testing.T) {
 	t.Parallel()
 
-	small := minStepsToDrainDuringEach(t, 100)
-	large := minStepsToDrainDuringEach(t, 400)
-	// Four times the elements costs about four times the steps when one copy
-	// is amortized over the drain, and about sixteen when every pop copies.
-	if limit := 6 * small; large > limit {
-		t.Fatalf("draining 400 elements inside each cost %d steps against %d for 100; "+
-			"want at most %d, or the copy is not amortized", large, small, limit)
+	drivers := map[string]string{
+		"each": `a.each do |x|
+    a.pop
+  end`,
+		"for_in": `for x in a
+    a.pop
+  end`,
+	}
+	for name, driver := range drivers {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			small := minStepsToDrainInside(t, driver, 100)
+			large := minStepsToDrainInside(t, driver, 400)
+			// Four times the elements costs about four times the steps when one
+			// copy is amortized over the drain, and about sixteen when every pop
+			// copies.
+			if limit := 6 * small; large > limit {
+				t.Fatalf("draining 400 elements inside %s cost %d steps against %d for 100; "+
+					"want at most %d, or the copy is not amortized", name, large, small, limit)
+			}
+		})
 	}
 }
