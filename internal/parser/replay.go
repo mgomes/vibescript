@@ -29,14 +29,16 @@ func noteSourceReplay(walked int) {
 // has already scanned past. The parser re-reads a construct directly from the
 // input whenever the lexer tokenized it under the wrong reading -- a
 // command-argument regex the lexer took for division, a percent-array literal
-// it took for modulo -- and each of those starts by resolving the byte offset a
-// token position names.
+// it took for modulo -- and each of those needs the byte offset a token
+// position names and the lexer state that held there.
 //
-// That used to walk the input from byte 0 on every request. Since a "/"
-// following a callee that is not a declared local reaches it, a file of
-// ordinary divisions cost the square of its size to parse, all of it before any
-// script step quota can meter it (#21): 20,000 `f / 2` lines took 1.26s, and
-// now take 14ms.
+// Both used to start over at byte 0 on every request: resolving a position
+// walked the input counting lines, and rebuilding lexer state re-lexed
+// everything before the offset. Since a "/" following a callee that is not a
+// declared local reaches the first of those, a file of ordinary divisions cost
+// the square of its size to parse, all of it before any script step quota can
+// meter it (#21). 20,000 `f / 2` lines took 1.26s and 5,000 `f /a/` lines 3.2s;
+// both are now under 15ms.
 //
 // One replay is shared by every lexer over the same input. It is deliberately
 // not rolled back by parser.restore, for the same reason the percent-scan
@@ -44,6 +46,40 @@ func noteSourceReplay(walked int) {
 // not change.
 type sourceReplay struct {
 	lines lineIndex
+
+	// scan is the forward-only re-lex stateBefore answers from, parked at the
+	// offset the last request stopped at.
+	scan *lexer
+}
+
+// stateBefore returns the bracket depth, bracket stack, and pending ternaries
+// that hold just before the first token starting at or after offset.
+//
+// Requests arrive in source order as the parse advances, so the re-lex stays
+// where the previous request left it and resumes from there. Only a request
+// pointing behind it -- after a speculative parse was rolled back, say --
+// starts over, and the next request in source order resumes again.
+func (r *sourceReplay) stateBefore(offset int, budget *percentScanBudget) (int, []bracketFrame, []ternaryFrame) {
+	if r.scan == nil || r.scan.currentOffset() > offset {
+		r.scan = newLexerWithBudget(r.lines.input, budget)
+	}
+	resumed := r.scan.currentOffset()
+	for r.scan.ch != 0 {
+		if _, ok := r.scan.skipWhitespaceAndComments(); ok {
+			continue
+		}
+		if r.scan.currentOffset() >= offset {
+			break
+		}
+		if tok := r.scan.NextToken(); tok.Type == ast.TokenEOF {
+			break
+		}
+	}
+	noteSourceReplay(r.scan.currentOffset() - resumed)
+
+	return r.scan.bracketDepth,
+		append([]bracketFrame(nil), r.scan.bracketStack...),
+		append([]ternaryFrame(nil), r.scan.ternaryStack...)
 }
 
 // lineIndex maps between byte offsets and the 1-indexed line/column positions

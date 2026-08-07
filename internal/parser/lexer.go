@@ -609,16 +609,16 @@ func (l *lexer) currentOffset() int {
 
 // seek repositions the lexer so the next scanned token begins at or after
 // the given byte offset. Line and column state comes from the source index
-// rather than from replaying readRune over everything before offset (see
-// sourceReplay). last becomes lastToken so gating that depends on the
-// preceding token (such as percent-literal and newline handling) behaves as
-// if that token had just been scanned.
+// and the bracket and ternary state from the shared replay, neither of which
+// restarts at byte 0 (see sourceReplay). last becomes lastToken so gating
+// that depends on the preceding token (such as percent-literal and newline
+// handling) behaves as if that token had just been scanned.
 func (l *lexer) seek(offset int, last ast.Token) {
 	structuralOffset := offset
 	if start, ok := l.offsetForPosition(last.Pos); ok && start < offset {
 		structuralOffset = start
 	}
-	bracketDepth, bracketStack, ternaryStack := lexerStructuralStateBefore(l.input, structuralOffset, l.percentScan)
+	bracketDepth, bracketStack, ternaryStack := l.replay.stateBefore(structuralOffset, l.percentScan)
 
 	// Landing one rune short of the target and reading it leaves every field
 	// readRune maintains -- including the previous rune's position, which the
@@ -639,25 +639,6 @@ func (l *lexer) seek(offset int, last ast.Token) {
 	l.prevPrevToken = ast.Token{}
 	l.prevToken = ast.Token{}
 	l.lastToken = last
-}
-
-func lexerStructuralStateBefore(input string, offset int, budget *percentScanBudget) (int, []bracketFrame, []ternaryFrame) {
-	scan := newLexerWithBudget(input, budget)
-	for scan.ch != 0 {
-		if _, ok := scan.skipWhitespaceAndComments(); ok {
-			continue
-		}
-		if scan.currentOffset() >= offset {
-			break
-		}
-		tok := scan.NextToken()
-		if tok.Type == ast.TokenEOF {
-			break
-		}
-	}
-	return scan.bracketDepth,
-		append([]bracketFrame(nil), scan.bracketStack...),
-		append([]ternaryFrame(nil), scan.ternaryStack...)
 }
 
 func (l *lexer) makeToken(tt ast.TokenType, literal string) ast.Token {
