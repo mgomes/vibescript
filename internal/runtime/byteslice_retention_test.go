@@ -119,21 +119,39 @@ end`)
 }
 
 // TestBytesliceCopyIsPricedBeforeItIsMade pins that the detaching copy is
-// reserved against the memory quota before it is allocated. The copy coexists
-// with the receiver it is taken from, and an ephemeral receiver is live for
-// exactly that window, so neither the pre-call nor the post-call check sees
-// both of them at once.
+// reserved against the memory quota before it is allocated. The copy is live
+// alongside the receiver it is taken from, and an ephemeral receiver is
+// reachable only from the Go stack for exactly that window, so the pre-call
+// check sees no copy and the post-call check no longer sees the receiver.
+//
+// The quota is sized so that only the peak is over it: the ephemeral megabyte
+// receiver fits on its own and so does the near-megabyte result, so an
+// unreserved copy would run to completion.
 func TestBytesliceCopyIsPricedBeforeItIsMade(t *testing.T) {
 	t.Parallel()
 
-	script := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: 2 << 20},
-		`def run(seed)
-  s = seed * 200
-  s.reverse.byteslice(0, s.bytesize - 1)
-end`)
 	seed := strings.Repeat("abcdefghij", 500)
+	const copies = 200
+	script := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: 3 << 19},
+		`def run(seed)
+  (seed * 200).byteslice(0, seed.bytesize * 200 - 1)
+end`)
 	if _, err := script.Call(context.Background(), "run", []Value{NewString(seed)}, CallOptions{}); err == nil {
 		t.Fatal("a copy that cannot fit beside its receiver must be rejected")
+	}
+
+	// The same receiver and the same result, one at a time, are each well under
+	// the quota -- so the rejection above is the peak, not either endpoint.
+	fits := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: 3 << 19},
+		`def run(seed)
+  (seed * 200).bytesize
+end`)
+	got, err := fits.Call(context.Background(), "run", []Value{NewString(seed)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("the receiver alone must fit under the quota: %v", err)
+	}
+	if want := int64(len(seed) * copies); got.Int() != want {
+		t.Fatalf("receiver bytesize = %d, want %d", got.Int(), want)
 	}
 }
 
@@ -153,10 +171,16 @@ func TestBytesliceChargesTheBytesItCopies(t *testing.T) {
 			"follow the copy, not the receiver", small, large)
 	}
 
-	// A slice that copies most of its receiver must cost more than that.
-	wide := minStepsForStringOp(t, "s.byteslice(0, s.bytesize - 1)", 64<<10)
-	if wide <= large {
-		t.Fatalf("a near-whole slice cost %d steps and a one-byte slice %d; copying more must cost more",
-			wide, large)
+	// The same near-whole slice over an eight times longer receiver copies eight
+	// times as many bytes and must cost meaningfully more. Comparing one
+	// expression against itself is what isolates the copy: a wider expression
+	// evaluated once would cost more for its own operators alone, whether or not
+	// the bytes it copies are charged at all.
+	const expr = "s.byteslice(0, s.bytesize - 1)"
+	narrow := minStepsForStringOp(t, expr, 8<<10)
+	wide := minStepsForStringOp(t, expr, 64<<10)
+	if want := narrow + (64<<10-8<<10)/stringScanBytesPerStep; wide < want {
+		t.Fatalf("copying 64 KiB cost %d steps and copying 8 KiB %d; want at least %d, one step "+
+			"per %d copied bytes", wide, narrow, want, stringScanBytesPerStep)
 	}
 }

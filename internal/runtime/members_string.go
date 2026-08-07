@@ -1551,37 +1551,53 @@ func stringRuneRangeSlice(text string, rng Range) (string, bool) {
 // byte-oriented semantics.
 func stringByteslice(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	text := receiver.String()
+	sub, inRange, err := stringBytesliceWindow(text, args)
+	if err != nil {
+		return NewNil(), err
+	}
+	if !inRange {
+		return NewNil(), nil
+	}
+	detached, err := detachedByteslice(exec, text, sub, receiver, args, kwargs, block)
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewString(detached), nil
+}
+
+// stringBytesliceWindow resolves String#byteslice's arguments against text and
+// returns the byte window they select. inRange is false for the out-of-range
+// selections that yield nil, which is distinct from the in-range selections
+// that yield an empty string.
+func stringBytesliceWindow(text string, args []Value) (string, bool, error) {
 	switch len(args) {
 	case 1:
 		if args[0].Kind() == KindRange {
-			substr, inRange := stringByteRangeSlice(text, args[0].Range())
-			if !inRange {
-				return NewNil(), nil
-			}
-			return NewString(detachedByteslice(text, substr)), nil
+			sub, inRange := stringByteRangeSlice(text, args[0].Range())
+			return sub, inRange, nil
 		}
 		index, err := valueToInt(args[0])
 		if err != nil {
-			return NewNil(), fmt.Errorf("string.byteslice index must be an integer or range")
+			return "", false, fmt.Errorf("string.byteslice index must be an integer or range")
 		}
 		if index < 0 {
 			index += len(text)
 		}
 		if index < 0 || index >= len(text) {
-			return NewNil(), nil
+			return "", false, nil
 		}
-		return NewString(detachedByteslice(text, text[index:index+1])), nil
+		return text[index : index+1], true, nil
 	case 2:
 		start, err := valueToInt(args[0])
 		if err != nil {
-			return NewNil(), fmt.Errorf("string.byteslice start must be an integer")
+			return "", false, fmt.Errorf("string.byteslice start must be an integer")
 		}
 		length, err := valueToInt(args[1])
 		if err != nil {
-			return NewNil(), fmt.Errorf("string.byteslice length must be an integer")
+			return "", false, fmt.Errorf("string.byteslice length must be an integer")
 		}
 		if length < 0 {
-			return NewNil(), nil
+			return "", false, nil
 		}
 		if start < 0 {
 			start += len(text)
@@ -1589,15 +1605,15 @@ func stringByteslice(exec *Execution, receiver Value, args []Value, kwargs map[s
 		// A start exactly at the length is valid and yields an empty string; only
 		// a start before zero or past the length is out of range.
 		if start < 0 || start > len(text) {
-			return NewNil(), nil
+			return "", false, nil
 		}
 		end := start + length
 		if end > len(text) || end < start {
 			end = len(text)
 		}
-		return NewString(detachedByteslice(text, text[start:end])), nil
+		return text[start:end], true, nil
 	default:
-		return NewNil(), fmt.Errorf("string.byteslice expects an index, a range, or a start and length")
+		return "", false, fmt.Errorf("string.byteslice expects an index, a range, or a start and length")
 	}
 }
 
@@ -5172,10 +5188,31 @@ func stringMemberTransforms(property string) (Value, error) {
 //
 // The copy bills the bytes it writes rather than the bytes it was taken from.
 // Charging by the receiver would make a one-byte slice of a large host string
-// cost the whole string, which is work byteslice never does.
-func detachedByteslice(text, sub string) string {
+// cost the whole string, which is work byteslice never does, so byteslice stays
+// exempt from the receiver-length charge and pays for its own copy here.
+//
+// The bytes are also reserved before they are allocated. The copy is live
+// alongside the string it was taken from, and for an ephemeral receiver --
+// `s.reverse.byteslice(...)` -- that receiver is reachable only from the Go
+// stack, so the pre-call check sees no copy and the post-call check no longer
+// sees the receiver. Folding the copy into the reserved scratch and rechecking
+// the live call roots is what prices that peak.
+func detachedByteslice(exec *Execution, text, sub string, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
 	if len(sub) == len(text) {
-		return sub
+		return sub, nil
 	}
-	return strings.Clone(sub)
+	// Some builtins are reachable without an execution, and those have no quota
+	// to charge or reserve against.
+	if exec == nil {
+		return strings.Clone(sub), nil
+	}
+	if err := exec.chargeStringScan(len(sub)); err != nil {
+		return "", err
+	}
+	delta := exec.reserveLoopScratch(len(sub))
+	defer exec.releaseLoopScratch(delta)
+	if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+		return "", err
+	}
+	return strings.Clone(sub), nil
 }
