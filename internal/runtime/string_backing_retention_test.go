@@ -408,3 +408,48 @@ func TestAlreadyIndependentWindowsAreNotCopiedAgain(t *testing.T) {
 		t.Fatal("a window onto the receiver was handed back without being copied")
 	}
 }
+
+// TestSliceCopyIsPricedBesideItsIgnoredArguments pins that the roots String#slice
+// accepts but ignores are still live when the detaching copy is reserved.
+//
+// Member dispatch hands slice keyword arguments and a block, and slice drops
+// both. They stay resident in the caller regardless, so an ephemeral receiver, an
+// ephemeral `junk:` value and the copy can all be resident at once. Reserving
+// against the receiver alone let that three-way peak through a quota that only
+// ever saw two of the three: the same script needed 2.0 MB before and needs 3.0
+// MB now.
+//
+// The quota below is sized so that only the peak is over it. Each pair fits on
+// its own, so the rejection is the peak rather than either endpoint.
+func TestSliceCopyIsPricedBesideItsIgnoredArguments(t *testing.T) {
+	t.Parallel()
+
+	seed := strings.Repeat("abcdefghij", 500)
+	const quota = 2_500_000
+	call := func(t *testing.T, source string) error {
+		t.Helper()
+		script := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: quota}, source)
+		_, err := script.Call(context.Background(), "run", []Value{NewString(seed)}, CallOptions{})
+		return err
+	}
+
+	if err := call(t, `def run(seed)
+  (seed * 200).slice(0, seed.length * 200 - 1, junk: seed * 200)
+end`); err == nil {
+		t.Fatal("a copy that cannot fit beside its receiver and an ignored keyword argument must be rejected")
+	}
+
+	// The same receiver and the same copy without the keyword argument fit.
+	if err := call(t, `def run(seed)
+  (seed * 200).slice(0, seed.length * 200 - 1)
+end`); err != nil {
+		t.Fatalf("receiver plus copy alone must fit under the quota: %v", err)
+	}
+
+	// So do the receiver and the keyword argument without a copy to make room for.
+	if err := call(t, `def run(seed)
+  (seed * 200).slice(0, 1, junk: seed * 200)
+end`); err != nil {
+		t.Fatalf("receiver plus keyword argument alone must fit under the quota: %v", err)
+	}
+}

@@ -1434,7 +1434,7 @@ func stringSlice(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	if len(args) == 2 {
 		second = args[1]
 	}
-	return stringSliceResult(exec, receiver, args[0], second, len(args) == 2)
+	return stringSliceResult(exec, receiver, args[0], second, len(args) == 2, kwargs, block)
 }
 
 // stringSliceResult builds String#slice's value, detaching it from the
@@ -1448,7 +1448,13 @@ func stringSlice(exec *Execution, receiver Value, args []Value, kwargs map[strin
 // The copy takes no charge of its own. chargeStringScanBeforeCall already
 // billed slice for its receiver's length, and a slice of the receiver can never
 // exceed it, so charging the copy on top would bill the same bytes twice.
-func stringSliceResult(exec *Execution, receiver, first, second Value, hasLength bool) (Value, error) {
+//
+// kwargs and block reach the reservation even though slice ignores them. Member
+// dispatch accepts both and keeps them live across the call, so an ephemeral
+// receiver, an ephemeral `junk:` value and the copy can be resident at once;
+// leaving them out let that three-way peak through a quota that only ever saw
+// two of the three.
+func stringSliceResult(exec *Execution, receiver, first, second Value, hasLength bool, kwargs map[string]Value, block Value) (Value, error) {
 	text := receiver.String()
 	if !hasLength && first.Kind() == KindString {
 		// A substring selector yields the argument itself rather than a window
@@ -1467,7 +1473,7 @@ func stringSliceResult(exec *Execution, receiver, first, second Value, hasLength
 	if hasLength {
 		count = 2
 	}
-	detached, err := detachedWindow(exec, text, window, receiver, args[:count], nil, NewNil())
+	detached, err := detachedWindow(exec, text, window, receiver, args[:count], kwargs, block)
 	if err != nil {
 		return NewNil(), err
 	}
