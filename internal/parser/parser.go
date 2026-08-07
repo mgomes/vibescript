@@ -42,6 +42,7 @@ type parser struct {
 	lineLimitedStopSuppression int
 	statementNesting           int
 	typeDepth                  int
+	parenlessCallDepth         int
 	localScopes                []localScope
 	parenlessArgDoStops        int
 	whenValueGroupDepths       []int
