@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 
@@ -71,6 +72,11 @@ type lexer struct {
 	// back the same one, which a rolled-back speculation would otherwise drop
 	// and make the next lookup pay to rebuild.
 	replay *sourceReplay
+
+	// ternaryScan is the shared record of which label colons of this source
+	// precede a ternary separator (see ternaryScanMemo). Every lexer over the
+	// same input shares it, including the throwaway ones the scans create.
+	ternaryScan *ternaryScanMemo
 }
 
 type ternaryFrame struct {
@@ -99,6 +105,7 @@ func newLexerWithBudget(input string, budget *percentScanBudget) *lexer {
 		column:      0,
 		percentScan: budget,
 		replay:      &sourceReplay{lines: lineIndex{input: input}},
+		ternaryScan: &ternaryScanMemo{},
 	}
 	l.readRune()
 	return l
@@ -1708,11 +1715,92 @@ func (l *lexer) labelFollowsParenlessArgumentComma() bool {
 	return l.prevToken.End.Column < l.lastToken.Pos.Column
 }
 
+// ternaryScanCounting and ternaryScanBytes let a test count the input bytes the
+// speculative label-colon scans walk, which is the work the complexity claim is
+// about. Wall-clock would fold in scheduling and the race and coverage
+// instrumentation this repository runs across three operating systems, and the
+// clock is too coarse on Windows to compare runs this short. Never set outside
+// tests; when off this costs one relaxed load per completed scan.
+var (
+	ternaryScanCounting atomic.Bool
+	ternaryScanBytes    atomic.Uint64
+)
+
+func noteTernaryScan(walked int) {
+	if ternaryScanCounting.Load() {
+		ternaryScanBytes.Add(uint64(walked))
+	}
+}
+
+// ternaryScanMemo records, per source, which label colons precede the separator
+// of the ternary they sit inside. The scan that settles one reads only the
+// source from that colon on, against the ternary the colon is being asked
+// about, so recording the answer under both spares every later scan that walks
+// over the same colon and keeps the reading it gives identical.
+//
+// One memo is shared by every lexer over the same input, including the
+// throwaway ones the scans create, which is where the sharing pays: a scan and
+// the scans it starts in turn all cover the same stretch of source. It is
+// deliberately not rolled back by parser.restore, for the same reason the
+// percent-scan allowance and the source replay are not: it describes the
+// source, which a discarded speculation did not change.
+type ternaryScanMemo struct {
+	answers map[ternaryScanKey]bool
+}
+
+// ternaryScanKey names one question: the colon at offset, asked about the
+// pending ternary that is innermost when the source has depth of them open. The
+// depth belongs in the key because a colon reached with an inner ternary also
+// pending is answering about that inner one instead.
+type ternaryScanKey struct {
+	offset int
+	depth  int
+}
+
+func (m *ternaryScanMemo) record(key ternaryScanKey, answer bool) {
+	if m.answers == nil {
+		m.answers = make(map[ternaryScanKey]bool)
+	}
+	m.answers[key] = answer
+}
+
+// labelColonPrecedesTernarySeparator reports whether the pending ternary the
+// colon under l.ch sits inside is closed by some later colon, which is what
+// makes this colon a label rather than the separator itself.
+//
+// It answers from the shared record when that colon has been settled already,
+// which is what keeps the scanning from compounding. The scan re-runs the whole
+// colon decision, so without the record a scan launched at one label colon
+// launched another at every later label colon, and each of those did the same
+// over the rest of the source: one more label doubled the work. A single line
+// of 22 spaced labels, 226 bytes in all, took 877ms to lex, and 26 labels took
+// over a minute (#31, #32).
 func (l *lexer) labelColonPrecedesTernarySeparator() bool {
+	key := ternaryScanKey{offset: l.currentOffset(), depth: len(l.ternaryStack)}
+	if answer, ok := l.ternaryScan.answers[key]; ok {
+		return answer
+	}
+	answer := l.scanForTernarySeparator(key.depth)
+	l.ternaryScan.record(key, answer)
+	return answer
+}
+
+// scanForTernarySeparator lexes forward from the colon under l.ch on a copy of
+// this lexer, reporting whether the pending ternary at outerDepth is closed
+// before the statement ends.
+//
+// It deliberately re-runs the full colon decision rather than looking for the
+// next colon that could close the ternary. Which colon that is depends on how
+// the colons before it are read: a label colon leaves the ternary pending while
+// a separator closes it, and a colon opening a quoted symbol swallows the value
+// after it. Reading them any more cheaply than by lexing them answers a
+// different question on some inputs.
+func (l *lexer) scanForTernarySeparator(outerDepth int) bool {
 	scan := *l
 	scan.bracketStack = append([]bracketFrame(nil), l.bracketStack...)
 	scan.ternaryStack = append([]ternaryFrame(nil), l.ternaryStack...)
-	outerDepth := len(scan.ternaryStack)
+	start := scan.currentOffset()
+	defer func() { noteTernaryScan(scan.currentOffset() - start) }()
 
 	scan.readRune()
 	for {
