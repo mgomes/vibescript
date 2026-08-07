@@ -4350,3 +4350,52 @@ func TestHashFetchValuesDoesNotOverReserve(t *testing.T) {
 	}
 	compareArrays(t, got, want)
 }
+
+// A default proc is script code, so values_at has the same shape as
+// fetch_values: each miss can resolve to a fresh near-quota value that lives
+// only in the Go-local out slice. The 29 retained 20KB defaults and the final
+// 600KB temporary each fit the 1MB quota alone, and the returned array is small
+// enough for the post-call check.
+func TestHashValuesAtChargesRetainedOutputDuringDefaultProcs(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run()
+      h = Hash.new { |hash, k|
+        if k == :m029
+          ("y" * 600000).length
+        else
+          "x" * 20000
+        end
+      }
+      h.values_at(`+fetchValuesKeyList(30)+`)
+    end
+    `)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("retained values_at output plus an in-proc temporary exceeded the quota but was accepted")
+	}
+}
+
+// The reservation is released when the builtin returns, so a values_at that
+// fits still resolves present keys and default-proc misses alike.
+func TestHashValuesAtDoesNotOverReserve(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run()
+      h = Hash.new { |hash, k| "x" * 20000 }
+      h[:a] = 1
+      h[:b] = 2
+      h.values_at(:a, :b, `+fetchValuesKeyList(30)+`)
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("a values_at that fits the quota was rejected: %v", err)
+	}
+	want := []Value{NewInt(1), NewInt(2)}
+	for range 30 {
+		want = append(want, NewString(strings.Repeat("x", 20000)))
+	}
+	compareArrays(t, got, want)
+}
