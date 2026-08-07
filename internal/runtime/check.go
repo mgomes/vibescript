@@ -12124,7 +12124,7 @@ func (c *scriptChecker) exactDynamicCallTargets(
 	}
 	if resolved {
 		if resolvedTarget.fn == nil && (resolvedTarget.name == "send" || resolvedTarget.name == "public_send") {
-			return c.exactForwardedCallTargets(call, resolvedTarget.name == "send", dynamicCandidates)
+			return c.exactForwardedCallTargets(call, resolvedTarget.name == "send", dynamicCandidates, 0)
 		}
 		return checkDynamicCallResolution{}
 	}
@@ -12133,7 +12133,7 @@ func (c *scriptChecker) exactDynamicCallTargets(
 		return checkDynamicCallResolution{}
 	}
 	if member.Property == "send" || member.Property == "public_send" {
-		return c.exactForwardedCallTargets(call, member.Property == "send", dynamicCandidates)
+		return c.exactForwardedCallTargets(call, member.Property == "send", dynamicCandidates, 0)
 	}
 	if member.Property == "call" && dynamicCandidates.callablesExact {
 		targets := make([]checkDynamicCallTarget, 0, len(dynamicCandidates.callables))
@@ -12155,12 +12155,19 @@ func (c *scriptChecker) exactDynamicCallTargets(
 
 // exactForwardedCallTargets models Object#send/public_send. Overrides receive
 // the original call; universal forwarding removes the method-name argument.
+// Each forwarded `:send` consumes one argument and recurses, so a flat
+// `C.send(:send, :send, ..., :class)` descends once per argument: at 60000
+// arguments, well inside the source-size limit, that took over ten seconds of
+// check time and grew quadratically (#15). Past maxCheckNestingDepth the
+// remaining chain stays unresolved rather than descending, which keeps the
+// call gradual instead of reporting anything about it.
 func (c *scriptChecker) exactForwardedCallTargets(
 	call *CallExpr,
 	allowPrivate bool,
 	dynamicCandidates checkDynamicCallCandidates,
+	depth int,
 ) checkDynamicCallResolution {
-	if call == nil || c.script == nil {
+	if call == nil || c.script == nil || depth >= maxCheckNestingDepth {
 		return checkDynamicCallResolution{}
 	}
 	member, ok := call.Callee.(*MemberExpr)
@@ -12227,6 +12234,7 @@ func (c *scriptChecker) exactForwardedCallTargets(
 						variant.call,
 						method == "send",
 						dynamicCandidates,
+						depth+1,
 					))
 					continue
 				}
@@ -12299,6 +12307,7 @@ func (c *scriptChecker) exactForwardedCallTargets(
 					variant.call,
 					method == "send",
 					dynamicCandidates,
+					depth+1,
 				))
 				continue
 			}
