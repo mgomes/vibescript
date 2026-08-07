@@ -3180,7 +3180,10 @@ func (exec *Execution) evalDirectStringSliceCall(call *CallExpr, receiver Value,
 	if err := checkDirectStringMemberCallRoots(exec, receiver, first, second, len(call.Args) == 2); err != nil {
 		return NewNil(), true, err
 	}
-	result, err := stringSliceResult(receiver, first, second, len(call.Args) == 2)
+	// This fast path is only reached when the call has no keyword arguments and
+	// no block (evalDirectStringMemberCallExpr rejects both), so there are no
+	// further roots to keep live across the copy.
+	result, err := stringSliceResult(exec, receiver, first, second, len(call.Args) == 2, nil, NewNil())
 	if err != nil {
 		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}
