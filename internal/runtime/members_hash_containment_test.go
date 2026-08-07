@@ -4344,7 +4344,8 @@ func TestHashFetchValuesDoesNotOverReserve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a fetch_values that fits the quota was rejected: %v", err)
 	}
-	want := []Value{NewInt(1), NewInt(2)}
+	want := make([]Value, 0, 32)
+	want = append(want, NewInt(1), NewInt(2))
 	for range 30 {
 		want = append(want, NewString(strings.Repeat("x", 20000)))
 	}
@@ -4393,7 +4394,8 @@ func TestHashValuesAtDoesNotOverReserve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a values_at that fits the quota was rejected: %v", err)
 	}
-	want := []Value{NewInt(1), NewInt(2)}
+	want := make([]Value, 0, 32)
+	want = append(want, NewInt(1), NewInt(2))
 	for range 30 {
 		want = append(want, NewString(strings.Repeat("x", 20000)))
 	}
