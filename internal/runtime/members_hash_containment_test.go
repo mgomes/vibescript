@@ -4401,3 +4401,50 @@ func TestHashValuesAtDoesNotOverReserve(t *testing.T) {
 	}
 	compareArrays(t, got, want)
 }
+
+// The conservative charge that keeps a default proc's in-place mutations
+// visible skips baseline deduplication, so applying it to a static default
+// billed the one default object again on top of the receiver that already
+// holds it. The quota here sits far above the call's real footprint and far
+// below the doubled estimate, so only the deduplicating charge admits it.
+func TestHashValuesAtDoesNotDoubleChargeAStaticDefault(t *testing.T) {
+	t.Parallel()
+
+	const defaultBytes = 400 * 1024
+	const missing = 30
+
+	defaultValue := NewString(strings.Repeat("d", defaultBytes))
+	receiver := NewHashWithDefault(map[string]Value{"a": NewInt(1)}, defaultValue, NewNil())
+
+	args := make([]Value, 0, missing+1)
+	args = append(args, NewSymbol("a"))
+	for i := range missing {
+		args = append(args, NewSymbol(fmt.Sprintf("m%03d", i)))
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
+	footprint := base + arraySlotBackingBytes(len(args))
+
+	// Half a default's worth of headroom: ample for the real build, nowhere
+	// near enough to absorb a second copy of the default's payload.
+	quota := footprint + defaultBytes/2
+	if quota <= footprint || quota >= footprint+defaultBytes {
+		t.Fatalf("quota %d must fit the real footprint %d and reject the doubled charge %d", quota, footprint, footprint+defaultBytes)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "values_at", args, NewNil())
+	if err != nil {
+		t.Fatalf("a values_at that fits its real footprint under quota %d was rejected: %v", quota, err)
+	}
+	want := make([]Value, 0, missing+1)
+	want = append(want, NewInt(1))
+	for range missing {
+		want = append(want, defaultValue)
+	}
+	compareArrays(t, got, want)
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("values_at leaked %d scratch bytes after success", exec.reservedScratchBytes)
+	}
+}
