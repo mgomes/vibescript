@@ -5,6 +5,7 @@ import (
 	goruntime "runtime"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 // retainedHeapBytes runs script's `run` function over seed and reports how much
@@ -232,5 +233,77 @@ end`)
 		"\"a�b�c\", \"\", nil, \"\", \"a\xffb\xfec\", nil]"
 	if invalid.Inspect() != wantInvalid {
 		t.Fatalf("slices over invalid UTF-8 = %s, want %s", invalid.Inspect(), wantInvalid)
+	}
+}
+
+// TestPartitionComponentsDoNotRetainTheReceiver pins that a partition component
+// stops holding the string it was cut from.
+//
+// head and tail are windows onto the receiver, so a separator near either edge
+// leaves the retained side tiny while it pins the whole receiver: each shape
+// below retained 192 MiB under an 8 MiB quota (#42).
+//
+// Not parallel: it measures process-wide heap.
+func TestPartitionComponentsDoNotRetainTheReceiver(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		expr string
+	}{
+		{"partition head", `("a|" + big).partition("|")[0]`},
+		{"partition tail", `(big + "|a").partition("|")[2]`},
+		{"rpartition head", `("a|" + big).rpartition("|")[0]`},
+		{"rpartition tail", `(big + "|a").rpartition("|")[2]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			held := retainedHeapBytes(t, retentionScript(t, tc.expr), retentionSeed(), 200)
+			assertUnderRetentionLimit(t, "partition components", held)
+		})
+	}
+}
+
+// TestEmptyComponentsAreDetachedToo pins that a zero-length component does not
+// keep a pointer into the string it was cut from.
+//
+// An empty partition component is charged nothing at all, so nothing bounds
+// what it could pin; a detach that skipped it as already free would leave that
+// open (#42). The heap measurements above cannot see this case because storing
+// the empty string in a Value boxes it through Go's shared zero value and drops
+// the pointer on the way, so this compares the backing pointers directly.
+func TestEmptyComponentsAreDetachedToo(t *testing.T) {
+	t.Parallel()
+
+	text := strings.Repeat("x", 4<<10)
+	parts := []string{text[:0], text[len(text):]}
+	if err := detachSubstrings(nil, text, parts, NewString(text), nil, nil, NewNil()); err != nil {
+		t.Fatalf("detaching failed: %v", err)
+	}
+	for i, part := range parts {
+		if part != "" {
+			t.Fatalf("component %d = %q, want it to stay empty", i, part)
+		}
+		if unsafe.StringData(part) == unsafe.StringData(text) {
+			t.Fatalf("empty component %d still points at its %d-byte backing", i, len(text))
+		}
+	}
+}
+
+// TestPartitionKeepsItsComponents pins that detaching the components did not
+// change what partition and rpartition return, including a missing separator,
+// an empty separator, and multibyte boundaries.
+func TestPartitionKeepsItsComponents(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run(s)
+  [s.partition("漢"), s.rpartition("漢"), s.partition("zz"), s.rpartition("zz"),
+   s.partition(""), s.rpartition(""), s.partition(s), s.rpartition(s)]
+end`)
+	got, err := script.Call(context.Background(), "run", []Value{NewString("a漢b漢c")}, CallOptions{})
+	if err != nil {
+		t.Fatalf("partition failed: %v", err)
+	}
+	want := `[["a", "漢", "b漢c"], ["a漢b", "漢", "c"], ["a漢b漢c", "", ""], ["", "", "a漢b漢c"], ` +
+		`["", "", "a漢b漢c"], ["a漢b漢c", "", ""], ["", "a漢b漢c", ""], ["", "a漢b漢c", ""]]`
+	if got.Inspect() != want {
+		t.Fatalf("partitions = %s, want %s", got.Inspect(), want)
 	}
 }

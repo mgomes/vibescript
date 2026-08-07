@@ -4507,7 +4507,7 @@ func stringMemberTextOps(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.partition separator must be string")
 			}
 			head, sep, tail := stringPartition(receiver.String(), args[0].String())
-			return NewArray([]Value{NewString(head), NewString(sep), NewString(tail)}), nil
+			return detachedPartitionValue(exec, receiver, head, sep, tail, args, kwargs, block)
 		}), nil
 	case "rpartition":
 		return NewAutoBuiltin("string.rpartition", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -4518,7 +4518,7 @@ func stringMemberTextOps(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.rpartition separator must be string")
 			}
 			head, sep, tail := stringRPartition(receiver.String(), args[0].String())
-			return NewArray([]Value{NewString(head), NewString(sep), NewString(tail)}), nil
+			return detachedPartitionValue(exec, receiver, head, sep, tail, args, kwargs, block)
 		}), nil
 	case "chars":
 		return NewAutoBuiltin("string.chars", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -5254,6 +5254,33 @@ func detachSubstrings(exec *Execution, text string, subs []string, receiver Valu
 		subs[i] = strings.Clone(sub)
 	}
 	return nil
+}
+
+// detachedPartitionValue builds the three-element result String#partition and
+// String#rpartition return, with the head and tail copied out of the receiver's
+// backing (see detachSubstrings).
+//
+// Both components are windows onto the receiver, so a separator near either edge
+// leaves the retained side tiny while it pins the whole receiver: keeping
+// `("a|" + big).partition("|")[0]` was charged about one byte and held a
+// megabyte, 200 of them 192 MiB under an 8 MiB quota (#42). An edge separator's
+// empty component goes through the same copy rather than being skipped as
+// already free: it is charged nothing at all, so nothing else bounds what it
+// could pin. Its backing pointer happens to disappear today when the component
+// is boxed into a Value's `any` payload, because Go maps the empty string to a
+// shared zero value there, but that is a property of the payload and not of the
+// component.
+//
+// The separator is the argument rather than a window onto the receiver, so it
+// has no backing to detach from. The copies take no charge of their own:
+// chargeStringScanBeforeCall already billed the receiver's length, and the head
+// and tail are disjoint windows onto it.
+func detachedPartitionValue(exec *Execution, receiver Value, head, sep, tail string, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	parts := [2]string{head, tail}
+	if err := detachSubstrings(exec, receiver.String(), parts[:], receiver, args, kwargs, block); err != nil {
+		return NewNil(), err
+	}
+	return NewArray([]Value{NewString(parts[0]), NewString(sep), NewString(parts[1])}), nil
 }
 
 // detachedSubstring returns the single-slice form of detachSubstrings.
