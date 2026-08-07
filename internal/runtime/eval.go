@@ -3609,6 +3609,11 @@ const predeclareScanNodesPerStep = 64
 // single walk is bounded by the compiled source, and it is the repetition that
 // the quota now sees.
 //
+// What does not fill a whole step is carried rather than dropped. One walk per
+// rescue clause, or per elsif branch, is many small walks rather than one large
+// one, and rounding each down to nothing left a source-limit-sized clause list
+// free however often it was rescanned.
+//
 // It latches rather than returning an error, because several of these scans
 // run while an error is already propagating -- a loop unwinding a next, a try
 // body about to select a rescue clause -- and replacing that error with a
@@ -3616,13 +3621,15 @@ const predeclareScanNodesPerStep = 64
 // in-flight error alone and still ends the execution: step returns the latched
 // error before charging anything else.
 func (exec *Execution) chargePredeclareScan(visited int) {
-	if exec == nil {
+	if exec == nil || visited <= 0 {
 		return
 	}
-	steps := visited / predeclareScanNodesPerStep
+	exec.predeclareScanDebt += visited
+	steps := exec.predeclareScanDebt / predeclareScanNodesPerStep
 	if steps <= 0 {
 		return
 	}
+	exec.predeclareScanDebt -= steps * predeclareScanNodesPerStep
 	_ = exec.stepN(steps)
 }
 
@@ -3671,6 +3678,9 @@ func collectLocalBindingNames(stmts []Statement, collector *localBindingCollecto
 		case *IfStmt:
 			collectLocalBindingNames(s.Consequent, collector)
 			for _, branch := range s.ElseIf {
+				// The branch itself is a node the walk steps over, and a long
+				// run of empty ones costs exactly that and nothing else.
+				collector.visited++
 				collectLocalBindingNames(branch.Consequent, collector)
 			}
 			collectLocalBindingNames(s.Alternate, collector)
@@ -3684,6 +3694,7 @@ func collectLocalBindingNames(stmts []Statement, collector *localBindingCollecto
 		case *TryStmt:
 			collectLocalBindingNames(s.Body, collector)
 			for i := range s.Rescues {
+				collector.visited++
 				collectLocalBindingNames(s.Rescues[i].Body, collector)
 			}
 			collectLocalBindingNames(s.Else, collector)
@@ -5005,7 +5016,9 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 }
 
 func (exec *Execution) copyRescueLocalAssignments(clause *RescueClause, from, to *Env) {
-	var collector localBindingCollector
+	// The clause counts as a node of its own, so a long list of empty ones is
+	// not free to walk however often it is rescanned.
+	collector := localBindingCollector{visited: 1}
 	collectLocalBindingNames(clause.Body, &collector)
 	for _, name := range collector.names {
 		if name == clause.Binding {
@@ -5028,7 +5041,7 @@ func (exec *Execution) predeclareRescueLocalBindings(stmt *TryStmt, env *Env) {
 }
 
 func (exec *Execution) predeclareRescueClauseLocalBindings(clause *RescueClause, env *Env) {
-	var collector localBindingCollector
+	collector := localBindingCollector{visited: 1}
 	collectLocalBindingNames(clause.Body, &collector)
 	for _, name := range collector.names {
 		if name == clause.Binding {

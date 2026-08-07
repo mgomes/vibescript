@@ -87,6 +87,11 @@ type Execution struct {
 	memoryQuota  int
 	recursionCap int
 	steps        int
+	// predeclareScanDebt carries the nodes a predeclaration scan walked that
+	// did not fill a whole step, so that many small scans still add up to one.
+	// Truncating per scan lost them: a loop over a hundred empty rescue clauses
+	// is a hundred separate walks that each round down to nothing.
+	predeclareScanDebt int
 	// exhausted latches the first genuine budget-exhaustion error (step
 	// quota, memory quota, or output limit) raised on this execution. Once
 	// set, step() fails immediately with it and no rescue clause matches any

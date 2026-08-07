@@ -110,21 +110,60 @@ func deadDestructureScript(iterations, targets int) string {
 	return b.String()
 }
 
-// TestPredeclareScanLeavesOrdinaryBodiesFree pins that the charge is amortized
-// rather than per node: a body that does not fill the amortization window costs
-// nothing, so ordinary code keeps the step count it has today.
+// TestPredeclareScanCountsTheWrappersItStepsOver pins that a walk counts the
+// branch and rescue-clause wrappers it steps over, not only the statements
+// inside them.
 //
-// A plain assignment is two nodes, the statement and its target, so both bodies
-// here stay well inside the window.
-func TestPredeclareScanLeavesOrdinaryBodiesFree(t *testing.T) {
+// A clause whose body is small is mostly wrapper, so a long clause list costs
+// real walking that the statement count alone barely sees.
+func TestPredeclareScanCountsTheWrappersItStepsOver(t *testing.T) {
 	t.Parallel()
 
-	const iterations = 500
-	const wider = predeclareScanNodesPerStep/2 - 4
-	small := minStepsForScript(t, deadBranchScript(iterations, 4))
-	larger := minStepsForScript(t, deadBranchScript(iterations, wider))
-	if small != larger {
-		t.Fatalf("bodies of 4 and %d assignments cost %d and %d steps; neither fills the %d node "+
-			"window, so both must stay free", wider, small, larger, predeclareScanNodesPerStep)
+	const branches = 32
+
+	elseIf := make([]*IfStmt, 0, branches)
+	rescues := make([]RescueClause, 0, branches)
+	for range branches {
+		elseIf = append(elseIf, &IfStmt{})
+		rescues = append(rescues, RescueClause{})
+	}
+
+	for _, tc := range []struct {
+		name string
+		stmt Statement
+	}{
+		{name: "elsif branches", stmt: &IfStmt{ElseIf: elseIf}},
+		{name: "rescue clauses", stmt: &TryStmt{Rescues: rescues}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var collector localBindingCollector
+			collectLocalBindingNames([]Statement{tc.stmt}, &collector)
+			// The statement itself, plus one per wrapper. The bodies are empty,
+			// so anything less means the wrappers walked for free.
+			if want := branches + 1; collector.visited != want {
+				t.Fatalf("walking %d empty %s counted %d nodes, want %d",
+					branches, tc.name, collector.visited, want)
+			}
+		})
+	}
+}
+
+// TestPredeclareScanCarriesWhatDoesNotFillAStep pins that walks too small to
+// reach the amortization window accumulate instead of rounding away.
+//
+// Each rescue clause is scanned on its own, so a long clause list is many small
+// walks rather than one large one. Truncating each of them independently would
+// charge nothing at all however many there were.
+func TestPredeclareScanCarriesWhatDoesNotFillAStep(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30}
+	for range predeclareScanNodesPerStep * 4 {
+		exec.chargePredeclareScan(1)
+	}
+	if want := 4; exec.steps != want {
+		t.Fatalf("%d single-node walks cost %d steps, want %d: a walk under the %d node window "+
+			"must carry rather than round away", predeclareScanNodesPerStep*4, exec.steps, want,
+			predeclareScanNodesPerStep)
 	}
 }
