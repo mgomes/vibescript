@@ -288,7 +288,7 @@ func (p *parser) peekSlashStartsRegexArgument() bool {
 	if calleeFlush {
 		return false
 	}
-	offset, ok := sourceOffsetForPosition(p.l.input, p.peekToken.Pos)
+	offset, ok := p.l.offsetForPosition(p.peekToken.Pos)
 	if !ok || offset+1 >= len(p.l.input) {
 		return false
 	}
@@ -360,15 +360,14 @@ func isParenlessArgumentStart(tt ast.TokenType) bool {
 }
 
 func (p *parser) percentArrayLiteralArgumentAt(pos ast.Position) bool {
-	// The allowance gates the whole probe, not just the scan it ends in:
-	// sourceOffsetForPosition walks the source from the start on every call, so
-	// leaving it outside would keep a source of dead candidates quadratic even
-	// once the scans themselves had stopped running.
+	// The allowance gates the whole probe, not just the scan it ends in, so a
+	// source of dead candidates stops touching the input entirely once the
+	// allowance is gone rather than still resolving a position per candidate.
 	if p.l.percentScan.spent() {
 		p.l.percentScan.noteDeclined(pos)
 		return false
 	}
-	offset, ok := sourceOffsetForPosition(p.l.input, pos)
+	offset, ok := p.l.offsetForPosition(pos)
 	if !ok || !offsetHasLeadingWhitespace(p.l.input, offset) {
 		return false
 	}
@@ -699,7 +698,7 @@ func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 // means the "*" is an ordinary multiplication continuation, so it returns
 // false.
 func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
-	offset, ok := sourceOffsetForPosition(p.l.input, star.Pos)
+	offset, ok := p.l.offsetForPosition(star.Pos)
 	if !ok {
 		return false
 	}
@@ -1241,7 +1240,7 @@ func (p *parser) parsePercentWordsLiteral() ast.Expression {
 // then flows through the normal argument path so flags, trailing postfixes,
 // and following arguments behave exactly like the parenthesized form.
 func (p *parser) parseRegexCommandArgument() ast.Expression {
-	offset, ok := sourceOffsetForPosition(p.l.input, p.curToken.Pos)
+	offset, ok := p.l.offsetForPosition(p.curToken.Pos)
 	if !ok {
 		p.errorUnexpected(p.curToken)
 		return nil
@@ -1254,7 +1253,7 @@ func (p *parser) parseRegexCommandArgument() ast.Expression {
 
 func (p *parser) parsePercentArrayLiteralArgument() ast.Expression {
 	pos := p.curToken.Pos
-	offset, ok := sourceOffsetForPosition(p.l.input, p.curToken.Pos)
+	offset, ok := p.l.offsetForPosition(p.curToken.Pos)
 	if !ok {
 		return nil
 	}
@@ -1262,7 +1261,7 @@ func (p *parser) parsePercentArrayLiteralArgument() ast.Expression {
 	if !ok {
 		return nil
 	}
-	end := sourcePositionForOffset(p.l.input, endOffset)
+	end := p.l.positionForOffset(endOffset)
 	elements := make([]ast.Expression, len(entries))
 	litType := ast.TokenWords
 	for i, entry := range entries {
@@ -1559,41 +1558,6 @@ func scanPercentArrayLiteralAt(input string, start int, budget *percentScanBudge
 	}
 	budget.record(len(input)-start, false)
 	return 0, nil, 0, false
-}
-
-func sourceOffsetForPosition(input string, pos ast.Position) (int, bool) {
-	line, column := 1, 1
-	for idx, r := range input {
-		if line == pos.Line && column == pos.Column {
-			return idx, true
-		}
-		if r == '\n' {
-			line++
-			column = 1
-		} else {
-			column++
-		}
-	}
-	if line == pos.Line && column == pos.Column {
-		return len(input), true
-	}
-	return 0, false
-}
-
-func sourcePositionForOffset(input string, offset int) ast.Position {
-	line, column := 1, 1
-	for idx, r := range input {
-		if idx >= offset {
-			return ast.Position{Line: line, Column: column}
-		}
-		if r == '\n' {
-			line++
-			column = 1
-		} else {
-			column++
-		}
-	}
-	return ast.Position{Line: line, Column: column}
 }
 
 func offsetHasLeadingWhitespace(input string, offset int) bool {
