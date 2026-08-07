@@ -508,14 +508,10 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 	if args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("%s expects a string format", name)
 	}
-	values, releaseConverted, err := exec.formatStringConversionValues(args[1:], receiver, args, kwargs, block)
+	values, err := exec.formatStringConversionValues(args[1:], receiver, args, kwargs, block)
 	if err != nil {
 		return NewNil(), err
 	}
-	// Held until the render is done: the converted strings stay live through
-	// projection and rendering, and the checks in there measure the original
-	// arguments rather than what to_s returned.
-	defer releaseConverted()
 	return exec.formatStringValues(args[0].String(), values, receiver, args, kwargs, block)
 }
 
@@ -545,21 +541,23 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 // the loop rather than after it, and the reservation is held until the render
 // is done because the strings stay live that whole time. The caller releases
 // it.
-func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, func(), error) {
-	// Built before the reservation so its baseline snapshots the scratch
-	// without the conversions, which the reservation would otherwise charge a
-	// second time.
-	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
-	scratch := newRetainedOutputScratch(exec)
+func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, error) {
+	var acc *arrayBuildAccumulator
 	var converted []Value
 	for i, val := range values {
 		rendered, substituted, err := exec.instanceStringValue(val, Position{})
 		if err != nil {
-			scratch.release()
-			return nil, nil, err
+			return nil, err
 		}
 		if !substituted {
 			continue
+		}
+		if acc == nil {
+			// Built at the first substitution, not at entry. Seeding it walks
+			// the whole reachable graph, and most calls convert nothing at all:
+			// format("done"), or any call whose operands are all primitives,
+			// would have paid for a walk it had no use for.
+			acc = newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 		}
 		// Charged against the baseline rather than by length, because a
 		// substituted value need not be new memory: a to_s that returns an
@@ -567,14 +565,13 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 		// several arguments can hand back the same one. The estimator has seen
 		// those through args, so it prices them at nothing and only a freshly
 		// built string costs what it is.
+		//
+		// The check lands between conversions, which is where it has to: the
+		// pile only exists because every operand is converted before the
+		// pattern is read, so each conversion is weighed against everything
+		// kept so far rather than against nothing.
 		if err := acc.add(rendered, 0); err != nil {
-			scratch.release()
-			return nil, nil, err
-		}
-		scratch.reserve(acc.accumulatedBytes(0))
-		if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
-			scratch.release()
-			return nil, nil, err
+			return nil, err
 		}
 		if converted == nil {
 			converted = make([]Value, len(values))
@@ -583,10 +580,9 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 		converted[i] = rendered
 	}
 	if converted == nil {
-		scratch.release()
-		return values, func() {}, nil
+		return values, nil
 	}
-	return converted, scratch.release, nil
+	return converted, nil
 }
 
 func formatStringValues(pattern string, values []Value) (Value, error) {
