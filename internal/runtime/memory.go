@@ -3365,7 +3365,8 @@ func (est *memoryEstimator) objectWrapperBytes(val Value) int {
 }
 
 // retainValue makes a value the estimator cannot otherwise reach part of this
-// execution's live set, and returns the release that drops it again.
+// execution's live set. releaseRetainedValues drops back to a depth taken
+// before the first retain.
 //
 // A builtin that holds results in a Go local while it goes on to run more
 // script code is invisible to every check that script performs: the value is
@@ -3373,15 +3374,19 @@ func (est *memoryEstimator) objectWrapperBytes(val Value) int {
 // count is not, because the same walk that counts it also deduplicates it --
 // a string a script handed back from one of its own fields is already counted
 // through the roots and costs nothing more here.
-func (exec *Execution) retainValue(val Value) func() {
-	if exec == nil {
-		return func() {}
+//
+// With no memory quota there is nothing to count against, so nothing is kept:
+// the release is written to be correct either way rather than conditional.
+func (exec *Execution) retainValue(val Value) {
+	if exec == nil || exec.memoryQuota <= 0 {
+		return
 	}
 	exec.retainedValues = append(exec.retainedValues, val)
-	depth := len(exec.retainedValues)
-	return func() {
-		if len(exec.retainedValues) >= depth {
-			exec.retainedValues = exec.retainedValues[:depth-1]
-		}
+}
+
+func (exec *Execution) releaseRetainedValues(depth int) {
+	if exec == nil || len(exec.retainedValues) <= depth {
+		return
 	}
+	exec.retainedValues = exec.retainedValues[:depth]
 }
