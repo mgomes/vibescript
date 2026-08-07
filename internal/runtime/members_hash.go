@@ -939,7 +939,8 @@ func hashMemberQuery(property string) (Value, error) {
 			// only at the post-call check (#43).
 			retained := newRetainedOutputScratch(exec)
 			defer retained.release()
-			retained.reserve(acc.accumulatedBytes(len(out)))
+			retainedBytes := 0
+			retained.reserve(arraySlotBackingBytes(len(out)))
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -972,6 +973,7 @@ func hashMemberQuery(property string) (Value, error) {
 				// default object again on top of the receiver that already holds
 				// it -- a 400KB default charged 800KB and rejected a values_at
 				// that fit its real footprint by a wide margin.
+				charged := acc.retainedPayloadBytes()
 				if ranProc {
 					err = acc.addConservative(resolved, len(out))
 				} else {
@@ -980,7 +982,9 @@ func hashMemberQuery(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				retained.reserve(acc.accumulatedBytes(len(out)))
+				retainedBytes = saturatingAdd(retainedBytes,
+					exec.retainedOutputDelta(acc.retainedPayloadBytes()-charged, resolved, block))
+				retained.reserve(saturatingAdd(retainedBytes, arraySlotBackingBytes(len(out))))
 			}
 			return NewArray(out), nil
 		}), nil
@@ -1032,7 +1036,8 @@ func hashMemberQuery(property string) (Value, error) {
 			// trips during accumulation instead (#43).
 			retained := newRetainedOutputScratch(exec)
 			defer retained.release()
-			retained.reserve(acc.accumulatedBytes(len(out)))
+			retainedBytes := 0
+			retained.reserve(arraySlotBackingBytes(len(out)))
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -1057,10 +1062,13 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out[i] = blockValue
+				charged := acc.retainedPayloadBytes()
 				if err := acc.addConservative(blockValue, len(out)); err != nil {
 					return NewNil(), err
 				}
-				retained.reserve(acc.accumulatedBytes(len(out)))
+				retainedBytes = saturatingAdd(retainedBytes,
+					exec.retainedOutputDelta(acc.retainedPayloadBytes()-charged, blockValue, block))
+				retained.reserve(saturatingAdd(retainedBytes, arraySlotBackingBytes(len(out))))
 			}
 			return NewArray(out), nil
 		}), nil
