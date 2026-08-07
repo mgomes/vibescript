@@ -154,9 +154,9 @@ end`)
 // string it sliced.
 //
 // slice built its result from []rune -- which copied by construction -- until it
-// moved to byte-offset slicing. normalizeInvalidUTF8 returns valid UTF-8
-// unchanged, so the result aliased the receiver again and 200 one-character
-// slices of a megabyte held 192 MiB under an 8 MiB quota (#50).
+// moved to byte-offset slicing. The rune rebuild survives only for invalid
+// UTF-8, so a valid selection came back as a window onto the receiver and 200
+// one-character slices of a megabyte held 192 MiB under an 8 MiB quota (#50).
 //
 // Not parallel: it measures process-wide heap.
 func TestSliceDoesNotRetainItsBacking(t *testing.T) {
@@ -362,5 +362,45 @@ func TestSquishReservesExactlyWhatItWrites(t *testing.T) {
 		if got, want := squishedLen(text), len(stringSquish(text)); got != want {
 			t.Fatalf("squishedLen(%q) = %d, but stringSquish wrote %d bytes", text, got, want)
 		}
+	}
+}
+
+// TestAlreadyIndependentWindowsAreNotCopiedAgain pins that a selection which
+// already owns its bytes is handed back untouched.
+//
+// Selecting invalid UTF-8 rebuilds the substring from its runes, and that
+// rebuild no longer shares the receiver's allocation. Detaching it a second
+// time copies for nothing, and leaves the receiver, the rebuild and the copy
+// all live while the reservation covers only the copy, understating the very
+// peak it exists to price.
+func TestAlreadyIndependentWindowsAreNotCopiedAgain(t *testing.T) {
+	t.Parallel()
+
+	text := "a\xff" + strings.Repeat("b", 4<<10)
+
+	rebuilt, ok := stringRuneSlice(text, 0, 2)
+	if !ok || !rebuilt.detached {
+		t.Fatalf("selecting invalid UTF-8 must report a rebuilt window, got %#v (ok=%v)", rebuilt, ok)
+	}
+	got, err := detachedWindow(nil, text, rebuilt, NewString(text), nil, nil, NewNil())
+	if err != nil {
+		t.Fatalf("detaching failed: %v", err)
+	}
+	if unsafe.StringData(got) != unsafe.StringData(rebuilt.text) {
+		t.Fatal("a window that already owns its bytes was copied a second time")
+	}
+
+	// The valid-UTF-8 selection beside it is a window onto the receiver and must
+	// still be copied, so the skip above cannot be a blanket one.
+	window, ok := stringRuneSlice(text, 3, 2)
+	if !ok || window.detached {
+		t.Fatalf("selecting valid UTF-8 must report a shared window, got %#v (ok=%v)", window, ok)
+	}
+	got, err = detachedWindow(nil, text, window, NewString(text), nil, nil, NewNil())
+	if err != nil {
+		t.Fatalf("detaching failed: %v", err)
+	}
+	if unsafe.StringData(got) == unsafe.StringData(window.text) {
+		t.Fatal("a window onto the receiver was handed back without being copied")
 	}
 }

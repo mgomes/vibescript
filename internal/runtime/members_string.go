@@ -1365,6 +1365,29 @@ func stringRuneRIndexFallback(exec *Execution, text, needle string, offset int) 
 	return utf8.RuneCountInString(hay[:at]), nil
 }
 
+// stringWindow is a rune-selected substring together with whether it already
+// owns its bytes instead of sharing the receiver's backing allocation.
+//
+// Selecting invalid UTF-8 rebuilds the substring from its runes, and that
+// rebuild is independent of the receiver the moment it is made. Detaching it a
+// second time would copy for nothing, and would leave the receiver, the rebuild
+// and the copy all live while only the copy is reserved, understating the peak
+// the reservation exists to price (#36, #50).
+type stringWindow struct {
+	text     string
+	detached bool
+}
+
+// newStringWindow normalizes a raw byte window the way Ruby's rune-aware
+// slicing does, recording whether the normalization already gave it a backing
+// of its own.
+func newStringWindow(window string) stringWindow {
+	if utf8.ValidString(window) {
+		return stringWindow{text: window}
+	}
+	return stringWindow{text: string([]rune(window)), detached: true}
+}
+
 // stringRuneSlice extracts at most length runes starting at the rune offset
 // start, matching Ruby's String#slice(start, length). A negative start counts
 // back from the end of the string. It returns ok=false when length is negative
@@ -1372,19 +1395,19 @@ func stringRuneRIndexFallback(exec *Execution, text, needle string, offset int) 
 // length is in range and yields an empty string (Ruby's "abc".slice(3, n) =>
 // ""). The length is clamped to the remaining runes, so an oversized length
 // returns the suffix from start rather than overrunning.
-func stringRuneSlice(text string, start, length int) (string, bool) {
+func stringRuneSlice(text string, start, length int) (stringWindow, bool) {
 	if length < 0 {
-		return "", false
+		return stringWindow{}, false
 	}
 	if start < 0 {
 		start += stringRuneLen(text)
 		if start < 0 {
-			return "", false
+			return stringWindow{}, false
 		}
 	}
 	startByte, ok := stringByteIndexForRuneOffset(text, start)
 	if !ok {
-		return "", false
+		return stringWindow{}, false
 	}
 	endByte := startByte
 	for range length {
@@ -1394,7 +1417,7 @@ func stringRuneSlice(text string, start, length int) (string, bool) {
 		_, size := utf8.DecodeRuneInString(text[endByte:])
 		endByte += size
 	}
-	return normalizeInvalidUTF8(text[startByte:endByte]), true
+	return newStringWindow(text[startByte:endByte]), true
 }
 
 // stringSlice implements String#slice. It mirrors Ruby's extraction semantics
@@ -1418,9 +1441,9 @@ func stringSlice(exec *Execution, receiver Value, args []Value, kwargs map[strin
 // receiver's backing.
 //
 // slice built its result from []rune until it moved to byte-offset slicing, and
-// normalizeInvalidUTF8 hands valid UTF-8 straight back, so the result aliased
-// the receiver again: 200 one-character slices of a megabyte held 192 MiB under
-// an 8 MiB quota (#50).
+// the rune rebuild now happens only for invalid UTF-8, so a valid selection came
+// straight back as a window onto the receiver: 200 one-character slices of a
+// megabyte held 192 MiB under an 8 MiB quota (#50).
 //
 // The copy takes no charge of its own. chargeStringScanBeforeCall already
 // billed slice for its receiver's length, and a slice of the receiver can never
@@ -1435,7 +1458,7 @@ func stringSliceResult(exec *Execution, receiver, first, second Value, hasLength
 		}
 		return NewNil(), nil
 	}
-	substr, ok, err := stringSliceWindow(text, first, second, hasLength)
+	window, ok, err := stringSliceWindow(text, first, second, hasLength)
 	if err != nil || !ok {
 		return NewNil(), err
 	}
@@ -1444,7 +1467,7 @@ func stringSliceResult(exec *Execution, receiver, first, second Value, hasLength
 	if hasLength {
 		count = 2
 	}
-	detached, err := detachedSubstring(exec, text, substr, receiver, args[:count], nil, NewNil())
+	detached, err := detachedWindow(exec, text, window, receiver, args[:count], nil, NewNil())
 	if err != nil {
 		return NewNil(), err
 	}
@@ -1455,44 +1478,44 @@ func stringSliceResult(exec *Execution, receiver, first, second Value, hasLength
 // selectors against text and returns the substring they select. ok is false for
 // the out-of-range selections that yield nil. The substring selector is handled
 // by the caller because it returns its argument rather than a window.
-func stringSliceWindow(text string, first, second Value, hasLength bool) (string, bool, error) {
+func stringSliceWindow(text string, first, second Value, hasLength bool) (stringWindow, bool, error) {
 	if hasLength {
 		start, err := valueToInt(first)
 		if err != nil {
-			return "", false, fmt.Errorf("string.slice index must be integer")
+			return stringWindow{}, false, fmt.Errorf("string.slice index must be integer")
 		}
 		length, err := valueToInt(second)
 		if err != nil {
-			return "", false, fmt.Errorf("string.slice length must be integer")
+			return stringWindow{}, false, fmt.Errorf("string.slice length must be integer")
 		}
-		substr, ok := stringRuneSlice(text, start, length)
-		return substr, ok, nil
+		window, ok := stringRuneSlice(text, start, length)
+		return window, ok, nil
 	}
 	if first.Kind() == KindRange {
-		substr, ok := stringRuneRangeSlice(text, first.Range())
-		return substr, ok, nil
+		window, ok := stringRuneRangeSlice(text, first.Range())
+		return window, ok, nil
 	}
 	index, err := valueToInt(first)
 	if err != nil {
-		return "", false, fmt.Errorf("string.slice index must be an integer, range, or substring")
+		return stringWindow{}, false, fmt.Errorf("string.slice index must be an integer, range, or substring")
 	}
-	substr, ok := stringSliceCharAt(text, index)
-	return substr, ok, nil
+	window, ok := stringSliceCharAt(text, index)
+	return window, ok, nil
 }
 
 // stringSliceCharAt returns the single-character slice for String#slice(index).
 // Unlike the (start, length) form, an index equal to the rune length is out of
 // range and yields ok=false (Ruby's "abc".slice(3) => nil while "abc".slice(3, 1)
 // => ""). A negative index counts back from the end.
-func stringSliceCharAt(text string, index int) (string, bool) {
+func stringSliceCharAt(text string, index int) (stringWindow, bool) {
 	if index < 0 {
 		index += stringRuneLen(text)
 		if index < 0 {
-			return "", false
+			return stringWindow{}, false
 		}
 	}
 	if index >= stringRuneLen(text) {
-		return "", false
+		return stringWindow{}, false
 	}
 	return stringRuneSlice(text, index, 1)
 }
@@ -1519,7 +1542,7 @@ func stringInsertByteOffset(text string, index int) (int, bool) {
 // returns ok=false (nil); a begin exactly at the length yields an empty string.
 // The end bound is clamped to the string length, and an end before begin yields
 // an empty string.
-func stringRuneRangeSlice(text string, rng Range) (string, bool) {
+func stringRuneRangeSlice(text string, rng Range) (stringWindow, bool) {
 	length := int64(stringRuneLen(text))
 	begin := rng.Start
 	if rng.Beginless {
@@ -1536,7 +1559,7 @@ func stringRuneRangeSlice(text string, rng Range) (string, bool) {
 		begin += length
 	}
 	if begin < 0 || begin > length {
-		return "", false
+		return stringWindow{}, false
 	}
 	end := rng.End
 	if end < 0 {
@@ -1557,11 +1580,7 @@ func stringRuneRangeSlice(text string, rng Range) (string, bool) {
 	if end < begin {
 		end = begin
 	}
-	substr, ok := stringRuneSlice(text, int(begin), int(end-begin))
-	if !ok {
-		return "", false
-	}
-	return substr, true
+	return stringRuneSlice(text, int(begin), int(end-begin))
 }
 
 // stringByteslice implements Ruby's String#byteslice. It operates on raw byte
@@ -1683,13 +1702,6 @@ func stringByteRangeSlice(text string, rng Range) (string, bool) {
 		end = begin
 	}
 	return text[begin:end], true
-}
-
-func normalizeInvalidUTF8(text string) string {
-	if utf8.ValidString(text) {
-		return text
-	}
-	return string([]rune(text))
 }
 
 // caseMode selects how the case-mapping helpers (upcase, downcase, capitalize,
@@ -5323,6 +5335,17 @@ func detachedPartitionValue(exec *Execution, receiver Value, head, sep, tail str
 		return NewNil(), err
 	}
 	return NewArray([]Value{NewString(parts[0]), NewString(sep), NewString(parts[1])}), nil
+}
+
+// detachedWindow returns w's characters as a string that does not hold text's
+// backing allocation. A window that already owns its bytes is handed straight
+// back: it has nothing left to detach, and copying it again would both waste
+// the copy and hide a live intermediate from the reservation (see stringWindow).
+func detachedWindow(exec *Execution, text string, w stringWindow, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
+	if w.detached {
+		return w.text, nil
+	}
+	return detachedSubstring(exec, text, w.text, receiver, args, kwargs, block)
 }
 
 // detachedSubstring returns the single-slice form of detachSubstrings.

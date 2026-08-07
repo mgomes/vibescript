@@ -952,11 +952,11 @@ func (exec *Execution) reserveArraySliceSlots(receiver Value, indices []Value, s
 // receiver's length, and a slice of the receiver can never exceed it.
 func (exec *Execution) indexString(e *IndexExpr, receiver Value, indices []Value) (Value, error) {
 	text := receiver.String()
-	substr, ok, err := exec.stringIndexWindow(e, text, indices)
+	window, ok, err := exec.stringIndexWindow(e, text, indices)
 	if err != nil || !ok {
 		return NewNil(), err
 	}
-	detached, err := detachedSubstring(exec, text, substr, receiver, indices, nil, NewNil())
+	detached, err := detachedWindow(exec, text, window, receiver, indices, nil, NewNil())
 	if err != nil {
 		return NewNil(), err
 	}
@@ -966,32 +966,32 @@ func (exec *Execution) indexString(e *IndexExpr, receiver Value, indices []Value
 // stringIndexWindow resolves a str[...] read's selectors against text and
 // returns the substring they select. ok is false for the out-of-range
 // selections that yield nil.
-func (exec *Execution) stringIndexWindow(e *IndexExpr, text string, indices []Value) (string, bool, error) {
+func (exec *Execution) stringIndexWindow(e *IndexExpr, text string, indices []Value) (stringWindow, bool, error) {
 	switch len(indices) {
 	case 1:
 		if indices[0].Kind() == KindRange {
-			substr, ok := stringRuneRangeSlice(text, indices[0].Range())
-			return substr, ok, nil
+			window, ok := stringRuneRangeSlice(text, indices[0].Range())
+			return window, ok, nil
 		}
 		index, err := exec.indexSelectorToInt(e, indices[0], 0)
 		if err != nil {
-			return "", false, err
+			return stringWindow{}, false, err
 		}
-		substr, ok := stringSliceCharAt(text, index)
-		return substr, ok, nil
+		window, ok := stringSliceCharAt(text, index)
+		return window, ok, nil
 	case 2:
 		start, err := exec.indexSelectorToInt(e, indices[0], 0)
 		if err != nil {
-			return "", false, err
+			return stringWindow{}, false, err
 		}
 		length, err := exec.indexSelectorToInt(e, indices[1], 1)
 		if err != nil {
-			return "", false, err
+			return stringWindow{}, false, err
 		}
-		substr, ok := stringRuneSlice(text, start, length)
-		return substr, ok, nil
+		window, ok := stringRuneSlice(text, start, length)
+		return window, ok, nil
 	default:
-		return "", false, exec.errorAt(e.Position, "string index expects one index, a start and length, or a range")
+		return stringWindow{}, false, exec.errorAt(e.Position, "string index expects one index, a start and length, or a range")
 	}
 }
 
