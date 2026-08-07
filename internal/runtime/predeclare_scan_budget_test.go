@@ -167,3 +167,37 @@ func TestPredeclareScanCarriesWhatDoesNotFillAStep(t *testing.T) {
 			predeclareScanNodesPerStep)
 	}
 }
+
+// TestPredeclareScanChargesLongIdentifiers pins that a name costs the bytes
+// hashed to record it, not one flat node.
+//
+// Every rescan hashes the identifier into the collector's seen set and again
+// when the environment predeclares it, so a dead branch holding one very long
+// name does work proportional to that name. Counting it as a single node left
+// a source-limit-sized identifier free to rescan.
+func TestPredeclareScanChargesLongIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	const iterations = 2000
+	const shortName = 1
+	const longName = 4096
+
+	short := minStepsForScript(t, deadLongNameScript(iterations, shortName))
+	long := minStepsForScript(t, deadLongNameScript(iterations, longName))
+
+	want := short + iterations*(longName-shortName)/predeclareScanNodesPerStep
+	if long < want {
+		t.Fatalf("a %d byte identifier cost %d steps and a %d byte one %d; want at least %d, "+
+			"one step per %d bytes hashed", longName, long, shortName, short, want,
+			predeclareScanNodesPerStep)
+	}
+}
+
+// deadLongNameScript builds a loop whose dead branch assigns to one identifier
+// of the given length.
+func deadLongNameScript(iterations, nameLen int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "def run()\n  i = 0\n  while i < %d\n    if false\n      d%s = 1\n    end\n    i = i + 1\n  end\n  i\nend",
+		iterations, strings.Repeat("x", nameLen-1))
+	return b.String()
+}

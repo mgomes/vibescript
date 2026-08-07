@@ -3590,9 +3590,11 @@ func (exec *Execution) predeclareLocalBindingsFromStatements(stmts []Statement, 
 	exec.chargePredeclareScan(collector.visited)
 }
 
-// predeclareScanNodesPerStep amortizes a predeclaration scan over the nodes it
-// walks: statements, and the assignment targets inside them. A body of a few
-// statements stays free, which is what ordinary code costs today.
+// predeclareScanNodesPerStep amortizes a predeclaration scan over the work it
+// does: a node walked -- a statement, a branch or clause wrapper, an assignment
+// target -- costs one, and a name costs the bytes hashed to record it. A body
+// of a few short statements stays free, which is what ordinary code costs
+// today.
 const predeclareScanNodesPerStep = 64
 
 // chargePredeclareScan bills the nodes a predeclaration scan walked.
@@ -3711,6 +3713,11 @@ func collectTargetBindingNames(target Expression, collector *localBindingCollect
 	collector.visited++
 	switch t := target.(type) {
 	case *Identifier:
+		// The name's bytes are work too: the collector hashes it into its seen
+		// set and the environment hashes it again when it predeclares it, so a
+		// rescan of one source-limit-sized identifier does real work that a
+		// count of one node does not see.
+		collector.visited += len(t.Name)
 		collector.add(t.Name)
 	case *DestructureTarget:
 		for _, element := range t.Elements {
