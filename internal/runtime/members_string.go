@@ -5170,49 +5170,91 @@ func stringMemberTransforms(property string) (Value, error) {
 	}
 }
 
-// detachedByteslice returns sub without keeping text's backing allocation
-// alive.
+// detachSubstrings replaces every element of subs with a copy that does not
+// keep text's backing allocation alive. Elements are windows onto text; one a
+// caller already rebuilt independently -- stringRuneSlice does that for invalid
+// UTF-8 -- is copied again, which is wasteful but not wrong.
 //
 // A Go substring holds its whole backing, while the memory estimator prices a
 // string by its own length. A script could therefore keep a one-byte slice of
 // a megabyte string and be charged one byte: 200 such slices retained 192 MiB
-// under an 8 MiB quota (#2).
+// under an 8 MiB quota, by byteslice (#2), by a bracket read (#36), by a
+// partition component (#42) and by slice (#50) alike.
 //
 // Every proper slice is copied, not just a small one. A threshold looks
 // tempting -- a slice keeping most of its source wastes little -- but the
-// waste composes: `s = s.byteslice(0, s.bytesize / 2)` repeated keeps at least
-// half each time and so never trips a threshold, while every intermediate
-// result still points at the original allocation. Copying unconditionally is
-// what makes a string's footprint equal its length, which is the property the
-// estimator prices against.
+// waste composes: `s = s.slice(0, s.length / 2)` repeated keeps at least half
+// each time and so never trips a threshold, while every intermediate result
+// still points at the original allocation. Copying unconditionally is what
+// makes a string's footprint equal its length, which is the property the
+// estimator prices against. Only an element as long as text itself is left
+// alone, because a window that long has no backing to detach from. An empty
+// window is copied like any other: strings.Clone yields the shared empty string
+// for it, so a component charged zero bytes cannot pin a megabyte.
+//
+// The bytes are reserved before they are allocated. A copy is live alongside
+// the string it was taken from, and for an ephemeral receiver --
+// `s.reverse.slice(...)` -- that receiver is reachable only from the Go stack,
+// so the pre-call check sees no copy and the post-call check no longer sees
+// the receiver. Folding the copies into the reserved scratch and rechecking
+// the live call roots is what prices that peak. All of them are reserved
+// together because a caller taking more than one holds them all at once
+// (String#partition returns a head and a tail); reserving them one at a time
+// would price only the largest.
+func detachSubstrings(exec *Execution, text string, subs []string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	copied := 0
+	detaching := false
+	for _, sub := range subs {
+		if len(sub) == len(text) {
+			continue
+		}
+		copied += len(sub)
+		detaching = true
+	}
+	if !detaching {
+		return nil
+	}
+	// Some builtins are reachable without an execution, and those have no quota
+	// to reserve against.
+	if exec != nil {
+		delta := exec.reserveLoopScratch(copied)
+		defer exec.releaseLoopScratch(delta)
+		if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+			return err
+		}
+	}
+	for i, sub := range subs {
+		if len(sub) == len(text) {
+			continue
+		}
+		subs[i] = strings.Clone(sub)
+	}
+	return nil
+}
+
+// detachedSubstring returns the single-slice form of detachSubstrings.
+func detachedSubstring(exec *Execution, text, sub string, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
+	subs := [1]string{sub}
+	if err := detachSubstrings(exec, text, subs[:], receiver, args, kwargs, block); err != nil {
+		return "", err
+	}
+	return subs[0], nil
+}
+
+// detachedByteslice detaches a String#byteslice result and bills the copy.
 //
 // The copy bills the bytes it writes rather than the bytes it was taken from.
 // Charging by the receiver would make a one-byte slice of a large host string
 // cost the whole string, which is work byteslice never does, so byteslice stays
-// exempt from the receiver-length charge and pays for its own copy here.
-//
-// The bytes are also reserved before they are allocated. The copy is live
-// alongside the string it was taken from, and for an ephemeral receiver --
-// `s.reverse.byteslice(...)` -- that receiver is reachable only from the Go
-// stack, so the pre-call check sees no copy and the post-call check no longer
-// sees the receiver. Folding the copy into the reserved scratch and rechecking
-// the live call roots is what prices that peak.
+// exempt from the receiver-length charge and pays for its own copy here. The
+// other detaching methods already paid for their receiver through
+// chargeStringScanBeforeCall, and a copy can never exceed the receiver it comes
+// from, so billing them again here would double-charge.
 func detachedByteslice(exec *Execution, text, sub string, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
-	if len(sub) == len(text) {
-		return sub, nil
+	if exec != nil && len(sub) != len(text) {
+		if err := exec.chargeStringScan(len(sub)); err != nil {
+			return "", err
+		}
 	}
-	// Some builtins are reachable without an execution, and those have no quota
-	// to charge or reserve against.
-	if exec == nil {
-		return strings.Clone(sub), nil
-	}
-	if err := exec.chargeStringScan(len(sub)); err != nil {
-		return "", err
-	}
-	delta := exec.reserveLoopScratch(len(sub))
-	defer exec.releaseLoopScratch(delta)
-	if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
-		return "", err
-	}
-	return strings.Clone(sub), nil
+	return detachedSubstring(exec, text, sub, receiver, args, kwargs, block)
 }
