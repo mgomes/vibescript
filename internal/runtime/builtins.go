@@ -508,11 +508,11 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 	if args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("%s expects a string format", name)
 	}
-	values, err := exec.formatStringConversionValues(args[1:], receiver, args, kwargs, block)
+	values, convertedBytes, err := exec.formatStringConversionValues(args[1:], receiver, args, kwargs, block)
 	if err != nil {
 		return NewNil(), err
 	}
-	return exec.formatStringValues(args[0].String(), values, receiver, args, kwargs, block)
+	return exec.formatStringValuesWithScratch(args[0].String(), values, convertedBytes, receiver, args, kwargs, block)
 }
 
 // formatStringConversionValues substitutes each argument's to_s form before
@@ -541,13 +541,13 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 // the loop rather than after it, and the reservation is held until the render
 // is done because the strings stay live that whole time. The caller releases
 // it.
-func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, error) {
+func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, int, error) {
 	var acc *arrayBuildAccumulator
 	var converted []Value
 	for i, val := range values {
 		rendered, substituted, err := exec.instanceStringValue(val, Position{})
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if !substituted {
 			continue
@@ -571,7 +571,7 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 		// pattern is read, so each conversion is weighed against everything
 		// kept so far rather than against nothing.
 		if err := acc.add(rendered, 0); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if converted == nil {
 			converted = make([]Value, len(values))
@@ -580,20 +580,32 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 		converted[i] = rendered
 	}
 	if converted == nil {
-		return values, nil
+		return values, 0, nil
 	}
-	return converted, nil
+	// The conversions are live through the render, and the checks in there
+	// measure the original arguments, which hold the instances rather than what
+	// their to_s returned. Carrying the payload keeps the peak priced: a
+	// megabyte conversion and the megabyte of output it produces coexist, and
+	// neither check saw both.
+	return converted, acc.accumulatedBytes(0), nil
 }
 
 func formatStringValues(pattern string, values []Value) (Value, error) {
-	return formatStringValuesChecked(nil, pattern, values, NewNil(), nil, nil, NewNil())
+	return formatStringValuesChecked(nil, pattern, values, 0, NewNil(), nil, nil, NewNil())
 }
 
 func (exec *Execution) formatStringValues(pattern string, values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-	return formatStringValuesChecked(exec, pattern, values, receiver, args, kwargs, block)
+	return formatStringValuesChecked(exec, pattern, values, 0, receiver, args, kwargs, block)
 }
 
-func formatStringValuesChecked(exec *Execution, pattern string, values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+// formatStringValuesWithScratch renders with extra live bytes to account for,
+// which is what the to_s conversions are: reachable from the values being
+// rendered but not from the arguments the checks walk.
+func (exec *Execution) formatStringValuesWithScratch(pattern string, values []Value, extraBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	return formatStringValuesChecked(exec, pattern, values, extraBytes, receiver, args, kwargs, block)
+}
+
+func formatStringValuesChecked(exec *Execution, pattern string, values []Value, extraBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	// Charged here rather than at the format builtin because this is the shared
 	// path: the String % operator reaches it directly from the evaluator, so a
 	// charge on the builtin alone left `pattern % []` unmetered. The pattern is
@@ -617,7 +629,8 @@ func formatStringValuesChecked(exec *Execution, pattern string, values []Value, 
 		if err := exec.chargeStringScan(prepared.projectedBytes); err != nil {
 			return NewNil(), err
 		}
-		if err := exec.checkProjectedStringBytesAndScratchWithCallRoots(prepared.projectedBytes, prepared.scratchBytes, receiver, args, kwargs, block); err != nil {
+		if err := exec.checkProjectedStringBytesAndScratchWithCallRoots(prepared.projectedBytes,
+			saturatingAdd(prepared.scratchBytes, extraBytes), receiver, args, kwargs, block); err != nil {
 			return NewNil(), err
 		}
 	}
