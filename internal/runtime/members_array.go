@@ -3744,6 +3744,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 					return NewNil(), nil
 				}
 				popped := arr[len(arr)-1]
+				clearVacatedSlots(arr[len(arr)-1:])
 				setArrayElems(receiver, arr[:len(arr)-1])
 				return popped, nil
 			}
@@ -3754,6 +3755,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 			}
 			removed := make([]Value, count)
 			copy(removed, arr[len(arr)-count:])
+			clearVacatedSlots(arr[len(arr)-count:])
 			setArrayElems(receiver, arr[:len(arr)-count])
 			return NewArray(removed), nil
 		}), nil
@@ -4255,6 +4257,22 @@ func arrayMemberTransforms(property string) (Value, error) {
 	}
 }
 
+// clearVacatedSlots zeroes the slots an in-place shrink steps over, before the
+// receiver is resliced past them.
+//
+// In Go the backing array stays live as a whole while any slice into it is
+// live, so a removed element parked in a slot outside the new length is still
+// reachable from the receiver. The estimator does not see it: it charges an
+// array's structure by capacity but only recurses into the visible
+// len(values) range, so the payload hanging off that slot is retained and
+// uncounted. Popping a megabyte string off each of 200 arrays and keeping the
+// emptied arrays held 192 MiB under an 8 MiB quota (#22).
+//
+// Every vacated slot is cleared, not just the ones above some size, because
+// the waste composes: a script that pops one small value at a time never
+// trips a per-element threshold yet still strands every one of them.
+func clearVacatedSlots(vacated []Value) { clear(vacated) }
+
 // arrayShift implements Ruby's Array#shift, removing element(s) from the front
 // of the receiver in place. Bare shift removes and returns the first element
 // (nil on an empty array); shift(n) removes up to n elements and returns them
@@ -4283,6 +4301,7 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 			return NewNil(), nil
 		}
 		shifted := arr[0]
+		clearVacatedSlots(arr[:1])
 		setArrayElems(receiver, arr[1:])
 		return shifted, nil
 	}
@@ -4293,6 +4312,7 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 	}
 	removed := make([]Value, count)
 	copy(removed, arr[:count])
+	clearVacatedSlots(arr[:count])
 	setArrayElems(receiver, arr[count:])
 	return NewArray(removed), nil
 }
