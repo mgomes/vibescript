@@ -133,3 +133,25 @@ end`, size)
 		t.Fatalf("formatted length = %d, want %d", got.Int(), want)
 	}
 }
+
+// TestFormatChargesAConversionAgainstTheOutputItProduces pins that a conversion
+// stays charged through the render, where it coexists with the string it
+// produces.
+//
+// The checks inside the render measure the arguments, which hold the instance
+// rather than what its to_s returned, so a megabyte conversion and the megabyte
+// of output copied from it were never weighed together. Assigning the same
+// value to a script variable first tripped the quota, which is the giveaway
+// that the footprint was real and simply unseen.
+func TestFormatChargesAConversionAgainstTheOutputItProduces(t *testing.T) {
+	t.Parallel()
+
+	src := bigToStringClass + `
+def run()
+  format("%s", Big.new(1048576))
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: 3 << 19}, src)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatal("a conversion and the output copied from it must be weighed together")
+	}
+}
