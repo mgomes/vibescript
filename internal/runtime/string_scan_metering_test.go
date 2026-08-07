@@ -88,9 +88,10 @@ func TestConstantCostStringOpsStayUncharged(t *testing.T) {
 	// would measure the tail rather than the method under test.
 	exempt := []string{
 		"s.bytesize", "s.empty?", "s.getbyte(0)",
-		// A byte-indexed slice returns a substring view, a symbol holds the
-		// receiver's string header without copying it, and replace ignores the
-		// receiver and returns its argument.
+		// A byte-indexed slice bills the bytes it copies rather than the
+		// receiver it never reads, a symbol holds the receiver's string header
+		// without copying it, and replace ignores the receiver and returns its
+		// argument.
 		"s.byteslice(0, 1)", "s.to_sym", "s.intern", "s.replace(\"x\")",
 	}
 	for _, expr := range exempt {
