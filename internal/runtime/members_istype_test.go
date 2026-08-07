@@ -48,6 +48,39 @@ func TestIsTypePredicate(t *testing.T) {
 	}
 }
 
+// TestIsTypeAtomIdentSegments pins the accept/reject set of the qualified-atom
+// check, whose segment counting no longer runs off a split of every dot.
+func TestIsTypeAtomIdentSegments(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		base string
+		want bool
+	}{
+		{base: "int", want: true},
+		{base: "User", want: true},
+		{base: "_x9", want: true},
+		{base: "lv.Level", want: true},
+		{base: "", want: false},
+		{base: "9x", want: false},
+		{base: ".", want: false},
+		{base: "lv.", want: false},
+		{base: ".Level", want: false},
+		{base: "a.b", want: true},
+		{base: "a.b.c", want: false},
+		{base: "a..b", want: false},
+		{base: "array<int>", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.base, func(t *testing.T) {
+			t.Parallel()
+			if got := isTypeAtomIdent(tc.base); got != tc.want {
+				t.Fatalf("isTypeAtomIdent(%q) = %v, want %v", tc.base, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsTypePredicateNamedAtoms(t *testing.T) {
 	t.Parallel()
 

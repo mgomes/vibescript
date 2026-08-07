@@ -89,11 +89,22 @@ var builtinTypeAtoms = map[string]TypeKind{
 	"money":    TypeMoney,
 }
 
+// maxTypeAtomLen bounds an atom before it is scanned or quoted back. Rejecting
+// an atom still costs a rune scan and a %q copy of the whole argument in the
+// error, neither of which is charged to the script's memory quota: an 8 MiB
+// argument of letters allocated 24 MiB just building its rejection (#17). An
+// atom names one type, so real spellings are two identifiers at most and the
+// bound is far above any of them.
+const maxTypeAtomLen = 256
+
 // parseTypeAtom parses an is_type? atom: a built-in type name or a class/enum
 // name, optionally suffixed with `?` for the nullable form. Anything wider —
 // generics, unions, shapes, `any` (which every value satisfies) — is rejected
 // so the predicate stays a meaningful test.
 func parseTypeAtom(text string) (*TypeExpr, error) {
+	if len(text) > maxTypeAtomLen {
+		return nil, fmt.Errorf("%s supports type atoms only, got %d bytes", isTypeMemberName, len(text))
+	}
 	nullable := strings.HasSuffix(text, "?")
 	base := strings.TrimSuffix(text, "?")
 	if base == "" || !isTypeAtomIdent(base) {
@@ -209,22 +220,36 @@ func typeAtomSpellingExact(atom string, match namedTypeMatch) bool {
 // isTypeAtomIdent reports whether base is a plain identifier — letters,
 // digits, and underscores, not starting with a digit — optionally qualified
 // by a single module alias segment ("lv.Level").
+//
+// The segment count comes from cutting at the first dot rather than from
+// splitting on every dot. The atom is script- or host-controlled, and
+// strings.Split materializes a string header per separator before the count
+// can reject it: an 8 MiB argument of dots, which fits the 16 MiB default
+// memory quota, allocated 128 MiB of Go slice backing that the script's
+// memory quota never sees (#17).
 func isTypeAtomIdent(base string) bool {
-	parts := strings.Split(base, ".")
-	if len(parts) > 2 {
+	alias, name, qualified := strings.Cut(base, ".")
+	if !qualified {
+		return isTypeAtomSegment(base)
+	}
+	if strings.IndexByte(name, '.') >= 0 {
 		return false
 	}
-	for _, part := range parts {
-		if part == "" {
+	return isTypeAtomSegment(alias) && isTypeAtomSegment(name)
+}
+
+// isTypeAtomSegment reports whether one dot-separated atom segment is a plain
+// identifier: letters, digits, and underscores, not starting with a digit.
+func isTypeAtomSegment(segment string) bool {
+	if segment == "" {
+		return false
+	}
+	for i, r := range segment {
+		switch {
+		case unicode.IsLetter(r) || r == '_':
+		case unicode.IsDigit(r) && i > 0:
+		default:
 			return false
-		}
-		for i, r := range part {
-			switch {
-			case unicode.IsLetter(r) || r == '_':
-			case unicode.IsDigit(r) && i > 0:
-			default:
-				return false
-			}
 		}
 	}
 	return true
