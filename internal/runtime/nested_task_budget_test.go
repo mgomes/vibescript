@@ -204,6 +204,57 @@ end`)
 	}
 }
 
+// TestRunGroupHoldsOnlyTheSlotsItUses pins the same property for Tasks.run,
+// which unlike map has no item count when its group is created: a group must
+// hold slots for the tasks it actually spawned, not for the max it was allowed.
+//
+// A run group that reserved its full max up front spent the whole host limit
+// on one spawned task, leaving a nested group with no worker. The nested group
+// defers its child until a wait, so a parent that blocks on a signal the child
+// produces never reaches the wait that would run it.
+func TestRunGroupHoldsOnlyTheSlotsItUses(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MaxTaskConcurrency: 2}, `def opener(n)
+  probe.open_gate()
+  n
+end
+
+def nested(n)
+  Tasks.run(max: 1) do |tasks|
+    a = tasks.spawn(:opener, 1)
+    probe.await_gate()
+    a.value
+  end
+end
+
+def run()
+  Tasks.run(max: 2) do |tasks|
+    a = tasks.spawn(:nested, 1)
+    a.value
+  end
+end`)
+
+	var starved atomic.Bool
+	done := make(chan error, 1)
+	go func() {
+		_, err := script.Call(context.Background(), "run", nil,
+			callOptionsWithCapabilities(blockingGateCapability{gate: make(chan struct{}), starved: &starved}))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("nested tasks failed: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("deadlock: the nested group was starved by slots the outer group reserved and never used")
+	}
+	if starved.Load() {
+		t.Fatal("the parent waited out its timeout: the outer group held a slot for a task it never spawned")
+	}
+}
+
 // blockingGateCapability makes await_gate genuinely wait, so a child that is
 // never scheduled deadlocks its parent rather than silently proceeding. The
 // wait is bounded so a regression fails the test instead of hanging the suite.
