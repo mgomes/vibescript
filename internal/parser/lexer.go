@@ -64,6 +64,13 @@ type lexer struct {
 	// scans themselves create -- shares the same allowance, so the total work
 	// stays bounded no matter how the source nests strings and literals.
 	percentScan *percentScanBudget
+
+	// replay resolves token positions to byte offsets and rebuilds the state a
+	// seek lands in, both without restarting at byte 0 (see sourceReplay). It
+	// is allocated with the lexer rather than on demand so parser.restore hands
+	// back the same one, which a rolled-back speculation would otherwise drop
+	// and make the next lookup pay to rebuild.
+	replay *sourceReplay
 }
 
 type ternaryFrame struct {
@@ -86,7 +93,13 @@ func newLexer(input string) *lexer {
 // has to use this: a per-lexer allowance would reset on each one and so would
 // bound nothing.
 func newLexerWithBudget(input string, budget *percentScanBudget) *lexer {
-	l := &lexer{input: input, line: 1, column: 0, percentScan: budget}
+	l := &lexer{
+		input:       input,
+		line:        1,
+		column:      0,
+		percentScan: budget,
+		replay:      &sourceReplay{lines: lineIndex{input: input}},
+	}
 	l.readRune()
 	return l
 }
@@ -595,22 +608,27 @@ func (l *lexer) currentOffset() int {
 }
 
 // seek repositions the lexer so the next scanned token begins at or after
-// the given byte offset. Line and column state is rebuilt by replaying
-// readRune from the start of the input, reusing the normal position
-// bookkeeping rather than recomputing it. last becomes lastToken so
-// gating that depends on the preceding token (such as percent-literal and
-// newline handling) behaves as if that token had just been scanned.
+// the given byte offset. Line and column state comes from the source index
+// and the bracket and ternary state from the shared replay, neither of which
+// restarts at byte 0 (see sourceReplay). last becomes lastToken so gating
+// that depends on the preceding token (such as percent-literal and newline
+// handling) behaves as if that token had just been scanned.
 func (l *lexer) seek(offset int, last ast.Token) {
 	structuralOffset := offset
-	if start, ok := sourceOffsetForPosition(l.input, last.Pos); ok && start < offset {
+	if start, ok := l.offsetForPosition(last.Pos); ok && start < offset {
 		structuralOffset = start
 	}
-	bracketDepth, bracketStack, ternaryStack := lexerStructuralStateBefore(l.input, structuralOffset, l.percentScan)
+	bracketDepth, bracketStack, ternaryStack := l.replay.stateBefore(structuralOffset, l.percentScan)
 
-	l.offset = 0
+	// Landing one rune short of the target and reading it leaves every field
+	// readRune maintains -- including the previous rune's position, which the
+	// next token's End is derived from -- exactly as a scan that arrived here
+	// rune by rune would have left them.
+	offset, at := l.replay.lines.runeAt(offset)
+	l.offset = offset
 	l.width = 0
-	l.line = 1
-	l.column = 0
+	l.line = at.Line
+	l.column = at.Column - 1
 	l.prevLine = 0
 	l.prevColumn = 0
 	l.ch = 0
@@ -618,31 +636,9 @@ func (l *lexer) seek(offset int, last ast.Token) {
 	l.bracketStack = bracketStack
 	l.ternaryStack = ternaryStack
 	l.readRune()
-	for l.currentOffset() < offset && l.ch != 0 {
-		l.readRune()
-	}
 	l.prevPrevToken = ast.Token{}
 	l.prevToken = ast.Token{}
 	l.lastToken = last
-}
-
-func lexerStructuralStateBefore(input string, offset int, budget *percentScanBudget) (int, []bracketFrame, []ternaryFrame) {
-	scan := newLexerWithBudget(input, budget)
-	for scan.ch != 0 {
-		if _, ok := scan.skipWhitespaceAndComments(); ok {
-			continue
-		}
-		if scan.currentOffset() >= offset {
-			break
-		}
-		tok := scan.NextToken()
-		if tok.Type == ast.TokenEOF {
-			break
-		}
-	}
-	return scan.bracketDepth,
-		append([]bracketFrame(nil), scan.bracketStack...),
-		append([]ternaryFrame(nil), scan.ternaryStack...)
 }
 
 func (l *lexer) makeToken(tt ast.TokenType, literal string) ast.Token {
