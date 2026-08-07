@@ -959,12 +959,25 @@ func hashMemberQuery(property string) (Value, error) {
 				// default (a default value, or a default proc invoked with the
 				// hash and key, which may store) rather than filling nil, matching
 				// MRI's Hash#values_at.
+				ranProc := !hashDefaultProc(receiver).IsNil()
 				resolved, err := exec.hashDefaultForKey(receiver, arg)
 				if err != nil {
 					return NewNil(), err
 				}
 				out[i] = resolved
-				if err := acc.addConservative(resolved, len(out)); err != nil {
+				// The conservative charge skips baseline deduplication so a proc
+				// that grows a receiver-owned container in place stays visible to
+				// the quota. A static default runs no script code at all, so there
+				// is nothing to catch, and pricing it that way billed the one
+				// default object again on top of the receiver that already holds
+				// it -- a 400KB default charged 800KB and rejected a values_at
+				// that fit its real footprint by a wide margin.
+				if ranProc {
+					err = acc.addConservative(resolved, len(out))
+				} else {
+					err = acc.add(resolved, len(out))
+				}
+				if err != nil {
 					return NewNil(), err
 				}
 				retained.reserve(acc.accumulatedBytes(len(out)))
