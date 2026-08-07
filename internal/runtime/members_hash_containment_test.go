@@ -4291,3 +4291,62 @@ func TestHashFlattenRejectsHugeExpansionEarly(t *testing.T) {
 		t.Fatalf("hash.flatten allocated %d cumulative bytes before rejecting; want it bounded by the quota, not the full result", allocated)
 	}
 }
+
+// fetchValuesKeyList renders count missing symbol keys as a fetch_values
+// argument list, so the block runs once per key in the order given.
+func fetchValuesKeyList(count int) string {
+	keys := make([]string, count)
+	for i := range keys {
+		keys[i] = fmt.Sprintf(":m%03d", i)
+	}
+	return strings.Join(keys, ", ")
+}
+
+// A block result stays in the Go-local out slice, which no memory check inside
+// a later block call can reach: the earlier results and an in-block temporary
+// passed their checks separately though they coexist. Here the 29 retained
+// 20KB results and the final 600KB temporary each fit the 1MB quota alone, and
+// the returned array is small enough for the post-call check, so only a
+// reservation covering the retained output can reject the combined peak.
+func TestHashFetchValuesChargesRetainedOutputDuringBlockCalls(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run(h)
+      h.fetch_values(`+fetchValuesKeyList(30)+`) { |k|
+        if k == :m029
+          ("y" * 600000).length
+        else
+          "x" * 20000
+        end
+      }
+    end
+    `)
+	if _, err := script.Call(context.Background(), "run", []Value{NewHash(map[string]Value{})}, CallOptions{}); err == nil {
+		t.Fatalf("retained fetch_values output plus an in-block temporary exceeded the quota but was accepted")
+	}
+}
+
+// The reservation is released when the builtin returns, so a fetch_values that
+// fits is still answered with the values Ruby's Hash#fetch_values returns.
+func TestHashFetchValuesDoesNotOverReserve(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run(h)
+      h.fetch_values(:a, :b, `+fetchValuesKeyList(30)+`) { |k| "x" * 20000 }
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", []Value{NewHash(map[string]Value{
+		"a": NewInt(1),
+		"b": NewInt(2),
+	})}, CallOptions{})
+	if err != nil {
+		t.Fatalf("a fetch_values that fits the quota was rejected: %v", err)
+	}
+	want := []Value{NewInt(1), NewInt(2)}
+	for range 30 {
+		want = append(want, NewString(strings.Repeat("x", 20000)))
+	}
+	compareArrays(t, got, want)
+}
