@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
-	"sync/atomic"
 )
 
 func registerTaskBuiltins(engine *Engine) {
@@ -153,11 +152,13 @@ type taskGroup struct {
 	inheritedLazyGlobals *taskLazyGlobals
 	jobs                 chan *taskJob
 	// budget is the call tree's shared pool, max the ceiling this group may
-	// draw from it, and reserved what it currently holds. The whole of
-	// reserved goes back to the pool when the group shuts down.
-	budget   *taskConcurrencyBudget
-	max      int
-	reserved int
+	// draw from it, reserved what it currently holds, and outstanding the jobs
+	// it has queued but not finished. The whole of reserved goes back to the
+	// pool when the group shuts down.
+	budget      *taskConcurrencyBudget
+	max         int
+	reserved    int
+	outstanding int
 	// deferred holds jobs for a group the shared pool could not staff. They
 	// run inline when something waits on them (see drainDeferred), not when
 	// they are spawned: spawning must stay nonblocking, or a block that
@@ -244,13 +245,18 @@ func newTaskGroup(exec *Execution, max int, detachRootGlobals bool) *taskGroup {
 // groups draw from the same pool, so a script cannot multiply its concurrency
 // by nesting Tasks calls inside task functions.
 type taskConcurrencyBudget struct {
-	remaining atomic.Int64
+	mu        sync.Mutex
+	remaining int
+	// starved holds the groups that have work no worker can take. A slot
+	// returned to the pool is offered to them before it sits idle, because a
+	// starved group only runs its deferred jobs when something waits on them
+	// -- and a parent blocked on a host signal its child produces never
+	// reaches that wait.
+	starved map[*taskGroup]struct{}
 }
 
 func newTaskConcurrencyBudget(limit int) *taskConcurrencyBudget {
-	budget := &taskConcurrencyBudget{}
-	budget.remaining.Store(int64(max(limit, 1)))
-	return budget
+	return &taskConcurrencyBudget{remaining: max(limit, 1)}
 }
 
 // reserveOne takes a single worker from the pool, and reports false when the
@@ -260,20 +266,52 @@ func newTaskConcurrencyBudget(limit int) *taskConcurrencyBudget {
 // a jobs channel nothing drains -- and the pool stays a hard cap rather than
 // one the deepest levels can creep past a worker at a time.
 func (b *taskConcurrencyBudget) reserveOne() bool {
-	for {
-		remaining := b.remaining.Load()
-		if remaining < 1 {
-			return false
-		}
-		if b.remaining.CompareAndSwap(remaining, remaining-1) {
-			return true
-		}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.remaining < 1 {
+		return false
 	}
+	b.remaining--
+	return true
 }
 
+// markStarved records that a group has deferred work waiting for capacity.
+func (b *taskConcurrencyBudget) markStarved(group *taskGroup) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.starved == nil {
+		b.starved = make(map[*taskGroup]struct{})
+	}
+	b.starved[group] = struct{}{}
+}
+
+func (b *taskConcurrencyBudget) forget(group *taskGroup) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.starved, group)
+}
+
+// release returns n workers to the pool and offers the capacity to every group
+// that is waiting for some.
+//
+// The waiting groups are taken out from under the lock before any of them is
+// touched: staffing a group takes that group's lock and then reserves from the
+// pool, so holding the pool lock across a group call would invert the order.
 func (b *taskConcurrencyBudget) release(n int) {
-	if n > 0 {
-		b.remaining.Add(int64(n))
+	if n < 1 {
+		return
+	}
+	b.mu.Lock()
+	b.remaining += n
+	waiting := make([]*taskGroup, 0, len(b.starved))
+	for group := range b.starved {
+		waiting = append(waiting, group)
+	}
+	clear(b.starved)
+	b.mu.Unlock()
+
+	for _, group := range waiting {
+		group.staffDeferred()
 	}
 }
 
@@ -462,6 +500,7 @@ func (group *taskGroup) enqueue(exec *Execution, functionName string, taskArgs [
 		group.mu.Lock()
 		group.deferred = append(group.deferred, job)
 		group.mu.Unlock()
+		group.budget.markStarved(group)
 		return handle, nil
 	}
 	select {
@@ -487,28 +526,63 @@ func (group *taskGroup) enqueue(exec *Execution, functionName string, taskArgs [
 // staffForJob draws one more worker from the shared pool for a job about to be
 // queued, and reports whether the group has a worker to run it.
 //
-// Workers are taken per job rather than max at once because max is a ceiling,
-// not a count. A Tasks.run(max: 4) that spawns one task would otherwise hold
-// four slots for the group's whole lifetime, and against a host limit of 4 a
-// nested group would get none: it defers its child until a wait, so a parent
-// that blocks on something the child produces never reaches the wait that
-// would run it. Growing on demand means a group holds exactly as many slots as
-// it has jobs, and a run group cannot be sized by a number it does not know
-// when it is created.
+// Workers are taken per outstanding job rather than max at once, because max
+// is a ceiling and not a count. Reserving the ceiling meant a Tasks.run(max: 4)
+// that spawned one task held four slots for the group's whole lifetime, and
+// against a host limit of 4 a nested group got none: it defers its child until
+// a wait, so a parent that blocks on something the child produces never
+// reaches the wait that would run it.
+//
+// Counting outstanding jobs rather than jobs ever spawned matters for the same
+// reason. A group that spawns a task, awaits it, then spawns another needs one
+// worker, not two: the first worker is idle by the time the second job exists,
+// and a slot held for it is a slot a nested group cannot have.
 func (group *taskGroup) staffForJob() bool {
 	group.mu.Lock()
 	defer group.mu.Unlock()
+	group.outstanding++
 	// Starting a worker under the same lock closeAndWait takes before it waits
 	// on the worker set keeps the two ordered: no worker joins after shutdown
 	// has begun.
-	if !group.closed && group.reserved < group.max && group.budget.reserveOne() {
+	if !group.closed && group.outstanding > group.reserved && group.reserved < group.max &&
+		group.budget.reserveOne() {
 		group.reserved++
 		group.workers.Go(group.worker)
 	}
 	return group.reserved > 0
 }
 
+// staffDeferred takes a slot the pool has just returned, for a group holding
+// work no worker could take. The new worker drains the deferred queue itself,
+// so the goroutine releasing the slot never runs script code or blocks on a
+// full jobs channel.
+func (group *taskGroup) staffDeferred() {
+	group.mu.Lock()
+	wanted := !group.closed && len(group.deferred) > 0 && group.reserved < group.max
+	group.mu.Unlock()
+	if !wanted {
+		return
+	}
+	if !group.budget.reserveOne() {
+		group.budget.markStarved(group)
+		return
+	}
+
+	group.mu.Lock()
+	if group.closed || len(group.deferred) == 0 {
+		group.mu.Unlock()
+		group.budget.release(1)
+		return
+	}
+	group.reserved++
+	group.workers.Go(group.worker)
+	group.mu.Unlock()
+}
+
 func (group *taskGroup) worker() {
+	// Deferred work first: a worker staffed from a released slot exists
+	// precisely because there was work nothing could take.
+	group.drainDeferred()
 	for job := range group.jobs {
 		group.runJob(job)
 	}
@@ -517,6 +591,7 @@ func (group *taskGroup) worker() {
 func (group *taskGroup) runJob(job *taskJob) {
 	defer group.tasks.Done()
 	defer group.releaseJobPayload(job)
+	defer group.finishJob()
 
 	if err := group.ctx.Err(); err != nil {
 		group.recordErr(err)
@@ -611,10 +686,19 @@ func (group *taskGroup) closeAndWait() error {
 	group.workers.Wait()
 	group.cancel()
 	if group.budget != nil {
+		group.budget.forget(group)
 		group.budget.release(group.reserved)
 		group.reserved = 0
 	}
 	return group.err()
+}
+
+// finishJob records that a job is no longer outstanding, so the next spawn
+// reuses the worker it leaves idle rather than reserving another.
+func (group *taskGroup) finishJob() {
+	group.mu.Lock()
+	defer group.mu.Unlock()
+	group.outstanding--
 }
 
 func (group *taskGroup) isClosed() bool {
