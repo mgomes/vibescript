@@ -89,11 +89,22 @@ var builtinTypeAtoms = map[string]TypeKind{
 	"money":    TypeMoney,
 }
 
+// maxTypeAtomLen bounds an atom before it is scanned or quoted back. Rejecting
+// an atom still costs a rune scan and a %q copy of the whole argument in the
+// error, neither of which is charged to the script's memory quota: an 8 MiB
+// argument of letters allocated 24 MiB just building its rejection (#17). An
+// atom names one type, so real spellings are two identifiers at most and the
+// bound is far above any of them.
+const maxTypeAtomLen = 256
+
 // parseTypeAtom parses an is_type? atom: a built-in type name or a class/enum
 // name, optionally suffixed with `?` for the nullable form. Anything wider —
 // generics, unions, shapes, `any` (which every value satisfies) — is rejected
 // so the predicate stays a meaningful test.
 func parseTypeAtom(text string) (*TypeExpr, error) {
+	if len(text) > maxTypeAtomLen {
+		return nil, fmt.Errorf("%s supports type atoms only, got %d bytes", isTypeMemberName, len(text))
+	}
 	nullable := strings.HasSuffix(text, "?")
 	base := strings.TrimSuffix(text, "?")
 	if base == "" || !isTypeAtomIdent(base) {
