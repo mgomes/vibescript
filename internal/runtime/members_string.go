@@ -3029,13 +3029,55 @@ func rubyStrip(text string) string {
 	return rubyLstrip(rubyRstrip(text))
 }
 
+// squishedLen reports the byte length stringSquish produces for text. It walks
+// the same whitespace-separated fields, counting one separating space between
+// consecutive ones. TestSquishReservesExactlyWhatItWrites pins the two in step.
+func squishedLen(text string) int {
+	total := 0
+	fieldStart := -1
+	for i, r := range text {
+		if unicode.IsSpace(r) {
+			if fieldStart >= 0 {
+				if total > 0 {
+					total++
+				}
+				total += i - fieldStart
+				fieldStart = -1
+			}
+			continue
+		}
+		if fieldStart < 0 {
+			fieldStart = i
+		}
+	}
+	if fieldStart >= 0 {
+		if total > 0 {
+			total++
+		}
+		total += len(text) - fieldStart
+	}
+	return total
+}
+
+// stringSquish collapses every run of whitespace in text to a single space and
+// trims both ends, mirroring Rails' String#squish.
+//
+// The builder is sized to the output rather than to the receiver. Growing it by
+// len(text) reserved the receiver's length before the fields were known, and
+// strings.Builder hands its whole backing array to the string it returns, so a
+// heavily collapsing input -- an all-whitespace string, or a megabyte of padding
+// around one character -- produced a short string still holding an oversized
+// buffer: 200 of them held 192 MiB under an 8 MiB quota while the estimator
+// priced them by their visible length (#51). squishedLen walks the same fields
+// this loop writes, so the reservation is exact and the builder never has to
+// grow again (which would overshoot to twice the capacity plus the write).
 func stringSquish(text string) string {
 	if stringIsSquished(text) {
 		return text
 	}
 
 	var b strings.Builder
-	b.Grow(len(text))
+	b.Grow(squishedLen(text))
 	pendingSpace := false
 	fieldStart := -1
 	for i, r := range text {

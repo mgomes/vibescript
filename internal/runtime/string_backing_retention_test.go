@@ -307,3 +307,60 @@ end`)
 		t.Fatalf("partitions = %s, want %s", got.Inspect(), want)
 	}
 }
+
+// TestSquishDoesNotRetainAnOversizedBuffer pins that a heavily collapsing
+// squish stops holding the buffer it was built in.
+//
+// squish grew its builder by the receiver's length before it knew how much
+// output there would be, and strings.Builder hands its whole backing array to
+// the string it returns. A megabyte of padding around one character therefore
+// produced a one-byte string still holding a megabyte: 200 of them held 192 MiB
+// under an 8 MiB quota (#51).
+//
+// Not parallel: it measures process-wide heap.
+func TestSquishDoesNotRetainAnOversizedBuffer(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		expr string
+	}{
+		{"squish", `(big + "x").squish`},
+		{"squish!", `(big + "x").squish!`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			held := retainedHeapBytes(t, retentionScript(t, tc.expr), strings.Repeat(" ", 5_000), 200)
+			assertUnderRetentionLimit(t, "squished strings", held)
+		})
+	}
+}
+
+// TestSquishReservesExactlyWhatItWrites pins squishedLen against the output
+// stringSquish actually produces. A projection that drifts low is silent: the
+// builder simply grows again, to twice its capacity plus the write, and the
+// oversized buffer comes back (#51).
+func TestSquishReservesExactlyWhatItWrites(t *testing.T) {
+	t.Parallel()
+
+	texts := []string{
+		"", " ", "   ", " \n\t", "x", " x ", "hello world", "  hello \n\t world  ",
+		"hello  world", "a\xff  b", " ", "a b  c   d", "a\n\n\nb",
+		strings.Repeat(" ", 1000) + "x", "x" + strings.Repeat("\t", 1000),
+	}
+	// Random inputs over an alphabet of letters and assorted whitespace catch a
+	// drift the hand-written cases above would miss.
+	alphabet := []string{"a", "b", " ", "\t", "\n", " ", " ", "\xff"}
+	next := uint64(1)
+	for range 500 {
+		var b strings.Builder
+		for range 16 {
+			next = next*6364136223846793005 + 1442695040888963407
+			b.WriteString(alphabet[int(next>>33)%len(alphabet)])
+		}
+		texts = append(texts, b.String())
+	}
+
+	for _, text := range texts {
+		if got, want := squishedLen(text), len(stringSquish(text)); got != want {
+			t.Fatalf("squishedLen(%q) = %d, but stringSquish wrote %d bytes", text, got, want)
+		}
+	}
+}
