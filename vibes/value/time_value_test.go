@@ -906,6 +906,38 @@ func TestTimeFromEpochParts(t *testing.T) {
 			t.Fatalf("Location() = %v, want time.Local", got.Location())
 		}
 	})
+
+	// A rejected unit is echoed back into the message, so an aliased array DAG
+	// (a = [a, a] evaluated thirty times) is a thirty-node graph that renders as
+	// 2^30 leaves. Rendering it whole hangs the host inside error formatting,
+	// where no quota is charged, so the rejection must stay proportional to the
+	// message rather than to the graph it names. The call runs in a goroutine so
+	// a regression fails here instead of hanging the suite.
+	t.Run("aliased_array_unit_rejected_without_rendering_it", func(t *testing.T) {
+		t.Parallel()
+		unit := value.NewArray([]value.Value{value.NewInt(1)})
+		for range 30 {
+			unit = value.NewArray([]value.Value{unit, unit})
+		}
+
+		errs := make(chan error, 1)
+		go func() {
+			_, err := value.TimeFromEpochParts(value.NewInt(0), subsec(value.NewInt(1)), &unit, time.UTC)
+			errs <- err
+		}()
+
+		select {
+		case err := <-errs:
+			if err == nil {
+				t.Fatal("TimeFromEpochParts error = nil, want an unexpected unit error")
+			}
+			if got, want := err.Error(), "unexpected unit of type array"; got != want {
+				t.Fatalf("TimeFromEpochParts error = %q, want %q", got, want)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("TimeFromEpochParts did not return: the rejected unit is being rendered in full")
+		}
+	})
 }
 
 func TestParseTimeString(t *testing.T) {
