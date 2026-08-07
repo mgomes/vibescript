@@ -978,7 +978,25 @@ func hashMemberQuery(property string) (Value, error) {
 		}), nil
 	case "fetch_values":
 		return NewAutoBuiltin("hash.fetch_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			// Built before the reservation below so its baseline snapshots
+			// exec.reservedScratchBytes without the output backing, which the
+			// reservation would otherwise charge a second time.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			if err := acc.reserveSlots(len(args)); err != nil {
+				return NewNil(), err
+			}
 			out := make([]Value, len(args))
+			// The block runs once per missing key and every result stays in the
+			// Go-local out slice, which the memory checks inside the next block
+			// call cannot reach. A block returning an individually quota-sized
+			// value therefore passed its own check each time while out still held
+			// all the earlier ones, and only the post-call check ever saw the
+			// pile -- after the spike had already happened. Reserving the retained
+			// output as scratch puts it in every in-block baseline, so the quota
+			// trips during accumulation instead (#43).
+			retained := newRetainedOutputScratch(exec)
+			defer retained.release()
+			retained.reserve(acc.accumulatedBytes(len(out)))
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -988,6 +1006,9 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.fetch_values key is unsupported hash key: %w", err)
 				}
 				if ok {
+					// A present value aliases memory the accumulator's baseline
+					// already counts through the receiver, so charging it would
+					// bill the receiver's payload a second time.
 					out[i] = value
 					continue
 				}
@@ -1000,6 +1021,10 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out[i] = blockValue
+				if err := acc.addConservative(blockValue, len(out)); err != nil {
+					return NewNil(), err
+				}
+				retained.reserve(acc.accumulatedBytes(len(out)))
 			}
 			return NewArray(out), nil
 		}), nil
