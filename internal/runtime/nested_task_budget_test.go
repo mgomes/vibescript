@@ -591,3 +591,101 @@ func (c concurrencyProbeCapability) Bind(binding CapabilityBinding) (map[string]
 		}),
 	}, nil
 }
+
+// TestSiblingScopesOnOneExecutionShareThePool pins that a scope opened inside
+// another scope's block draws from the same pool.
+//
+// The pool rides on the context the group hands to the calls it drives, but a
+// block that opens a second scope runs on the SAME execution, whose context was
+// never replaced. That scope saw no pool and started its own, putting both
+// scopes' workers on the host at once and reopening the multiplication the
+// shared pool exists to stop (#54).
+//
+// Not parallel: it counts process-wide goroutines.
+func TestSiblingScopesOnOneExecutionShareThePool(t *testing.T) {
+	script := compileScriptWithConfig(t, Config{MaxTaskConcurrency: 4}, `def leaf(n)
+  total = 0
+  i = 0
+  while i < 20000
+    total = total + i
+    i = i + 1
+  end
+  total
+end
+
+def run()
+  Tasks.run(max: 4) do |tasks|
+    a = tasks.spawn(:leaf, 1)
+    b = tasks.spawn(:leaf, 2)
+    inner = Tasks.map([1, 2, 3, 4], max: 4, with: :leaf)
+    a.value + b.value + inner.length
+  end
+end`)
+
+	stop := make(chan struct{})
+	var peak atomic.Int64
+	sampling := make(chan struct{})
+	go func() {
+		close(sampling)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if n := int64(goruntime.NumGoroutine()); n > peak.Load() {
+					peak.Store(n)
+				}
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+	<-sampling
+	base := goruntime.NumGoroutine()
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		close(stop)
+		t.Fatalf("sibling scopes failed: %v", err)
+	}
+	close(stop)
+	if workers := int(peak.Load()) - base; workers > 4 {
+		t.Fatalf("two scopes on one execution held %d workers, want at most the host cap %d", workers, 4)
+	}
+}
+
+// TestAWaiterMayUseSpareGroupConcurrency pins that a waiter runs queued work
+// when the group is under its own max, rather than only when it is idle.
+//
+// The waiter's goroutine belongs to a slot already counted and is blocked, so
+// borrowing it adds no concurrency. Refusing while any job was running deadlocked
+// the shape where that running job waits on something the parent does only once
+// the deferred handle is in hand.
+func TestAWaiterMayUseSpareGroupConcurrency(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MaxTaskConcurrency: 2}, `def blocker(n)
+  probe.await_gate(n)
+  n
+end
+
+def opener(n)
+  probe.open_gate(n)
+  n
+end
+
+def nested(n)
+  Tasks.run(max: 2) do |tasks|
+    a = tasks.spawn(:blocker, 1)
+    b = tasks.spawn(:opener, 2)
+    b.value
+    probe.open_gate(1)
+    a.value
+  end
+end
+
+def run()
+  Tasks.map([1], max: 1, with: :nested)
+end`)
+
+	assertTaskTreeMakesProgress(t, script,
+		"a waiter refused to run queued work while the group was under its own max")
+}

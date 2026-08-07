@@ -217,7 +217,16 @@ func newTaskGroup(exec *Execution, max int, detachRootGlobals bool) *taskGroup {
 	// four levels of max:4 peaked at 144 workers against a host cap of 64,
 	// each child also holding a full step and memory quota (#54). Sharing the
 	// pool through the group context caps the whole tree instead.
+	// The context carries the pool into the calls this group drives, but a
+	// scope that opens another scope on the SAME execution never had its
+	// context replaced, so a Tasks.run block that calls Tasks.run directly saw
+	// no pool and started a second one, putting both scopes' workers on the
+	// host at once. The groups this execution already has open are the other
+	// half of the answer.
 	budget := taskBudgetFromContext(exec.Context())
+	if budget == nil {
+		budget = exec.enclosingTaskBudget()
+	}
 	if budget == nil {
 		budget = newTaskConcurrencyBudget(exec.hostTaskConcurrencyLimit())
 	}
@@ -278,6 +287,12 @@ func (b *taskConcurrencyBudget) markStarved(group *taskGroup) {
 		b.starved = make(map[*taskGroup]struct{})
 	}
 	b.starved[group] = struct{}{}
+}
+
+func (b *taskConcurrencyBudget) hasStarved() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.starved) > 0
 }
 
 func (b *taskConcurrencyBudget) forget(group *taskGroup) {
@@ -349,6 +364,17 @@ func taskBudgetFromContext(ctx context.Context) *taskConcurrencyBudget {
 	}
 	budget, _ := ctx.Value(taskBudgetKey{}).(*taskConcurrencyBudget)
 	return budget
+}
+
+// enclosingTaskBudget reports the pool of the innermost scope this execution
+// still has open, if any.
+func (exec *Execution) enclosingTaskBudget() *taskConcurrencyBudget {
+	for i := len(exec.activeTaskGroups) - 1; i >= 0; i-- {
+		if budget := exec.activeTaskGroups[i].budget; budget != nil {
+			return budget
+		}
+	}
+	return nil
 }
 
 // hostTaskConcurrencyLimit reports the ceiling a whole call tree shares.
@@ -638,15 +664,28 @@ func (group *taskGroup) nextQueuedJob() (*taskGroup, *taskJob) {
 	}
 	group.mu.Unlock()
 
-	if owner, job := group.budget.takeStarvedJob(group); job != nil {
-		return owner, job
-	}
+	for {
+		if owner, job := group.budget.takeStarvedJob(group); job != nil {
+			return owner, job
+		}
 
-	group.mu.Lock()
-	group.running--
-	group.mu.Unlock()
-	group.budget.release(1)
-	return nil, nil
+		group.mu.Lock()
+		group.running--
+		group.mu.Unlock()
+		group.budget.release(1)
+
+		// A group can register as starved between the snapshot above and this
+		// release, and its own retry fails while this slot is still held, so
+		// letting the slot go quiet there would leave it waiting with nothing
+		// to wake it. Re-taking the slot and looking again closes that window;
+		// losing the race for it is fine, because whoever won is doing this.
+		if !group.budget.hasStarved() || !group.budget.reserveOne() {
+			return nil, nil
+		}
+		group.mu.Lock()
+		group.running++
+		group.mu.Unlock()
+	}
 }
 
 func (group *taskGroup) runJob(job *taskJob) {
@@ -718,9 +757,12 @@ func (group *taskGroup) lazyGlobalsForJob() *taskLazyGlobals {
 // that is itself waiting on a host action the parent performs once this wait
 // returns.
 //
-// Only a group with nothing on a slot needs this. A group that has a job
-// running works through its queue on that slot, and running one here as well
-// would put more script on the CPU at once than the pool allowed.
+// A group under its own max may still run work here even when it has a job on
+// a slot: the waiter's goroutine is already counted by whatever slot it belongs
+// to and is blocked, so borrowing it adds no concurrency, while refusing would
+// deadlock a parent whose running child is waiting on something that parent
+// only does once the deferred handle is in hand. Above the max it must refuse,
+// which is what the group's own limit means.
 func (group *taskGroup) drainDeferred(done <-chan struct{}) {
 	for {
 		if done != nil {
@@ -731,7 +773,7 @@ func (group *taskGroup) drainDeferred(done <-chan struct{}) {
 			}
 		}
 		group.mu.Lock()
-		if len(group.deferred) == 0 || group.running > 0 {
+		if len(group.deferred) == 0 || group.running >= group.max {
 			group.mu.Unlock()
 			return
 		}
