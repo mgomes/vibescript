@@ -219,6 +219,96 @@ end
 	}
 }
 
+// TestCheckWarningsNamespaceWriteAtRecursionDepthIsRecorded pins the effect the
+// namespace scan must not lose. The lambda's false branch changes the captured
+// state before calling itself, so the `JSON.stringify` assignment in its true
+// branch runs only on the nested invocation. The ordinary scan walks the body
+// under the first invocation's state and prunes that branch, so without the
+// re-entrant pass the checker would keep treating JSON.stringify as the
+// builtin and report its string result as a contradiction.
+func TestCheckWarningsNamespaceWriteAtRecursionDepthIsRecorded(t *testing.T) {
+	t.Parallel()
+
+	written := compileScript(t, `
+def main() -> int
+  x = false
+  h = -> {
+    if x
+      JSON.stringify = -> { 1 }
+    else
+      x = true
+      h.call
+    end
+  }
+  h.call
+  JSON.stringify({})
+end
+`)
+	if warnings := checkWarningsWithin(t, written, "a namespace write at recursion depth"); len(warnings) != 0 {
+		t.Fatalf("expected the nested write to make JSON.stringify dynamic, got %v", warnings)
+	}
+
+	// The same recursive shape without a write keeps the member exact, so the
+	// re-entrant pass records reachable writes instead of widening everything.
+	unwritten := compileScript(t, `
+def main() -> int
+  x = false
+  h = -> {
+    if x
+      1
+    else
+      x = true
+      h.call
+    end
+  }
+  h.call
+  JSON.stringify({})
+end
+`)
+	warnings := checkWarningsWithin(t, unwritten, "a recursive lambda with no namespace write")
+	if len(warnings) != 1 || warnings[0].Message != "return value expected int, got string" {
+		t.Fatalf("expected JSON.stringify to stay exact with no write, got %v", warnings)
+	}
+}
+
+// TestCheckWarningsSelfInvokedLambdaScanTerminates covers the namespace effect
+// scan. An array element resolves to an exact lambda value, so a lambda that
+// calls its own array slot made the scan walk the same body again for every
+// nested call and never return (#12).
+func TestCheckWarningsSelfInvokedLambdaScanTerminates(t *testing.T) {
+	t.Parallel()
+
+	const source = `
+def main()
+  fns = [-> { fns[0].call }]
+  h = -> { fns[0].call }
+  h.call
+  0
+end
+`
+	script := compileScript(t, source)
+	if warnings := checkWarningsWithin(t, script, "a self-invoking projected lambda"); len(warnings) != 0 {
+		t.Fatalf("expected no warnings for a self-invoking projected lambda, got %v", warnings)
+	}
+
+	diagnosed := compileScript(t, `
+def main()
+  fns = [-> {
+    fns[0].call
+    missing
+  }]
+  h = -> { fns[0].call }
+  h.call
+  0
+end
+`)
+	requireOnlyUndefinedMissingWarning(
+		t,
+		checkWarningsWithin(t, diagnosed, "a self-invoking projected lambda with a bad body"),
+		"self-invoking projected lambda",
+	)
+}
+
 // forwardedSendChainSource builds `C.send(:send, ..., :build)` with depth
 // forwarding hops, the flat shape that made the forwarded-target resolver
 // recurse once per argument.

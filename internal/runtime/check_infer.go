@@ -2404,8 +2404,11 @@ func (c *scriptChecker) collectMutationCandidateRootsFromExpression(expr Express
 }
 
 type regionIvarEffects struct {
-	writes  map[string]struct{}
-	unknown bool
+	writes map[string]struct{}
+	// reentrant records that a lambda body reached itself, so the region can
+	// run again with state the first pass has already changed.
+	reentrant bool
+	unknown   bool
 }
 
 type capturedBlockLiteralValue struct {
@@ -2466,6 +2469,7 @@ func mergeRegionIvarEffects(dst *regionIvarEffects, src regionIvarEffects) {
 		return
 	}
 	dst.unknown = dst.unknown || src.unknown
+	dst.reentrant = dst.reentrant || src.reentrant
 	for name := range src.writes {
 		if dst.writes == nil {
 			dst.writes = make(map[string]struct{})
@@ -5185,6 +5189,7 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromBlock(
 		return
 	}
 	if _, walking := c.repeatedRegionBlocksInWalk[block]; walking {
+		effects.reentrant = true
 		effects.unknown = true
 		return
 	}
@@ -5256,6 +5261,9 @@ func (c *scriptChecker) widenRepeatedRegionBlockIvarFacts(block *BlockLiteral) {
 	c.collectRepeatedRegionIvarEffectsFromBlock(block, &effects)
 	c.restoreScopeState(scopeState)
 	c.widenRegionIvarFacts(effects)
+	if effects.reentrant {
+		c.applyReentrantLambdaNamespaceMutations(block)
+	}
 }
 
 // refineOneShotBlockIvarFacts restores exact scalar facts only on a normally

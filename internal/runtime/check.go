@@ -18099,6 +18099,34 @@ func (c *scriptChecker) checkInvokedLambdaSummaryYields(function string, block *
 	c.checkBlockLiteral(function, block, true)
 }
 
+// applyReentrantLambdaNamespaceMutations records the namespace members a
+// lambda that reaches itself may rewrite. The ordinary scan walks the body
+// under the state of the first invocation, so a branch the recursion enables
+// (a false branch that sets `x = true` before calling itself, a true branch
+// that assigns `JSON.stringify`) is pruned and its write is never recorded.
+// Forgetting the locals the body rebinds leaves those branches undecided, so
+// the scan reaches every write a nested invocation could perform. Only a body
+// the region walk proved re-entrant takes this pass, which is a shape no
+// bounded walk reached before.
+func (c *scriptChecker) applyReentrantLambdaNamespaceMutations(block *BlockLiteral) {
+	if block == nil {
+		return
+	}
+	scopeState := c.snapshotScopeState()
+	rebound := make(map[string]struct{})
+	collectLocalBindings(block.Body, rebound)
+	for name := range rebound {
+		c.bindLocalType(name, nil)
+		c.bindLocalClassValue(name, "")
+	}
+	scan := c.newNamespaceMutationScan()
+	scan.scanLambdaBlock(block)
+	c.restoreScopeState(scopeState)
+	for member := range scan.out {
+		c.recordRuntimeNamespaceMember(member)
+	}
+}
+
 // applyLambdaBlockNamespaceMutations records the namespace members a lambda
 // may rewrite once its body can run.
 func (c *scriptChecker) applyLambdaBlockNamespaceMutations(block *BlockLiteral) bool {
