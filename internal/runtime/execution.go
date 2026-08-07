@@ -124,10 +124,15 @@ type Execution struct {
 	receiverStack             []Value
 	envStack                  []*Env
 	activeTaskGroups          []*taskGroup
-	validatedCapabilityArgs   []string
-	capabilityReturnProof     capabilityReturnProof
-	memoryEst                 memoryEstimator
-	reservedScratchBytes      int
+	// retainedValues holds values a builtin is keeping alive in Go locals where
+	// nothing the estimator walks can reach them. Registering them makes every
+	// check see them, including the ones that run inside script code the
+	// builtin goes on to call.
+	retainedValues          []Value
+	validatedCapabilityArgs []string
+	capabilityReturnProof   capabilityReturnProof
+	memoryEst               memoryEstimator
+	reservedScratchBytes    int
 	// adoptedConstantBytes sums the class-constant map entries mixin adoption
 	// has inserted since its last memory check (see chargeAdoptedConstant). It
 	// carries across includes so that many small adoptions are measured as

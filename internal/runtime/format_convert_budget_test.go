@@ -155,3 +155,38 @@ end`
 		t.Fatal("a conversion and the output copied from it must be weighed together")
 	}
 }
+
+// TestFormatSeesEarlierConversionsInsideALaterToString pins that a conversion
+// already in hand is visible to the memory checks that run inside whatever
+// to_s runs next.
+//
+// The results live in a Go local that no walk reaches, so a later to_s
+// allocating a large temporary was weighed against a baseline missing every
+// conversion before it, and each one passed on its own.
+func TestFormatSeesEarlierConversionsInsideALaterToString(t *testing.T) {
+	t.Parallel()
+
+	// The first argument converts to 1 MiB and is retained; the second builds a
+	// 1 MiB temporary inside its own to_s. Neither fits beside the other under
+	// this quota, and the temporary is what has to notice.
+	src := `
+class Kept
+  def to_s
+    "x" * 1048576
+  end
+end
+class Temp
+  def to_s
+    big = "y" * 1048576
+    big.byteslice(0, 1)
+  end
+end
+
+def run()
+  format("%.1s%.1s", Kept.new, Temp.new)
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: 3 << 19}, src)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatal("a temporary inside a later to_s must be weighed against the conversions already held")
+	}
+}

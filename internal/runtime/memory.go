@@ -2694,6 +2694,9 @@ func (exec *Execution) estimateGraphTail(est *memoryEstimator, globals *taskLazy
 		total += group.jobPayloadMemory(est)
 		total += group.retainedResultMemory(est)
 	}
+	for _, val := range exec.retainedValues {
+		total += est.value(val)
+	}
 	if globals != nil {
 		total += globals.retainedSourceMemory(est)
 		total += globals.retainedCloneMemory(est)
@@ -3415,4 +3418,26 @@ func (est *memoryEstimator) objectWrapperBytes(val Value) int {
 		est.journal.objectData = append(est.journal.objectData, id)
 	}
 	return estimatedObjectDataBytes
+}
+
+// retainValue makes a value the estimator cannot otherwise reach part of this
+// execution's live set, and returns the release that drops it again.
+//
+// A builtin that holds results in a Go local while it goes on to run more
+// script code is invisible to every check that script performs: the value is
+// live, but no walk reaches it. Registering it is exact where reserving a byte
+// count is not, because the same walk that counts it also deduplicates it --
+// a string a script handed back from one of its own fields is already counted
+// through the roots and costs nothing more here.
+func (exec *Execution) retainValue(val Value) func() {
+	if exec == nil {
+		return func() {}
+	}
+	exec.retainedValues = append(exec.retainedValues, val)
+	depth := len(exec.retainedValues)
+	return func() {
+		if len(exec.retainedValues) >= depth {
+			exec.retainedValues = exec.retainedValues[:depth-1]
+		}
+	}
 }
