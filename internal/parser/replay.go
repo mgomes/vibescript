@@ -91,36 +91,84 @@ func (r *sourceReplay) stateBefore(offset int, budget *percentScanBudget) (int, 
 // keeps one very long line -- the shape a whole-source ASCII test would leave
 // quadratic -- as cheap as many short ones, and costs sources that never ask
 // about such a line nothing at all.
+//
+// The line table grows the same way, a prefix at a time. Most of an index is
+// read front to back and it makes no difference, but not every index covers
+// source anyone reads all of: findStringInterpolationEnd drives a throwaway
+// lexer over the whole rest of the source to close one `#{...}`, and that lexer
+// only ever asks about offsets inside the interpolation. Scanning the entire
+// suffix to answer made a percent-array literal inside an interpolation cost
+// the source that follows it, so 2,000 lines of `s = "#{a %w[b]}"` walked 34 MB
+// of a 34 KB source and quadrupled per doubling. They walk 74 KB now (#45).
 type lineIndex struct {
 	input string
 
-	// starts holds the byte offset each line begins at. Input ending in a
-	// newline has a final empty line, which is where the End of the last token
-	// and the one-past-the-input position land.
+	// starts holds the byte offset each line begins at, over the prefix
+	// scanned so far. Input ending in a newline has a final empty line, which
+	// is where the End of the last token and the one-past-the-input position
+	// land.
 	starts []int
-	ascii  []bool
-	runes  map[int][]int
+
+	// ascii records, for each line the scan has passed the end of, whether it
+	// is free of multi-byte runes. asciiRun carries the same answer for the
+	// line the scan stopped inside, covering it as far as scanned, which is
+	// all a column at or before that point can depend on.
+	ascii    []bool
+	asciiRun bool
+
+	runes map[int][]int
+
+	// scanned is how far into the input the line table reaches. complete
+	// records that it reached the end, at which point ascii holds an entry per
+	// line and the last line's end is known.
+	scanned  int
+	complete bool
 }
 
-func (x *lineIndex) build() {
-	if x.starts != nil {
-		return
+// extend grows the line table until it covers untilOffset bytes of input and
+// has found the start of the line after untilLine, or until the input runs out.
+// Zero leaves either bound already satisfied, so a caller states only the one it
+// needs.
+//
+// Stopping at the start of the line after untilLine is what settles that line:
+// its end and its ascii entry both exist only once the scan has passed its
+// newline.
+func (x *lineIndex) extend(untilOffset, untilLine int) {
+	if x.starts == nil {
+		x.starts = []int{0}
+		x.asciiRun = true
 	}
-	noteSourceReplay(len(x.input))
 
-	x.starts = []int{0}
-	ascii := true
-	for i := range len(x.input) {
+	from := x.scanned
+	for !x.complete && (x.scanned < untilOffset || len(x.starts) <= untilLine) {
+		if x.scanned == len(x.input) {
+			x.complete = true
+			x.ascii = append(x.ascii, x.asciiRun)
+			break
+		}
+		i := x.scanned
+		x.scanned++
 		switch {
 		case x.input[i] >= utf8.RuneSelf:
-			ascii = false
+			x.asciiRun = false
 		case x.input[i] == '\n':
 			x.starts = append(x.starts, i+1)
-			x.ascii = append(x.ascii, ascii)
-			ascii = true
+			x.ascii = append(x.ascii, x.asciiRun)
+			x.asciiRun = true
 		}
 	}
-	x.ascii = append(x.ascii, ascii)
+	noteSourceReplay(x.scanned - from)
+}
+
+// lineASCII reports whether the given line is free of multi-byte runes. A line
+// the scan has not passed the end of yet answers for the part of it covered so
+// far, which is why every caller extends past the offset it is asking about
+// before asking.
+func (x *lineIndex) lineASCII(line int) bool {
+	if line-1 < len(x.ascii) {
+		return x.ascii[line-1]
+	}
+	return x.asciiRun
 }
 
 // offsetForPosition returns the byte offset of the rune at pos, or false when
@@ -131,7 +179,7 @@ func (x *lineIndex) offsetForPosition(pos ast.Position) (int, bool) {
 	if pos.Line < 1 || pos.Column < 1 {
 		return 0, false
 	}
-	x.build()
+	x.extend(0, pos.Line)
 	if pos.Line > len(x.starts) {
 		return 0, false
 	}
@@ -139,7 +187,7 @@ func (x *lineIndex) offsetForPosition(pos ast.Position) (int, bool) {
 	start, end := x.lineBounds(pos.Line)
 	index := pos.Column - 1
 	lastLine := pos.Line == len(x.starts)
-	if !x.ascii[pos.Line-1] {
+	if !x.lineASCII(pos.Line) {
 		runes := x.runeStarts(pos.Line)
 		if index < len(runes) {
 			return runes[index], true
@@ -159,9 +207,9 @@ func (x *lineIndex) offsetForPosition(pos ast.Position) (int, bool) {
 // reports both that offset and its position. An offset at or past the end of
 // the input reports the one-past-the-final-rune position.
 func (x *lineIndex) runeAt(offset int) (int, ast.Position) {
-	x.build()
 	offset = max(offset, 0)
 	offset = min(offset, len(x.input))
+	x.extend(offset, 0)
 
 	index, found := slices.BinarySearch(x.starts, offset)
 	if !found {
@@ -170,7 +218,7 @@ func (x *lineIndex) runeAt(offset int) (int, ast.Position) {
 	line := index + 1
 
 	start, _ := x.lineBounds(line)
-	if x.ascii[line-1] {
+	if x.lineASCII(line) {
 		return offset, ast.Position{Line: line, Column: offset - start + 1}
 	}
 	runes := x.runeStarts(line)
@@ -181,6 +229,10 @@ func (x *lineIndex) runeAt(offset int) (int, ast.Position) {
 	return len(x.input), ast.Position{Line: line, Column: len(runes) + 1}
 }
 
+// lineBounds returns the byte range of the given line. The end of the last
+// known line reads as the end of the input, so a caller that needs a real end
+// must have extended past the line first; one that only wants the start (which
+// the table always holds) need not.
 func (x *lineIndex) lineBounds(line int) (int, int) {
 	if line < len(x.starts) {
 		return x.starts[line-1], x.starts[line]
@@ -196,6 +248,7 @@ func (x *lineIndex) runeStarts(line int) []int {
 		return offsets
 	}
 
+	x.extend(0, line)
 	start, end := x.lineBounds(line)
 	noteSourceReplay(end - start)
 	offsets := make([]int, 0, end-start)

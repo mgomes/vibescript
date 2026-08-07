@@ -61,6 +61,61 @@ func TestParenlessSlashReplayStaysLinear(t *testing.T) {
 	}
 }
 
+// A percent-array literal inside a `#{...}` reaches the same door from the far
+// side: closing the interpolation runs a throwaway lexer over the whole rest of
+// the source, and repositioning that lexer past the literal asked it to resolve
+// an offset. Indexing the suffix to answer walked all of it, so every such
+// interpolation paid for the source that follows it and the parse went
+// quadratic again -- 4,000 of either line below walked over 150 MB (#45).
+//
+// Both shapes appear because the suffix a throwaway lexer covers is a whole
+// file's worth of lines in one and a single very long line in the other, and
+// only the second shows a line table that stops at the end of a line rather
+// than at the offset asked about. Counting bytes rather than timing them is for
+// the reasons given above.
+func TestInterpolatedPercentArrayReplayStaysLinear(t *testing.T) {
+	measure := func(t *testing.T, src string) uint64 {
+		t.Helper()
+
+		sourceReplayBytes.Store(0)
+		sourceReplayCounting.Store(true)
+		defer sourceReplayCounting.Store(false)
+		if _, errs := Parse(src); len(errs) != 0 {
+			t.Fatalf("the source no longer parses cleanly, so it no longer exercises the walk: %v", errs[0])
+		}
+		return sourceReplayBytes.Load()
+	}
+
+	for _, tc := range []struct {
+		name string
+		gen  func(count int) string
+	}{
+		{
+			"one interpolation per line",
+			func(count int) string { return strings.Repeat("s = \"#{a %w[b]}\"\n", count) },
+		},
+		{
+			"every interpolation on one line",
+			func(count int) string { return "s = \"" + strings.Repeat("#{a %w[b]}", count) + "\"\n" },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			small := measure(t, tc.gen(1000))
+			large := measure(t, tc.gen(2000))
+
+			// Measured 37,000 then 74,000 bytes either way: a 2.00x step for a
+			// doubled source. Before, the lines walked 8.5M and 34.1M and the
+			// single line 10.0M and 40.1M, a 3.99x step both times. The
+			// assertion allows up to 3x so it states the complexity rather than
+			// pinning counts that ordinary lexer changes would shift.
+			if large > small*3 {
+				t.Fatalf("doubling the source re-walked %d bytes against %d -- over 3x, so a percent-array"+
+					" literal inside an interpolation is superlinear in the source size again", large, small)
+			}
+		})
+	}
+}
+
 // walkToPosition and walkToOffset are the definition lineIndex has to match:
 // the straight walk over the input that resolving a position used to do.
 func walkToPosition(input string, pos ast.Position) (int, bool) {
@@ -105,6 +160,13 @@ func walkToOffset(input string, offset int) ast.Position {
 // sources chosen for the boundaries -- empty input, a trailing newline (which
 // opens a final empty line), blank lines, and multi-byte runes both before and
 // after the column being asked about.
+//
+// Each source is compared twice. Once through a single index, which is how a
+// parse uses one and leaves the table built by the time the later lookups
+// arrive, and once through an index built for that one lookup, which is the
+// only way to see what a partly built table answers: the throwaway lexers
+// findStringInterpolationEnd starts ask about one offset in the middle of a
+// source and never come back for the rest of it.
 func TestLineIndexMatchesAStraightWalk(t *testing.T) {
 	t.Parallel()
 
@@ -118,35 +180,47 @@ func TestLineIndexMatchesAStraightWalk(t *testing.T) {
 		"héllo /wörld/\n\nfin",
 		"emoji 🙂 mid\nsecond ✓ line\n",
 		"trailing\r\nwindows\r\n",
+		"s = \"#{a %w[b]}\"\ns = \"#{a %w[b]}\"\n",
+		"wide é line with no newline at all and a 🙂 after the middle of it",
 	} {
 		t.Run(strings.ReplaceAll(input, "\n", "\\n"), func(t *testing.T) {
 			t.Parallel()
 
-			index := &lineIndex{input: input}
-			for line := range strings.Count(input, "\n") + 3 {
-				for column := range len(input) + 3 {
-					pos := ast.Position{Line: line, Column: column}
-					wantOffset, wantOK := walkToPosition(input, pos)
-					gotOffset, gotOK := index.offsetForPosition(pos)
-					if gotOffset != wantOffset || gotOK != wantOK {
-						t.Fatalf("offsetForPosition(%+v) = %d, %v; the walk says %d, %v",
-							pos, gotOffset, gotOK, wantOffset, wantOK)
+			shared := &lineIndex{input: input}
+			for _, fresh := range []bool{false, true} {
+				index := func() *lineIndex {
+					if fresh {
+						return &lineIndex{input: input}
+					}
+					return shared
+				}
+
+				for line := range strings.Count(input, "\n") + 3 {
+					for column := range len(input) + 3 {
+						pos := ast.Position{Line: line, Column: column}
+						wantOffset, wantOK := walkToPosition(input, pos)
+						gotOffset, gotOK := index().offsetForPosition(pos)
+						if gotOffset != wantOffset || gotOK != wantOK {
+							t.Fatalf("offsetForPosition(%+v) = %d, %v; the walk says %d, %v (fresh=%v)",
+								pos, gotOffset, gotOK, wantOffset, wantOK, fresh)
+						}
 					}
 				}
-			}
 
-			for offset := range len(input) + 2 {
-				want := walkToOffset(input, offset)
-				gotOffset, got := index.runeAt(offset)
-				if got != want {
-					t.Fatalf("runeAt(%d) reports position %+v; the walk says %+v", offset, got, want)
-				}
-				// The offset reported alongside is the start of the rune that
-				// position names, so seeking to it lands the lexer on a rune
-				// boundary even when the caller pointed into the middle of one.
-				if boundary, ok := index.offsetForPosition(got); !ok || boundary != gotOffset {
-					t.Fatalf("runeAt(%d) reports offset %d for position %+v, which resolves to %d, %v",
-						offset, gotOffset, got, boundary, ok)
+				for offset := range len(input) + 2 {
+					want := walkToOffset(input, offset)
+					gotOffset, got := index().runeAt(offset)
+					if got != want {
+						t.Fatalf("runeAt(%d) reports position %+v; the walk says %+v (fresh=%v)",
+							offset, got, want, fresh)
+					}
+					// The offset reported alongside is the start of the rune that
+					// position names, so seeking to it lands the lexer on a rune
+					// boundary even when the caller pointed into the middle of one.
+					if boundary, ok := index().offsetForPosition(got); !ok || boundary != gotOffset {
+						t.Fatalf("runeAt(%d) reports offset %d for position %+v, which resolves to %d, %v (fresh=%v)",
+							offset, gotOffset, got, boundary, ok, fresh)
+					}
 				}
 			}
 		})
