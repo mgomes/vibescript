@@ -175,6 +175,7 @@ type scriptChecker struct {
 	blockLocalBreakCollector   *returnSummaryCollector
 	summaryYieldCollector      *returnSummaryCollector
 	summaryYieldBlock          *BlockLiteral
+	summaryYieldBlocksInWalk   map[*BlockLiteral]struct{}
 	summaryYieldsActive        bool
 	summaryBlockAvailable      bool
 	pinnedExpressionFacts      map[Expression]*TypeExpr
@@ -18062,10 +18063,21 @@ func (c *scriptChecker) checkScriptCallInvokedLambdaSummaryYields(
 // checkInvokedLambdaSummaryYields rechecks an executed lambda with local
 // return semantics intact while allowing reachable yields to poison the
 // enclosing function summary. Merely defining a lambda keeps yields inert.
+// A lambda stored in a local it also calls (`h = -> { h.call }; h.call`) would
+// otherwise re-enter its own body once per nested call and never return, so a
+// body already on the walk contributes its yields from the outer walk (#7).
 func (c *scriptChecker) checkInvokedLambdaSummaryYields(function string, block *BlockLiteral) {
 	if block == nil || c.summaryYieldCollector == nil || !c.summaryYieldsActive {
 		return
 	}
+	if _, walking := c.summaryYieldBlocksInWalk[block]; walking {
+		return
+	}
+	if c.summaryYieldBlocksInWalk == nil {
+		c.summaryYieldBlocksInWalk = make(map[*BlockLiteral]struct{})
+	}
+	c.summaryYieldBlocksInWalk[block] = struct{}{}
+	defer delete(c.summaryYieldBlocksInWalk, block)
 	previousBlock := c.summaryYieldBlock
 	c.summaryYieldBlock = block
 	defer func() { c.summaryYieldBlock = previousBlock }()

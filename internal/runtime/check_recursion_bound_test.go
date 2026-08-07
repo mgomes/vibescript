@@ -76,3 +76,86 @@ end
 		"self-invoking stored lambda",
 	)
 }
+
+// TestCheckWarningsSelfInvokedLambdaSummaryTerminates covers the same lambda
+// once a caller makes the checker summarize f. The summary walk re-checked the
+// stored lambda for every exact invocation, and the lambda invoking itself made
+// that walk re-enter the same body forever (#7).
+func TestCheckWarningsSelfInvokedLambdaSummaryTerminates(t *testing.T) {
+	t.Parallel()
+
+	const source = `
+def f()
+  h = -> { h.call }
+  h.call
+  0
+end
+
+def main()
+  f()
+end
+`
+	script := compileScript(t, source)
+	if warnings := checkWarningsWithin(t, script, "a summarized self-invoking stored lambda"); len(warnings) != 0 {
+		t.Fatalf("expected no warnings for a summarized self-invoking stored lambda, got %v", warnings)
+	}
+
+	diagnosed := compileScript(t, `
+def f()
+  h = -> {
+    h.call
+    missing
+  }
+  h.call
+  0
+end
+
+def main()
+  f()
+end
+`)
+	requireOnlyUndefinedMissingWarning(
+		t,
+		checkWarningsWithin(t, diagnosed, "a summarized self-invoking lambda with a bad body"),
+		"summarized self-invoking lambda",
+	)
+}
+
+// TestCheckWarningsInvokedLambdaYieldsStillPoisonSummary keeps the summary
+// re-check the bound protects: an executed lambda that yields must still make
+// the enclosing function's result unknown instead of reporting the literal
+// result the body falls through to.
+func TestCheckWarningsInvokedLambdaYieldsStillPoisonSummary(t *testing.T) {
+	t.Parallel()
+
+	yielding := compileScript(t, `
+def f()
+  h = -> { yield }
+  h.call
+  0
+end
+
+def main() -> string
+  f() { 1 }
+end
+`)
+	if warnings := checkWarningsWithin(t, yielding, "a yielding invoked lambda"); len(warnings) != 0 {
+		t.Fatalf("expected the yield to leave f's summary unknown, got %v", warnings)
+	}
+
+	plain := compileScript(t, `
+def f()
+  h = -> { 1 }
+  h.call
+  0
+end
+
+def main() -> string
+  f()
+end
+`)
+	warnings := checkWarningsWithin(t, plain, "a non-yielding invoked lambda")
+	if len(warnings) != 1 || warnings[0].Message != "return value expected string, got int" {
+		t.Fatalf("expected f to summarize as int, got %v", warnings)
+	}
+}
