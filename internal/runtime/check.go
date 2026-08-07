@@ -18073,13 +18073,19 @@ func (c *scriptChecker) checkScriptCallInvokedLambdaSummaryYields(
 // return semantics intact while allowing reachable yields to poison the
 // enclosing function summary. Merely defining a lambda keeps yields inert.
 // A lambda stored in a local it also calls (`h = -> { h.call }; h.call`) would
-// otherwise re-enter its own body once per nested call and never return, so a
-// body already on the walk contributes its yields from the outer walk (#7).
+// otherwise re-enter its own body once per nested call and never return (#7).
+// The nested invocation can change captured state and so reach a yield the
+// outer one pruned, as in a lambda whose false branch sets `x = true` before
+// calling itself and whose true branch yields, so a body already on the walk
+// records the unknown result any reachable yield would produce instead of
+// walking it again. That is what the walk exists to detect, so the bounded
+// walk concludes no less than an unbounded one.
 func (c *scriptChecker) checkInvokedLambdaSummaryYields(function string, block *BlockLiteral) {
 	if block == nil || c.summaryYieldCollector == nil || !c.summaryYieldsActive {
 		return
 	}
 	if _, walking := c.summaryYieldBlocksInWalk[block]; walking {
+		c.recordReturnSummaryResult(c.summaryYieldCollector, nil, nil)
 		return
 	}
 	if c.summaryYieldBlocksInWalk == nil {

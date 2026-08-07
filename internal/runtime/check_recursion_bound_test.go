@@ -162,42 +162,61 @@ end
 	}
 }
 
-// TestCheckWarningsSelfInvokedLambdaScanTerminates covers the namespace effect
-// scan. An array element resolves to an exact lambda value, so a lambda that
-// calls its own array slot made the scan walk the same body again for every
-// nested call and never return (#12).
-func TestCheckWarningsSelfInvokedLambdaScanTerminates(t *testing.T) {
+// TestCheckWarningsYieldReachableOnlyAtRecursionDepthPoisonsSummary pins the
+// case the summary bound must not lose. The lambda's false branch changes the
+// captured state before calling itself, so the yield in its true branch runs
+// only on the nested invocation: the outer walk prunes that branch, and a
+// bound that merely skipped the nested walk would summarize f as int and
+// report a contradiction that the runtime never produces.
+func TestCheckWarningsYieldReachableOnlyAtRecursionDepthPoisonsSummary(t *testing.T) {
 	t.Parallel()
 
-	const source = `
-def main()
-  fns = [-> { fns[0].call }]
-  h = -> { fns[0].call }
+	reachable := compileScript(t, `
+def f()
+  x = false
+  h = -> {
+    if x
+      yield
+    else
+      x = true
+      h.call
+    end
+  }
   h.call
   0
 end
-`
-	script := compileScript(t, source)
-	if warnings := checkWarningsWithin(t, script, "a self-invoking projected lambda"); len(warnings) != 0 {
-		t.Fatalf("expected no warnings for a self-invoking projected lambda, got %v", warnings)
-	}
 
-	diagnosed := compileScript(t, `
-def main()
-  fns = [-> {
-    fns[0].call
-    missing
-  }]
-  h = -> { fns[0].call }
-  h.call
-  0
+def main() -> string
+  f() { 1 }
 end
 `)
-	requireOnlyUndefinedMissingWarning(
-		t,
-		checkWarningsWithin(t, diagnosed, "a self-invoking projected lambda with a bad body"),
-		"self-invoking projected lambda",
-	)
+	warnings := checkWarningsWithin(t, reachable, "a yield reachable only at recursion depth")
+	if len(warnings) != 0 {
+		t.Fatalf("expected the nested yield to leave f's summary unknown, got %v", warnings)
+	}
+
+	// A yield no invocation can reach keeps the summary exact, so the bound
+	// widens on recursion rather than on every conditional yield.
+	unreachable := compileScript(t, `
+def f()
+  x = false
+  h = -> {
+    if x
+      yield
+    end
+  }
+  h.call
+  0
+end
+
+def main() -> string
+  f() { 1 }
+end
+`)
+	warnings = checkWarningsWithin(t, unreachable, "an unreachable yield")
+	if len(warnings) != 1 || warnings[0].Message != "return value expected string, got int" {
+		t.Fatalf("expected f to summarize as int for an unreachable yield, got %v", warnings)
+	}
 }
 
 // forwardedSendChainSource builds `C.send(:send, ..., :build)` with depth
