@@ -1448,29 +1448,29 @@ func stringSliceResult(receiver, first, second Value, hasLength bool) (Value, er
 		if err != nil {
 			return NewNil(), fmt.Errorf("string.slice index must be an integer, range, or substring")
 		}
-		return stringSliceCharAt(text, index), nil
+		substr, ok := stringSliceCharAt(text, index)
+		if !ok {
+			return NewNil(), nil
+		}
+		return NewString(substr), nil
 	}
 }
 
 // stringSliceCharAt returns the single-character slice for String#slice(index).
 // Unlike the (start, length) form, an index equal to the rune length is out of
-// range and yields nil (Ruby's "abc".slice(3) => nil while "abc".slice(3, 1) =>
-// ""). A negative index counts back from the end.
-func stringSliceCharAt(text string, index int) Value {
+// range and yields ok=false (Ruby's "abc".slice(3) => nil while "abc".slice(3, 1)
+// => ""). A negative index counts back from the end.
+func stringSliceCharAt(text string, index int) (string, bool) {
 	if index < 0 {
 		index += stringRuneLen(text)
 		if index < 0 {
-			return NewNil()
+			return "", false
 		}
 	}
 	if index >= stringRuneLen(text) {
-		return NewNil()
+		return "", false
 	}
-	substr, ok := stringRuneSlice(text, index, 1)
-	if !ok {
-		return NewNil()
-	}
-	return NewString(substr)
+	return stringRuneSlice(text, index, 1)
 }
 
 // stringInsertByteOffset maps a Ruby String#insert character index to a byte

@@ -861,7 +861,7 @@ func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) 
 				return NewNil(), exec.wrapError(err, e.Position)
 			}
 		}
-		return exec.indexString(e, obj.String(), indices)
+		return exec.indexString(e, obj, indices)
 	case KindArray:
 		return exec.indexArray(e, obj, indices)
 	case KindHash, KindObject:
@@ -940,37 +940,58 @@ func (exec *Execution) reserveArraySliceSlots(receiver Value, indices []Value, s
 // from the end) returns the one-character substring or nil when out of range,
 // while a range returns a substring or nil. The two-selector form is String#[]
 // start/length.
-func (exec *Execution) indexString(e *IndexExpr, text string, indices []Value) (Value, error) {
+//
+// Every form selects a slice of the receiver, so the result is detached from
+// the receiver's backing before it becomes a value. Retaining `(big + "x")[0]`
+// was charged about one byte while pinning the whole backing: 200 such reads
+// held 192 MiB under an 8 MiB quota (#36). The single-index form is a
+// regression rather than an oversight -- it used to convert to []rune and build
+// a fresh one-character string, which copied by construction.
+//
+// The copy takes no charge of its own: evalIndexValue already billed the
+// receiver's length, and a slice of the receiver can never exceed it.
+func (exec *Execution) indexString(e *IndexExpr, receiver Value, indices []Value) (Value, error) {
+	text := receiver.String()
+	substr, ok, err := exec.stringIndexWindow(e, text, indices)
+	if err != nil || !ok {
+		return NewNil(), err
+	}
+	detached, err := detachedSubstring(exec, text, substr, receiver, indices, nil, NewNil())
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewString(detached), nil
+}
+
+// stringIndexWindow resolves a str[...] read's selectors against text and
+// returns the substring they select. ok is false for the out-of-range
+// selections that yield nil.
+func (exec *Execution) stringIndexWindow(e *IndexExpr, text string, indices []Value) (string, bool, error) {
 	switch len(indices) {
 	case 1:
 		if indices[0].Kind() == KindRange {
 			substr, ok := stringRuneRangeSlice(text, indices[0].Range())
-			if !ok {
-				return NewNil(), nil
-			}
-			return NewString(substr), nil
+			return substr, ok, nil
 		}
 		index, err := exec.indexSelectorToInt(e, indices[0], 0)
 		if err != nil {
-			return NewNil(), err
+			return "", false, err
 		}
-		return stringSliceCharAt(text, index), nil
+		substr, ok := stringSliceCharAt(text, index)
+		return substr, ok, nil
 	case 2:
 		start, err := exec.indexSelectorToInt(e, indices[0], 0)
 		if err != nil {
-			return NewNil(), err
+			return "", false, err
 		}
 		length, err := exec.indexSelectorToInt(e, indices[1], 1)
 		if err != nil {
-			return NewNil(), err
+			return "", false, err
 		}
 		substr, ok := stringRuneSlice(text, start, length)
-		if !ok {
-			return NewNil(), nil
-		}
-		return NewString(substr), nil
+		return substr, ok, nil
 	default:
-		return NewNil(), exec.errorAt(e.Position, "string index expects one index, a start and length, or a range")
+		return "", false, exec.errorAt(e.Position, "string index expects one index, a start and length, or a range")
 	}
 }
 
