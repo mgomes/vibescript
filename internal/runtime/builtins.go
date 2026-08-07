@@ -508,14 +508,15 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 	if args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("%s expects a string format", name)
 	}
-	values, releaseConverted, err := exec.formatStringConversionValues(args[1:], receiver, args, kwargs, block)
-	if err != nil {
-		return NewNil(), err
-	}
 	// Held through the render: the conversions are live until the output is
 	// built, and the checks in there walk the arguments, which hold the
 	// instances rather than what their to_s returned.
-	defer releaseConverted()
+	retainedAt := len(exec.retainedValues)
+	defer exec.releaseRetainedValues(retainedAt)
+	values, err := exec.formatStringConversionValues(args[1:], receiver, args, kwargs, block)
+	if err != nil {
+		return NewNil(), err
+	}
 	return exec.formatStringValues(args[0].String(), values, receiver, args, kwargs, block)
 }
 
@@ -545,19 +546,12 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 // the loop rather than after it, and the reservation is held until the render
 // is done because the strings stay live that whole time. The caller releases
 // it.
-func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, func(), error) {
+func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, error) {
 	var converted []Value
-	releases := make([]func(), 0, len(values))
-	release := func() {
-		for i := len(releases) - 1; i >= 0; i-- {
-			releases[i]()
-		}
-	}
 	for i, val := range values {
 		rendered, substituted, err := exec.instanceStringValue(val, Position{})
 		if err != nil {
-			release()
-			return nil, nil, err
+			return nil, err
 		}
 		if !substituted {
 			continue
@@ -572,15 +566,14 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 		// walk that counts it also deduplicates it, so a to_s handing back one of
 		// its own fields costs nothing, and a to_s that stores its result on its
 		// receiver is not counted once for the field and again for the copy.
-		releases = append(releases, exec.retainValue(rendered))
+		exec.retainValue(rendered)
 		// Checked against the call roots, not just the execution's own: the
 		// arguments are a builtin's Go locals, so a plain check does not see
 		// the instances the conversions were taken from. Each side could fit on
 		// its own while together they did not, and a pattern that rejects
 		// returns before the render check that would have seen both.
 		if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
-			release()
-			return nil, nil, err
+			return nil, err
 		}
 		if converted == nil {
 			converted = make([]Value, len(values))
@@ -589,10 +582,9 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 		converted[i] = rendered
 	}
 	if converted == nil {
-		release()
-		return values, func() {}, nil
+		return values, nil
 	}
-	return converted, release, nil
+	return converted, nil
 }
 
 func formatStringValues(pattern string, values []Value) (Value, error) {
