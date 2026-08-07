@@ -340,16 +340,20 @@ func TestSquishDoesNotRetainAnOversizedBuffer(t *testing.T) {
 func TestSquishReservesExactlyWhatItWrites(t *testing.T) {
 	t.Parallel()
 
-	texts := []string{
+	const randomCases = 500
+	written := []string{
 		"", " ", "   ", " \n\t", "x", " x ", "hello world", "  hello \n\t world  ",
 		"hello  world", "a\xff  b", " ", "a b  c   d", "a\n\n\nb",
 		strings.Repeat(" ", 1000) + "x", "x" + strings.Repeat("\t", 1000),
 	}
+	texts := make([]string, 0, len(written)+randomCases)
+	texts = append(texts, written...)
+
 	// Random inputs over an alphabet of letters and assorted whitespace catch a
 	// drift the hand-written cases above would miss.
 	alphabet := []string{"a", "b", " ", "\t", "\n", " ", " ", "\xff"}
 	next := uint64(1)
-	for range 500 {
+	for range randomCases {
 		var b strings.Builder
 		for range 16 {
 			next = next*6364136223846793005 + 1442695040888963407
