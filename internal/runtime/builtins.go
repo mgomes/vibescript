@@ -573,10 +573,12 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 		// its own fields costs nothing, and a to_s that stores its result on its
 		// receiver is not counted once for the field and again for the copy.
 		releases = append(releases, exec.retainValue(rendered))
-		// Checked here so the pile is weighed against each new conversion rather
-		// than only at the end, and so it is already visible to the checks inside
-		// whatever to_s runs next.
-		if err := exec.checkMemory(); err != nil {
+		// Checked against the call roots, not just the execution's own: the
+		// arguments are a builtin's Go locals, so a plain check does not see
+		// the instances the conversions were taken from. Each side could fit on
+		// its own while together they did not, and a pattern that rejects
+		// returns before the render check that would have seen both.
+		if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
 			release()
 			return nil, nil, err
 		}

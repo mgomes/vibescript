@@ -190,3 +190,41 @@ end`
 		t.Fatal("a temporary inside a later to_s must be weighed against the conversions already held")
 	}
 }
+
+// TestFormatWeighsConversionsWithTheArgumentsTheyCameFrom pins that the check
+// during conversion sees the arguments as well as what they converted to.
+//
+// The arguments are a builtin's Go locals, so a check on the execution alone
+// does not reach them. Temporary instances could therefore fit the quota before
+// dispatch while their conversions fit the conversion check separately, and a
+// pattern that rejects returns before the render check that would have seen
+// both.
+func TestFormatWeighsConversionsWithTheArgumentsTheyCameFrom(t *testing.T) {
+	t.Parallel()
+
+	// Each instance holds 512 KiB and converts to a fresh 512 KiB, so the two
+	// arguments are 1 MiB and their conversions another 1 MiB. At 2 MiB the
+	// quota fits either side alone and not the two together, which is the only
+	// window where the difference shows.
+	src := `
+class Both
+  def initialize(n)
+    @text = "x" * n
+  end
+  def to_s
+    @text + "!"
+  end
+end
+
+def run()
+  format("", Both.new(524288), Both.new(524288))
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: 2 << 20}, src)
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatal("conversions must be weighed against the arguments they came from")
+	}
+	if strings.Contains(err.Error(), "unused") {
+		t.Fatalf("rejected for the pattern rather than the memory it had built: %v", err)
+	}
+}
