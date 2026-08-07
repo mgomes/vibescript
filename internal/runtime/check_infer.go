@@ -7497,6 +7497,14 @@ func mergeCapturedContainerRoots(
 }
 
 func typeExprDefinitelyDestructuresAsScalar(ty *TypeExpr) bool {
+	// This probe runs for every non-literal destructure, and typeExprArms
+	// allocates per arm, so an unbudgeted flatten of one wide declared union
+	// bills every destructure that mentions it. Too complex to size is the
+	// conservative answer here: the caller falls through to the projection,
+	// which abandons the same type against the same budget.
+	if !typeExprFactSizeWithin(ty, maxTypedDestructureProjections) {
+		return false
+	}
 	arms, exact := typeExprArms(ty, 0)
 	if !exact || len(arms) == 0 {
 		return false
@@ -7588,11 +7596,32 @@ func captureTypedDestructureValueFactsWithRoots(
 	return facts, true
 }
 
+// maxTypedDestructureProjections budgets one destructure projection, counted in
+// canonicalized type nodes. The projection derives a candidate type per target
+// and joins it, and joining canonicalizes the whole candidate, so the work is
+// the target count times the value type's size. Declared annotations are capped
+// neither to maxInferredUnionArms nor in nesting, so a wide or deeply wrapped
+// declared union destructured into many targets would otherwise make that
+// product quadratic in the source size, inside a static check that runs outside
+// the runtime's step and memory quotas. Past the budget the projection gives up
+// and the caller falls back to unknown element facts.
+const maxTypedDestructureProjections = 1024
+
 func typedDestructureElementTypes(
 	target *DestructureTarget,
 	valueType *TypeExpr,
 ) ([]*TypeExpr, bool) {
 	if target == nil {
+		return nil, false
+	}
+	// Size the value type before flattening it: typeExprArms allocates per arm,
+	// so charging the budget only afterwards would let a wide union bill the
+	// flatten to every destructure that mentions it. Divide rather than
+	// multiply so a hostile target count cannot overflow the product.
+	if len(target.Elements) > 0 && !typeExprFactSizeWithin(
+		valueType,
+		maxTypedDestructureProjections/len(target.Elements),
+	) {
 		return nil, false
 	}
 	arms, exact := typeExprArms(valueType, 0)
@@ -16780,6 +16809,41 @@ func collapseBooleanFactArms(arms []*TypeExpr) []*TypeExpr {
 		}
 	}
 	return collapsed
+}
+
+// typeExprFactSizeWithin reports whether ty canonicalizes to at most limit
+// nodes. It walks what appendTypeFactKey walks, under the same depth cap, and
+// abandons the walk the moment the budget is spent, so measuring a type a
+// caller is about to refuse costs the budget rather than the type's own size.
+func typeExprFactSizeWithin(ty *TypeExpr, limit int) bool {
+	remaining := limit
+	return typeExprFactSizeRemaining(ty, 0, &remaining)
+}
+
+func typeExprFactSizeRemaining(ty *TypeExpr, depth int, remaining *int) bool {
+	if *remaining <= 0 {
+		return false
+	}
+	*remaining--
+	if ty == nil || depth > maxTypeArmDepth {
+		return true
+	}
+	for _, arg := range ty.TypeArgs {
+		if !typeExprFactSizeRemaining(arg, depth+1, remaining) {
+			return false
+		}
+	}
+	for _, field := range ty.Shape {
+		if !typeExprFactSizeRemaining(field, depth+1, remaining) {
+			return false
+		}
+	}
+	for _, option := range ty.Union {
+		if !typeExprFactSizeRemaining(option, depth+1, remaining) {
+			return false
+		}
+	}
+	return true
 }
 
 // typeFactKey canonicalizes a type fact for deduplication. Unlike
