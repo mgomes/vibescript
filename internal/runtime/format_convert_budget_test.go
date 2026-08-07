@@ -33,11 +33,13 @@ func TestFormatChargesConversionsAsTheyAccumulate(t *testing.T) {
 	t.Parallel()
 
 	// Each conversion is 1 MiB against a 6 MiB quota, so no single one is
-	// rejectable and eight of them are.
+	// rejectable and eight of them are. The pattern truncates each to three
+	// bytes, so the output is tiny: what the quota has to catch is the
+	// conversions themselves, not the string they end up producing.
 	src := bigToStringClass + `
 def run()
   a = Big.new(1048576)
-  format("%s %s %s %s %s %s %s %s", a, a, a, a, a, a, a, a)
+  format("%.3s%.3s%.3s%.3s%.3s%.3s%.3s%.3s", a, a, a, a, a, a, a, a)
 end`
 	script := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: 6 << 20}, src)
 	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
