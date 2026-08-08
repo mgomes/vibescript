@@ -346,6 +346,28 @@ func (b *taskConcurrencyBudget) takeStarvedJob(from *taskGroup) (*taskGroup, *ta
 	return nil, nil
 }
 
+type taskSlotKey struct{}
+
+// contextWithTaskSlot marks the calls a job drives as running on a pool slot,
+// so a wait inside one of them knows it may run queued work on its goroutine.
+// It propagates to nested scopes, which is right: their blocks run on the same
+// slot-backed goroutine.
+func contextWithTaskSlot(ctx context.Context) context.Context {
+	return context.WithValue(ctx, taskSlotKey{}, true)
+}
+
+// taskSlotFromContext reports whether the waiting goroutine holds a pool slot.
+// The root goroutine does not, so nothing may be run on it: a script that waits
+// there is waiting for capacity to reach the group, not for permission to add
+// some.
+func taskSlotFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	slot, _ := ctx.Value(taskSlotKey{}).(bool)
+	return slot
+}
+
 type taskBudgetKey struct{}
 
 // contextWithTaskBudget publishes the pool to everything the group drives.
@@ -700,7 +722,7 @@ func (group *taskGroup) runJob(job *taskJob) {
 
 	opts := group.callOptionsForJob(job)
 	var workerExhaustion error
-	result, err := group.script.callWithLazyTaskGlobals(group.ctx, job.functionName, job.callArgs(), opts, group.lazyGlobalsForJob(), &workerExhaustion)
+	result, err := group.script.callWithLazyTaskGlobals(contextWithTaskSlot(group.ctx), job.functionName, job.callArgs(), opts, group.lazyGlobalsForJob(), &workerExhaustion)
 	if workerExhaustion != nil {
 		workerExhaustion = fmt.Errorf("task %s failed: %w", job.functionName, workerExhaustion)
 	}
@@ -757,28 +779,40 @@ func (group *taskGroup) lazyGlobalsForJob() *taskLazyGlobals {
 // that is itself waiting on a host action the parent performs once this wait
 // returns.
 //
-// A group under its own max may still run work here even when it has a job on
-// a slot: the waiter's goroutine is already counted by whatever slot it belongs
-// to and is blocked, so borrowing it adds no concurrency, while refusing would
-// deadlock a parent whose running child is waiting on something that parent
-// only does once the deferred handle is in hand. Above the max it must refuse,
-// which is what the group's own limit means.
-func (group *taskGroup) drainDeferred(done <-chan struct{}) {
+// drainDeferred runs queued work on the goroutine that is waiting for it.
+//
+// With a target it runs that handle's own job and nothing else. Popping the
+// queue head instead ran an unrelated job on the waiter's behalf, which
+// deadlocks when the awaited handle is behind one that is itself waiting for
+// something the waiter only does once it has its result. With no target it
+// drains the queue, which is what closing the scope wants.
+//
+// A group under its own max may run work here even when it has a job on a slot:
+// the waiter's goroutine belongs to a slot already counted and is blocked, so
+// borrowing it adds no concurrency, while refusing would deadlock a parent
+// whose running child waits on something that parent only does once the
+// deferred handle is in hand. Above the max it must refuse, which is what the
+// group's own limit means.
+//
+// Only a waiter that is itself on a slot may do this. The root goroutine holds
+// no slot, so running a job there would put one more script on the host than
+// the pool allows, which is the whole point of the pool; it waits for capacity
+// to reach the group instead (see taskSlotFromContext).
+func (group *taskGroup) drainDeferred(target *taskHandle) {
 	for {
-		if done != nil {
+		if target != nil {
 			select {
-			case <-done:
+			case <-target.done:
 				return
 			default:
 			}
 		}
 		group.mu.Lock()
-		if len(group.deferred) == 0 || group.running >= group.max {
+		job, ok := group.takeDeferredLocked(target)
+		if !ok {
 			group.mu.Unlock()
 			return
 		}
-		job := group.deferred[0]
-		group.deferred = group.deferred[1:]
 		// Counted while it runs, even though it is on a borrowed goroutine: a
 		// slot released elsewhere would otherwise see room in this group and
 		// hand it a second job to run beside this one, past the max the group
@@ -794,14 +828,50 @@ func (group *taskGroup) drainDeferred(done <-chan struct{}) {
 	}
 }
 
+// takeDeferredLocked removes the job a waiter may run: the target's own, or the
+// head of the queue when there is no target. It reports false when the group is
+// at its max, when the queue is empty, or when the target is not queued at all
+// because something else already has it.
+func (group *taskGroup) takeDeferredLocked(target *taskHandle) (*taskJob, bool) {
+	if group.running >= group.max || len(group.deferred) == 0 {
+		return nil, false
+	}
+	index := 0
+	if target != nil {
+		index = -1
+		for i, job := range group.deferred {
+			if job.handle == target {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return nil, false
+		}
+	}
+	job := group.deferred[index]
+	group.deferred = append(group.deferred[:index], group.deferred[index+1:]...)
+	return job, true
+}
+
+// drainQueueIfSlotBacked runs the whole queue on the waiting goroutine, but
+// only when that goroutine holds a slot. On the root goroutine it waits
+// instead: the queue runs when capacity reaches the group, and running it here
+// would put one more script on the host than the pool allows.
+func (group *taskGroup) drainQueueIfSlotBacked() {
+	if taskSlotFromContext(group.ctx) {
+		group.drainDeferred(nil)
+	}
+}
+
 func (group *taskGroup) wait() error {
-	group.drainDeferred(nil)
+	group.drainQueueIfSlotBacked()
 	group.tasks.Wait()
 	return group.err()
 }
 
 func (group *taskGroup) closeAndWait() error {
-	group.drainDeferred(nil)
+	group.drainQueueIfSlotBacked()
 	group.mu.Lock()
 	group.closed = true
 	group.mu.Unlock()
@@ -983,7 +1053,9 @@ func (handle *taskHandle) substituteRootCause(err error) error {
 }
 
 func (handle *taskHandle) wait(ctx context.Context) (Value, error) {
-	handle.group.drainDeferred(handle.done)
+	if taskSlotFromContext(ctx) {
+		handle.group.drainDeferred(handle)
+	}
 	select {
 	case <-handle.done:
 		return handle.result()
@@ -993,7 +1065,7 @@ func (handle *taskHandle) wait(ctx context.Context) (Value, error) {
 }
 
 func (handle *taskHandle) result() (Value, error) {
-	handle.group.drainDeferred(handle.done)
+	handle.group.drainDeferred(handle)
 	<-handle.done
 	return handle.value, handle.err
 }

@@ -689,3 +689,95 @@ end`)
 	assertTaskTreeMakesProgress(t, script,
 		"a waiter refused to run queued work while the group was under its own max")
 }
+
+// TestWaitingRunsTheAwaitedJobNotTheQueueHead pins that a waiter runs the job
+// it is waiting for rather than whatever happens to be first in the queue.
+//
+// Popping the head ran an unrelated job on the waiter's behalf, which deadlocks
+// when the awaited handle sits behind one that is itself waiting for something
+// the waiter only does once it has that result.
+//
+// The sibling holds the second slot until the end, so the nested group is
+// starved for the whole window and everything it runs goes through the waiter.
+func TestWaitingRunsTheAwaitedJobNotTheQueueHead(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MaxTaskConcurrency: 2}, `def blocker(n)
+  probe.await_gate(n)
+  n
+end
+
+def quick(n)
+  n
+end
+
+def holder(n)
+  probe.await_gate(7)
+  n
+end
+
+def nested(n)
+  Tasks.run(max: 2) do |tasks|
+    a = tasks.spawn(:blocker, 1)
+    b = tasks.spawn(:quick, 2)
+    b.value
+    probe.open_gate(1)
+    a.value
+    probe.open_gate(7)
+    n
+  end
+end
+
+def fanout(n)
+  if n == 1
+    nested(n)
+  else
+    holder(n)
+  end
+end
+
+def run()
+  Tasks.map([1, 2], max: 2, with: :fanout)
+end`)
+
+	assertTaskTreeMakesProgress(t, script,
+		"awaiting the second handle ran the blocking job queued ahead of it")
+}
+
+// TestTheRootGoroutineRunsNoTaskWork pins that queued work never runs on a
+// goroutine that holds no slot.
+//
+// The root goroutine is not a task, so running a job there is one more script
+// on the host than the pool allows. A scope opened after the pool is spent was
+// exactly that case: waiting on it ran its job inline on the root, alongside
+// the tasks already holding every slot.
+//
+// Not parallel: it counts concurrent tasks process-wide.
+func TestTheRootGoroutineRunsNoTaskWork(t *testing.T) {
+	var peak, running atomic.Int64
+	script := compileScriptWithConfig(t, Config{MaxTaskConcurrency: 2}, `def busy(n)
+  probe.enter(n)
+  probe.leave(n)
+  n
+end
+
+def run()
+  Tasks.run(max: 2) do |tasks|
+    a = tasks.spawn(:busy, 1)
+    b = tasks.spawn(:busy, 2)
+    inner = Tasks.map([3], max: 1, with: :busy)
+    a.value + b.value + inner.length
+  end
+end`)
+
+	probe := concurrencyProbeCapability{
+		peak: &peak, running: &running,
+		started: make(chan struct{}), mu: &sync.Mutex{},
+	}
+	if _, err := script.Call(context.Background(), "run", nil, callOptionsWithCapabilities(probe)); err != nil {
+		t.Fatalf("nested scopes failed: %v", err)
+	}
+	if got := peak.Load(); got > 2 {
+		t.Fatalf("%d tasks ran at once against a host cap of 2; the root goroutine holds no slot", got)
+	}
+}
