@@ -534,7 +534,11 @@ const singlePairHashLiteral = 1
 func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, valueTypeForKey func(Value) *TypeExpr) (Value, error) {
 	var acc *hashLiteralBuildAccumulator
 	if exec.memoryQuota > 0 && len(e.Pairs) > singlePairHashLiteral {
-		acc = newHashLiteralBuildAccumulator(exec, len(e.Pairs))
+		var err error
+		acc, err = newHashLiteralBuildAccumulator(exec)
+		if err != nil {
+			return NewNil(), err
+		}
 		if err := acc.reserveBacking(len(e.Pairs)); err != nil {
 			return NewNil(), err
 		}

@@ -98,6 +98,14 @@ type memoryEstimator struct {
 	// borrowed pointer to exec.dormantSet, so it stays current as the set is
 	// reconciled; reset clears it.
 	dormant map[*Env]struct{}
+
+	// walked counts the graph nodes this estimator has visited over its whole
+	// lifetime, so a caller that drives a walk from script code can charge the
+	// step quota for the work it caused (see chargeEstimatorWalk). It is
+	// monotonic and survives reset: callers read differences around their own
+	// walk rather than an absolute, and a reset mid-walk would make a
+	// difference negative.
+	walked int
 }
 
 // estimatorJournal records the seen-set keys a single probe walk inserts so the
@@ -422,10 +430,44 @@ func (exec *Execution) releaseBaseWalkCache() {
 // they deduplicate against the base and against each other, exactly as in an
 // unmemoized walk -- and must call close before the next check runs.
 type baseWalkSession struct {
-	exec   *Execution
-	est    *memoryEstimator
-	base   int
-	cached bool
+	exec *Execution
+	est  *memoryEstimator
+	base int
+	// walked0 is est.walked as the session opened, so nodes can report the
+	// graph nodes this session visited no matter which estimator beginBaseWalk
+	// selected.
+	walked0 int
+	cached  bool
+}
+
+// nodes reports how many graph nodes this session has walked so far, base walk
+// included: a memo hit walks almost none, a miss walks the whole graph. Callers
+// that drive sessions from script code charge the step quota for it (#1).
+func (s *baseWalkSession) nodes() int {
+	return s.est.walked - s.walked0
+}
+
+// estimatorNodesPerStep is the number of graph nodes one sandbox step covers
+// when script code drives an estimator walk.
+//
+// Visiting a node is a switch plus a seen-set map probe, so it is dominated by
+// the same hashing an array element comparison pays; the rate is amortized for
+// the same reason chargeStringScan's is, so that ordinary code whose accounting
+// walks a handful of nodes is not charged for the runtime's bookkeeping while a
+// walk that scales with host-supplied data cannot stay free. A wide hash literal
+// with duplicate keys re-walked a 10k-element host array once per pair, 51.7M
+// estimator visits for a few thousand steps, and nothing charged for it (#1).
+const estimatorNodesPerStep = 64
+
+// chargeEstimatorWalk charges the step quota for an estimator walk of n nodes.
+// Walking nothing costs nothing, and a walk short enough to round down to zero
+// steps is already bounded by the caller's own per-expression charge.
+func (exec *Execution) chargeEstimatorWalk(n int) error {
+	steps := n / estimatorNodesPerStep
+	if steps <= 0 {
+		return nil
+	}
+	return exec.stepN(steps)
 }
 
 // beginBaseWalk opens a base-walk session, reusing the memoized graph walk
@@ -466,6 +508,7 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 	globals := taskLazyGlobalsFromContext(exec.Context())
 	scalars := exec.estimateScalarBase()
 	est := &exec.memoryEst
+	walked0 := est.walked
 	if exec.blockRegionBaseWalkEngaged(globals) {
 		return exec.beginRegionBaseWalk(est, scalars)
 	}
@@ -485,7 +528,7 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		// is reserved for the memoized path below, where the graph is stable and
 		// single-goroutine. popEnv still keeps the committed prefix consistent here
 		// (it retracts on every pop), so the next memoized check resumes correctly.
-		return baseWalkSession{exec: exec, est: est, base: scalars + exec.estimateGraphBase(est, globals)}
+		return baseWalkSession{exec: exec, est: est, base: scalars + exec.estimateGraphBase(est, globals), walked0: walked0}
 	}
 	c := exec.baseWalkCache
 	if c == nil {
@@ -523,7 +566,7 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 	// this check, but the memo is valid only while the topology is unchanged, so
 	// the set still matches the stack. See memory_dormant.go.
 	est.dormant = exec.currentDormantSet()
-	return baseWalkSession{exec: exec, est: est, base: scalars + c.graphBytes, cached: true}
+	return baseWalkSession{exec: exec, est: est, base: scalars + c.graphBytes, walked0: walked0, cached: true}
 }
 
 // close ends a base-walk session. A memoized session rolls back every
@@ -1681,29 +1724,34 @@ type hashLiteralEntry struct {
 // that may mutate baseline containers in place, so an alias such as
 // `big = ...; {a: big}` should be charged like the final hash: the new map
 // structure and key bytes are fresh, while big's backing remains counted once.
-// sessionHashLiteralMaxPairs caps sessions mode by literal width. Each
-// session replays the earlier entries' identities to deduplicate against the
-// union, so a k-pair literal does O(k²) replay probes; for the small literals
-// loops build that is a handful of map hits, while a generated thousand-pair
-// literal would burn quadratic CPU the step quota never sees. Wide literals
-// take the snapshot mode instead — one reference walk per literal, master's
-// behavior, linear in the literal's own size.
-const sessionHashLiteralMaxPairs = 64
-
-func newHashLiteralBuildAccumulator(exec *Execution, pairs int) *hashLiteralBuildAccumulator {
+//
+// Sessions mode is taken at every literal width. It was once capped at 64 pairs
+// because the union replay makes a k-pair literal do O(k²) estimator probes the
+// step quota never saw, but the snapshot mode wide literals fell back to is the
+// worse trade: it walks the whole reachable graph once per literal, and once a
+// duplicate key switches it to replacement accounting, once per pair. Where the
+// replay is bounded by the literal's own source width, that walk is bounded by
+// whatever the host handed the script. Looping a 256-pair duplicate-key literal
+// over a 10k-element host array did 51.7M estimator visits against 233k for a
+// 32-pair one, on a step count that barely moved (#1). The replay is metered
+// instead (see chargeEstimatorWalk), which is what the cap was standing in for.
+func newHashLiteralBuildAccumulator(exec *Execution) (*hashLiteralBuildAccumulator, error) {
 	acc := &hashLiteralBuildAccumulator{exec: exec}
 	if exec.memoryQuota <= 0 {
-		return acc
+		return acc, nil
 	}
 
 	acc.base = estimatedValueBytes + estimatedMapBaseBytes + estimatedHashDataBytes
-	if pairs <= sessionHashLiteralMaxPairs && exec.baseWalkSessionsAreCheap() {
+	if exec.baseWalkSessionsAreCheap() {
 		acc.sessions = true
-		return acc
+		return acc, nil
 	}
 	acc.est = newMemoryEstimator()
 	acc.base = saturatingAdd(exec.estimateMemoryUsageBase(acc.est), acc.base)
-	return acc
+	if err := exec.chargeEstimatorWalk(acc.est.walked); err != nil {
+		return nil, err
+	}
+	return acc, nil
 }
 
 func (acc *hashLiteralBuildAccumulator) reserveBacking(capacity int) error {
@@ -1721,22 +1769,29 @@ func (acc *hashLiteralBuildAccumulator) addDistinctEntry(lookupKey HashLookupKey
 
 	if acc.sessions {
 		entryStructural := acc.typedEntryStructuralBytes()
-		used := acc.sessionUsedBytes(func(est *memoryEstimator) int {
+		used, nodes := acc.sessionUsedBytes(func(est *memoryEstimator) int {
 			payload := saturatingAdd(hashLiteralKeyPayload(est, lookupKey, key), est.valuePayload(val))
 			return saturatingAdd(entryStructural, payload)
 		})
 		if used > acc.exec.memoryQuota {
 			return acc.exec.memoryQuotaExceededError()
 		}
+		if err := acc.exec.chargeEstimatorWalk(nodes); err != nil {
+			return err
+		}
 		acc.retained = saturatingAdd(acc.retained, entryStructural)
 		acc.sessionEntries = append(acc.sessionEntries, hashLiteralEntry{key: key, lookupKey: lookupKey, value: val})
 		return nil
 	}
 
+	before := acc.est.walked
 	acc.retained = saturatingAdd(acc.retained, acc.typedEntryStructuralBytes())
 	acc.retained = saturatingAdd(acc.retained, hashLiteralKeyPayload(acc.est, lookupKey, key))
 	acc.retained = saturatingAdd(acc.retained, acc.est.valuePayload(val))
-	return acc.checkQuota()
+	if err := acc.checkQuota(); err != nil {
+		return err
+	}
+	return acc.exec.chargeEstimatorWalk(acc.est.walked - before)
 }
 
 // replaceEntry switches duplicate-key literals to per-key retained accounting.
@@ -1765,11 +1820,14 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 		// stays in the unpublished hash until the write lands, so the
 		// transient peak holds both allocations.
 		candidate := hashLiteralEntry{key: key, lookupKey: lookupKey, value: val}
-		used := acc.sessionUsedBytes(func(est *memoryEstimator) int {
+		used, nodes := acc.sessionUsedBytes(func(est *memoryEstimator) int {
 			return saturatingAdd(hashLiteralKeyPayload(est, candidate.lookupKey, candidate.key), est.valuePayload(candidate.value))
 		})
 		if used > acc.exec.memoryQuota {
 			return acc.exec.memoryQuotaExceededError()
+		}
+		if err := acc.exec.chargeEstimatorWalk(nodes); err != nil {
+			return err
 		}
 		entries := make([]hashLiteralEntry, 0, len(current)+1)
 		replacedExisting := false
@@ -1791,14 +1849,21 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 		acc.replacing = true
 		return nil
 	}
+	nodes := 0
 	if !acc.replacing {
-		acc.rebuildRetainedEntries(current)
+		nodes = acc.rebuildRetainedEntries(current)
 	}
 
-	keyPayload, valuePayload := acc.entryPayloads(lookupKey, key, val)
+	keyPayload, valuePayload, entryNodes := acc.entryPayloads(lookupKey, key, val)
+	nodes += entryNodes
 	incoming := saturatingAdd(keyPayload, valuePayload)
-	if used := saturatingAdd(saturatingAdd(acc.liveBase(), acc.retained), incoming); used > acc.exec.memoryQuota {
+	base, baseNodes := acc.liveBase()
+	nodes += baseNodes
+	if used := saturatingAdd(saturatingAdd(base, acc.retained), incoming); used > acc.exec.memoryQuota {
 		return acc.exec.memoryQuotaExceededError()
+	}
+	if err := acc.exec.chargeEstimatorWalk(nodes); err != nil {
+		return err
 	}
 
 	prior := saturatingAdd(acc.keyPayloads[canonical], acc.valuePayloads[canonical])
@@ -1816,20 +1881,26 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 	return acc.checkQuota()
 }
 
-func (acc *hashLiteralBuildAccumulator) rebuildRetainedEntries(current map[string]hashLiteralEntry) {
+// rebuildRetainedEntries re-measures every entry retained so far and reports the
+// graph nodes doing so walked, so the caller can charge for them: one walk per
+// entry is the widest single burst of estimator work a literal can drive.
+func (acc *hashLiteralBuildAccumulator) rebuildRetainedEntries(current map[string]hashLiteralEntry) int {
 	acc.retained = 0
 	acc.keyPayloads = make(map[string]int, len(current))
 	acc.valuePayloads = make(map[string]int, len(current))
 	acc.typedEntries = 0
+	nodes := 0
 	for canonical, entry := range current {
 		acc.retained = saturatingAdd(acc.retained, acc.typedEntryStructuralBytes())
-		keyPayload, valuePayload := acc.entryPayloads(entry.lookupKey, entry.key, entry.value)
+		keyPayload, valuePayload, entryNodes := acc.entryPayloads(entry.lookupKey, entry.key, entry.value)
+		nodes += entryNodes
 		acc.keyPayloads[canonical] = keyPayload
 		acc.valuePayloads[canonical] = valuePayload
 		acc.retained = saturatingAdd(acc.retained, saturatingAdd(keyPayload, valuePayload))
 	}
 	acc.est = nil
 	acc.replacing = true
+	return nodes
 }
 
 func (acc *hashLiteralBuildAccumulator) typedEntryStructuralBytes() int {
@@ -1843,19 +1914,21 @@ func (acc *hashLiteralBuildAccumulator) typedEntryStructuralBytes() int {
 	return entryBytes
 }
 
-func (acc *hashLiteralBuildAccumulator) entryPayloads(lookupKey HashLookupKey, key, val Value) (int, int) {
+// entryPayloads measures one entry's key and value payloads and reports the
+// graph nodes doing so walked.
+func (acc *hashLiteralBuildAccumulator) entryPayloads(lookupKey HashLookupKey, key, val Value) (int, int, int) {
 	if acc.sessions {
 		s := acc.exec.beginBaseWalk()
 		defer s.close()
 		valuePayload := s.est.valuePayload(val)
 		keyPayload := hashLiteralKeyPayload(s.est, lookupKey, key)
-		return keyPayload, valuePayload
+		return keyPayload, valuePayload, s.nodes()
 	}
 	est := newMemoryEstimator()
 	acc.exec.estimateMemoryUsageBase(est)
 	valuePayload := est.valuePayload(val)
 	keyPayload := hashLiteralKeyPayload(est, lookupKey, key)
-	return keyPayload, valuePayload
+	return keyPayload, valuePayload, est.walked
 }
 
 // sessionUsedBytes measures the literal's retained set against the live base
@@ -1867,7 +1940,7 @@ func (acc *hashLiteralBuildAccumulator) entryPayloads(lookupKey HashLookupKey, k
 // exactly as the reference walk's union dedup behaves. measure, when
 // non-nil, prices the candidate entry against the same union. In sessions
 // mode acc.retained holds only the arithmetic structural bytes.
-func (acc *hashLiteralBuildAccumulator) sessionUsedBytes(measure func(est *memoryEstimator) int) int {
+func (acc *hashLiteralBuildAccumulator) sessionUsedBytes(measure func(est *memoryEstimator) int) (int, int) {
 	s := acc.exec.beginBaseWalk()
 	defer s.close()
 	retained := 0
@@ -1879,20 +1952,23 @@ func (acc *hashLiteralBuildAccumulator) sessionUsedBytes(measure func(est *memor
 	if measure != nil {
 		extra = measure(s.est)
 	}
-	return saturatingAdd(saturatingAdd(s.base, acc.base), saturatingAdd(acc.retained, saturatingAdd(retained, extra)))
+	used := saturatingAdd(saturatingAdd(s.base, acc.base), saturatingAdd(acc.retained, saturatingAdd(retained, extra)))
+	return used, s.nodes()
 }
 
 // liveBase returns the reachable-graph base the next quota comparison should
 // use: the memoized base in sessions mode (the construction snapshot in base
 // already covers it otherwise), so checks track the graph as it actually is
-// mid-literal rather than as it was at construction.
-func (acc *hashLiteralBuildAccumulator) liveBase() int {
+// mid-literal rather than as it was at construction. It also reports the graph
+// nodes the session it opened walked, which is zero in snapshot mode because
+// the construction walk already paid for that base.
+func (acc *hashLiteralBuildAccumulator) liveBase() (int, int) {
 	if !acc.sessions {
-		return acc.base
+		return acc.base, 0
 	}
 	s := acc.exec.beginBaseWalk()
 	defer s.close()
-	return saturatingAdd(s.base, acc.base)
+	return saturatingAdd(s.base, acc.base), s.nodes()
 }
 
 func hashLiteralKeyPayload(est *memoryEstimator, lookupKey HashLookupKey, key Value) int {
@@ -1903,14 +1979,15 @@ func hashLiteralKeyPayload(est *memoryEstimator, lookupKey HashLookupKey, key Va
 }
 
 func (acc *hashLiteralBuildAccumulator) checkQuota() error {
-	used := saturatingAdd(acc.liveBase(), acc.retained)
+	base, nodes := acc.liveBase()
+	used := saturatingAdd(base, acc.retained)
 	if acc.sessions {
-		used = acc.sessionUsedBytes(nil)
+		used, nodes = acc.sessionUsedBytes(nil)
 	}
 	if used > acc.exec.memoryQuota {
 		return acc.exec.memoryQuotaExceededError()
 	}
-	return nil
+	return acc.exec.chargeEstimatorWalk(nodes)
 }
 
 // reserveBacking folds the structural footprint of a preallocated output map
@@ -2921,6 +2998,7 @@ func (est *memoryEstimator) valuePayload(val Value) int {
 }
 
 func (est *memoryEstimator) value(val Value) int {
+	est.walked++
 	if estimatorVisitCounting.Load() {
 		estimatorVisits.Add(1)
 	}

@@ -130,6 +130,7 @@ func (exec *Execution) blockRegionBaseWalkEngaged(globals *taskLazyGlobals) bool
 // region) fails the key and forces a re-walk, so the memo never serves a
 // prefix-only total to a whole-stack check.
 func (exec *Execution) beginRegionBaseWalk(est *memoryEstimator, scalars int) baseWalkSession {
+	walked0 := est.walked
 	c := exec.baseWalkCache
 	if c == nil {
 		if exec.engine != nil {
@@ -201,7 +202,7 @@ func (exec *Execution) beginRegionBaseWalk(est *memoryEstimator, scalars int) ba
 		}
 	}
 
-	return baseWalkSession{exec: exec, est: est, base: base, cached: true}
+	return baseWalkSession{exec: exec, est: est, base: base, walked0: walked0, cached: true}
 }
 
 // estimateGraphBasePrefix walks the reachable graph of the region's stable
