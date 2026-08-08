@@ -68,11 +68,11 @@ func TestParenlessSlashReplayStaysLinear(t *testing.T) {
 // interpolation paid for the source that follows it and the parse went
 // quadratic again -- 4,000 of either line below walked over 150 MB (#45).
 //
-// Both shapes appear because the suffix a throwaway lexer covers is a whole
-// file's worth of lines in one and a single very long line in the other, and
-// only the second shows a line table that stops at the end of a line rather
-// than at the offset asked about. Counting bytes rather than timing them is for
-// the reasons given above.
+// Three shapes because the suffix a throwaway lexer covers is a whole file's
+// worth of lines in the first and a single very long line in the others, and
+// only a long line shows a line table that stops at the end of a line rather
+// than at the offset asked about, or a rune table built for a whole line at a
+// time. Counting bytes rather than timing them is for the reasons given above.
 func TestInterpolatedPercentArrayReplayStaysLinear(t *testing.T) {
 	measure := func(t *testing.T, src string) uint64 {
 		t.Helper()
@@ -98,16 +98,22 @@ func TestInterpolatedPercentArrayReplayStaysLinear(t *testing.T) {
 			"every interpolation on one line",
 			func(count int) string { return "s = \"" + strings.Repeat("#{a %w[b]}", count) + "\"\n" },
 		},
+		{
+			"one line carrying a multi-byte rune",
+			func(count int) string { return "s = \"" + strings.Repeat("#{a %w[é]}", count) + "\"\n" },
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			small := measure(t, tc.gen(1000))
 			large := measure(t, tc.gen(2000))
 
-			// Measured 37,000 then 74,000 bytes either way: a 2.00x step for a
-			// doubled source. Before, the lines walked 8.5M and 34.1M and the
-			// single line 10.0M and 40.1M, a 3.99x step both times. The
-			// assertion allows up to 3x so it states the complexity rather than
-			// pinning counts that ordinary lexer changes would shift.
+			// Measured 37,000 then 74,000 bytes for the first two and 70,000
+			// then 140,000 for the third: a 2.00x step for a doubled source
+			// every time. Before, the lines walked 8.5M and 34.1M, the single
+			// line 10.0M and 40.1M, and the one carrying a rune 22.1M and 88.1M,
+			// a 3.99x step throughout. The assertion allows up to 3x so it
+			// states the complexity rather than pinning counts that ordinary
+			// lexer changes would shift.
 			if large > small*3 {
 				t.Fatalf("doubling the source re-walked %d bytes against %d -- over 3x, so a percent-array"+
 					" literal inside an interpolation is superlinear in the source size again", large, small)

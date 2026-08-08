@@ -116,7 +116,7 @@ type lineIndex struct {
 	ascii    []bool
 	asciiRun bool
 
-	runes map[int][]int
+	runes map[int]*runeTable
 
 	// scanned is how far into the input the line table reaches. complete
 	// records that it reached the end, at which point ascii holds an entry per
@@ -188,7 +188,7 @@ func (x *lineIndex) offsetForPosition(pos ast.Position) (int, bool) {
 	index := pos.Column - 1
 	lastLine := pos.Line == len(x.starts)
 	if !x.lineASCII(pos.Line) {
-		runes := x.runeStarts(pos.Line)
+		runes := x.runeStarts(pos.Line, end)
 		if index < len(runes) {
 			return runes[index], true
 		}
@@ -221,7 +221,7 @@ func (x *lineIndex) runeAt(offset int) (int, ast.Position) {
 	if x.lineASCII(line) {
 		return offset, ast.Position{Line: line, Column: offset - start + 1}
 	}
-	runes := x.runeStarts(line)
+	runes := x.runeStarts(line, offset)
 	column, _ := slices.BinarySearch(runes, offset)
 	if column < len(runes) {
 		return runes[column], ast.Position{Line: line, Column: column + 1}
@@ -240,26 +240,53 @@ func (x *lineIndex) lineBounds(line int) (int, int) {
 	return x.starts[line-1], len(x.input)
 }
 
-// runeStarts returns the byte offset of every rune on the given line, built on
-// the first lookup that needs it and kept for later ones. Only a line holding a
-// multi-byte rune needs it: on an ASCII line the column is the byte distance.
-func (x *lineIndex) runeStarts(line int) []int {
-	if offsets, ok := x.runes[line]; ok {
-		return offsets
+// runeTable holds the byte offset of each rune on one line, over the prefix of
+// that line tabulated so far, and records once that prefix is all of it.
+type runeTable struct {
+	starts   []int
+	scanned  int
+	complete bool
+}
+
+// runeStarts tabulates the runes on the given line as far as untilOffset, keeps
+// what it built for later lookups, and returns the table. Only a line holding a
+// multi-byte rune needs one: on an ASCII line the column is the byte distance.
+//
+// It grows a prefix at a time for the same reason the line table does, and the
+// one very long line is where that matters twice over: an interpolation on such
+// a line hands its throwaway lexer an index whose first line runs to the end of
+// the source, so tabulating the line to answer one offset near its start put the
+// same quadratic back that the line table alone had already removed -- 2,000
+// `#{a %w[é]}` on one line walked 88 MB, against 148 KB now (#45). Asking as far
+// as the end of the line asks for all of it, which is what resolving a column
+// needs.
+func (x *lineIndex) runeStarts(line, untilOffset int) []int {
+	table, ok := x.runes[line]
+	if !ok {
+		table = &runeTable{scanned: x.starts[line-1]}
+		if x.runes == nil {
+			x.runes = make(map[int]*runeTable)
+		}
+		x.runes[line] = table
 	}
 
-	x.extend(0, line)
-	start, end := x.lineBounds(line)
-	noteSourceReplay(end - start)
-	offsets := make([]int, 0, end-start)
-	for i := range x.input[start:end] {
-		offsets = append(offsets, start+i)
+	from := table.scanned
+	for !table.complete && (len(table.starts) == 0 || table.starts[len(table.starts)-1] < untilOffset) {
+		// One byte past the rune about to be read is enough for lineBounds to
+		// have the real end of the line as soon as the scan crosses its
+		// newline, which is what stops this.
+		x.extend(table.scanned+1, 0)
+		if _, end := x.lineBounds(line); table.scanned >= end {
+			table.complete = true
+			break
+		}
+		_, width := utf8.DecodeRuneInString(x.input[table.scanned:])
+		table.starts = append(table.starts, table.scanned)
+		table.scanned += width
 	}
-	if x.runes == nil {
-		x.runes = make(map[int][]int)
-	}
-	x.runes[line] = offsets
-	return offsets
+	noteSourceReplay(table.scanned - from)
+
+	return table.starts
 }
 
 // offsetForPosition returns the byte offset of the rune at pos and whether the
