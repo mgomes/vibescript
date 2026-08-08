@@ -2827,6 +2827,7 @@ func (exec *Execution) estimateGraphTail(est *memoryEstimator, globals *taskLazy
 		total += globals.retainedSourceMemory(est)
 		total += globals.retainedCloneMemory(est)
 	}
+	total += exec.detachedArrayBackingBytes(est)
 	return total
 }
 

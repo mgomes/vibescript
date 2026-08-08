@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -341,5 +342,48 @@ end`)
 				t.Fatalf("%s yielded %s, want %s", function, got.Inspect(), want)
 			}
 		})
+	}
+}
+
+// TestDetachedSnapshotStaysOnTheQuota pins that a header a shrink copied away
+// from keeps costing while its holder is still walking it.
+//
+// The holder keeps that header alive on its Go stack, but the receiver no
+// longer points at it, so nothing the estimator walks reaches it. A block that
+// drained its receiver and dropped the result could then build a second
+// generation of the same size against a receiver the drain had just emptied,
+// with both live and only one counted.
+func TestDetachedSnapshotStaysOnTheQuota(t *testing.T) {
+	t.Parallel()
+
+	// Eight half-megabyte strings fit the quota; two such generations do not.
+	const build = `  a = []
+  i = 0
+  while i < 8
+    a.push(seed * 100)
+    i = i + 1
+  end
+`
+	seed := NewString(strings.Repeat("abcdefghij", 500))
+	config := Config{StepQuota: 50_000_000, MemoryQuotaBytes: 6 << 20}
+
+	fits := compileScriptWithConfig(t, config, "def run(seed)\n"+build+"  a.size\nend")
+	got, err := fits.Call(context.Background(), "run", []Value{seed}, CallOptions{})
+	if err != nil {
+		t.Fatalf("one generation must fit under the quota: %v", err)
+	}
+	if got.Int() != 8 {
+		t.Fatalf("built %d elements, want 8", got.Int())
+	}
+
+	drains := compileScriptWithConfig(t, config, "def run(seed)\n"+build+`  b = []
+  a.each do |x|
+    a.pop(a.size)
+    b.push(seed * 100)
+  end
+  b.size
+end`)
+	if _, err := drains.Call(context.Background(), "run", []Value{seed}, CallOptions{}); err == nil {
+		t.Fatal("a drained snapshot the iterator still holds must stay on the quota")
 	}
 }

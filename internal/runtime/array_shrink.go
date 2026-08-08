@@ -39,14 +39,24 @@ package runtime
 // otherwise force an arbitrarily large copy per call. It copies element slots
 // rather than payloads, so what it bills the memory quota is a second slot
 // array and not a second copy of what the array holds.
+//
+// A copy also leaves the holder as the only thing keeping the old header alive,
+// which takes it out of reach of every root the estimator walks. The claim
+// carries the header for exactly that reason: while it is marked detached, the
+// graph walk charges it, so a block cannot drain its receiver, drop the result,
+// and build a second generation of the same size against a quota that has
+// forgotten the first.
 
-// heldArrayBacking is one frame's claim on an array element backing: the
-// identity of the backing the frame captured, and the builtin depth it walks
-// that header at. The depth is what lets a shrink tell an enclosing frame's
-// claim from the claim its own dispatch just recorded for it.
+// heldArrayBacking is one frame's claim on an array element backing: the header
+// the frame captured, and the builtin depth it walks that header at. The depth
+// is what lets a shrink tell an enclosing frame's claim from the claim its own
+// dispatch just recorded for it. detached marks a claim a shrink has already
+// copied away from, which is what makes the header worth accounting for.
 type heldArrayBacking struct {
-	id    uintptr
-	depth int
+	id       uintptr
+	depth    int
+	elems    []Value
+	detached bool
 }
 
 // holdArrayBackings claims the element backing of every array a frame is about
@@ -78,27 +88,59 @@ func (exec *Execution) holdArrayBacking(val Value) {
 	if val.Kind() != KindArray {
 		return
 	}
-	id := sliceBackingIdentity(val.Array())
+	elems := val.Array()
+	id := sliceBackingIdentity(elems)
 	if id == 0 {
 		return
 	}
 	exec.heldArrayBackings = append(exec.heldArrayBackings,
-		heldArrayBacking{id: id, depth: exec.builtinDepth})
+		heldArrayBacking{id: id, depth: exec.builtinDepth, elems: elems})
 }
 
-// releaseArrayBackings drops every claim taken since mark.
+// releaseArrayBackings drops every claim taken since mark. Dropping a detached
+// claim also bumps the mutation epoch: the header stops being live state at
+// that moment, and without the bump the base-walk memo would keep serving a
+// total that still includes it.
 func (exec *Execution) releaseArrayBackings(mark int) {
 	if mark >= len(exec.heldArrayBackings) {
 		return
 	}
+	for _, held := range exec.heldArrayBackings[mark:] {
+		if held.detached {
+			bumpMutationEpoch()
+			break
+		}
+	}
 	exec.heldArrayBackings = exec.heldArrayBackings[:mark]
 }
 
-// arrayBackingHeldByCaller reports whether a frame enclosing the running one is
+// detachedArrayBackingBytes is the memory of every header a shrink has copied
+// away from while its holder is still walking it.
+//
+// The holder keeps the header alive on its Go stack, but the receiver no longer
+// points at it, so no root the estimator walks reaches it any more. A block that
+// drained its receiver and dropped the result could then allocate a second
+// quota's worth against a receiver the shrink had just emptied, with the first
+// generation still live and uncounted.
+func (exec *Execution) detachedArrayBackingBytes(est *memoryEstimator) int {
+	total := 0
+	for _, held := range exec.heldArrayBackings {
+		if held.detached {
+			total += est.slice(held.elems)
+		}
+	}
+	return total
+}
+
+// detachArrayBackingClaims reports whether a frame enclosing the running one is
 // holding values' backing, and so may still read slots this frame is about to
 // vacate. The running frame's own claim, recorded by its dispatch, sits at the
 // current builtin depth and is not an enclosing one.
-func (exec *Execution) arrayBackingHeldByCaller(values []Value) bool {
+//
+// Every enclosing claim it finds is marked detached, because the shrink that
+// asked is about to move the receiver onto a fresh backing and leave those
+// holders as the only thing keeping this one alive.
+func (exec *Execution) detachArrayBackingClaims(values []Value) bool {
 	if exec == nil || len(exec.heldArrayBackings) == 0 {
 		return false
 	}
@@ -106,12 +148,14 @@ func (exec *Execution) arrayBackingHeldByCaller(values []Value) bool {
 	if id == 0 {
 		return false
 	}
-	for _, held := range exec.heldArrayBackings {
+	found := false
+	for i, held := range exec.heldArrayBackings {
 		if held.id == id && held.depth < exec.builtinDepth {
-			return true
+			exec.heldArrayBackings[i].detached = true
+			found = true
 		}
 	}
-	return false
+	return found
 }
 
 // shrinkArray narrows the receiver to arr[start:end] in place, leaving the
@@ -122,7 +166,7 @@ func (exec *Execution) arrayBackingHeldByCaller(values []Value) bool {
 func shrinkArray(exec *Execution, receiver Value, arr []Value, start, end int,
 	args []Value, kwargs map[string]Value, block Value, pendingSlots int) error {
 	window := arr[start:end]
-	if !exec.arrayBackingHeldByCaller(arr) {
+	if !exec.detachArrayBackingClaims(arr) {
 		clear(arr[:start])
 		clear(arr[end:])
 		setArrayElems(receiver, window)
