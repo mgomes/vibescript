@@ -3,7 +3,9 @@ package runtime
 import (
 	"context"
 	"fmt"
+	goruntime "runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -226,5 +228,66 @@ end`
 	}
 	if strings.Contains(err.Error(), "unused") {
 		t.Fatalf("rejected for the pattern rather than the memory it had built: %v", err)
+	}
+}
+
+// heapProbeCapability reports the process heap, measured from inside the
+// script so a value that is only reachable while the call is still running can
+// be observed at all.
+type heapProbeCapability struct{ heap *atomic.Int64 }
+
+func (c heapProbeCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	heap := c.heap
+	return map[string]Value{
+		"probe": NewObject(map[string]Value{
+			"heap": NewBuiltin("probe.heap", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+				var stats goruntime.MemStats
+				goruntime.GC()
+				goruntime.ReadMemStats(&stats)
+				heap.Store(int64(stats.HeapAlloc))
+				return NewNil(), nil
+			}),
+		}),
+	}, nil
+}
+
+// TestFormatDoesNotRetainConversionsAfterTheyAreReleased pins that a released
+// conversion stops being reachable, not merely uncounted.
+//
+// The retained set is a stack, and shortening a Go slice leaves the pointers in
+// its backing array: the walk reads the visible length and stops counting the
+// conversion, while the collector goes on holding it. That is the same
+// retained-but-uncounted shape the registration exists to expose, and it is why
+// the slots are cleared rather than just dropped.
+//
+// The heap is sampled from inside the call, because the stale slot is
+// overwritten by the next conversion and the whole execution is gone by the
+// time Call returns -- so nothing about it is observable from outside.
+//
+// Not parallel: it measures process-wide heap.
+func TestFormatDoesNotRetainConversionsAfterTheyAreReleased(t *testing.T) {
+	script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: 64 << 20},
+		bigToStringClass+`
+def run()
+  format("%.1s", Big.new(8388608))
+  probe.heap()
+  0
+end`)
+
+	var during atomic.Int64
+	var before goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	if _, err := script.Call(context.Background(), "run", nil,
+		callOptionsWithCapabilities(heapProbeCapability{heap: &during})); err != nil {
+		t.Fatalf("formatting failed: %v", err)
+	}
+
+	held := during.Load() - int64(before.HeapAlloc)
+	// The 8 MiB conversion is dead once format returns: nothing in the script
+	// holds it, so only a stale slot could.
+	if limit := int64(4 << 20); held > limit {
+		t.Fatalf("a released conversion still holds %.2f MiB, want under %.2f MiB",
+			float64(held)/(1<<20), float64(limit)/(1<<20))
 	}
 }
