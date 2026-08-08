@@ -150,10 +150,20 @@ type taskGroup struct {
 	globals              map[string]Value
 	detachedGlobals      bool
 	inheritedLazyGlobals *taskLazyGlobals
-	jobs                 chan *taskJob
+	// budget is the call tree's shared pool, max the ceiling this group may
+	// draw from it, and running the jobs currently on a slot. Each running job
+	// holds exactly one slot and returns it when it finishes.
+	budget  *taskConcurrencyBudget
+	max     int
+	running int
+	// deferred holds jobs for a group the shared pool could not staff. They
+	// run inline when something waits on them (see drainDeferred), not when
+	// they are spawned: spawning must stay nonblocking, or a block that
+	// performs a host action right after spawn would never reach it while the
+	// task waiting on that action ran first.
+	deferred []*taskJob
 
-	tasks   sync.WaitGroup
-	workers sync.WaitGroup
+	tasks sync.WaitGroup
 
 	mu       sync.Mutex
 	closed   bool
@@ -200,6 +210,27 @@ func newTaskGroup(exec *Execution, max int, detachRootGlobals bool) *taskGroup {
 			detachedGlobals = true
 		}
 	}
+	// Every group in a call tree draws its workers from one pool. A group
+	// validates its own max against the host limit, but nothing bounded the
+	// tree: each nested task runs through Script.Call, which starts a fresh
+	// group with a fresh allowance, so concurrency compounded as max^depth --
+	// four levels of max:4 peaked at 144 workers against a host cap of 64,
+	// each child also holding a full step and memory quota (#54). Sharing the
+	// pool through the group context caps the whole tree instead.
+	// The context carries the pool into the calls this group drives, but a
+	// scope that opens another scope on the SAME execution never had its
+	// context replaced, so a Tasks.run block that calls Tasks.run directly saw
+	// no pool and started a second one, putting both scopes' workers on the
+	// host at once. The groups this execution already has open are the other
+	// half of the answer.
+	budget := taskBudgetFromContext(exec.Context())
+	if budget == nil {
+		budget = exec.enclosingTaskBudget()
+	}
+	if budget == nil {
+		budget = newTaskConcurrencyBudget(exec.hostTaskConcurrencyLimit())
+	}
+	ctx = contextWithTaskBudget(ctx, budget)
 	group := &taskGroup{
 		script:               taskScript(exec),
 		ctx:                  ctx,
@@ -208,12 +239,172 @@ func newTaskGroup(exec *Execution, max int, detachRootGlobals bool) *taskGroup {
 		globals:              globals,
 		detachedGlobals:      detachedGlobals,
 		inheritedLazyGlobals: inheritedLazyGlobals,
-		jobs:                 make(chan *taskJob, max),
-	}
-	for range max {
-		group.workers.Go(group.worker)
+		budget:               budget,
+		max:                  max,
 	}
 	return group
+}
+
+// taskConcurrencyBudget is the worker allotment one call tree shares. Nested
+// groups draw from the same pool, so a script cannot multiply its concurrency
+// by nesting Tasks calls inside task functions.
+type taskConcurrencyBudget struct {
+	mu        sync.Mutex
+	remaining int
+	// starved holds the groups that have work no worker can take. A slot
+	// returned to the pool is offered to them before it sits idle, because a
+	// starved group only runs its deferred jobs when something waits on them
+	// -- and a parent blocked on a host signal its child produces never
+	// reaches that wait.
+	starved map[*taskGroup]struct{}
+}
+
+func newTaskConcurrencyBudget(limit int) *taskConcurrencyBudget {
+	return &taskConcurrencyBudget{remaining: max(limit, 1)}
+}
+
+// reserveOne takes a single worker from the pool, and reports false when the
+// tree has spent its allowance. A group with no worker runs its jobs inline on
+// the goroutine that waits for them (see enqueue and drainDeferred), so a
+// starved nesting level degrades to serial execution instead of deadlocking on
+// a jobs channel nothing drains -- and the pool stays a hard cap rather than
+// one the deepest levels can creep past a worker at a time.
+func (b *taskConcurrencyBudget) reserveOne() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.remaining < 1 {
+		return false
+	}
+	b.remaining--
+	return true
+}
+
+// markStarved records that a group has deferred work waiting for capacity.
+func (b *taskConcurrencyBudget) markStarved(group *taskGroup) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.starved == nil {
+		b.starved = make(map[*taskGroup]struct{})
+	}
+	b.starved[group] = struct{}{}
+}
+
+func (b *taskConcurrencyBudget) hasStarved() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.starved) > 0
+}
+
+func (b *taskConcurrencyBudget) forget(group *taskGroup) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.starved, group)
+}
+
+// release returns a worker to the pool.
+//
+// It does not start anything. A slot that frees while another group is waiting
+// is handed over by the goroutine that freed it, which takes that group's work
+// and runs it rather than spawning a successor (see takeStarvedJob): starting
+// one would briefly run two goroutines against one slot. Nothing is lost by
+// releasing quietly, because a group that cannot reserve retries after it
+// registers, so a slot returned here is one no waiting group had claimed.
+func (b *taskConcurrencyBudget) release(n int) {
+	if n < 1 {
+		return
+	}
+	b.mu.Lock()
+	b.remaining += n
+	b.mu.Unlock()
+}
+
+// takeStarvedJob moves a job from a group waiting for capacity onto the slot
+// the caller already holds, and reports the group it belongs to. The slot
+// changes hands without changing count: the caller's group gives it up and the
+// starved group takes it.
+func (b *taskConcurrencyBudget) takeStarvedJob(from *taskGroup) (*taskGroup, *taskJob) {
+	b.mu.Lock()
+	waiting := make([]*taskGroup, 0, len(b.starved))
+	for group := range b.starved {
+		waiting = append(waiting, group)
+	}
+	b.mu.Unlock()
+
+	for _, group := range waiting {
+		job, drained := group.takeQueuedJob()
+		if drained {
+			b.forget(group)
+		}
+		if job == nil {
+			continue
+		}
+		from.mu.Lock()
+		from.running--
+		from.mu.Unlock()
+		return group, job
+	}
+	return nil, nil
+}
+
+type taskSlotKey struct{}
+
+// contextWithTaskSlot marks the calls a job drives as running on a pool slot,
+// so a wait inside one of them knows it may run queued work on its goroutine.
+// It propagates to nested scopes, which is right: their blocks run on the same
+// slot-backed goroutine.
+func contextWithTaskSlot(ctx context.Context) context.Context {
+	return context.WithValue(ctx, taskSlotKey{}, true)
+}
+
+// taskSlotFromContext reports whether the waiting goroutine holds a pool slot.
+// The root goroutine does not, so nothing may be run on it: a script that waits
+// there is waiting for capacity to reach the group, not for permission to add
+// some.
+func taskSlotFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	slot, _ := ctx.Value(taskSlotKey{}).(bool)
+	return slot
+}
+
+type taskBudgetKey struct{}
+
+// contextWithTaskBudget publishes the pool to everything the group drives.
+// It rides as a context value rather than a wrapper type so it survives the
+// cancel contexts nested calls layer on top.
+func contextWithTaskBudget(ctx context.Context, budget *taskConcurrencyBudget) context.Context {
+	if budget == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, taskBudgetKey{}, budget)
+}
+
+func taskBudgetFromContext(ctx context.Context) *taskConcurrencyBudget {
+	if ctx == nil {
+		return nil
+	}
+	budget, _ := ctx.Value(taskBudgetKey{}).(*taskConcurrencyBudget)
+	return budget
+}
+
+// enclosingTaskBudget reports the pool of the innermost scope this execution
+// still has open, if any.
+func (exec *Execution) enclosingTaskBudget() *taskConcurrencyBudget {
+	for i := len(exec.activeTaskGroups) - 1; i >= 0; i-- {
+		if budget := exec.activeTaskGroups[i].budget; budget != nil {
+			return budget
+		}
+	}
+	return nil
+}
+
+// hostTaskConcurrencyLimit reports the ceiling a whole call tree shares.
+func (exec *Execution) hostTaskConcurrencyLimit() int {
+	if exec == nil || exec.engine == nil {
+		return defaultMaxTaskConcurrency
+	}
+	return exec.engine.config.MaxTaskConcurrency
 }
 
 func taskScript(exec *Execution) *Script {
@@ -365,30 +556,157 @@ func (group *taskGroup) enqueue(exec *Execution, functionName string, taskArgs [
 		return nil, err
 	}
 
-	group.tasks.Add(1)
-	select {
-	case group.jobs <- job:
-		return handle, nil
-	case <-group.ctx.Done():
+	if err := group.ctx.Err(); err != nil {
 		group.releaseJobPayload(job)
-		err := group.ctx.Err()
 		if groupErr := group.err(); groupErr != nil {
 			err = groupErr
 		}
 		handle.complete(NewNil(), err)
-		group.tasks.Done()
 		return nil, exec.latchGroupTaskExhaustion(group, err)
-	case <-ctx.Done():
+	}
+	if err := ctx.Err(); err != nil {
 		group.releaseJobPayload(job)
-		handle.complete(NewNil(), ctx.Err())
-		group.tasks.Done()
-		return nil, ctx.Err()
+		handle.complete(NewNil(), err)
+		return nil, err
+	}
+
+	group.tasks.Add(1)
+	// A group the shared pool could not staff defers its work rather than
+	// starting a goroutine the pool did not allow. The job runs inline at the
+	// next wait; spawning stays nonblocking either way.
+	if !group.startJob(job) {
+		group.mu.Lock()
+		group.deferred = append(group.deferred, job)
+		group.mu.Unlock()
+		// Registered before the retry, so a slot released between the failed
+		// reservation and this point cannot be missed: release only skips a
+		// group it cannot see, and staffDeferred re-registers if it loses the
+		// race for the slot again.
+		group.budget.markStarved(group)
+		group.staffDeferred()
+	}
+	return handle, nil
+}
+
+// startJob takes a slot from the shared pool and runs the job on it, reporting
+// false when the pool or this group's own ceiling has nothing to give.
+//
+// A slot is held by a running job and returned the moment it finishes, rather
+// than by a worker that outlives the work. max is a ceiling, not a count, so a
+// pool of workers sized to it held capacity for tasks that were never spawned
+// and kept holding it after the ones that were had finished: against a host
+// limit of 2, a Tasks.run(max: 2) that spawned one task starved every nested
+// group for its whole lifetime, and a group that ran two tasks concurrently
+// went on holding both slots once they were done.
+//
+// Tying the slot to the job instead means a group holds exactly the
+// concurrency it is using at that instant, and the pool is a hard cap because
+// nothing runs script code without a slot.
+func (group *taskGroup) startJob(job *taskJob) bool {
+	group.mu.Lock()
+	defer group.mu.Unlock()
+	if group.closed || group.running >= group.max || !group.budget.reserveOne() {
+		return false
+	}
+	group.running++
+	go group.runSlottedJob(job)
+	return true
+}
+
+// staffDeferred starts queued work on capacity the pool still has. It runs
+// right after a group registers as starved, closing the window where a slot was
+// returned between the failed reservation and the registration. The goroutine
+// it starts occupies a slot the pool actually had, so it adds no concurrency
+// beyond the cap.
+func (group *taskGroup) staffDeferred() {
+	for {
+		group.mu.Lock()
+		if group.closed || len(group.deferred) == 0 || group.running >= group.max {
+			group.mu.Unlock()
+			return
+		}
+		if !group.budget.reserveOne() {
+			group.mu.Unlock()
+			// Still holding work, so stay registered for the next release.
+			group.budget.markStarved(group)
+			return
+		}
+		job := group.deferred[0]
+		group.deferred = group.deferred[1:]
+		group.running++
+		go group.runSlottedJob(job)
+		group.mu.Unlock()
 	}
 }
 
-func (group *taskGroup) worker() {
-	for job := range group.jobs {
+// runSlottedJob runs queued work on one slot until there is none left, then
+// returns the slot. Deferred work run inline by a waiter goes through runJob
+// directly: it never took a slot, because the goroutine running it is one the
+// pool already counted.
+func (group *taskGroup) runSlottedJob(job *taskJob) {
+	for job != nil {
 		group.runJob(job)
+		group, job = group.nextQueuedJob()
+	}
+}
+
+// takeQueuedJob pops one queued job for a slot that is being handed to this
+// group, and reports whether the queue is now empty. It raises running because
+// the incoming slot is this group's for the duration of that job.
+func (group *taskGroup) takeQueuedJob() (*taskJob, bool) {
+	group.mu.Lock()
+	defer group.mu.Unlock()
+	if len(group.deferred) == 0 || group.running >= group.max {
+		return nil, len(group.deferred) == 0
+	}
+	job := group.deferred[0]
+	group.deferred = group.deferred[1:]
+	group.running++
+	return job, len(group.deferred) == 0
+}
+
+// nextQueuedJob finds the next job for the slot the caller holds: this group's
+// own queue first, then any group waiting for capacity. It returns nil once
+// there is nothing left, having given the slot back to the pool.
+//
+// Work moves to the slot rather than a goroutine being started for it. The
+// finishing goroutine has not unwound yet, so starting a successor from its
+// tail would run two goroutines against one slot, which is one more script at
+// once than the pool allowed. This group's own queue comes first because the
+// slot is one this group was already allowed.
+func (group *taskGroup) nextQueuedJob() (*taskGroup, *taskJob) {
+	group.mu.Lock()
+	// Queued work still runs after close: closing stops new spawns, and work
+	// already admitted has to run or the wait for it never returns.
+	if len(group.deferred) > 0 && group.running <= group.max {
+		job := group.deferred[0]
+		group.deferred = group.deferred[1:]
+		group.mu.Unlock()
+		return group, job
+	}
+	group.mu.Unlock()
+
+	for {
+		if owner, job := group.budget.takeStarvedJob(group); job != nil {
+			return owner, job
+		}
+
+		group.mu.Lock()
+		group.running--
+		group.mu.Unlock()
+		group.budget.release(1)
+
+		// A group can register as starved between the snapshot above and this
+		// release, and its own retry fails while this slot is still held, so
+		// letting the slot go quiet there would leave it waiting with nothing
+		// to wake it. Re-taking the slot and looking again closes that window;
+		// losing the race for it is fine, because whoever won is doing this.
+		if !group.budget.hasStarved() || !group.budget.reserveOne() {
+			return nil, nil
+		}
+		group.mu.Lock()
+		group.running++
+		group.mu.Unlock()
 	}
 }
 
@@ -404,7 +722,7 @@ func (group *taskGroup) runJob(job *taskJob) {
 
 	opts := group.callOptionsForJob(job)
 	var workerExhaustion error
-	result, err := group.script.callWithLazyTaskGlobals(group.ctx, job.functionName, job.callArgs(), opts, group.lazyGlobalsForJob(), &workerExhaustion)
+	result, err := group.script.callWithLazyTaskGlobals(contextWithTaskSlot(group.ctx), job.functionName, job.callArgs(), opts, group.lazyGlobalsForJob(), &workerExhaustion)
 	if workerExhaustion != nil {
 		workerExhaustion = fmt.Errorf("task %s failed: %w", job.functionName, workerExhaustion)
 	}
@@ -452,22 +770,117 @@ func (group *taskGroup) lazyGlobalsForJob() *taskLazyGlobals {
 	return newTaskLazyGlobals(group.globals, false, group.detachedGlobals)
 }
 
+// drainDeferred runs the jobs a starved group could not put on a slot, on the
+// goroutine that is waiting for them, and stops as soon as done is closed. A
+// nil done drains everything, which is what closing the scope wants.
+//
+// Stopping at done matters because a waiter is only entitled to the work it is
+// waiting for: running the rest would trap a parent inside an unrelated job
+// that is itself waiting on a host action the parent performs once this wait
+// returns.
+//
+// drainDeferred runs queued work on the goroutine that is waiting for it.
+//
+// With a target it runs that handle's own job and nothing else. Popping the
+// queue head instead ran an unrelated job on the waiter's behalf, which
+// deadlocks when the awaited handle is behind one that is itself waiting for
+// something the waiter only does once it has its result. With no target it
+// drains the queue, which is what closing the scope wants.
+//
+// A group under its own max may run work here even when it has a job on a slot:
+// the waiter's goroutine belongs to a slot already counted and is blocked, so
+// borrowing it adds no concurrency, while refusing would deadlock a parent
+// whose running child waits on something that parent only does once the
+// deferred handle is in hand. Above the max it must refuse, which is what the
+// group's own limit means.
+//
+// Only a waiter that is itself on a slot may do this. The root goroutine holds
+// no slot, so running a job there would put one more script on the host than
+// the pool allows, which is the whole point of the pool; it waits for capacity
+// to reach the group instead (see taskSlotFromContext).
+func (group *taskGroup) drainDeferred(target *taskHandle) {
+	for {
+		if target != nil {
+			select {
+			case <-target.done:
+				return
+			default:
+			}
+		}
+		group.mu.Lock()
+		job, ok := group.takeDeferredLocked(target)
+		if !ok {
+			group.mu.Unlock()
+			return
+		}
+		// Counted while it runs, even though it is on a borrowed goroutine: a
+		// slot released elsewhere would otherwise see room in this group and
+		// hand it a second job to run beside this one, past the max the group
+		// was given.
+		group.running++
+		group.mu.Unlock()
+
+		group.runJob(job)
+
+		group.mu.Lock()
+		group.running--
+		group.mu.Unlock()
+	}
+}
+
+// takeDeferredLocked removes the job a waiter may run: the target's own, or the
+// head of the queue when there is no target. It reports false when the group is
+// at its max, when the queue is empty, or when the target is not queued at all
+// because something else already has it.
+func (group *taskGroup) takeDeferredLocked(target *taskHandle) (*taskJob, bool) {
+	if group.running >= group.max || len(group.deferred) == 0 {
+		return nil, false
+	}
+	index := 0
+	if target != nil {
+		index = -1
+		for i, job := range group.deferred {
+			if job.handle == target {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return nil, false
+		}
+	}
+	job := group.deferred[index]
+	group.deferred = append(group.deferred[:index], group.deferred[index+1:]...)
+	return job, true
+}
+
+// drainQueueIfSlotBacked runs the whole queue on the waiting goroutine, but
+// only when that goroutine holds a slot. On the root goroutine it waits
+// instead: the queue runs when capacity reaches the group, and running it here
+// would put one more script on the host than the pool allows.
+func (group *taskGroup) drainQueueIfSlotBacked() {
+	if taskSlotFromContext(group.ctx) {
+		group.drainDeferred(nil)
+	}
+}
+
 func (group *taskGroup) wait() error {
+	group.drainQueueIfSlotBacked()
 	group.tasks.Wait()
 	return group.err()
 }
 
 func (group *taskGroup) closeAndWait() error {
+	group.drainQueueIfSlotBacked()
 	group.mu.Lock()
-	if !group.closed {
-		group.closed = true
-		close(group.jobs)
-	}
+	group.closed = true
 	group.mu.Unlock()
 
 	group.tasks.Wait()
-	group.workers.Wait()
 	group.cancel()
+	if group.budget != nil {
+		group.budget.forget(group)
+	}
 	return group.err()
 }
 
@@ -640,6 +1053,9 @@ func (handle *taskHandle) substituteRootCause(err error) error {
 }
 
 func (handle *taskHandle) wait(ctx context.Context) (Value, error) {
+	if taskSlotFromContext(ctx) {
+		handle.group.drainDeferred(handle)
+	}
 	select {
 	case <-handle.done:
 		return handle.result()
@@ -649,6 +1065,7 @@ func (handle *taskHandle) wait(ctx context.Context) (Value, error) {
 }
 
 func (handle *taskHandle) result() (Value, error) {
+	handle.group.drainDeferred(handle)
 	<-handle.done
 	return handle.value, handle.err
 }

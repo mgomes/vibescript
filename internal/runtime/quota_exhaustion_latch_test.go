@@ -690,7 +690,7 @@ func TestGroupRetainsExhaustionBehindFirstError(t *testing.T) {
 func TestEnqueueReobservesExhaustionAfterClone(t *testing.T) {
 	t.Parallel()
 
-	group := &taskGroup{cancel: func() {}, jobs: make(chan *taskJob, 1)}
+	group := &taskGroup{cancel: func() {}}
 	worker := &Execution{ctx: context.Background(), quota: 1}
 	worker.steps = 1
 	requireErrorIs(t, worker.step(), errStepQuotaExceeded)
@@ -702,8 +702,8 @@ func TestEnqueueReobservesExhaustionAfterClone(t *testing.T) {
 		t.Fatalf("enqueue = (%v, %v), want a refused admission after an observed exhaustion", handle, err)
 	}
 	requireErrorContains(t, err, "task work failed")
-	if len(group.jobs) != 0 {
-		t.Fatal("a refused admission must not enqueue a job")
+	if group.running != 0 || len(group.deferred) != 0 {
+		t.Fatal("a refused admission must not start or defer a job")
 	}
 	if parent.exhausted == nil {
 		t.Fatal("the parent latch was not set by the re-observation")

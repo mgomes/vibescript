@@ -995,10 +995,7 @@ func TestTaskGroupSpawnChecksRetainedPayloadMemoryQuota(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	group := &taskGroup{
-		ctx:  ctx,
-		jobs: make(chan *taskJob, 1),
-	}
+	group := &taskGroup{ctx: ctx}
 	exec.pushTaskGroup(group)
 	defer exec.popTaskGroup()
 
@@ -1009,10 +1006,8 @@ func TestTaskGroupSpawnChecksRetainedPayloadMemoryQuota(t *testing.T) {
 	if got := group.jobPayloadMemory(newMemoryEstimator()); got != 0 {
 		t.Fatalf("job payload memory after rejected spawn = %d, want 0", got)
 	}
-	select {
-	case job := <-group.jobs:
-		t.Fatalf("rejected spawn enqueued job %s", job.functionName)
-	default:
+	if group.running != 0 || len(group.deferred) != 0 {
+		t.Fatal("a rejected spawn must not start or defer a job")
 	}
 }
 
