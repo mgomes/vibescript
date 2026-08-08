@@ -270,3 +270,76 @@ func minStepsForShrinkInsideFind(t *testing.T, expr string, n int) int {
 	}
 	return lo
 }
+
+// arrayArgDriver drives a script block from an array argument, the way a host
+// adapter walking a collection the script handed it does. It is dispatched with
+// no receiver, so the receiver claim alone never sees the array it walks.
+type arrayArgDriver struct{}
+
+func (arrayArgDriver) Bind(CapabilityBinding) (map[string]Value, error) {
+	walk := func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		items := args[0].Array()
+		if len(items) == 0 {
+			items = kwargs["over"].Array()
+		}
+		for _, item := range items {
+			if _, err := exec.CallBlock(block, []Value{item}); err != nil {
+				return NewNil(), err
+			}
+		}
+		return NewNil(), nil
+	}
+	return map[string]Value{
+		"driver": NewObject(map[string]Value{
+			"walk":    NewBuiltin("driver.walk", walk),
+			"walk_kw": NewBuiltin("driver.walk_kw", walk),
+		}),
+	}, nil
+}
+
+// TestArrayShrinkDuringCallbackKeepsSnapshot pins that the arguments a frame
+// holds are claimed like its receiver.
+//
+// A capability method and a global builtin are dispatched with no receiver, so
+// a driver that walks an array argument across exec.CallBlock had nothing
+// claiming the header it was reading, and a shrink from inside the block zeroed
+// slots it had not reached.
+func TestArrayShrinkDuringCallbackKeepsSnapshot(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def positional()
+  a = [1, 2, 3]
+  seen = []
+  driver.walk(a) do |x|
+    seen.push(x)
+    a.pop
+  end
+  seen
+end
+
+def keyword()
+  a = [1, 2, 3]
+  seen = []
+  driver.walk_kw([], over: a) do |x|
+    seen.push(x)
+    a.pop
+  end
+  seen
+end`)
+
+	for _, function := range []string{"positional", "keyword"} {
+		t.Run(function, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := script.Call(context.Background(), function, nil, CallOptions{
+				Capabilities: []CapabilityAdapter{arrayArgDriver{}},
+			})
+			if err != nil {
+				t.Fatalf("%s: %v", function, err)
+			}
+			if want := `[1, 2, 3]`; got.Inspect() != want {
+				t.Fatalf("%s yielded %s, want %s", function, got.Inspect(), want)
+			}
+		})
+	}
+}

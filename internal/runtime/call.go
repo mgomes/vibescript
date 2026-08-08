@@ -299,14 +299,16 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// error returns a script can rescue.
 		yieldFrame := exec.pushCapabilityYieldFrame(scope, exec.builtinDepth+1, preCallKnownBuiltins, callAmbientEnvs)
 		exec.builtinDepth++
-		// A builtin that walks an array receiver captures its element header
-		// here and keeps reading it while the block it yields to runs. The
-		// claim tells an in-place shrink performed by that block that it must
-		// copy the survivors out rather than zero the slots it vacates (see
+		// A builtin that walks an array captures its element header here and
+		// keeps reading it while the block it yields to runs. The claim tells
+		// an in-place shrink performed by that block that it must copy the
+		// survivors out rather than zero the slots it vacates. Arguments are
+		// claimed alongside the receiver because an adapter or global builtin
+		// is dispatched without one and drives its block from an argument (see
 		// array_shrink.go).
-		heldBacking := exec.holdArrayBacking(receiver)
+		heldBackings := exec.holdArrayBackings(receiver, args, kwargs)
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
-		exec.releaseArrayBacking(heldBacking)
+		exec.releaseArrayBackings(heldBackings)
 		exec.builtinDepth--
 		exec.popCapabilityYieldFrame(yieldFrame)
 		// A capability adapter that ignored a quota error from the exported

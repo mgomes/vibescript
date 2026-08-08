@@ -22,11 +22,9 @@ package runtime
 // instead, by leaving the captured header untouched.
 //
 // Copying on every shrink would also be correct, but it makes a shrink O(len)
-// and a drain loop O(n^2) -- and, under a tight quota, a pop from a large array
-// would need room for a second copy of it and could fail outright. So the
-// shrink copies only when it would otherwise write into a backing an enclosing
-// frame is holding, and zeroes in place the rest of the time. The common shapes
-// settle out as:
+// and a drain loop O(n^2). So the shrink copies only when it would otherwise
+// write into a backing an enclosing frame is holding, and zeroes in place the
+// rest of the time. The common shapes settle out as:
 //
 //   - `while a.size > 0; a.pop; end` -- no enclosing frame holds the backing,
 //     so every pop zeroes in place and the loop stays linear.
@@ -38,41 +36,62 @@ package runtime
 //
 // A copy still bills its own elements, because nothing else in the shrink is
 // proportional to them: a builtin that yields once for a flat cost could
-// otherwise force an arbitrarily large copy per call.
+// otherwise force an arbitrarily large copy per call. It copies element slots
+// rather than payloads, so what it bills the memory quota is a second slot
+// array and not a second copy of what the array holds.
 
 // heldArrayBacking is one frame's claim on an array element backing: the
-// identity of the backing the frame captured, and the builtin depth the frame
-// walks it at. The depth is what lets a shrink tell an enclosing frame's claim
-// from the claim its own dispatch just recorded for it.
+// identity of the backing the frame captured, and the builtin depth it walks
+// that header at. The depth is what lets a shrink tell an enclosing frame's
+// claim from the claim its own dispatch just recorded for it.
 type heldArrayBacking struct {
 	id    uintptr
 	depth int
 }
 
-// holdArrayBacking records an array value's element backing for the frame that
-// is about to walk it, and reports whether it recorded anything. The claim is
-// taken where the driver captures the header it will walk -- builtin dispatch
-// for the member functions, the loop head for `for x in a` -- so nothing has
-// run in between that could have moved the value onto a different backing.
-func (exec *Execution) holdArrayBacking(receiver Value) bool {
-	if receiver.Kind() != KindArray {
-		return false
+// holdArrayBackings claims the element backing of every array a frame is about
+// to hold across the script it runs, and returns the mark releaseArrayBackings
+// takes to drop them again.
+//
+// A frame's receiver is the obvious one, but not the only one: a global builtin
+// and a capability method are dispatched with no receiver at all and drive their
+// block from an array argument, so `driver.walk(a) { a.pop }` walked a header
+// nothing had claimed. Keyword arguments reach a frame the same way.
+//
+// The claims are taken where the driver captures the headers it will walk --
+// builtin dispatch for the member functions and adapters, the loop head for
+// `for x in a` -- so nothing has run in between that could have moved a value
+// onto a different backing.
+func (exec *Execution) holdArrayBackings(receiver Value, args []Value, kwargs map[string]Value) int {
+	mark := len(exec.heldArrayBackings)
+	exec.holdArrayBacking(receiver)
+	for _, arg := range args {
+		exec.holdArrayBacking(arg)
 	}
-	id := sliceBackingIdentity(receiver.Array())
-	if id == 0 {
-		return false
+	for _, val := range kwargs {
+		exec.holdArrayBacking(val)
 	}
-	exec.heldArrayBackings = append(exec.heldArrayBackings, heldArrayBacking{id: id, depth: exec.builtinDepth})
-	return true
+	return mark
 }
 
-// releaseArrayBacking drops the claim holdArrayBacking recorded, if it recorded
-// one.
-func (exec *Execution) releaseArrayBacking(held bool) {
-	if !held || len(exec.heldArrayBackings) == 0 {
+func (exec *Execution) holdArrayBacking(val Value) {
+	if val.Kind() != KindArray {
 		return
 	}
-	exec.heldArrayBackings = exec.heldArrayBackings[:len(exec.heldArrayBackings)-1]
+	id := sliceBackingIdentity(val.Array())
+	if id == 0 {
+		return
+	}
+	exec.heldArrayBackings = append(exec.heldArrayBackings,
+		heldArrayBacking{id: id, depth: exec.builtinDepth})
+}
+
+// releaseArrayBackings drops every claim taken since mark.
+func (exec *Execution) releaseArrayBackings(mark int) {
+	if mark >= len(exec.heldArrayBackings) {
+		return
+	}
+	exec.heldArrayBackings = exec.heldArrayBackings[:mark]
 }
 
 // arrayBackingHeldByCaller reports whether a frame enclosing the running one is
