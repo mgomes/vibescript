@@ -115,3 +115,64 @@ end`)
 		t.Fatalf("run = %s, want %s", got.Inspect(), want)
 	}
 }
+
+// TestReleasedClaimDropsItsHeader pins that the claim stack stops holding an
+// array once the frame that walked it has returned.
+//
+// A claim carries the header it walks so a detached one can still be charged,
+// which makes the stack itself a place where the bug this file is about can
+// recur: shortening it would leave those pointers in its backing, keeping the
+// array reachable from the execution while the walk over the live claims stops
+// counting it. One iteration over a 48 MiB array, dropped straight afterwards,
+// held all of it.
+//
+// The heap is sampled from inside the call. A released slot is overwritten by
+// the next claim taken at the same depth, and the execution is gone by the time
+// Call returns, so nothing is visible from outside.
+//
+// Not parallel: it measures process-wide heap.
+func TestReleasedClaimDropsItsHeader(t *testing.T) {
+	var samples []uint64
+	engine := MustNewEngine(Config{StepQuota: 50_000_000, MemoryQuotaBytes: Unlimited})
+	engine.RegisterBuiltin("probe_heap", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		var stats goruntime.MemStats
+		goruntime.GC()
+		goruntime.ReadMemStats(&stats)
+		samples = append(samples, stats.HeapAlloc)
+		return NewNil(), nil
+	})
+	// probe_heap is a global builtin, so it claims nothing and cannot overwrite
+	// the slot each's claim was released from.
+	script, err := engine.Compile(`def run(seed)
+  probe_heap()
+  a = []
+  i = 0
+  while i < 100
+    a.push(seed * 100)
+    i = i + 1
+  end
+  a.each do |x|
+  end
+  a = nil
+  probe_heap()
+  0
+end`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	seed := NewString(strings.Repeat("abcdefghij", 500))
+	if _, err := script.Call(context.Background(), "run", []Value{seed}, CallOptions{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("probe_heap ran %d times, want 2", len(samples))
+	}
+
+	held := int64(samples[1]) - int64(samples[0])
+	// A stale claim held about 48 MiB here.
+	if limit := int64(16 << 20); held > limit {
+		t.Fatalf("a dropped array is still held to %.2f MiB, want under %.2f MiB",
+			float64(held)/(1<<20), float64(limit)/(1<<20))
+	}
+}

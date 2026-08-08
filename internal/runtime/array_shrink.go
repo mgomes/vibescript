@@ -101,16 +101,25 @@ func (exec *Execution) holdArrayBacking(val Value) {
 // claim also bumps the mutation epoch: the header stops being live state at
 // that moment, and without the bump the base-walk memo would keep serving a
 // total that still includes it.
+//
+// The released claims are cleared rather than only cut off. A claim carries the
+// header it walks, so shortening the stack would leave those pointers in its
+// backing, keeping the array reachable from the execution while a walk that
+// reads only the live claims stops counting it -- the very shape this file
+// exists to fix. Running one iteration over a 48 MiB array and then dropping it
+// held all of it.
 func (exec *Execution) releaseArrayBackings(mark int) {
 	if mark >= len(exec.heldArrayBackings) {
 		return
 	}
-	for _, held := range exec.heldArrayBackings[mark:] {
+	released := exec.heldArrayBackings[mark:]
+	for _, held := range released {
 		if held.detached {
 			bumpMutationEpoch()
 			break
 		}
 	}
+	clear(released)
 	exec.heldArrayBackings = exec.heldArrayBackings[:mark]
 }
 
