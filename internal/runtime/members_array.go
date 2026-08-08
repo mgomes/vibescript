@@ -3749,6 +3749,13 @@ func arrayMemberTransforms(property string) (Value, error) {
 				}
 				return popped, nil
 			}
+			// pop(0), and pop(n) on an empty receiver, remove nothing. Falling
+			// through would still take the shrink path, which inside an
+			// iterator copies the whole receiver and bills its elements for a
+			// call that changes nothing.
+			if count == 0 {
+				return NewArray([]Value{}), nil
+			}
 			// pop(n) copies the removed tail out so the returned array does not
 			// share backing storage with the receiver.
 			if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(count); err != nil {
@@ -4291,6 +4298,12 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 			return NewNil(), err
 		}
 		return shifted, nil
+	}
+	// shift(0), and shift(n) on an empty receiver, remove nothing. Falling
+	// through would still take the shrink path, which inside an iterator copies
+	// the whole receiver and bills its elements for a call that changes nothing.
+	if count == 0 {
+		return NewArray([]Value{}), nil
 	}
 	// shift(n) copies the removed head out so the returned array does not share
 	// backing storage with the receiver.

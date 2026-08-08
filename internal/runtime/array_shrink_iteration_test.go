@@ -222,3 +222,51 @@ func TestShrinkDuringIterationStaysLinear(t *testing.T) {
 		})
 	}
 }
+
+// TestZeroCountShrinkDoesNoWork pins that pop(0) and shift(0) cost the same
+// whatever the receiver holds. They remove nothing, but they used to reach the
+// shrink path anyway, which inside an iterator copies the whole receiver and
+// bills its elements: a no-op over 800 elements cost 700 steps more than the
+// same no-op over 100.
+func TestZeroCountShrinkDoesNoWork(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{"a.pop(0)", "a.shift(0)"} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+
+			small := minStepsForShrinkInsideFind(t, expr, 100)
+			large := minStepsForShrinkInsideFind(t, expr, 800)
+			if small != large {
+				t.Fatalf("%s cost %d steps over 100 elements and %d over 800; a call that "+
+					"removes nothing must not follow the receiver", expr, small, large)
+			}
+		})
+	}
+}
+
+// minStepsForShrinkInsideFind returns the smallest step quota that lets expr
+// run once inside a find over an n-element array. find stops at the first
+// truthy block result, so the measurement is one shrink rather than n, and the
+// array arrives as an argument so building it costs no steps.
+func minStepsForShrinkInsideFind(t *testing.T, expr string, n int) int {
+	t.Helper()
+
+	src := fmt.Sprintf("def run(a)\n  a.find do |x|\n    %s\n    true\n  end\n  0\nend", expr)
+	elems := make([]Value, n)
+	for i := range n {
+		elems[i] = NewInt(int64(i))
+	}
+
+	lo, hi := 1, 100*n
+	for lo < hi {
+		mid := (lo + hi) / 2
+		script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+		if _, err := script.Call(context.Background(), "run", []Value{NewArray(elems)}, CallOptions{}); err != nil {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
