@@ -2406,11 +2406,14 @@ func (c *blockBindCharge) projectRestWindow(count int) error {
 // binding -- the only off-baseline memory is the rest backing this preflight gates.
 func (c *blockBindCharge) destructureCharge() destructureCharge {
 	if c == nil {
-		return destructureCharge{check: noopDestructureCheck}
+		return destructureCharge{check: noopDestructureCheck, step: noopDestructureStep}
 	}
-	return destructureCharge{check: func(count, _ int, _ Value) error {
-		return c.projectRestWindow(count)
-	}}
+	return destructureCharge{
+		check: func(count, _ int, _ Value) error {
+			return c.projectRestWindow(count)
+		},
+		step: c.exec.chargeDestructureScan,
+	}
 }
 
 // blockBindsRest reports whether any of the block's parameters destructure a value

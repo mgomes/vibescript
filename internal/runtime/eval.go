@@ -2645,7 +2645,7 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 // (the right-hand-side snapshot and any named rest window) against the memory
 // quota before it is allocated.
 func AssignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error) error {
-	return assignDestructure(target, value, assign, destructureCharge{check: noopDestructureCheck})
+	return assignDestructure(target, value, assign, destructureCharge{check: noopDestructureCheck, step: noopDestructureStep})
 }
 
 // destructureCharge meters the fresh int-value slot arrays a destructuring
@@ -2666,8 +2666,15 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 // either; the count threads down the recursion so a nested destructure charges
 // its own arrays on top of every enclosing level's still-live snapshot,
 // projecting the true peak rather than a single level's allocation.
+//
+// step bills the step quota for the targets the walk visits and the value slots
+// it copies. The walk is one statement but arbitrarily much work: a target may
+// nest, and every nested rest copies its own window, so a single assignment
+// could copy a large host-supplied array once per nested target for a flat
+// handful of steps and poll the context not at all (#49).
 type destructureCharge struct {
 	check     func(count, liveSlots int, liveRoot Value) error
+	step      func(units int) error
 	liveRoot  Value
 	liveSlots int
 }
@@ -2676,6 +2683,38 @@ type destructureCharge struct {
 // run outside a memory quota, so the arrays they may materialize are not metered.
 func noopDestructureCheck(int, int, Value) error { return nil }
 
+// noopDestructureStep bills nothing, for the same host callers: they run outside
+// a step quota too.
+func noopDestructureStep(int) error { return nil }
+
+// destructureUnitsPerStep amortizes a destructuring assignment over the targets
+// it walks and the value slots it copies, at the same rate chargeStringScan and
+// the predeclaration scan use for their own per-unit work. Copying a slot is a
+// pointer-width move and visiting a target is a type switch, so an ordinary
+// `a, b, *rest = xs` stays free while work that scales with a host-supplied
+// array cannot.
+const destructureUnitsPerStep = 64
+
+// chargeDestructureScan bills n units of destructuring work, carrying the
+// sub-step remainder on the execution. Rounding each call down would leave a
+// target list of many just-under-threshold windows free however many of them
+// there were, which is the shape the charge exists to stop; the residue settles
+// whole steps as those tails accumulate. Charging through stepN also restores
+// the cancellation poll and periodic memory check that a long assignment
+// otherwise ran to completion without.
+func (exec *Execution) chargeDestructureScan(n int) error {
+	if n <= 0 {
+		return nil
+	}
+	exec.destructureScanResidue += n
+	steps := exec.destructureScanResidue / destructureUnitsPerStep
+	if steps <= 0 {
+		return nil
+	}
+	exec.destructureScanResidue -= steps * destructureUnitsPerStep
+	return exec.stepN(steps)
+}
+
 // assignDestructure applies Vibescript's destructuring assignment rules and
 // invokes assign for each concrete leaf target. The returned charge meters every
 // fresh slot array against the caller's memory quota before it is allocated,
@@ -2683,7 +2722,11 @@ func noopDestructureCheck(int, int, Value) error { return nil }
 // is projected even when the right-hand side is not reachable from any
 // environment (a function return or array literal).
 func (exec *Execution) assignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error) error {
-	return assignDestructure(target, value, assign, destructureCharge{check: exec.checkProjectedIntArrayBytesWithLive, liveRoot: value})
+	return assignDestructure(target, value, assign, destructureCharge{
+		check:    exec.checkProjectedIntArrayBytesWithLive,
+		step:     exec.chargeDestructureScan,
+		liveRoot: value,
+	})
 }
 
 func assignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error, charge destructureCharge) error {
@@ -2693,6 +2736,12 @@ func assignDestructure(target *DestructureTarget, value Value, assign func(Expre
 type destructureElementNormalizer func(DestructureElement, Value) (Value, error)
 
 func assignDestructureWithNormalizer(target *DestructureTarget, value Value, assign func(Expression, Value) error, charge destructureCharge, normalize destructureElementNormalizer) error {
+	// Charged per level, so a nested target bills its own elements on top of
+	// every enclosing one: the recursion is what turns one statement into
+	// arbitrarily many target walks.
+	if err := charge.step(len(target.Elements)); err != nil {
+		return err
+	}
 	values := destructureValues(value)
 	// Ruby evaluates the whole right-hand side into an array before performing
 	// any assignment, so every target reads its original value regardless of
@@ -2708,6 +2757,9 @@ func assignDestructureWithNormalizer(target *DestructureTarget, value Value, ass
 	// "values[0], * = values"), which reads nothing the write could corrupt.
 	if value.Kind() == KindArray && destructureWriteIsReadBack(target) {
 		if err := charge.check(len(values), charge.liveSlots, charge.liveRoot); err != nil {
+			return err
+		}
+		if err := charge.step(len(values)); err != nil {
 			return err
 		}
 		values = append([]Value(nil), values...)
@@ -2770,6 +2822,9 @@ func assignDestructureWithNormalizer(target *DestructureTarget, value Value, ass
 			// check, allocate the window anyway, and the snapshot would be gone by
 			// the next per-statement check, letting execution exceed the quota.
 			if err := charge.check(restEnd-restStart, charge.liveSlots, charge.liveRoot); err != nil {
+				return err
+			}
+			if err := charge.step(restEnd - restStart); err != nil {
 				return err
 			}
 			// Allocate the rest backing with capacity exactly equal to the collected
