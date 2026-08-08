@@ -3388,5 +3388,10 @@ func (exec *Execution) releaseRetainedValues(depth int) {
 	if exec == nil || len(exec.retainedValues) <= depth {
 		return
 	}
+	// Cleared before the length drops. Shortening a slice leaves its backing
+	// array holding the pointers, so the values would stay live to the garbage
+	// collector while this walk, which reads only the visible length, stopped
+	// counting them: exactly the retention this registration exists to expose.
+	clear(exec.retainedValues[depth:])
 	exec.retainedValues = exec.retainedValues[:depth]
 }
