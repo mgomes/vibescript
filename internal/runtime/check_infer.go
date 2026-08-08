@@ -2404,8 +2404,11 @@ func (c *scriptChecker) collectMutationCandidateRootsFromExpression(expr Express
 }
 
 type regionIvarEffects struct {
-	writes  map[string]struct{}
-	unknown bool
+	writes map[string]struct{}
+	// reentrant records that a lambda body reached itself, so the region can
+	// run again with state the first pass has already changed.
+	reentrant bool
+	unknown   bool
 }
 
 type capturedBlockLiteralValue struct {
@@ -2466,6 +2469,7 @@ func mergeRegionIvarEffects(dst *regionIvarEffects, src regionIvarEffects) {
 		return
 	}
 	dst.unknown = dst.unknown || src.unknown
+	dst.reentrant = dst.reentrant || src.reentrant
 	for name := range src.writes {
 		if dst.writes == nil {
 			dst.writes = make(map[string]struct{})
@@ -5171,6 +5175,12 @@ func collectRegionIvarWriteTargets(target Expression, effects *regionIvarEffects
 	}
 }
 
+// collectRepeatedRegionIvarEffectsFromBlock unions in the ivar effects a
+// lambda body can produce each time the region repeats. A body reachable from
+// itself (`h = -> { h.call }; h.call`) would otherwise re-enter its own
+// statements once per nested call and never finish, so a body already on the
+// walk widens every unset ivar instead of descending again: the checker cannot
+// bound how often such a region runs, so it keeps no exact fact.
 func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromBlock(
 	block *BlockLiteral,
 	effects *regionIvarEffects,
@@ -5178,6 +5188,16 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromBlock(
 	if block == nil {
 		return
 	}
+	if _, walking := c.repeatedRegionBlocksInWalk[block]; walking {
+		effects.reentrant = true
+		effects.unknown = true
+		return
+	}
+	if c.repeatedRegionBlocksInWalk == nil {
+		c.repeatedRegionBlocksInWalk = make(map[*BlockLiteral]struct{})
+	}
+	c.repeatedRegionBlocksInWalk[block] = struct{}{}
+	defer delete(c.repeatedRegionBlocksInWalk, block)
 	popScope := c.pushBlockCheckScope(block)
 	defer popScope()
 	for _, name := range block.ImplicitParams {
@@ -5241,6 +5261,9 @@ func (c *scriptChecker) widenRepeatedRegionBlockIvarFacts(block *BlockLiteral) {
 	c.collectRepeatedRegionIvarEffectsFromBlock(block, &effects)
 	c.restoreScopeState(scopeState)
 	c.widenRegionIvarFacts(effects)
+	if effects.reentrant {
+		c.applyReentrantLambdaNamespaceMutations(block)
+	}
 }
 
 // refineOneShotBlockIvarFacts restores exact scalar facts only on a normally

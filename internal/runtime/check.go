@@ -175,6 +175,7 @@ type scriptChecker struct {
 	blockLocalBreakCollector   *returnSummaryCollector
 	summaryYieldCollector      *returnSummaryCollector
 	summaryYieldBlock          *BlockLiteral
+	summaryYieldBlockWalks     map[*BlockLiteral]int
 	summaryYieldsActive        bool
 	summaryBlockAvailable      bool
 	pinnedExpressionFacts      map[Expression]*TypeExpr
@@ -182,6 +183,7 @@ type scriptChecker struct {
 	pinnedInstanceOrigins      map[Expression]checkInstanceOriginsCapture
 	constructorInstanceFacts   map[Expression]checkInstanceClassFact
 	constructorIvarFacts       map[Expression]map[string]*TypeExpr
+	repeatedRegionBlocksInWalk map[*BlockLiteral]struct{}
 	widenedIvarFacts           map[string]struct{}
 	instanceIvarFactsDirty     bool
 	assignmentReceiverCapture  *checkAssignmentReceiverCapture
@@ -12122,7 +12124,7 @@ func (c *scriptChecker) exactDynamicCallTargets(
 	}
 	if resolved {
 		if resolvedTarget.fn == nil && (resolvedTarget.name == "send" || resolvedTarget.name == "public_send") {
-			return c.exactForwardedCallTargets(call, resolvedTarget.name == "send", dynamicCandidates)
+			return c.exactForwardedCallTargets(call, resolvedTarget.name == "send", dynamicCandidates, 0)
 		}
 		return checkDynamicCallResolution{}
 	}
@@ -12131,7 +12133,7 @@ func (c *scriptChecker) exactDynamicCallTargets(
 		return checkDynamicCallResolution{}
 	}
 	if member.Property == "send" || member.Property == "public_send" {
-		return c.exactForwardedCallTargets(call, member.Property == "send", dynamicCandidates)
+		return c.exactForwardedCallTargets(call, member.Property == "send", dynamicCandidates, 0)
 	}
 	if member.Property == "call" && dynamicCandidates.callablesExact {
 		targets := make([]checkDynamicCallTarget, 0, len(dynamicCandidates.callables))
@@ -12153,12 +12155,19 @@ func (c *scriptChecker) exactDynamicCallTargets(
 
 // exactForwardedCallTargets models Object#send/public_send. Overrides receive
 // the original call; universal forwarding removes the method-name argument.
+// Each forwarded `:send` consumes one argument and recurses, so a flat
+// `C.send(:send, :send, ..., :class)` descends once per argument: at 60000
+// arguments, well inside the source-size limit, that took over ten seconds of
+// check time and grew quadratically (#15). Past maxCheckNestingDepth the
+// remaining chain stays unresolved rather than descending, which keeps the
+// call gradual instead of reporting anything about it.
 func (c *scriptChecker) exactForwardedCallTargets(
 	call *CallExpr,
 	allowPrivate bool,
 	dynamicCandidates checkDynamicCallCandidates,
+	depth int,
 ) checkDynamicCallResolution {
-	if call == nil || c.script == nil {
+	if call == nil || c.script == nil || depth >= maxCheckNestingDepth {
 		return checkDynamicCallResolution{}
 	}
 	member, ok := call.Callee.(*MemberExpr)
@@ -12225,6 +12234,7 @@ func (c *scriptChecker) exactForwardedCallTargets(
 						variant.call,
 						method == "send",
 						dynamicCandidates,
+						depth+1,
 					))
 					continue
 				}
@@ -12297,6 +12307,7 @@ func (c *scriptChecker) exactForwardedCallTargets(
 					variant.call,
 					method == "send",
 					dynamicCandidates,
+					depth+1,
 				))
 				continue
 			}
@@ -18058,17 +18069,83 @@ func (c *scriptChecker) checkScriptCallInvokedLambdaSummaryYields(
 	}
 }
 
+// maxSummaryYieldBlockWalks caps how often one lambda body may be re-checked
+// while the walk it started is still running. The first walk uses the caller's
+// facts. A nested invocation can change captured state and so reach a yield the
+// first walk pruned, so the second forgets the locals the body rebinds and
+// therefore leaves every branch a nested invocation could enable undecided. A
+// third adds nothing the second did not already reach, which bounds a body that
+// calls itself (#7).
+const maxSummaryYieldBlockWalks = 2
+
 // checkInvokedLambdaSummaryYields rechecks an executed lambda with local
 // return semantics intact while allowing reachable yields to poison the
 // enclosing function summary. Merely defining a lambda keeps yields inert.
+// The bound reaches a yield the recursion enables rather than assuming one,
+// so recursion that yields nothing keeps its exact summary.
 func (c *scriptChecker) checkInvokedLambdaSummaryYields(function string, block *BlockLiteral) {
 	if block == nil || c.summaryYieldCollector == nil || !c.summaryYieldsActive {
 		return
 	}
+	walks := c.summaryYieldBlockWalks[block]
+	if walks >= maxSummaryYieldBlockWalks {
+		return
+	}
+	if c.summaryYieldBlockWalks == nil {
+		c.summaryYieldBlockWalks = make(map[*BlockLiteral]int)
+	}
+	c.summaryYieldBlockWalks[block] = walks + 1
+	defer func() {
+		if walks == 0 {
+			delete(c.summaryYieldBlockWalks, block)
+			return
+		}
+		c.summaryYieldBlockWalks[block] = walks
+	}()
 	previousBlock := c.summaryYieldBlock
 	c.summaryYieldBlock = block
 	defer func() { c.summaryYieldBlock = previousBlock }()
+	if walks == 0 {
+		c.checkBlockLiteral(function, block, true)
+		return
+	}
+	scopeState := c.snapshotScopeState()
+	rebound := make(map[string]struct{})
+	collectLocalBindings(block.Body, rebound)
+	for name := range rebound {
+		c.bindLocalType(name, nil)
+		c.bindLocalClassValue(name, "")
+	}
 	c.checkBlockLiteral(function, block, true)
+	c.restoreScopeState(scopeState)
+}
+
+// applyReentrantLambdaNamespaceMutations records the namespace members a
+// lambda that reaches itself may rewrite. The ordinary scan walks the body
+// under the state of the first invocation, so a branch the recursion enables
+// (a false branch that sets `x = true` before calling itself, a true branch
+// that assigns `JSON.stringify`) is pruned and its write is never recorded.
+// Forgetting the locals the body rebinds leaves those branches undecided, so
+// the scan reaches every write a nested invocation could perform. Only a body
+// the region walk proved re-entrant takes this pass, which is a shape no
+// bounded walk reached before.
+func (c *scriptChecker) applyReentrantLambdaNamespaceMutations(block *BlockLiteral) {
+	if block == nil {
+		return
+	}
+	scopeState := c.snapshotScopeState()
+	rebound := make(map[string]struct{})
+	collectLocalBindings(block.Body, rebound)
+	for name := range rebound {
+		c.bindLocalType(name, nil)
+		c.bindLocalClassValue(name, "")
+	}
+	scan := c.newNamespaceMutationScan()
+	scan.scanLambdaBlock(block)
+	c.restoreScopeState(scopeState)
+	for member := range scan.out {
+		c.recordRuntimeNamespaceMember(member)
+	}
 }
 
 // applyLambdaBlockNamespaceMutations records the namespace members a lambda
@@ -18320,6 +18397,7 @@ type namespaceMutationScan struct {
 	functions        map[string]*ScriptFunction
 	classes          map[string]*ClassDef
 	active           map[*ScriptFunction]struct{}
+	activeLambdas    map[*BlockLiteral]struct{}
 	activeDefaults   map[*ScriptFunction]map[int]struct{}
 	methodClasses    map[*ScriptFunction]*ClassDef
 	classMethodFns   map[*ScriptFunction]struct{}
@@ -18353,6 +18431,7 @@ func (c *scriptChecker) newNamespaceMutationScan() *namespaceMutationScan {
 		functions:                c.script.functions,
 		classes:                  c.script.classes,
 		active:                   make(map[*ScriptFunction]struct{}),
+		activeLambdas:            make(map[*BlockLiteral]struct{}),
 		activeDefaults:           make(map[*ScriptFunction]map[int]struct{}),
 		methodClasses:            c.selfScopeFnClasses,
 		classMethodFns:           c.selfScopeClassFns,
@@ -19137,10 +19216,21 @@ func (s *namespaceMutationScan) withCallableParamShadows(params []Param, walk fu
 	walk()
 }
 
+// scanLambdaBlock unions in the writes of a lambda body the scanned code can
+// run. A body already on the scan collects the same writes from its outer
+// frame, so re-entering it adds nothing; without that guard a lambda reachable
+// from itself through an exact static value (`fns = [-> { fns[0].call }]`)
+// makes the scan descend forever (#12), mirroring how active bounds recursive
+// function scans.
 func (s *namespaceMutationScan) scanLambdaBlock(block *BlockLiteral) {
 	if block == nil {
 		return
 	}
+	if _, active := s.activeLambdas[block]; active {
+		return
+	}
+	s.activeLambdas[block] = struct{}{}
+	defer delete(s.activeLambdas, block)
 	previousFunction := s.currentFunction
 	s.currentFunction = nil
 	defer func() { s.currentFunction = previousFunction }()
