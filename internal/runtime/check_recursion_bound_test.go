@@ -219,6 +219,93 @@ end
 	}
 }
 
+// TestCheckWarningsRecursionReachesYieldsWithoutAssumingThem pins both sides of
+// the summary bound. The second walk forgets the locals the body rebinds, so it
+// reaches a yield no fixed number of nested invocations would expose and a yield
+// that only a sibling lambda performs, while recursion that yields nothing keeps
+// its exact summary instead of being widened on the mere fact of recursion.
+func TestCheckWarningsRecursionReachesYieldsWithoutAssumingThem(t *testing.T) {
+	t.Parallel()
+
+	// Three levels of state changes before the yield becomes reachable.
+	deep := compileScript(t, `
+def f()
+  x = 0
+  h = -> {
+    if x == 2
+      yield
+    elsif x == 1
+      x = 2
+      h.call
+    else
+      x = 1
+      h.call
+    end
+  }
+  h.call
+  0
+end
+
+def main() -> string
+  f() { 1 }
+end
+`)
+	if warnings := checkWarningsWithin(t, deep, "a yield three levels deep"); len(warnings) != 0 {
+		t.Fatalf("expected the deep yield to leave f's summary unknown, got %v", warnings)
+	}
+
+	// The recursion enables a sibling lambda that performs the yield.
+	sibling := compileScript(t, `
+def f()
+  x = false
+  g = -> { yield }
+  h = -> {
+    if x
+      g.call
+    else
+      x = true
+      h.call
+    end
+  }
+  h.call
+  0
+end
+
+def main() -> string
+  f() { 1 }
+end
+`)
+	if warnings := checkWarningsWithin(t, sibling, "a yield through a sibling lambda"); len(warnings) != 0 {
+		t.Fatalf("expected the sibling yield to leave f's summary unknown, got %v", warnings)
+	}
+
+	// Recursion that reaches no yield keeps the summary exact, so the bound
+	// costs no diagnostic on bodies that never yield.
+	yieldFree := compileScript(t, `
+def f()
+  x = false
+  h = -> {
+    if x
+      1
+    else
+      x = true
+      h.call
+    end
+  }
+  h.call
+  0
+end
+
+def main() -> string
+  f()
+end
+`)
+	warnings := checkWarningsWithin(t, yieldFree, "yield-free recursion")
+	if len(warnings) != 1 || warnings[0].Message != "return value expected string, got int" {
+		t.Fatalf("expected yield-free recursion to keep f's summary exact, got %v", warnings)
+	}
+}
+
 // TestCheckWarningsNamespaceWriteAtRecursionDepthIsRecorded pins the effect the
 // namespace scan must not lose. The lambda's false branch changes the captured
 // state before calling itself, so the `JSON.stringify` assignment in its true

@@ -175,7 +175,7 @@ type scriptChecker struct {
 	blockLocalBreakCollector   *returnSummaryCollector
 	summaryYieldCollector      *returnSummaryCollector
 	summaryYieldBlock          *BlockLiteral
-	summaryYieldBlocksInWalk   map[*BlockLiteral]struct{}
+	summaryYieldBlockWalks     map[*BlockLiteral]int
 	summaryYieldsActive        bool
 	summaryBlockAvailable      bool
 	pinnedExpressionFacts      map[Expression]*TypeExpr
@@ -18069,34 +18069,55 @@ func (c *scriptChecker) checkScriptCallInvokedLambdaSummaryYields(
 	}
 }
 
+// maxSummaryYieldBlockWalks caps how often one lambda body may be re-checked
+// while the walk it started is still running. The first walk uses the caller's
+// facts. A nested invocation can change captured state and so reach a yield the
+// first walk pruned, so the second forgets the locals the body rebinds and
+// therefore leaves every branch a nested invocation could enable undecided. A
+// third adds nothing the second did not already reach, which bounds a body that
+// calls itself (#7).
+const maxSummaryYieldBlockWalks = 2
+
 // checkInvokedLambdaSummaryYields rechecks an executed lambda with local
 // return semantics intact while allowing reachable yields to poison the
 // enclosing function summary. Merely defining a lambda keeps yields inert.
-// A lambda stored in a local it also calls (`h = -> { h.call }; h.call`) would
-// otherwise re-enter its own body once per nested call and never return (#7).
-// The nested invocation can change captured state and so reach a yield the
-// outer one pruned, as in a lambda whose false branch sets `x = true` before
-// calling itself and whose true branch yields, so a body already on the walk
-// records the unknown result any reachable yield would produce instead of
-// walking it again. That is what the walk exists to detect, so the bounded
-// walk concludes no less than an unbounded one.
+// The bound reaches a yield the recursion enables rather than assuming one,
+// so recursion that yields nothing keeps its exact summary.
 func (c *scriptChecker) checkInvokedLambdaSummaryYields(function string, block *BlockLiteral) {
 	if block == nil || c.summaryYieldCollector == nil || !c.summaryYieldsActive {
 		return
 	}
-	if _, walking := c.summaryYieldBlocksInWalk[block]; walking {
-		c.recordReturnSummaryResult(c.summaryYieldCollector, nil, nil)
+	walks := c.summaryYieldBlockWalks[block]
+	if walks >= maxSummaryYieldBlockWalks {
 		return
 	}
-	if c.summaryYieldBlocksInWalk == nil {
-		c.summaryYieldBlocksInWalk = make(map[*BlockLiteral]struct{})
+	if c.summaryYieldBlockWalks == nil {
+		c.summaryYieldBlockWalks = make(map[*BlockLiteral]int)
 	}
-	c.summaryYieldBlocksInWalk[block] = struct{}{}
-	defer delete(c.summaryYieldBlocksInWalk, block)
+	c.summaryYieldBlockWalks[block] = walks + 1
+	defer func() {
+		if walks == 0 {
+			delete(c.summaryYieldBlockWalks, block)
+			return
+		}
+		c.summaryYieldBlockWalks[block] = walks
+	}()
 	previousBlock := c.summaryYieldBlock
 	c.summaryYieldBlock = block
 	defer func() { c.summaryYieldBlock = previousBlock }()
+	if walks == 0 {
+		c.checkBlockLiteral(function, block, true)
+		return
+	}
+	scopeState := c.snapshotScopeState()
+	rebound := make(map[string]struct{})
+	collectLocalBindings(block.Body, rebound)
+	for name := range rebound {
+		c.bindLocalType(name, nil)
+		c.bindLocalClassValue(name, "")
+	}
 	c.checkBlockLiteral(function, block, true)
+	c.restoreScopeState(scopeState)
 }
 
 // applyReentrantLambdaNamespaceMutations records the namespace members a
