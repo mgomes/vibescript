@@ -508,7 +508,12 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 	if args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("%s expects a string format", name)
 	}
-	values, err := exec.formatStringConversionValues(args[1:])
+	// Held through the render: the conversions are live until the output is
+	// built, and the checks in there walk the arguments, which hold the
+	// instances rather than what their to_s returned.
+	retainedAt := len(exec.retainedValues)
+	defer exec.releaseRetainedValues(retainedAt)
+	values, err := exec.formatStringConversionValues(args[1:], receiver, args, kwargs, block)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -528,7 +533,20 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 // they must agree or the reservation the quota approved is not the one built.
 // It is safe for the numeric verbs because an instance is not a valid operand
 // for any of them either way.
-func (exec *Execution) formatStringConversionValues(values []Value) ([]Value, error) {
+//
+// Every argument is converted, including ones the pattern never uses, so a
+// script-defined to_s runs once per operand before the pattern has been looked
+// at. What it returns lands in a Go-local slice the estimator cannot reach:
+// each result passed its own check while the ones before it were invisible, and
+// a pattern that fails validation -- format("", *instances) -- returned the
+// error before any output check ran at all. Many instances whose to_s returns
+// an individually quota-sized string therefore accumulated unseen (#4).
+//
+// The conversions are reserved as they accumulate, so the quota fires during
+// the loop rather than after it, and the reservation is held until the render
+// is done because the strings stay live that whole time. The caller releases
+// it.
+func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, error) {
 	var converted []Value
 	for i, val := range values {
 		rendered, substituted, err := exec.instanceStringValue(val, Position{})
@@ -537,6 +555,25 @@ func (exec *Execution) formatStringConversionValues(values []Value) ([]Value, er
 		}
 		if !substituted {
 			continue
+		}
+		// Registered rather than charged by length, and rather than reserved as
+		// a byte count. A conversion is live from here until the render is done,
+		// and it is held only in a Go local that no check can reach, so the pile
+		// grew unseen: every operand is converted before the pattern is read, and
+		// a rejected pattern returned before any check ran at all.
+		//
+		// Registering is what makes the accounting exact in both directions. The
+		// walk that counts it also deduplicates it, so a to_s handing back one of
+		// its own fields costs nothing, and a to_s that stores its result on its
+		// receiver is not counted once for the field and again for the copy.
+		exec.retainValue(rendered)
+		// Checked against the call roots, not just the execution's own: the
+		// arguments are a builtin's Go locals, so a plain check does not see
+		// the instances the conversions were taken from. Each side could fit on
+		// its own while together they did not, and a pattern that rejects
+		// returns before the render check that would have seen both.
+		if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+			return nil, err
 		}
 		if converted == nil {
 			converted = make([]Value, len(values))
