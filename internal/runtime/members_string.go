@@ -1365,6 +1365,29 @@ func stringRuneRIndexFallback(exec *Execution, text, needle string, offset int) 
 	return utf8.RuneCountInString(hay[:at]), nil
 }
 
+// stringWindow is a rune-selected substring together with whether it already
+// owns its bytes instead of sharing the receiver's backing allocation.
+//
+// Selecting invalid UTF-8 rebuilds the substring from its runes, and that
+// rebuild is independent of the receiver the moment it is made. Detaching it a
+// second time would copy for nothing, and would leave the receiver, the rebuild
+// and the copy all live while only the copy is reserved, understating the peak
+// the reservation exists to price (#36, #50).
+type stringWindow struct {
+	text     string
+	detached bool
+}
+
+// newStringWindow normalizes a raw byte window the way Ruby's rune-aware
+// slicing does, recording whether the normalization already gave it a backing
+// of its own.
+func newStringWindow(window string) stringWindow {
+	if utf8.ValidString(window) {
+		return stringWindow{text: window}
+	}
+	return stringWindow{text: string([]rune(window)), detached: true}
+}
+
 // stringRuneSlice extracts at most length runes starting at the rune offset
 // start, matching Ruby's String#slice(start, length). A negative start counts
 // back from the end of the string. It returns ok=false when length is negative
@@ -1372,19 +1395,19 @@ func stringRuneRIndexFallback(exec *Execution, text, needle string, offset int) 
 // length is in range and yields an empty string (Ruby's "abc".slice(3, n) =>
 // ""). The length is clamped to the remaining runes, so an oversized length
 // returns the suffix from start rather than overrunning.
-func stringRuneSlice(text string, start, length int) (string, bool) {
+func stringRuneSlice(text string, start, length int) (stringWindow, bool) {
 	if length < 0 {
-		return "", false
+		return stringWindow{}, false
 	}
 	if start < 0 {
 		start += stringRuneLen(text)
 		if start < 0 {
-			return "", false
+			return stringWindow{}, false
 		}
 	}
 	startByte, ok := stringByteIndexForRuneOffset(text, start)
 	if !ok {
-		return "", false
+		return stringWindow{}, false
 	}
 	endByte := startByte
 	for range length {
@@ -1394,7 +1417,7 @@ func stringRuneSlice(text string, start, length int) (string, bool) {
 		_, size := utf8.DecodeRuneInString(text[endByte:])
 		endByte += size
 	}
-	return normalizeInvalidUTF8(text[startByte:endByte]), true
+	return newStringWindow(text[startByte:endByte]), true
 }
 
 // stringSlice implements String#slice. It mirrors Ruby's extraction semantics
@@ -1411,66 +1434,96 @@ func stringSlice(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	if len(args) == 2 {
 		second = args[1]
 	}
-	return stringSliceResult(receiver, args[0], second, len(args) == 2)
+	return stringSliceResult(exec, receiver, args[0], second, len(args) == 2, kwargs, block)
 }
 
-func stringSliceResult(receiver, first, second Value, hasLength bool) (Value, error) {
+// stringSliceResult builds String#slice's value, detaching it from the
+// receiver's backing.
+//
+// slice built its result from []rune until it moved to byte-offset slicing, and
+// the rune rebuild now happens only for invalid UTF-8, so a valid selection came
+// straight back as a window onto the receiver: 200 one-character slices of a
+// megabyte held 192 MiB under an 8 MiB quota (#50).
+//
+// The copy takes no charge of its own. chargeStringScanBeforeCall already
+// billed slice for its receiver's length, and a slice of the receiver can never
+// exceed it, so charging the copy on top would bill the same bytes twice.
+//
+// kwargs and block reach the reservation even though slice ignores them. Member
+// dispatch accepts both and keeps them live across the call, so an ephemeral
+// receiver, an ephemeral `junk:` value and the copy can be resident at once;
+// leaving them out let that three-way peak through a quota that only ever saw
+// two of the three.
+func stringSliceResult(exec *Execution, receiver, first, second Value, hasLength bool, kwargs map[string]Value, block Value) (Value, error) {
 	text := receiver.String()
+	if !hasLength && first.Kind() == KindString {
+		// A substring selector yields the argument itself rather than a window
+		// into the receiver, so there is no backing to detach from.
+		if strings.Contains(text, first.String()) {
+			return NewString(first.String()), nil
+		}
+		return NewNil(), nil
+	}
+	window, ok, err := stringSliceWindow(text, first, second, hasLength)
+	if err != nil || !ok {
+		return NewNil(), err
+	}
+	args := [2]Value{first, second}
+	count := 1
+	if hasLength {
+		count = 2
+	}
+	detached, err := detachedWindow(exec, text, window, receiver, args[:count], kwargs, block)
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewString(detached), nil
+}
+
+// stringSliceWindow resolves String#slice's integer, start/length and range
+// selectors against text and returns the substring they select. ok is false for
+// the out-of-range selections that yield nil. The substring selector is handled
+// by the caller because it returns its argument rather than a window.
+func stringSliceWindow(text string, first, second Value, hasLength bool) (stringWindow, bool, error) {
 	if hasLength {
 		start, err := valueToInt(first)
 		if err != nil {
-			return NewNil(), fmt.Errorf("string.slice index must be integer")
+			return stringWindow{}, false, fmt.Errorf("string.slice index must be integer")
 		}
 		length, err := valueToInt(second)
 		if err != nil {
-			return NewNil(), fmt.Errorf("string.slice length must be integer")
+			return stringWindow{}, false, fmt.Errorf("string.slice length must be integer")
 		}
-		substr, ok := stringRuneSlice(text, start, length)
-		if !ok {
-			return NewNil(), nil
-		}
-		return NewString(substr), nil
+		window, ok := stringRuneSlice(text, start, length)
+		return window, ok, nil
 	}
-	switch arg := first; arg.Kind() {
-	case KindRange:
-		substr, ok := stringRuneRangeSlice(text, arg.Range())
-		if !ok {
-			return NewNil(), nil
-		}
-		return NewString(substr), nil
-	case KindString:
-		if strings.Contains(text, arg.String()) {
-			return NewString(arg.String()), nil
-		}
-		return NewNil(), nil
-	default:
-		index, err := valueToInt(arg)
-		if err != nil {
-			return NewNil(), fmt.Errorf("string.slice index must be an integer, range, or substring")
-		}
-		return stringSliceCharAt(text, index), nil
+	if first.Kind() == KindRange {
+		window, ok := stringRuneRangeSlice(text, first.Range())
+		return window, ok, nil
 	}
+	index, err := valueToInt(first)
+	if err != nil {
+		return stringWindow{}, false, fmt.Errorf("string.slice index must be an integer, range, or substring")
+	}
+	window, ok := stringSliceCharAt(text, index)
+	return window, ok, nil
 }
 
 // stringSliceCharAt returns the single-character slice for String#slice(index).
 // Unlike the (start, length) form, an index equal to the rune length is out of
-// range and yields nil (Ruby's "abc".slice(3) => nil while "abc".slice(3, 1) =>
-// ""). A negative index counts back from the end.
-func stringSliceCharAt(text string, index int) Value {
+// range and yields ok=false (Ruby's "abc".slice(3) => nil while "abc".slice(3, 1)
+// => ""). A negative index counts back from the end.
+func stringSliceCharAt(text string, index int) (stringWindow, bool) {
 	if index < 0 {
 		index += stringRuneLen(text)
 		if index < 0 {
-			return NewNil()
+			return stringWindow{}, false
 		}
 	}
 	if index >= stringRuneLen(text) {
-		return NewNil()
+		return stringWindow{}, false
 	}
-	substr, ok := stringRuneSlice(text, index, 1)
-	if !ok {
-		return NewNil()
-	}
-	return NewString(substr)
+	return stringRuneSlice(text, index, 1)
 }
 
 // stringInsertByteOffset maps a Ruby String#insert character index to a byte
@@ -1495,7 +1548,7 @@ func stringInsertByteOffset(text string, index int) (int, bool) {
 // returns ok=false (nil); a begin exactly at the length yields an empty string.
 // The end bound is clamped to the string length, and an end before begin yields
 // an empty string.
-func stringRuneRangeSlice(text string, rng Range) (string, bool) {
+func stringRuneRangeSlice(text string, rng Range) (stringWindow, bool) {
 	length := int64(stringRuneLen(text))
 	begin := rng.Start
 	if rng.Beginless {
@@ -1512,7 +1565,7 @@ func stringRuneRangeSlice(text string, rng Range) (string, bool) {
 		begin += length
 	}
 	if begin < 0 || begin > length {
-		return "", false
+		return stringWindow{}, false
 	}
 	end := rng.End
 	if end < 0 {
@@ -1533,11 +1586,7 @@ func stringRuneRangeSlice(text string, rng Range) (string, bool) {
 	if end < begin {
 		end = begin
 	}
-	substr, ok := stringRuneSlice(text, int(begin), int(end-begin))
-	if !ok {
-		return "", false
-	}
-	return substr, true
+	return stringRuneSlice(text, int(begin), int(end-begin))
 }
 
 // stringByteslice implements Ruby's String#byteslice. It operates on raw byte
@@ -1659,13 +1708,6 @@ func stringByteRangeSlice(text string, rng Range) (string, bool) {
 		end = begin
 	}
 	return text[begin:end], true
-}
-
-func normalizeInvalidUTF8(text string) string {
-	if utf8.ValidString(text) {
-		return text
-	}
-	return string([]rune(text))
 }
 
 // caseMode selects how the case-mapping helpers (upcase, downcase, capitalize,
@@ -3005,13 +3047,55 @@ func rubyStrip(text string) string {
 	return rubyLstrip(rubyRstrip(text))
 }
 
+// squishedLen reports the byte length stringSquish produces for text. It walks
+// the same whitespace-separated fields, counting one separating space between
+// consecutive ones. TestSquishReservesExactlyWhatItWrites pins the two in step.
+func squishedLen(text string) int {
+	total := 0
+	fieldStart := -1
+	for i, r := range text {
+		if unicode.IsSpace(r) {
+			if fieldStart >= 0 {
+				if total > 0 {
+					total++
+				}
+				total += i - fieldStart
+				fieldStart = -1
+			}
+			continue
+		}
+		if fieldStart < 0 {
+			fieldStart = i
+		}
+	}
+	if fieldStart >= 0 {
+		if total > 0 {
+			total++
+		}
+		total += len(text) - fieldStart
+	}
+	return total
+}
+
+// stringSquish collapses every run of whitespace in text to a single space and
+// trims both ends, mirroring Rails' String#squish.
+//
+// The builder is sized to the output rather than to the receiver. Growing it by
+// len(text) reserved the receiver's length before the fields were known, and
+// strings.Builder hands its whole backing array to the string it returns, so a
+// heavily collapsing input -- an all-whitespace string, or a megabyte of padding
+// around one character -- produced a short string still holding an oversized
+// buffer: 200 of them held 192 MiB under an 8 MiB quota while the estimator
+// priced them by their visible length (#51). squishedLen walks the same fields
+// this loop writes, so the reservation is exact and the builder never has to
+// grow again (which would overshoot to twice the capacity plus the write).
 func stringSquish(text string) string {
 	if stringIsSquished(text) {
 		return text
 	}
 
 	var b strings.Builder
-	b.Grow(len(text))
+	b.Grow(squishedLen(text))
 	pendingSpace := false
 	fieldStart := -1
 	for i, r := range text {
@@ -4483,7 +4567,7 @@ func stringMemberTextOps(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.partition separator must be string")
 			}
 			head, sep, tail := stringPartition(receiver.String(), args[0].String())
-			return NewArray([]Value{NewString(head), NewString(sep), NewString(tail)}), nil
+			return detachedPartitionValue(exec, receiver, head, sep, tail, args, kwargs, block)
 		}), nil
 	case "rpartition":
 		return NewAutoBuiltin("string.rpartition", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -4494,7 +4578,7 @@ func stringMemberTextOps(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.rpartition separator must be string")
 			}
 			head, sep, tail := stringRPartition(receiver.String(), args[0].String())
-			return NewArray([]Value{NewString(head), NewString(sep), NewString(tail)}), nil
+			return detachedPartitionValue(exec, receiver, head, sep, tail, args, kwargs, block)
 		}), nil
 	case "chars":
 		return NewAutoBuiltin("string.chars", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -5170,49 +5254,144 @@ func stringMemberTransforms(property string) (Value, error) {
 	}
 }
 
-// detachedByteslice returns sub without keeping text's backing allocation
-// alive.
+// clonedWindow copies sub out of text's backing allocation.
 //
 // A Go substring holds its whole backing, while the memory estimator prices a
 // string by its own length. A script could therefore keep a one-byte slice of
 // a megabyte string and be charged one byte: 200 such slices retained 192 MiB
-// under an 8 MiB quota (#2).
+// under an 8 MiB quota, by byteslice (#2), by a bracket read (#36), by a
+// partition component (#42) and by slice (#50) alike.
 //
-// Every proper slice is copied, not just a small one. A threshold looks
-// tempting -- a slice keeping most of its source wastes little -- but the
-// waste composes: `s = s.byteslice(0, s.bytesize / 2)` repeated keeps at least
-// half each time and so never trips a threshold, while every intermediate
-// result still points at the original allocation. Copying unconditionally is
-// what makes a string's footprint equal its length, which is the property the
-// estimator prices against.
+// Every proper window is copied, not just a small one. A threshold looks
+// tempting -- a window keeping most of its source wastes little -- but the
+// waste composes: `s = s.slice(0, s.length / 2)` repeated keeps at least half
+// each time and so never trips a threshold, while every intermediate result
+// still points at the original allocation. Copying unconditionally is what
+// makes a string's footprint equal its length, which is the property the
+// estimator prices against. Only a window as long as text itself is left alone,
+// because a window that long has no backing to detach from. An empty window is
+// copied like any other: strings.Clone yields the shared empty string for it, so
+// a component charged zero bytes cannot pin a megabyte.
 //
-// The copy bills the bytes it writes rather than the bytes it was taken from.
-// Charging by the receiver would make a one-byte slice of a large host string
-// cost the whole string, which is work byteslice never does, so byteslice stays
-// exempt from the receiver-length charge and pays for its own copy here.
+// The copy is unpriced here; pricing belongs to whoever knows the whole result.
+// detachedSubstring reserves a single copy, and detachedPartitionValue projects
+// an entire three-element array.
+func clonedWindow(text, sub string) string {
+	if len(sub) == len(text) {
+		return sub
+	}
+	return strings.Clone(sub)
+}
+
+// detachedSubstring returns sub detached from text's backing, priced as the one
+// string value the caller is about to build from it.
 //
-// The bytes are also reserved before they are allocated. The copy is live
-// alongside the string it was taken from, and for an ephemeral receiver --
-// `s.reverse.byteslice(...)` -- that receiver is reachable only from the Go
-// stack, so the pre-call check sees no copy and the post-call check no longer
-// sees the receiver. Folding the copy into the reserved scratch and rechecking
-// the live call roots is what prices that peak.
-func detachedByteslice(exec *Execution, text, sub string, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
+// The bytes are reserved before they are allocated. The copy is live alongside
+// the string it was taken from, and for an ephemeral receiver --
+// `s.reverse.slice(...)` -- that receiver is reachable only from the Go stack,
+// so the pre-call check sees no copy and the post-call check no longer sees the
+// receiver. Folding the copy into the reserved scratch and rechecking the live
+// call roots is what prices that peak.
+//
+// The value header is reserved with the bytes. The caller wraps the copy the
+// moment this returns, by which point the reservation is gone and the receiver
+// is once again invisible, so a reservation covering only the payload leaves
+// that last allocation unweighed.
+func detachedSubstring(exec *Execution, text, sub string, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
 	if len(sub) == len(text) {
 		return sub, nil
 	}
 	// Some builtins are reachable without an execution, and those have no quota
-	// to charge or reserve against.
-	if exec == nil {
-		return strings.Clone(sub), nil
+	// to reserve against.
+	if exec != nil {
+		delta := exec.reserveLoopScratch(saturatingAdd(len(sub), estimatedValueBytes+estimatedStringHeaderBytes))
+		defer exec.releaseLoopScratch(delta)
+		if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+			return "", err
+		}
 	}
-	if err := exec.chargeStringScan(len(sub)); err != nil {
-		return "", err
+	return clonedWindow(text, sub), nil
+}
+
+// detachedPartitionValue builds the three-element result String#partition and
+// String#rpartition return, with the head and tail copied out of the receiver's
+// backing (see clonedWindow).
+//
+// Both components are windows onto the receiver, so a separator near either edge
+// leaves the retained side tiny while it pins the whole receiver: keeping
+// `("a|" + big).partition("|")[0]` was charged about one byte and held a
+// megabyte, 200 of them 192 MiB under an 8 MiB quota (#42). An edge separator's
+// empty component goes through the same copy rather than being skipped as
+// already free: it is charged nothing at all, so nothing else bounds what it
+// could pin. Its backing pointer happens to disappear today when the component
+// is boxed into a Value's `any` payload, because Go maps the empty string to a
+// shared zero value there, but that is a property of the payload and not of the
+// component.
+//
+// The whole result is projected up front rather than the copies being reserved
+// and released around them. Both copies stay live in Go locals while the array
+// is built, the receiver may be ephemeral, and a reservation that ends before
+// NewArray leaves the array's own structure weighed against neither: the same
+// script needed 2,008,673 bytes of quota before this and needs 2,008,873 now.
+//
+// The copies take no step charge of their own: chargeStringScanBeforeCall
+// already billed the receiver's length, and the head and tail are disjoint
+// windows onto it.
+func detachedPartitionValue(exec *Execution, receiver Value, head, sep, tail string, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	text := receiver.String()
+	if exec != nil {
+		if err := exec.checkProjectedPartitionBytes(text, head, tail, receiver, args, kwargs, block); err != nil {
+			return NewNil(), err
+		}
 	}
-	delta := exec.reserveLoopScratch(len(sub))
-	defer exec.releaseLoopScratch(delta)
-	if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
-		return "", err
+	return NewArray([]Value{
+		NewString(clonedWindow(text, head)),
+		NewString(sep),
+		NewString(clonedWindow(text, tail)),
+	}), nil
+}
+
+// checkProjectedPartitionBytes rejects a partition result before any part of it
+// exists: the two detached components, the three string values wrapping them,
+// and the three-slot array, all weighed together against the call's live roots.
+//
+// stringSplitPartPayloadBytes computes each component the way split already
+// does, which is exactly the rule here: a component that still shares the
+// receiver's backing (the whole string, when the separator is absent) or is
+// empty costs only its header, because clonedWindow allocates nothing for it.
+// The separator is the argument's own string, already counted among the roots,
+// so only the value header wrapping it is new.
+func (exec *Execution) checkProjectedPartitionBytes(text, head, tail string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	payload := saturatingAdd(stringSplitPartPayloadBytes(text, head), stringSplitPartPayloadBytes(text, tail))
+	payload = saturatingAdd(payload, estimatedStringHeaderBytes)
+	return exec.checkProjectedArrayBytesWithCallRoots(3, payload, receiver, args, kwargs, block)
+}
+
+// detachedWindow returns w's characters as a string that does not hold text's
+// backing allocation. A window that already owns its bytes is handed straight
+// back: it has nothing left to detach, and copying it again would both waste
+// the copy and hide a live intermediate from the reservation (see stringWindow).
+func detachedWindow(exec *Execution, text string, w stringWindow, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
+	if w.detached {
+		return w.text, nil
 	}
-	return strings.Clone(sub), nil
+	return detachedSubstring(exec, text, w.text, receiver, args, kwargs, block)
+}
+
+// detachedByteslice detaches a String#byteslice result and bills the copy.
+//
+// The copy bills the bytes it writes rather than the bytes it was taken from.
+// Charging by the receiver would make a one-byte slice of a large host string
+// cost the whole string, which is work byteslice never does, so byteslice stays
+// exempt from the receiver-length charge and pays for its own copy here. The
+// other detaching methods already paid for their receiver through
+// chargeStringScanBeforeCall, and a copy can never exceed the receiver it comes
+// from, so billing them again here would double-charge.
+func detachedByteslice(exec *Execution, text, sub string, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
+	if exec != nil && len(sub) != len(text) {
+		if err := exec.chargeStringScan(len(sub)); err != nil {
+			return "", err
+		}
+	}
+	return detachedSubstring(exec, text, sub, receiver, args, kwargs, block)
 }
