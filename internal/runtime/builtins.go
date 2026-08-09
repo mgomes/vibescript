@@ -548,7 +548,7 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, *retainedOutputScratch, error) {
 	var acc *arrayBuildAccumulator
 	var converted []Value
-	scratch := newRetainedOutputScratch(exec)
+	var scratch *retainedOutputScratch
 	for i, val := range values {
 		rendered, substituted, err := exec.instanceStringValue(val, Position{})
 		if err != nil {
@@ -559,11 +559,13 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 			continue
 		}
 		if acc == nil {
-			// Seeded at the first substitution, not at entry. Seeding walks the
-			// whole reachable graph, and most calls convert nothing: format("done"),
-			// or any call whose operands are all primitives, would pay for a walk it
-			// has no use for.
+			// Both built at the first substitution, not at entry. Seeding the
+			// accumulator walks the whole reachable graph and the scratch escapes
+			// to the caller, and most calls convert nothing: format("done"), or
+			// any call whose operands are all primitives, would pay for a walk
+			// and an allocation it has no use for.
 			acc = newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			scratch = newRetainedOutputScratch(exec)
 		}
 		// Priced against the seeded baseline rather than by length, so a to_s
 		// that hands back one of its own fields costs nothing and several
