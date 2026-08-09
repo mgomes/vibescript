@@ -1775,12 +1775,33 @@ func (b *sleepBudget) left() (time.Duration, time.Duration) {
 	return remaining, limit
 }
 
+// effectiveLimit reports the tightest limit in the chain, which is the most a
+// call under this budget could ever be allowed to sleep. Limits are fixed at
+// construction, so unlike an allowance this does not move.
+func (b *sleepBudget) effectiveLimit() time.Duration {
+	b.mu.Lock()
+	limit, parent := b.limit, b.parent
+	b.mu.Unlock()
+
+	if parent != nil {
+		if up := parent.effectiveLimit(); up < limit {
+			return up
+		}
+	}
+	return limit
+}
+
 // atMost reports whether this budget is already no looser than limit, in which
 // case a callee with that limit can share it rather than chaining a new one.
+//
+// The comparison is against the chain's limits, not what is left of them. What
+// remains falls as other calls reserve time and rises again when a canceled
+// sleep refunds one, so a callee that shared on the strength of a momentarily
+// low allowance kept sharing after the refund restored it, and could then sleep
+// past the bound its own host configured. A limit is fixed at construction, so
+// deciding on it cannot be undone by anything that happens afterwards.
 func (b *sleepBudget) atMost(limit time.Duration) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.remaining <= limit
+	return b.effectiveLimit() <= limit
 }
 
 // sleepBudgetForCall returns the budget a call runs under, inheriting the one

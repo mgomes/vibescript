@@ -407,6 +407,39 @@ end`)
 	}
 }
 
+// TestSharingIsDecidedOnLimitsNotOnWhatIsLeft pins that a tighter callee chains
+// its own budget even when the inherited one is momentarily low.
+//
+// Sharing was decided on the inherited allowance, which falls as other calls
+// reserve time and rises again when a canceled sleep refunds one. A callee that
+// shared because the allowance happened to be under its limit kept sharing after
+// a refund restored it, and could then sleep for the looser host's bound rather
+// than its own (#29).
+func TestSharingIsDecidedOnLimitsNotOnWhatIsLeft(t *testing.T) {
+	t.Parallel()
+
+	// A generous outer bound with almost nothing left of it, the state a
+	// sibling call holding a long reservation produces.
+	outer := &sleepBudget{limit: time.Hour, remaining: 5 * time.Millisecond}
+	ctx := contextWithSleepBudget(context.Background(), outer)
+
+	_, budget := sleepBudgetForCall(ctx, 10*time.Minute)
+	if budget == outer {
+		t.Fatal("a 10m callee shared an hour-long budget because little was left of it; the refund of a canceled sibling sleep then lets it sleep for the hour")
+	}
+	if budget.limit != 10*time.Minute {
+		t.Fatalf("chained budget has limit %s, want the callee's own 10m", budget.limit)
+	}
+	if budget.parent != outer {
+		t.Fatal("the chained budget must still spend the inherited one")
+	}
+
+	// A callee no looser than the chain still shares rather than chaining.
+	if _, shared := sleepBudgetForCall(ctx, 2*time.Hour); shared != outer {
+		t.Fatal("a callee looser than the inherited bound must share it, not chain a new one")
+	}
+}
+
 // TestConcurrentSpendAndRefundConserveTheBudget pins that the chain's accounting
 // survives concurrent workers, which is what the refund's locking is for.
 //
