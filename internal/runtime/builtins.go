@@ -1687,6 +1687,15 @@ type sleepBudget struct {
 // observe a child that has paid for a sleep its parent refused. Locks are
 // always taken child before parent, a consistent order that cannot deadlock.
 func (b *sleepBudget) spend(duration time.Duration) bool {
+	// A non-positive request costs nothing and, more to the point, must never
+	// credit the budget: `remaining -= duration` would run backwards and hand
+	// out allowance the host never granted. valueToSleepDuration rejects
+	// negative script durations today, so nothing reaches here with one -- this
+	// guard is what keeps that true of the next caller rather than of only the
+	// present one.
+	if duration <= 0 {
+		return true
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if duration > b.remaining {

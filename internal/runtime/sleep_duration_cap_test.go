@@ -294,6 +294,36 @@ func TestChainedBudgetsSpendAtomically(t *testing.T) {
 	}
 }
 
+// TestNonPositiveSleepNeverCreditsTheBudget pins the sign of the accumulator.
+//
+// spend subtracts the request from what is left, so a negative one would add
+// allowance instead of consuming it, and a loop of them would mint an unbounded
+// budget out of the bound meant to cap it. valueToSleepDuration rejects negative
+// script durations, so the sleep builtin cannot reach this today; the guard is
+// here so that a later caller computing a duration cannot quietly reopen it.
+func TestNonPositiveSleepNeverCreditsTheBudget(t *testing.T) {
+	t.Parallel()
+
+	parent := &sleepBudget{limit: time.Second, remaining: time.Second}
+	budget := &sleepBudget{limit: time.Second, remaining: time.Second, parent: parent}
+
+	for _, duration := range []time.Duration{0, -time.Millisecond, -time.Hour} {
+		if !budget.spend(duration) {
+			t.Fatalf("a %s sleep costs nothing and must be admitted", duration)
+		}
+	}
+	if got := budget.remaining; got != time.Second {
+		t.Fatalf("budget holds %s, want 1s: a non-positive sleep must not move it", got)
+	}
+	if got := parent.remaining; got != time.Second {
+		t.Fatalf("parent holds %s, want 1s: a non-positive sleep must not move it either", got)
+	}
+
+	if budget.spend(2 * time.Second) {
+		t.Fatal("the budget was credited: a sleep past the limit must still be refused")
+	}
+}
+
 // TestSleepRejectionNamesWhatIsLeft pins that a refusal reports the allowance
 // remaining, not just the configured limit.
 //
