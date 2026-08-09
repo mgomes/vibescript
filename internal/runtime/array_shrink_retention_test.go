@@ -241,3 +241,60 @@ end`)
 			float64(freed)/(1<<20), float64(want)/(1<<20))
 	}
 }
+
+// TestEveryAliasedReceiverIsReclaimed pins that a claim tracks each array that
+// narrowed over a piece of storage, not just the first one to do so.
+//
+// A host can build two array values over one Go slice. Keying the record on the
+// storage alone recorded only whichever shrank first, so releasing the claim
+// moved that one and left the second showing a shorter window of storage it
+// still reached -- with the element it had removed sitting past its length,
+// held and no longer walked. That is the retention this file is about, arrived
+// at through the mechanism meant to prevent it.
+//
+// Not parallel: it measures process-wide heap.
+func TestEveryAliasedReceiverIsReclaimed(t *testing.T) {
+	var samples []uint64
+	engine := MustNewEngine(Config{StepQuota: 50_000_000, MemoryQuotaBytes: Unlimited})
+	engine.RegisterBuiltin("probe_heap", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		var stats goruntime.MemStats
+		goruntime.GC()
+		goruntime.ReadMemStats(&stats)
+		samples = append(samples, stats.HeapAlloc)
+		return NewNil(), nil
+	})
+	script, err := engine.Compile(`def run(seed)
+  probe_heap()
+  kept = nil
+  driver.walk_aliased_big(seed) do |a, b|
+    a.pop
+    b.pop
+    kept = b
+  end
+  probe_heap()
+  kept.size
+end`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	got, err := script.Call(context.Background(), "run", []Value{NewString("abcdefghij")}, CallOptions{
+		Capabilities: []CapabilityAdapter{arrayArgDriver{}},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got.Int() != 2 {
+		t.Fatalf("the second array holds %d elements, want 2", got.Int())
+	}
+	if len(samples) != 2 {
+		t.Fatalf("probe_heap ran %d times, want 2", len(samples))
+	}
+
+	// Both arrays removed the 8 MiB element, so neither must still reach it.
+	held := int64(samples[1]) - int64(samples[0])
+	if limit := int64(4 << 20); held > limit {
+		t.Fatalf("the aliased arrays still hold %.2f MiB, want under %.2f MiB",
+			float64(held)/(1<<20), float64(limit)/(1<<20))
+	}
+}

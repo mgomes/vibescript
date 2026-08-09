@@ -1,5 +1,7 @@
 package runtime
 
+import "unsafe"
+
 // Ruby's in-place array shrinks -- Array#pop and Array#shift -- narrow the
 // receiver's window over its element backing. Two properties have to hold at
 // once, and the obvious implementation of either breaks the other.
@@ -61,6 +63,30 @@ package runtime
 // That is the cheapest of the three as well as the safest, since a drain
 // narrows the same storage over and over and never copies.
 
+// arrayStorageIdentity identifies the allocation behind an array's elements,
+// not the window the array currently shows of it.
+//
+// sliceBackingIdentity, which the estimator deduplicates on, is the address of
+// the first element, and a shrink moves that: `shift` hands the array the
+// suffix, so every successive shift looks like a different allocation and the
+// claim machinery treated one drain as an unbounded series of new storage --
+// draining 400 elements through shift cost 68,735 steps against 1,207 through
+// pop. The end of the allocation does not move: for orig[k:] the start advances
+// by k elements and the capacity falls by k, so start+cap*elemSize is exactly
+// what it was, while a growing append allocates elsewhere and is legitimately a
+// different identity.
+//
+// A zero-capacity slice has no identity to give -- unsafe.SliceData is only
+// specified for cap > 0 -- so it reports none, and callers treat an array that
+// shows nothing as holding no storage worth tracking.
+func arrayStorageIdentity(values []Value) uintptr {
+	if cap(values) == 0 {
+		return 0
+	}
+	start := uintptr(unsafe.Pointer(unsafe.SliceData(values)))
+	return start + uintptr(cap(values))*unsafe.Sizeof(Value{})
+}
+
 // heldArrayBacking is one frame's claim on the array element headers it walks
 // across the script it runs, and the builtin depth it walks them at. The depth
 // is what lets a shrink tell an enclosing frame's claim from the claim its own
@@ -98,6 +124,7 @@ type heldArrayBacking struct {
 type retainedArrayBacking struct {
 	full     []Value
 	receiver Value
+	owner    uintptr
 }
 
 // maxHeldArrayHeaders caps the headers one claim accounts for by walking them.
@@ -166,7 +193,7 @@ func (exec *Execution) holdArrayBacking(val Value) {
 	if val.Kind() != KindArray {
 		return
 	}
-	id := sliceBackingIdentity(val.Array())
+	id := arrayStorageIdentity(val.Array())
 	if id == 0 {
 		return
 	}
@@ -212,17 +239,26 @@ func (exec *Execution) releaseArrayBackings(mark int) error {
 	return reclaimErr
 }
 
-// canRetain reports whether this claim can take on full without exceeding the
-// header cap. A backing it already holds costs nothing more, which is the case a
-// drain hits: it narrows the same storage over and over.
-func (held *heldArrayBacking) canRetain(full []Value) bool {
-	return len(held.retained) < maxHeldArrayHeaders || held.holds(full)
+// canRetain reports whether this claim can take on this array without exceeding
+// the header cap. One it already holds costs nothing more, which is the case a
+// drain hits: it narrows the same storage through the same array over and over.
+func (held *heldArrayBacking) canRetain(full []Value, receiver Value) bool {
+	return len(held.retained) < maxHeldArrayHeaders || held.holds(full, receiver)
 }
 
-func (held *heldArrayBacking) holds(full []Value) bool {
-	id := sliceBackingIdentity(full)
+// holds reports whether this claim is already tracking this array over this
+// storage.
+//
+// Both halves matter. Storage alone is not enough: a host can build two array
+// values over one slice, and shrinking both recorded only the first, so
+// releasing the claim moved that one and left the second showing a shorter
+// window of storage whose removed tail it still reached and the estimator no
+// longer walked. The array alone is not enough either, since one array moves
+// between allocations as it grows.
+func (held *heldArrayBacking) holds(full []Value, receiver Value) bool {
+	id, owner := arrayStorageIdentity(full), arrayIdentity(receiver)
 	for _, already := range held.retained {
-		if sliceBackingIdentity(already.full) == id {
+		if already.owner == owner && arrayStorageIdentity(already.full) == id {
 			return true
 		}
 	}
@@ -232,10 +268,11 @@ func (held *heldArrayBacking) holds(full []Value) bool {
 // retain records an array a shrink narrowed without touching its storage, so
 // the whole header keeps costing while this claim is live.
 func (held *heldArrayBacking) retain(full []Value, receiver Value) {
-	if held.holds(full) {
+	if held.holds(full, receiver) {
 		return
 	}
-	held.retained = append(held.retained, retainedArrayBacking{full: full, receiver: receiver})
+	held.retained = append(held.retained,
+		retainedArrayBacking{full: full, receiver: receiver, owner: arrayIdentity(receiver)})
 }
 
 // reclaim moves the array off the storage it has been narrowing, once the frame
@@ -256,7 +293,17 @@ func (held *heldArrayBacking) retain(full []Value, receiver Value) {
 // left to move it off.
 func (retained retainedArrayBacking) reclaim(exec *Execution) error {
 	current := retained.receiver.Array()
-	if sliceBackingIdentity(current) == 0 || !sliceWithin(retained.full, current) {
+	if len(current) == 0 {
+		// Nothing to copy, but the array may still be pointing into the
+		// storage -- a drain through pop leaves the whole capacity behind it,
+		// and one through shift leaves it addressing the far end. A fresh
+		// empty slice lets go of both.
+		if cap(current) != 0 {
+			setArrayElems(retained.receiver, []Value{})
+		}
+		return nil
+	}
+	if arrayStorageIdentity(current) != arrayStorageIdentity(retained.full) {
 		return nil
 	}
 	if err := exec.chargeScanSteps(len(current)); err != nil {
@@ -270,15 +317,6 @@ func (retained retainedArrayBacking) reclaim(exec *Execution) error {
 	copy(moved, current)
 	setArrayElems(retained.receiver, moved)
 	return nil
-}
-
-// sliceWithin reports whether inner is a window onto outer's storage.
-func sliceWithin(outer, inner []Value) bool {
-	head := cap(outer) - cap(inner)
-	if head < 0 || head > len(outer) || len(inner) > len(outer)-head {
-		return false
-	}
-	return sliceBackingIdentity(outer[head:]) == sliceBackingIdentity(inner)
 }
 
 // retainedArrayBackingBytes is the memory of every header a shrink narrowed in
@@ -327,7 +365,7 @@ func (exec *Execution) wildcardArrayClaim(values []Value) *heldArrayBacking {
 	if exec == nil || len(exec.heldArrayBackings) == 0 {
 		return nil
 	}
-	if sliceBackingIdentity(values) == 0 {
+	if arrayStorageIdentity(values) == 0 {
 		return nil
 	}
 	for i := range exec.heldArrayBackings {
@@ -345,7 +383,7 @@ func (exec *Execution) namedArrayBackingHeld(values []Value) bool {
 	if exec == nil || len(exec.heldArrayBackings) == 0 {
 		return false
 	}
-	id := sliceBackingIdentity(values)
+	id := arrayStorageIdentity(values)
 	if id == 0 {
 		return false
 	}
@@ -369,7 +407,7 @@ func (exec *Execution) detachArrayBackingClaims(values []Value) bool {
 	if exec == nil || len(exec.heldArrayBackings) == 0 {
 		return false
 	}
-	id := sliceBackingIdentity(values)
+	id := arrayStorageIdentity(values)
 	if id == 0 {
 		return false
 	}
@@ -402,7 +440,7 @@ func shrinkArray(exec *Execution, receiver Value, arr []Value, start, end int,
 		setArrayElems(receiver, window)
 		return nil
 	}
-	if !named && wildcard.canRetain(arr) {
+	if !named && wildcard.canRetain(arr, receiver) {
 		// A frame the runtime did not write may be walking this header, and
 		// may also be handed whatever the shrink moves the array onto, so the
 		// storage is left exactly as it is and the array just shows less of

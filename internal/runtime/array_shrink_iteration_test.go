@@ -200,11 +200,17 @@ func TestShrinkDuringIterationStaysLinear(t *testing.T) {
 	t.Parallel()
 
 	drivers := map[string]string{
-		"each": `a.each do |x|
+		"each_pop": `a.each do |x|
     a.pop
   end`,
-		"for_in": `for x in a
+		"each_shift": `a.each do |x|
+    a.shift
+  end`,
+		"for_in_pop": `for x in a
     a.pop
+  end`,
+		"for_in_shift": `for x in a
+    a.shift
   end`,
 	}
 	for name, driver := range drivers {
@@ -370,14 +376,24 @@ func (arrayArgDriver) Bind(CapabilityBinding) (map[string]Value, error) {
 		_, err := exec.CallBlock(block, []Value{NewArray(elems), NewArray(elems)})
 		return NewNil(), err
 	}
+	// walkAliasedBig is walkAliased with a payload worth measuring on the
+	// element the script removes through both values. The payload is built here
+	// rather than passed in, so the only thing that can hold it is the storage
+	// the two values share.
+	walkAliasedBig := func(exec *Execution, _ Value, args []Value, _ map[string]Value, block Value) (Value, error) {
+		elems := []Value{NewInt(1), NewInt(2), NewString(strings.Repeat(args[0].String(), 800_000))}
+		_, err := exec.CallBlock(block, []Value{NewArray(elems), NewArray(elems)})
+		return NewNil(), err
+	}
 	return map[string]Value{
 		"driver": NewObject(map[string]Value{
-			"walk_aliased":  NewBuiltin("driver.walk_aliased", walkAliased),
-			"walk":          NewBuiltin("driver.walk", walk),
-			"walk_kw":       NewBuiltin("driver.walk_kw", walk),
-			"walk_in":       NewBuiltin("driver.walk_in", walkNested),
-			"walk_inner":    NewBuiltin("driver.walk_inner", walkNested),
-			"walk_returned": NewBuiltin("driver.walk_returned", walkReturned),
+			"walk_aliased":     NewBuiltin("driver.walk_aliased", walkAliased),
+			"walk_aliased_big": NewBuiltin("driver.walk_aliased_big", walkAliasedBig),
+			"walk":             NewBuiltin("driver.walk", walk),
+			"walk_kw":          NewBuiltin("driver.walk_kw", walk),
+			"walk_in":          NewBuiltin("driver.walk_in", walkNested),
+			"walk_inner":       NewBuiltin("driver.walk_inner", walkNested),
+			"walk_returned":    NewBuiltin("driver.walk_returned", walkReturned),
 		}),
 	}, nil
 }
@@ -525,29 +541,34 @@ end`)
 func TestShrinkUnderWildcardClaimStaysLinear(t *testing.T) {
 	t.Parallel()
 
-	small := minStepsToDrainUnderDriver(t, 100)
-	large := minStepsToDrainUnderDriver(t, 400)
-	// Four times the elements costs about four times the steps when one copy is
-	// amortized over the drain, and about sixteen when every pop copies.
-	if limit := 6 * small; large > limit {
-		t.Fatalf("draining 400 elements under a host driver cost %d steps against %d for "+
-			"100; want at most %d, or the wildcard claim is copying every time",
-			large, small, limit)
+	// pop and shift both have to be measured. shift moves the start of the
+	// window, so keying the claim on that address made one drain look like a
+	// series of new storage: it cost 68,735 steps over 400 elements against
+	// 1,207 through pop, and a measurement that only ran pop saw none of it.
+	for _, op := range []string{"a.pop", "a.shift"} {
+		t.Run(op, func(t *testing.T) {
+			t.Parallel()
+
+			small := minStepsToDrainUnderDriver(t, op, 100)
+			large := minStepsToDrainUnderDriver(t, op, 400)
+			// Four times the elements costs about four times the steps when the
+			// drain narrows one piece of storage, and about sixteen when each
+			// call copies.
+			if limit := 6 * small; large > limit {
+				t.Fatalf("draining 400 elements with %s under a host driver cost %d steps "+
+					"against %d for 100; want at most %d", op, large, small, limit)
+			}
+		})
 	}
 }
 
 // minStepsToDrainUnderDriver returns the smallest step quota that lets a pop
 // drain of an n-element array run to completion inside a host adapter's
 // callback.
-func minStepsToDrainUnderDriver(t *testing.T, n int) int {
+func minStepsToDrainUnderDriver(t *testing.T, op string, n int) int {
 	t.Helper()
 
-	const src = `def run(a)
-  driver.walk(a) do |x|
-    a.pop
-  end
-  a.size
-end`
+	src := "def run(a)\n  driver.walk(a) do |x|\n    " + op + "\n  end\n  a.size\nend"
 	elems := make([]Value, n)
 	for i := range n {
 		elems[i] = NewInt(int64(i))
@@ -646,10 +667,11 @@ func TestRetainedHeaderRecordIsBounded(t *testing.T) {
 	held := &heldArrayBacking{wildcard: true}
 	for i := range maxHeldArrayHeaders * 3 {
 		full := []Value{NewInt(int64(i))}
-		if !held.canRetain(full) {
+		receiver := NewArray(full)
+		if !held.canRetain(full, receiver) {
 			continue
 		}
-		held.retain(full, NewArray(full))
+		held.retain(full, receiver)
 	}
 	if len(held.retained) != maxHeldArrayHeaders {
 		t.Fatalf("claim holds %d narrowed arrays, want at most %d",
