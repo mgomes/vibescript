@@ -4291,3 +4291,555 @@ func TestHashFlattenRejectsHugeExpansionEarly(t *testing.T) {
 		t.Fatalf("hash.flatten allocated %d cumulative bytes before rejecting; want it bounded by the quota, not the full result", allocated)
 	}
 }
+
+// lookupKeyList renders count missing symbol keys as a fetch_values or
+// values_at argument list, so the callback runs once per key in the order
+// given.
+func lookupKeyList(count int) string {
+	keys := make([]string, count)
+	for i := range keys {
+		keys[i] = fmt.Sprintf(":m%03d", i)
+	}
+	return strings.Join(keys, ", ")
+}
+
+// A block result stays in the Go-local out slice, which no memory check inside
+// a later block call could reach before the slice became a walk root: the
+// earlier results and an in-block temporary passed their checks separately
+// though they coexist. Here the 29 retained 20KB results and the final 600KB
+// temporary each fit the 1MB quota alone, and the returned array is small
+// enough for the post-call check, so only walking the retained output rejects
+// the combined peak.
+func TestHashFetchValuesWalksRetainedOutputDuringBlockCalls(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run(h)
+      h.fetch_values(`+lookupKeyList(30)+`) { |k|
+        if k == :m029
+          ("y" * 600000).length
+        else
+          "x" * 20000
+        end
+      }
+    end
+    `)
+	if _, err := script.Call(context.Background(), "run", []Value{NewHash(map[string]Value{})}, CallOptions{}); err == nil {
+		t.Fatalf("retained fetch_values output plus an in-block temporary exceeded the quota but was accepted")
+	}
+}
+
+// The root is unregistered when the builtin returns, so a fetch_values that
+// fits is still answered with the values Ruby's Hash#fetch_values returns.
+func TestHashFetchValuesDoesNotOverCharge(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run(h)
+      h.fetch_values(:a, :b, `+lookupKeyList(30)+`) { |k| "x" * 20000 }
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", []Value{NewHash(map[string]Value{
+		"a": NewInt(1),
+		"b": NewInt(2),
+	})}, CallOptions{})
+	if err != nil {
+		t.Fatalf("a fetch_values that fits the quota was rejected: %v", err)
+	}
+	want := make([]Value, 0, 32)
+	want = append(want, NewInt(1), NewInt(2))
+	for range 30 {
+		want = append(want, NewString(strings.Repeat("x", 20000)))
+	}
+	compareArrays(t, got, want)
+}
+
+// A default proc is script code, so values_at has the same shape as
+// fetch_values: each miss can resolve to a fresh near-quota value that lives
+// only in the Go-local out slice. The 29 retained 20KB defaults and the final
+// 600KB temporary each fit the 1MB quota alone, and the returned array is small
+// enough for the post-call check.
+func TestHashValuesAtWalksRetainedOutputDuringDefaultProcs(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run()
+      h = Hash.new { |hash, k|
+        if k == :m029
+          ("y" * 600000).length
+        else
+          "x" * 20000
+        end
+      }
+      h.values_at(`+lookupKeyList(30)+`)
+    end
+    `)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("retained values_at output plus an in-proc temporary exceeded the quota but was accepted")
+	}
+}
+
+// The root is unregistered when the builtin returns, so a values_at that fits
+// still resolves present keys and default-proc misses alike.
+func TestHashValuesAtDoesNotOverCharge(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run()
+      h = Hash.new { |hash, k| "x" * 20000 }
+      h[:a] = 1
+      h[:b] = 2
+      h.values_at(:a, :b, `+lookupKeyList(30)+`)
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("a values_at that fits the quota was rejected: %v", err)
+	}
+	want := make([]Value, 0, 32)
+	want = append(want, NewInt(1), NewInt(2))
+	for range 30 {
+		want = append(want, NewString(strings.Repeat("x", 20000)))
+	}
+	compareArrays(t, got, want)
+}
+
+// Every miss resolving to one static default retains the same payload thirty
+// times over, and the receiver holds it too. A charge computed for the output
+// on its own bills that payload again on top of the receiver; walking the
+// output through the estimator that already saw the receiver counts it once.
+// The quota here sits far above the call's real footprint and far below the
+// doubled estimate, so only the deduplicating walk admits it.
+func TestHashValuesAtDoesNotDoubleChargeAStaticDefault(t *testing.T) {
+	t.Parallel()
+
+	const defaultBytes = 400 * 1024
+	const missing = 30
+
+	defaultValue := NewString(strings.Repeat("d", defaultBytes))
+	receiver := NewHashWithDefault(map[string]Value{"a": NewInt(1)}, defaultValue, NewNil())
+
+	args := make([]Value, 0, missing+1)
+	args = append(args, NewSymbol("a"))
+	for i := range missing {
+		args = append(args, NewSymbol(fmt.Sprintf("m%03d", i)))
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
+	footprint := base + arraySlotBackingBytes(len(args))
+
+	// Half a default's worth of headroom: ample for the real build, nowhere
+	// near enough to absorb a second copy of the default's payload.
+	quota := footprint + defaultBytes/2
+	if quota <= footprint || quota >= footprint+defaultBytes {
+		t.Fatalf("quota %d must fit the real footprint %d and reject the doubled charge %d", quota, footprint, footprint+defaultBytes)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "values_at", args, NewNil())
+	if err != nil {
+		t.Fatalf("a values_at that fits its real footprint under quota %d was rejected: %v", quota, err)
+	}
+	want := make([]Value, 0, missing+1)
+	want = append(want, NewInt(1))
+	for range missing {
+		want = append(want, defaultValue)
+	}
+	compareArrays(t, got, want)
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("values_at leaked %d scratch bytes after success", exec.reservedScratchBytes)
+	}
+	if len(exec.outputWalkRoots) != 0 {
+		t.Fatalf("values_at left %d output walk roots registered after success", len(exec.outputWalkRoots))
+	}
+}
+
+// A callback can detach a result it previously stored: here the first callback
+// memoizes a 400KB value into the hash, and the second clears the hash -- so
+// the payload is live only in the Go-local output -- before allocating a 700KB
+// temporary. The true peak is about 1.1MB against a 1MB quota, and nothing
+// reachable from the interpreter holds the detached 400KB, so only a root that
+// keeps walking the output rejects the pair.
+func TestHashRetainedOutputIsWalkedWhenACallbackDetachesIt(t *testing.T) {
+	t.Parallel()
+
+	sources := map[string]string{
+		"values_at default proc": `
+    def run()
+      h = Hash.new { |hash, k|
+        if k == :b
+          hash.clear
+          ("t" * 700000).length
+        else
+          hash[k] = "x" * 400000
+        end
+      }
+      h.values_at(:a, :b)
+    end
+    `,
+		"fetch_values block": `
+    def run()
+      h = { }
+      h.fetch_values(:a, :b) { |k|
+        if k == :b
+          h.clear
+          ("t" * 700000).length
+        else
+          h[k] = "x" * 400000
+        end
+      }
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a detached retained result coexisting with an in-callback temporary exceeded the quota but was accepted")
+			}
+		})
+	}
+}
+
+// The same detach hazard reaches values the receiver already held. A present
+// key is answered by aliasing the receiver, and a callback can then clear the
+// hash, leaving the alias live solely in the Go-local output. Here :a
+// contributes 400KB, the :b callback clears the hash and allocates 700KB, and
+// the 1MB quota must reject the pair even though no other walk can still reach
+// the detached value.
+func TestHashPresentResultIsWalkedWhenACallbackDetachesIt(t *testing.T) {
+	t.Parallel()
+
+	sources := map[string]string{
+		"values_at default proc": `
+    def run()
+      h = Hash.new { |hash, k|
+        hash.clear
+        ("t" * 700000).length
+      }
+      h[:a] = "x" * 400000
+      h.values_at(:a, :b)
+    end
+    `,
+		"fetch_values block": `
+    def run()
+      h = { }
+      h[:a] = "x" * 400000
+      h.fetch_values(:a, :b) { |k|
+        h.clear
+        ("t" * 700000).length
+      }
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a detached present result coexisting with an in-callback temporary exceeded the quota but was accepted")
+			}
+		})
+	}
+}
+
+// An alias no callback can break must not be billed twice. A lookup whose keys
+// are all present runs no script code at all, and a callback returning its own
+// key retains a payload the argument slice pins for the whole call: both add
+// only an array slot on top of memory the walk already reaches, so a quota with
+// room for one copy has to accept them.
+func TestHashLookupsDoNotDoubleChargeAliasesNoCallbackCanDetach(t *testing.T) {
+	t.Parallel()
+
+	const quota = 650 * 1024
+
+	sources := map[string]string{
+		"values_at with every key present": `
+    def run()
+      h = Hash.new { |hash, k| hash[k] = "z" * 10 }
+      h[:a] = "x" * 400000
+      h.values_at(:a)
+    end
+    `,
+		"fetch_values with every key present": `
+    def run()
+      h = { }
+      h[:a] = "x" * 400000
+      h.fetch_values(:a) { |k| "z" * 10 }
+    end
+    `,
+		"fetch_values block returning its key": `
+    def run()
+      k = "y" * 400000
+      { }.fetch_values(k) { |x| x }
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: quota}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+				t.Fatalf("a lookup whose real footprint fits the quota was rejected: %v", err)
+			}
+		})
+	}
+}
+
+// An array is a supported hash key, so a key argument is not automatically a
+// stable root. The first callback returns a large element of the array key; a
+// later callback clears that array, detaching the element while the output
+// still holds it, then allocates a temporary. Deducting the key from the
+// output's charge hid the detached payload from the walk entirely.
+func TestHashLookupsRejectDetachedElementsOfAnArrayKey(t *testing.T) {
+	t.Parallel()
+
+	sources := map[string]string{
+		"fetch_values block": `
+    def run()
+      k = ["x" * 400000]
+      h = { }
+      h.fetch_values(k, :b) { |x|
+        if x == :b
+          k.clear
+          ("t" * 700000).length
+        else
+          x[0]
+        end
+      }
+    end
+    `,
+		"values_at default proc": `
+    def run()
+      k = ["x" * 400000]
+      h = Hash.new { |hash, x|
+        if x == :b
+          k.clear
+          ("t" * 700000).length
+        else
+          x[0]
+        end
+      }
+      h.values_at(k, :b)
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a detached array-key element coexisting with an in-callback temporary exceeded the quota but was accepted")
+			}
+		})
+	}
+}
+
+// A retained result does not stay the size it was when it was produced. The
+// first callback returns an empty array, so it costs almost nothing; the second
+// pushes 400KB into that array and then clears the box holding it, so the
+// payload is both larger than it was and reachable only through the output; the
+// third allocates 700KB. A total captured when the result was produced misses
+// the growth, so only re-deriving the output at each check rejects this.
+func TestHashLookupsRechargeResultsThatGrowAfterBeingProduced(t *testing.T) {
+	t.Parallel()
+
+	body := `
+        if k == :a
+          box[0]
+        elsif k == :b
+          box[0].push("x" * 400000)
+          box.clear
+          1
+        else
+          ("t" * 700000).length
+        end`
+
+	sources := map[string]string{
+		"fetch_values block": `
+    def run()
+      box = [[]]
+      h = { }
+      h.fetch_values(:a, :b, :c) { |k|` + body + `
+      }
+    end
+    `,
+		"values_at default proc": `
+    def run()
+      box = [[]]
+      h = Hash.new { |hash, k|` + body + `
+      }
+      h.values_at(:a, :b, :c)
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a result that grew after being produced exceeded the quota but was accepted")
+			}
+		})
+	}
+}
+
+// The growth, the detachment, and the allocation can all happen inside one
+// callback, leaving no moment between callbacks at which a measurement could be
+// refreshed. The second callback grows the array the first returned, clears the
+// box that held it, and then allocates 700KB: any scheme that prices the output
+// before entering a callback is already stale by the time this allocates, so
+// only a root the estimator walks at the allocation's own check rejects it.
+func TestHashLookupsRejectGrowthAndDetachWithinOneCallback(t *testing.T) {
+	t.Parallel()
+
+	body := `
+        if k == :a
+          box[0]
+        else
+          box[0].push("x" * 400000)
+          box.clear
+          ("t" * 700000).length
+        end`
+
+	sources := map[string]string{
+		"fetch_values block": `
+    def run()
+      box = [[]]
+      h = { }
+      h.fetch_values(:a, :b) { |k|` + body + `
+      }
+    end
+    `,
+		"values_at default proc": `
+    def run()
+      box = [[]]
+      h = Hash.new { |hash, k|` + body + `
+      }
+      h.values_at(:a, :b)
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a result grown and detached inside the callback that allocates against it was accepted")
+			}
+		})
+	}
+}
+
+// The output has to be followed down as well as up. The first callback returns
+// a 400KB array, the second empties it, and the third allocates 700KB: by then
+// the retained result holds almost nothing, so a charge still pinned at the
+// original size would wrongly reject the call.
+func TestHashLookupsDoNotChargeAResultThatShrank(t *testing.T) {
+	t.Parallel()
+
+	body := `
+        if k == :a
+          a
+        elsif k == :b
+          a.clear
+          1
+        else
+          ("t" * 700000).length
+        end`
+
+	sources := map[string]string{
+		"fetch_values block": `
+    def run()
+      a = ["x" * 400000]
+      h = { }
+      h.fetch_values(:a, :b, :c) { |k|` + body + `
+      }
+    end
+    `,
+		"values_at default proc": `
+    def run()
+      a = ["x" * 400000]
+      h = Hash.new { |hash, k|` + body + `
+      }
+      h.values_at(:a, :b, :c)
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+				t.Fatalf("a lookup whose retained result had shrunk was rejected: %v", err)
+			}
+		})
+	}
+}
+
+// A key argument lives only in the builtin's Go-local slice, which the walk
+// inside a callback cannot reach either. A result that aliases one is therefore
+// held by nothing the estimator sees except the output itself: the first
+// callback returns its own 400KB key, and the second allocates 700KB against a
+// 1MB quota with the two coexisting.
+func TestHashLookupsChargeAResultAliasingAnEphemeralKey(t *testing.T) {
+	t.Parallel()
+
+	sources := map[string]string{
+		"fetch_values block": `
+    def run()
+      { }.fetch_values("x" * 400000, :b) { |k|
+        if k == :b
+          ("t" * 700000).length
+        else
+          k
+        end
+      }
+    end
+    `,
+		"values_at default proc": `
+    def run()
+      h = Hash.new { |hash, k|
+        if k == :b
+          ("t" * 700000).length
+        else
+          k
+        end
+      }
+      h.values_at("x" * 400000, :b)
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a retained result aliasing an ephemeral key exceeded the quota but was accepted")
+			}
+		})
+	}
+}
+
+// hashOfIndexedInts builds a receiver whose sorted key order matches its value
+// order, so a block can key its behaviour on which entry it is looking at.
+func hashOfIndexedInts(count int) Value {
+	entries := make(map[string]Value, count)
+	for i := range count {
+		entries[fmt.Sprintf("k%03d", i)] = NewInt(int64(i))
+	}
+	return NewHash(entries)
+}
+
+
+
