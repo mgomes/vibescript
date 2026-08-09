@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -1606,6 +1608,9 @@ func builtinSleep(exec *Execution, receiver Value, args []Value, kwargs map[stri
 	if err != nil {
 		return NewNil(), err
 	}
+	if err := exec.checkSleepDuration(duration); err != nil {
+		return NewNil(), err
+	}
 	if duration <= 0 {
 		if err := exec.checkContext(); err != nil {
 			return NewNil(), err
@@ -1615,12 +1620,231 @@ func builtinSleep(exec *Execution, receiver Value, args []Value, kwargs map[stri
 
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
+	started := time.Now()
 	select {
 	case <-timer.C:
 		return NewInt(int64(duration / time.Second)), nil
 	case <-exec.Context().Done():
+		// A sibling task failing cancels this worker mid-sleep, and that
+		// failure is rescuable, so the call can go on to sleep again. Give back
+		// what the timer never used, measured rather than assumed: a sleep
+		// canceled at the last moment used nearly all of its reservation.
+		exec.refundUnsleptTime(duration, time.Since(started))
 		return NewNil(), exec.Context().Err()
 	}
+}
+
+// refundUnsleptTime returns the unused part of a reservation to the call's
+// sleeping budget.
+func (exec *Execution) refundUnsleptTime(reserved, slept time.Duration) {
+	if exec == nil || exec.sleepBudget == nil {
+		return
+	}
+	exec.sleepBudget.refund(reserved - slept)
+}
+
+// checkSleepDuration rejects a sleep longer than the host allows.
+//
+// sleep honors context cancellation, but Script.Call substitutes
+// context.Background() for a nil context, so a host that relies on the
+// engine's own quotas had nothing bounding wall-clock: the step and memory
+// quotas do not advance while a worker is parked (#29). The bound is the
+// host's to set, and Unlimited removes it for hosts that pass a deadline
+// themselves.
+func (exec *Execution) checkSleepDuration(duration time.Duration) error {
+	if exec == nil || exec.engine == nil {
+		return nil
+	}
+	// Driven by whether a budget reached this call, not by this engine's own
+	// setting. An engine with no bound of its own still spends a budget it
+	// inherited, or re-entering an unbounded engine would be the way out of a
+	// bounded caller's sandbox.
+	if exec.sleepBudget == nil {
+		return nil
+	}
+	// Budgeted across the call tree, not checked per statement and not per
+	// execution. A per-statement limit bounds one sleep and nothing else --
+	// `loop { sleep(60) }` parks a worker for years, one permitted sleep at a
+	// time -- and a per-execution total resets for every task worker, since
+	// each job runs on a fresh Execution: Tasks.map over a hundred items slept
+	// a hundred times the bound.
+	if !exec.sleepBudget.spend(duration) {
+		// The remaining allowance is named, not just the limit: after earlier
+		// sleeps have spent part of the budget, reporting the request against
+		// the original limit reads as arithmetic that does not hold, since the
+		// rejected duration is often well under it.
+		left, limit := exec.sleepBudget.left()
+		return guardLimitErrorf("sleep %s exceeds the %s left of the host maximum of %s per call",
+			duration, left, limit)
+	}
+	return nil
+}
+
+// sleepBudget is the sleeping time one call tree shares. A nested engine with
+// a tighter bound gets its own, chained to the outer one so that sleeping
+// inside it spends both: the inner host's limit constrains the inner script,
+// and the outer host's still bounds the call as a whole.
+type sleepBudget struct {
+	mu sync.Mutex
+	// limit is what the budget started with, kept so a refusal can name the
+	// bound the host configured rather than whatever is left of it.
+	limit     time.Duration
+	remaining time.Duration
+	parent    *sleepBudget
+}
+
+// spend takes duration from this budget and every budget above it, reporting
+// false when any of them cannot afford it. Nothing is deducted unless all of
+// them can, so a refusal leaves every allowance for whatever else the tree
+// still has to do.
+// The deduction is made under this budget's own lock and only once every
+// budget above has accepted, so concurrent task workers sharing a chain never
+// observe a child that has paid for a sleep its parent refused. Locks are
+// always taken child before parent, a consistent order that cannot deadlock.
+func (b *sleepBudget) spend(duration time.Duration) bool {
+	// A non-positive request costs nothing and, more to the point, must never
+	// credit the budget: `remaining -= duration` would run backwards and hand
+	// out allowance the host never granted. valueToSleepDuration rejects
+	// negative script durations today, so nothing reaches here with one -- this
+	// guard is what keeps that true of the next caller rather than of only the
+	// present one.
+	if duration <= 0 {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if duration > b.remaining {
+		return false
+	}
+	if b.parent != nil && !b.parent.spend(duration) {
+		return false
+	}
+	b.remaining -= duration
+	return true
+}
+
+// refund returns time a sleep reserved but did not use to every budget the
+// reservation was taken from.
+//
+// spend deducts the whole request before the sleep begins, because the budget
+// has to refuse a sleep before it happens rather than discover afterwards that
+// it was too long. A sleep cut short by context cancellation therefore leaves
+// the difference deducted although the tree never spent it, and since an
+// ordinary task failure is rescuable, a script that carries on is then refused
+// sleeps the host would have allowed. What is bounded is time actually spent
+// sleeping, and returning the unused remainder is what keeps the accounting
+// equal to that.
+//
+// Each level is clamped to its own limit so a refund can never leave a budget
+// holding more than the host granted.
+//
+// This budget's lock is held across the parent's credit, in the same child to
+// parent order spend takes, so the whole chain is published at once. Releasing
+// it first let a concurrent worker pass the child check against the refunded
+// allowance and then fail at a parent that had not been credited yet, so it was
+// refused a sleep both levels could afford.
+func (b *sleepBudget) refund(duration time.Duration) {
+	if duration <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.remaining += duration
+	if b.remaining > b.limit {
+		b.remaining = b.limit
+	}
+	if b.parent != nil {
+		b.parent.refund(duration)
+	}
+}
+
+// left reports the smallest allowance across this budget and everything above
+// it, with the limit that allowance came from. The binding constraint can be a
+// parent, so a message naming this budget alone would name the wrong bound.
+func (b *sleepBudget) left() (time.Duration, time.Duration) {
+	b.mu.Lock()
+	remaining, limit := b.remaining, b.limit
+	parent := b.parent
+	b.mu.Unlock()
+
+	if parent != nil {
+		if up, upLimit := parent.left(); up < remaining {
+			return up, upLimit
+		}
+	}
+	return remaining, limit
+}
+
+// effectiveLimit reports the tightest limit in the chain, which is the most a
+// call under this budget could ever be allowed to sleep. Limits are fixed at
+// construction, so unlike an allowance this does not move.
+func (b *sleepBudget) effectiveLimit() time.Duration {
+	b.mu.Lock()
+	limit, parent := b.limit, b.parent
+	b.mu.Unlock()
+
+	if parent != nil {
+		if up := parent.effectiveLimit(); up < limit {
+			return up
+		}
+	}
+	return limit
+}
+
+// atMost reports whether this budget is already no looser than limit, in which
+// case a callee with that limit can share it rather than chaining a new one.
+//
+// The comparison is against the chain's limits, not what is left of them. What
+// remains falls as other calls reserve time and rises again when a canceled
+// sleep refunds one, so a callee that shared on the strength of a momentarily
+// low allowance kept sharing after the refund restored it, and could then sleep
+// past the bound its own host configured. A limit is fixed at construction, so
+// deciding on it cannot be undone by anything that happens afterwards.
+func (b *sleepBudget) atMost(limit time.Duration) bool {
+	return b.effectiveLimit() <= limit
+}
+
+// sleepBudgetForCall returns the budget a call runs under, inheriting the one
+// its caller published or starting a fresh allowance, along with the context
+// that carries it to everything the call drives.
+//
+// A tree shares one allowance: a task worker runs on its own Execution, so a
+// per-execution total resets for every queued job and Tasks.map over a hundred
+// items sleeps a hundred times the bound.
+func sleepBudgetForCall(ctx context.Context, limit time.Duration) (context.Context, *sleepBudget) {
+	// An inherited budget is kept whatever this engine allows, and capped at
+	// this engine's own limit when that is tighter. A capability adapter can
+	// re-enter a script on a different engine: inheriting a looser allowance
+	// would let an outer engine lend the inner one permission its own
+	// configuration refuses, and dropping the inherited one because the callee
+	// is unlimited would let a bounded caller escape its own bound by
+	// re-entering an unbounded engine.
+	if shared := sleepBudgetFromContext(ctx); shared != nil {
+		if limit <= 0 || shared.atMost(limit) {
+			return ctx, shared
+		}
+		inner := &sleepBudget{limit: limit, remaining: limit, parent: shared}
+		return contextWithSleepBudget(ctx, inner), inner
+	}
+	if limit <= 0 {
+		return ctx, nil
+	}
+	budget := &sleepBudget{limit: limit, remaining: limit}
+	return contextWithSleepBudget(ctx, budget), budget
+}
+
+type sleepBudgetKey struct{}
+
+func contextWithSleepBudget(ctx context.Context, budget *sleepBudget) context.Context {
+	return context.WithValue(ctx, sleepBudgetKey{}, budget)
+}
+
+func sleepBudgetFromContext(ctx context.Context) *sleepBudget {
+	if ctx == nil {
+		return nil
+	}
+	budget, _ := ctx.Value(sleepBudgetKey{}).(*sleepBudget)
+	return budget
 }
 
 func valueToSleepDuration(val Value) (time.Duration, error) {

@@ -12,7 +12,9 @@ type Engine = runtime.Engine
 // distinct from a zero value, which selects the built-in default.
 const Unlimited = runtime.Unlimited
 
-// QuotaProfile is a named bundle of the step, memory, and recursion quotas.
+// QuotaProfile is a named bundle of the step, memory, recursion, and maximum
+// sleeping quotas. ApplyTo writes every one of them, so a host layering its own
+// override on a profile must set it after applying, not before.
 type QuotaProfile = runtime.QuotaProfile
 
 // The named quota profiles, in ascending order of generosity. The lower rungs

@@ -17,6 +17,16 @@ const (
 	defaultMaxSourceBytes     = 1 << 20
 	defaultTaskConcurrency    = 4
 	defaultMaxTaskConcurrency = 64
+	// defaultMaxSleepDuration bounds a single sleep call.
+	//
+	// sleep honors context cancellation, but Script.Call accepts a nil context
+	// and substitutes context.Background(), so an embedder that relies on the
+	// engine's own quotas had nothing bounding wall-clock at all: one
+	// sleep(9223372036) parks a worker for centuries while the step and memory
+	// quotas sit idle (#29). A minute is far longer than any sleep a sandboxed
+	// script needs and far shorter than a parked worker matters; hosts that
+	// genuinely want unbounded sleeps set Unlimited.
+	defaultMaxSleepDuration = time.Minute
 )
 
 // The zero-value Config quota default is the low profile: an embedder that sets
@@ -53,6 +63,20 @@ func resolveQuota(value, def int) int {
 	}
 }
 
+// resolveSleepDuration maps Config.MaxSleepDuration to its effective value,
+// mirroring resolveQuota: zero selects def, a negative value (Unlimited)
+// resolves to zero, which the sleep builtin reads as unbounded.
+func resolveSleepDuration(value, def time.Duration) time.Duration {
+	switch {
+	case value == 0:
+		return def
+	case value < 0:
+		return 0
+	default:
+		return value
+	}
+}
+
 // Config controls interpreter execution bounds and enforcement modes.
 type Config struct {
 	StepQuota              int
@@ -70,6 +94,25 @@ type Config struct {
 	MaxSourceBytes         int
 	DefaultTaskConcurrency int
 	MaxTaskConcurrency     int
+
+	// MaxSleepDuration is the total time one Call may spend sleeping, not a
+	// limit on each sleep. The budget is shared by everything the call drives,
+	// including task workers, so a hundred permitted sleeps exhaust it exactly
+	// as one long sleep would; a single sleep past the whole budget is
+	// rejected on its own. A call that re-enters another engine spends that
+	// engine's budget as well as this one, and neither is spent by a sleep
+	// either of them refuses.
+	//
+	// A budget rather than a per-statement limit because a per-statement limit
+	// bounds nothing: `loop { sleep(60) }` parks a worker for years, one
+	// permitted sleep at a time, and neither the step nor the memory quota
+	// advances while it waits.
+	//
+	// Zero selects the default; Unlimited removes the bound, which is only
+	// safe when the host passes a context with a deadline to every Call. An
+	// unlimited engine still spends a budget it inherited from a bounded
+	// caller.
+	MaxSleepDuration time.Duration
 
 	// DevMode enables development-time module reloading. When true, every
 	// require revalidates its cached module against the source file's
@@ -126,6 +169,7 @@ func NewEngine(cfg Config) (*Engine, error) {
 	if cfg.MaxSourceBytes == 0 {
 		cfg.MaxSourceBytes = defaultMaxSourceBytes
 	}
+	cfg.MaxSleepDuration = resolveSleepDuration(cfg.MaxSleepDuration, defaultMaxSleepDuration)
 	if cfg.MaxTaskConcurrency <= 0 {
 		cfg.MaxTaskConcurrency = defaultMaxTaskConcurrency
 	}
@@ -596,11 +640,20 @@ func (e *Engine) Execute(ctx context.Context, script string) error {
 
 // ConfigSummary provides a human-readable description of the interpreter limits.
 func (e *Engine) ConfigSummary() string {
-	summary := fmt.Sprintf("steps=%s memory=%s recursion=%s strict_effects=%t tasks=%d/%d", quotaSummary(e.config.StepQuota, ""), quotaSummary(e.config.MemoryQuotaBytes, "B"), quotaSummary(e.config.RecursionLimit, ""), e.config.StrictEffects, e.config.DefaultTaskConcurrency, e.config.MaxTaskConcurrency)
+	summary := fmt.Sprintf("steps=%s memory=%s recursion=%s sleep=%s strict_effects=%t tasks=%d/%d", quotaSummary(e.config.StepQuota, ""), quotaSummary(e.config.MemoryQuotaBytes, "B"), quotaSummary(e.config.RecursionLimit, ""), sleepSummary(e.config.MaxSleepDuration), e.config.StrictEffects, e.config.DefaultTaskConcurrency, e.config.MaxTaskConcurrency)
 	if e.config.DevMode {
 		summary += " dev_mode=true"
 	}
 	return summary
+}
+
+// sleepSummary renders the resolved sleeping budget for ConfigSummary. A
+// resolved zero means unbounded, matching how every enforcement site reads it.
+func sleepSummary(limit time.Duration) string {
+	if limit <= 0 {
+		return "unlimited"
+	}
+	return limit.String()
 }
 
 // quotaSummary renders a resolved quota for ConfigSummary: a positive quota

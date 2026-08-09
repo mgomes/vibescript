@@ -43,6 +43,7 @@ func TestQuotaFlagsDefaultToXHigh(t *testing.T) {
 		stepQuota:      vibes.ProfileXHigh.StepQuota,
 		memoryQuota:    vibes.ProfileXHigh.MemoryQuotaBytes,
 		recursionLimit: vibes.ProfileXHigh.RecursionLimit,
+		maxSleep:       vibes.ProfileXHigh.MaxSleepDuration,
 	}
 	if got != want {
 		t.Fatalf("default quota = %+v, want xhigh %+v", got, want)
