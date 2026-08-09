@@ -927,6 +927,10 @@ func hashMemberQuery(property string) (Value, error) {
 			// exec.reservedScratchBytes without the output backing, which the
 			// reservation would otherwise charge a second time.
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			// The keys stay pinned on this frame for the whole call, so a
+			// callback returning one retains nothing the baseline has not
+			// already paid for.
+			acc.seedConservativeRoots(args)
 			if err := acc.reserveSlots(len(args)); err != nil {
 				return NewNil(), err
 			}
@@ -940,6 +944,10 @@ func hashMemberQuery(property string) (Value, error) {
 			retained := newRetainedOutputScratch(exec)
 			defer retained.release()
 			retained.reserve(acc.accumulatedBytes(len(out)))
+			// out[chargedThrough:] holds present values not yet billed. They stay
+			// unbilled until a proc is about to run, and any left at the end need
+			// no charge at all: nothing can detach them before the builtin returns.
+			chargedThrough := 0
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -949,24 +957,13 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.values_at key is unsupported hash key: %w", err)
 				}
 				if ok {
+					// Left uncharged here: it aliases the receiver, which the
+					// baseline already counts, and it needs its own accounting
+					// only once script code gets a chance to detach it. Charging
+					// every present value as soon as the hash merely had a proc
+					// configured rejected an all-present values_at that allocates
+					// nothing but the array slot.
 					out[i] = value
-					// A present value aliases the receiver, which the baseline
-					// already counts -- but only for as long as the receiver keeps
-					// holding it. A default proc can clear or delete the entry
-					// while out still retains the payload, after which no walk
-					// reaches it and an unreserved 400KB result sat alongside a
-					// 700KB in-proc temporary under a 1MB quota. Charging it
-					// whenever a proc could run keeps it accounted through any
-					// later detach; with no proc no script code runs at all, so
-					// the alias cannot be broken and billing it would double the
-					// receiver's payload.
-					if hashDefaultProc(receiver).IsNil() {
-						continue
-					}
-					if err := acc.addConservative(value, len(out)); err != nil {
-						return NewNil(), err
-					}
-					retained.reserve(acc.accumulatedBytes(len(out)))
 					continue
 				}
 				// A missing key is a [] access: consult the hash's Ruby-style
@@ -974,6 +971,19 @@ func hashMemberQuery(property string) (Value, error) {
 				// hash and key, which may store) rather than filling nil, matching
 				// MRI's Hash#values_at.
 				ranProc := !hashDefaultProc(receiver).IsNil()
+				if ranProc {
+					// The proc is about to run and can clear or delete the
+					// receiver, detaching every present value out still holds, so
+					// those aliases are accounted now -- immediately before script
+					// code can break them, and no earlier.
+					for _, prev := range out[chargedThrough:i] {
+						if err := acc.addConservative(prev, len(out)); err != nil {
+							return NewNil(), err
+						}
+					}
+					chargedThrough = i
+					retained.reserve(acc.accumulatedBytes(len(out)))
+				}
 				resolved, err := exec.hashDefaultForKey(receiver, arg)
 				if err != nil {
 					return NewNil(), err
@@ -994,6 +1004,7 @@ func hashMemberQuery(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
+				chargedThrough = i + 1
 				retained.reserve(acc.accumulatedBytes(len(out)))
 			}
 			return NewArray(out), nil
@@ -1032,6 +1043,10 @@ func hashMemberQuery(property string) (Value, error) {
 			// exec.reservedScratchBytes without the output backing, which the
 			// reservation would otherwise charge a second time.
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			// The keys stay pinned on this frame for the whole call, so a
+			// callback returning one retains nothing the baseline has not
+			// already paid for.
+			acc.seedConservativeRoots(args)
 			if err := acc.reserveSlots(len(args)); err != nil {
 				return NewNil(), err
 			}
@@ -1047,6 +1062,10 @@ func hashMemberQuery(property string) (Value, error) {
 			retained := newRetainedOutputScratch(exec)
 			defer retained.release()
 			retained.reserve(acc.accumulatedBytes(len(out)))
+			// out[chargedThrough:] holds present values not yet billed. They stay
+			// unbilled until the block is about to run, and any left at the end
+			// need no charge: nothing can detach them before the builtin returns.
+			chargedThrough := 0
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -1056,27 +1075,29 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.fetch_values key is unsupported hash key: %w", err)
 				}
 				if ok {
+					// Left uncharged here: it aliases the receiver, which the
+					// baseline already counts, and it needs its own accounting
+					// only once the block gets a chance to detach it. Charging
+					// every present value as soon as a block was merely supplied
+					// rejected an all-present fetch_values that allocates nothing
+					// but the array slot.
 					out[i] = value
-					// A present value aliases the receiver, which the baseline
-					// already counts -- but only for as long as the receiver keeps
-					// holding it. The block can clear or delete the entry while
-					// out still retains the payload, after which no walk reaches
-					// it. Charging it whenever a block could run keeps it
-					// accounted through any later detach; without a block a miss
-					// raises instead of running script code, so the alias cannot
-					// be broken and billing it would double the receiver's payload.
-					if valueBlock(block) == nil {
-						continue
-					}
-					if err := acc.addConservative(value, len(out)); err != nil {
-						return NewNil(), err
-					}
-					retained.reserve(acc.accumulatedBytes(len(out)))
 					continue
 				}
 				if valueBlock(block) == nil {
 					return NewNil(), fmt.Errorf("hash.fetch_values key not found: %s", formatMissingHashKey(arg))
 				}
+				// The block is about to run and can clear or delete the receiver,
+				// detaching every present value out still holds, so those aliases
+				// are accounted now -- immediately before script code can break
+				// them, and no earlier.
+				for _, prev := range out[chargedThrough:i] {
+					if err := acc.addConservative(prev, len(out)); err != nil {
+						return NewNil(), err
+					}
+				}
+				chargedThrough = i
+				retained.reserve(acc.accumulatedBytes(len(out)))
 				blockArg := [1]Value{arg}
 				blockValue, err := exec.CallBlock(block, blockArg[:])
 				if err != nil {
@@ -1086,6 +1107,7 @@ func hashMemberQuery(property string) (Value, error) {
 				if err := acc.addConservative(blockValue, len(out)); err != nil {
 					return NewNil(), err
 				}
+				chargedThrough = i + 1
 				retained.reserve(acc.accumulatedBytes(len(out)))
 			}
 			return NewArray(out), nil

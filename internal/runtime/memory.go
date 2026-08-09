@@ -1331,6 +1331,30 @@ func (acc *arrayBuildAccumulator) addToReservedBacking(val Value) error {
 	return nil
 }
 
+// seedConservativeRoots marks roots the conservative charge must not bill a
+// second time. addConservative skips the build baseline on purpose, so that a
+// callback growing a receiver-owned container in place stays visible; but a
+// call argument is pinned on the builtin's Go frame for the whole call and no
+// callback can detach it, so a result aliasing one is already paid for by the
+// baseline. Without this, `fetch_values(key) { |k| k }` billed a 400KB key
+// twice and was rejected under a quota its real footprint fits easily.
+//
+// Pass only roots with that property. Hash#fetch_values and Hash#values_at pass
+// their keys, which the hash-key contract restricts to immutable scalars, so no
+// callback can reach inside one and drop part of it while the output still
+// holds that part.
+func (acc *arrayBuildAccumulator) seedConservativeRoots(roots []Value) {
+	if acc.exec.memoryQuota <= 0 || len(roots) == 0 {
+		return
+	}
+	if acc.result == nil {
+		acc.result = newMemoryEstimator()
+	}
+	for _, root := range roots {
+		acc.result.value(root)
+	}
+}
+
 // addConservative charges a block-produced result without deduplicating it
 // against the build baseline. That keeps in-place mutations of receiver-owned
 // containers visible to the quota while still deduplicating shared backings
