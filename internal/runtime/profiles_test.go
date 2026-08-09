@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"reflect"
 	"testing"
 )
 
@@ -130,8 +131,23 @@ func TestQuotaProfileApplyTo(t *testing.T) {
 	cfg := Config{StrictEffects: true, MaxSourceBytes: 123}
 	ProfileHigh.ApplyTo(&cfg)
 
-	if cfg.StepQuota != ProfileHigh.StepQuota || cfg.MemoryQuotaBytes != ProfileHigh.MemoryQuotaBytes || cfg.RecursionLimit != ProfileHigh.RecursionLimit {
-		t.Fatalf("ApplyTo did not set quota fields: %+v", cfg)
+	// Compare by field name rather than one assertion per quota, so a quota
+	// added to QuotaProfile but not copied in ApplyTo fails here instead of
+	// silently leaving embedders on the Config default.
+	profile := reflect.ValueOf(ProfileHigh)
+	applied := reflect.ValueOf(cfg)
+	for i := range profile.NumField() {
+		name := profile.Type().Field(i).Name
+		if name == "Name" {
+			continue
+		}
+		target := applied.FieldByName(name)
+		if !target.IsValid() {
+			t.Fatalf("QuotaProfile.%s has no matching Config field", name)
+		}
+		if !target.Equal(profile.Field(i)) {
+			t.Fatalf("ApplyTo did not copy %s: got %v, want %v", name, target, profile.Field(i))
+		}
 	}
 	if !cfg.StrictEffects || cfg.MaxSourceBytes != 123 {
 		t.Fatalf("ApplyTo clobbered non-quota fields: %+v", cfg)

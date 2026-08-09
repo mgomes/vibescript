@@ -65,11 +65,14 @@ func QuotaProfileNames() []string {
 	return names
 }
 
-// ApplyTo sets the three quota fields on cfg from the profile, leaving every
-// other Config field untouched. Callers layer explicit per-quota overrides on
-// top after applying a profile.
+// ApplyTo sets every quota field on cfg from the profile, leaving all other
+// Config fields untouched. Callers layer explicit per-quota overrides on top
+// after applying a profile. A quota added to QuotaProfile must be copied here
+// too, or an embedder selecting a profile silently keeps the Config default for
+// it; TestQuotaProfileApplyTo enforces that.
 func (p QuotaProfile) ApplyTo(cfg *Config) {
 	cfg.StepQuota = p.StepQuota
 	cfg.MemoryQuotaBytes = p.MemoryQuotaBytes
 	cfg.RecursionLimit = p.RecursionLimit
+	cfg.MaxSleepDuration = p.MaxSleepDuration
 }
