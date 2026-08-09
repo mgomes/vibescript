@@ -1331,19 +1331,6 @@ func (acc *arrayBuildAccumulator) addToReservedBacking(val Value) error {
 	return nil
 }
 
-// valueHoldsNoDetachableParts reports whether a value's payload is entirely its
-// own, with no contained Value that script code could remove from it. Only these
-// are safe to seed as stable roots; every container kind is excluded because a
-// callback can empty it while a retained result still points at what it held.
-func valueHoldsNoDetachableParts(val Value) bool {
-	switch val.Kind() {
-	case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol, KindRange:
-		return true
-	default:
-		return false
-	}
-}
-
 // chargeRetainedLookupOutput prices everything a lookup builtin's Go-local
 // output currently holds and reserves it, so the memory checks inside the
 // callback that is about to run account for it. held is the filled prefix of
@@ -1361,12 +1348,16 @@ func valueHoldsNoDetachableParts(val Value) bool {
 // the only point where the answer is guaranteed current, and it is also the only
 // point where it matters, since nothing else can change what the output holds.
 //
-// A fresh estimator per call keeps the pricing conservative: a result that
-// aliases receiver-owned memory is charged in full rather than deduplicated
-// against a baseline the callback can invalidate. Only arguments that hold no
-// detachable parts are seeded, so a callback returning its own scalar key is not
-// billed for memory the baseline already covers.
-func chargeRetainedLookupOutput(exec *Execution, acc *arrayBuildAccumulator, retained *retainedOutputScratch, held []Value, slotCount int, stableRoots []Value) error {
+// A fresh estimator per call keeps the pricing conservative, and nothing is
+// seeded into it. Deducting the call's own arguments looks safe -- they are
+// pinned on the builtin's Go frame and the accumulator baseline already counts
+// them -- but that baseline is not what the checks inside a callback consult.
+// Those checks walk the reachable graph, which cannot see a Go-local slice, so
+// a result aliasing an argument was left neither reserved nor walkable: a
+// callback returning its own 400KB key sat unpriced beside the next callback's
+// 700KB temporary. The cost of not deducting is that such a result is counted
+// once here and once in the accumulator's own baseline.
+func chargeRetainedLookupOutput(exec *Execution, acc *arrayBuildAccumulator, retained *retainedOutputScratch, held []Value, slotCount int) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
@@ -1377,11 +1368,6 @@ func chargeRetainedLookupOutput(exec *Execution, acc *arrayBuildAccumulator, ret
 		return err
 	}
 	est := newMemoryEstimator()
-	for _, root := range stableRoots {
-		if valueHoldsNoDetachableParts(root) {
-			est.value(root)
-		}
-	}
 	total := 0
 	for _, val := range held {
 		total = saturatingAdd(total, est.valuePayload(val))

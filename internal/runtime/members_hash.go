@@ -965,7 +965,7 @@ func hashMemberQuery(property string) (Value, error) {
 					// priced now, at the last moment its size and reachability
 					// are still known to be current. With no proc nothing runs,
 					// so a static default needs no charge at all.
-					if err := chargeRetainedLookupOutput(exec, acc, retained, out[:i], len(out), args); err != nil {
+					if err := chargeRetainedLookupOutput(exec, acc, retained, out[:i], len(out)); err != nil {
 						return NewNil(), err
 					}
 				}
@@ -1048,7 +1048,7 @@ func hashMemberQuery(property string) (Value, error) {
 				// The block is about to run, so everything retained so far is
 				// priced now, at the last moment its size and reachability are
 				// still known to be current.
-				if err := chargeRetainedLookupOutput(exec, acc, retained, out[:i], len(out), args); err != nil {
+				if err := chargeRetainedLookupOutput(exec, acc, retained, out[:i], len(out)); err != nil {
 					return NewNil(), err
 				}
 				blockArg := [1]Value{arg}
