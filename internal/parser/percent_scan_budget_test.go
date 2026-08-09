@@ -177,7 +177,7 @@ func TestPercentScanDeclinesOnceTheBudgetIsSpent(t *testing.T) {
 	const input = "%w[a b]"
 
 	fresh := newPercentScanBudget(len(input))
-	if _, entries, _, ok := scanPercentArrayLiteralAt(input, 0, fresh); !ok || len(entries) != 2 {
+	if _, entries, _, ok, _ := scanPercentArrayLiteralAt(input, 0, fresh, 0); !ok || len(entries) != 2 {
 		t.Fatalf("with an unspent budget: ok = %v, entries = %v; want true and two entries", ok, entries)
 	}
 	if fresh.remaining != len(input)*percentScanBudgetFactor {
@@ -186,7 +186,7 @@ func TestPercentScanDeclinesOnceTheBudgetIsSpent(t *testing.T) {
 	}
 
 	spent := &percentScanBudget{}
-	if _, _, _, ok := scanPercentArrayLiteralAt(input, 0, spent); ok {
+	if _, _, _, ok, _ := scanPercentArrayLiteralAt(input, 0, spent, 0); ok {
 		t.Fatal("with a spent budget: ok = true; want the scan to decline and leave % as modulo")
 	}
 }

@@ -59,9 +59,10 @@ type sourceReplay struct {
 // where the previous request left it and resumes from there. Only a request
 // pointing behind it -- after a speculative parse was rolled back, say --
 // starts over, and the next request in source order resumes again.
-func (r *sourceReplay) stateBefore(offset int, budget *percentScanBudget) (int, []bracketFrame, []ternaryFrame) {
+func (r *sourceReplay) stateBefore(offset int, budget *percentScanBudget, interpDepth int) (int, *frameStack[bracketFrame], *frameStack[ternaryFrame]) {
 	if r.scan == nil || r.scan.currentOffset() > offset {
 		r.scan = newLexerWithBudget(r.lines.input, budget)
+		r.scan.interpDepth = interpDepth
 	}
 	resumed := r.scan.currentOffset()
 	for r.scan.ch != 0 {
@@ -77,9 +78,7 @@ func (r *sourceReplay) stateBefore(offset int, budget *percentScanBudget) (int, 
 	}
 	noteSourceReplay(r.scan.currentOffset() - resumed)
 
-	return r.scan.bracketDepth,
-		append([]bracketFrame(nil), r.scan.bracketStack...),
-		append([]ternaryFrame(nil), r.scan.ternaryStack...)
+	return r.scan.bracketDepth, r.scan.bracketStack, r.scan.ternaryStack
 }
 
 // lineIndex maps between byte offsets and the 1-indexed line/column positions

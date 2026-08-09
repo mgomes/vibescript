@@ -43,7 +43,7 @@ type lexer struct {
 	// `?` opened at the same nesting level, never a label `:` inside a hash,
 	// array, or paren group opened after the `?`.
 	bracketDepth int
-	bracketStack []bracketFrame
+	bracketStack *frameStack[bracketFrame]
 
 	// ternaryStack holds each ternary `?` whose separator `:` has not yet been
 	// scanned. A `:` in expression-end position closes the innermost pending
@@ -54,10 +54,10 @@ type lexer struct {
 	// being mistaken for the separator. The lexer reads ahead of the parser, but
 	// this stack only relates `?` tokens to the colons the lexer itself scans, so
 	// it stays self-consistent. The parser captures and restores it with the
-	// rest of the lexer value during speculative parsing; snapshot and restore
-	// deep-copy the slice so a rolled-back speculation cannot leak pushes or pops
+	// rest of the lexer value during speculative parsing; the stack is immutable
+	// (see frameStack) so a rolled-back speculation cannot leak pushes or pops
 	// into the live lexer.
-	ternaryStack []ternaryFrame
+	ternaryStack *frameStack[ternaryFrame]
 
 	// percentScan is the parse-wide allowance for the speculative
 	// percent-array-literal scans this lexer's interpolation handling starts.
@@ -77,6 +77,18 @@ type lexer struct {
 	// precede a ternary separator (see ternaryScanMemo). Every lexer over the
 	// same input shares it, including the throwaway ones the scans create.
 	ternaryScan *ternaryScanMemo
+
+	// interpDepth is how many "#{...}" bodies the source this lexer reads
+	// already sits inside. It is not shared: each throwaway lexer driven over
+	// an interpolation body is one level deeper than the one that started it,
+	// and so is the sub-parser that reparses that body. See
+	// maxInterpolationDepth.
+	interpDepth int
+
+	// nestingRefused records that this lexer turned down an interpolation for
+	// nesting past maxInterpolationDepth, so the caller driving it can say that
+	// rather than reporting the string it was reading as unterminated.
+	nestingRefused bool
 }
 
 type ternaryFrame struct {
@@ -87,6 +99,67 @@ type ternaryFrame struct {
 type bracketFrame struct {
 	token         ast.TokenType
 	callArguments bool
+}
+
+// frameStack is an immutable stack of lexer frames: pushing returns a new head
+// whose tail is the stack pushed onto, which therefore keeps holding exactly
+// what it held before. Capturing one is copying a pointer, and no copy has to
+// be taken to keep a capture from being written through later.
+//
+// Both lexer stacks grow with the source and neither is emptied at a statement
+// boundary or after a parse error: nothing pops a `?` whose `:` never arrives,
+// or a `(` the source never closes. parser.snapshot captures both for every
+// speculative parse, and while it copied their slices a source of 50,000 stray
+// `?` followed by 10,000 ambiguous braced parameters (`def f(a:{b:c},...)`, one
+// speculation each) spent 3.9s and allocated 15 GB doing nothing but copying
+// frames -- and 40,000 stray `(` cost the same. Both are 25ms now (#34).
+type frameStack[T any] struct {
+	frame  T
+	under  *frameStack[T]
+	height int
+}
+
+// push returns the stack with frame on top. The nil stack is the empty one, so
+// a lexer needs no stack setup.
+func (s *frameStack[T]) push(frame T) *frameStack[T] {
+	return &frameStack[T]{frame: frame, under: s, height: s.len() + 1}
+}
+
+// len reports how many frames the stack holds.
+func (s *frameStack[T]) len() int {
+	if s == nil {
+		return 0
+	}
+	return s.height
+}
+
+// pop returns the stack without its top frame. Popping the empty stack yields
+// the empty stack, so unbalanced input needs no separate guard.
+func (s *frameStack[T]) pop() *frameStack[T] {
+	if s == nil {
+		return nil
+	}
+	return s.under
+}
+
+// top returns the frame on top of the stack and whether there was one.
+func (s *frameStack[T]) top() (T, bool) {
+	if s == nil {
+		var zero T
+		return zero, false
+	}
+	return s.frame, true
+}
+
+// replaceTop returns the stack with its top frame replaced. Amending a frame
+// goes through here because the frame under the old head may be shared with a
+// snapshot or with a scan running over a copy of this lexer, neither of which
+// the amendment belongs to.
+func (s *frameStack[T]) replaceTop(frame T) *frameStack[T] {
+	if s == nil {
+		return nil
+	}
+	return s.under.push(frame)
 }
 
 func newLexer(input string) *lexer {
@@ -348,7 +421,7 @@ func (l *lexer) scanToken() ast.Token {
 		}
 		closesTernary := l.colonClosesTernary()
 		if closesTernary {
-			l.ternaryStack = l.ternaryStack[:len(l.ternaryStack)-1]
+			l.ternaryStack = l.ternaryStack.pop()
 		}
 		if quote := l.peekRune(); (quote == '"' || quote == '\'') && !closesTernary && l.colonStartsSymbolLiteral() {
 			return l.scanQuotedSymbol(tok)
@@ -497,7 +570,7 @@ func (l *lexer) scanToken() ast.Token {
 		}
 	case '?':
 		tok = l.makeToken(ast.TokenQuestion, "?")
-		l.ternaryStack = append(l.ternaryStack, ternaryFrame{bracketDepth: l.bracketDepth})
+		l.ternaryStack = l.ternaryStack.push(ternaryFrame{bracketDepth: l.bracketDepth})
 		l.readRune()
 	case '|':
 		if l.peekRune() == '|' {
@@ -625,7 +698,7 @@ func (l *lexer) seek(offset int, last ast.Token) {
 	if start, ok := l.offsetForPosition(last.Pos); ok && start < offset {
 		structuralOffset = start
 	}
-	bracketDepth, bracketStack, ternaryStack := l.replay.stateBefore(structuralOffset, l.percentScan)
+	bracketDepth, bracketStack, ternaryStack := l.replay.stateBefore(structuralOffset, l.percentScan, l.interpDepth)
 
 	// Landing one rune short of the target and reading it leaves every field
 	// readRune maintains -- including the previous rune's position, which the
@@ -646,6 +719,30 @@ func (l *lexer) seek(offset int, last ast.Token) {
 	l.prevPrevToken = ast.Token{}
 	l.prevToken = ast.Token{}
 	l.lastToken = last
+}
+
+// scanFrom returns a throwaway lexer over the same source, parked so the next
+// token it scans is the one beginning at offset. Whatever it reads leaves this
+// lexer's own position untouched.
+//
+// It shares the source replay and the label-colon record, which describe the
+// source rather than one lexer's progress through it. A fresh replay would put
+// back the walk from byte 0 that it exists to remove: every line-leading `*`
+// asks whether it opens a destructuring assignment, and rebuilding a line index
+// and a structural re-lex per question made 8,000 such lines, 48 KB, take 10.5s
+// and allocate 2.1 GB (#38).
+func (l *lexer) scanFrom(offset int) *lexer {
+	scan := &lexer{
+		input:       l.input,
+		percentScan: l.percentScan,
+		replay:      l.replay,
+		ternaryScan: l.ternaryScan,
+		interpDepth: l.interpDepth,
+	}
+	// seek sets every field a rune-by-rune arrival would have left, so the
+	// zero line and column it starts from are never read.
+	scan.seek(offset, ast.Token{})
+	return scan
 }
 
 func (l *lexer) makeToken(tt ast.TokenType, literal string) ast.Token {
@@ -1080,8 +1177,13 @@ func isBaseDigit(r rune, base int) bool {
 
 func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 	var decoded strings.Builder
-	var raw strings.Builder
 	interpolated := false
+	// An interpolated string's raw text is the source between the quotes
+	// verbatim, so it is taken as a slice of the input at the closing quote
+	// rather than rebuilt rune by rune. Rebuilding it made an interpolation
+	// nested inside another one copy its whole body again at every level that
+	// encloses it (#46).
+	bodyStart := l.offset
 
 	for {
 		l.readRune()
@@ -1089,9 +1191,10 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 		case 0:
 			return "", false, "unterminated string"
 		case '"':
+			body := l.input[bodyStart:l.currentOffset()]
 			l.readRune()
 			if interpolated {
-				return raw.String(), true, ""
+				return body, true, ""
 			}
 			return decoded.String(), false, ""
 		case '\\':
@@ -1102,82 +1205,60 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 			switch next {
 			case '"', '\\':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteRune(next)
 			case 'a':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte('\a')
 			case 'b':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte('\b')
 			case 'e':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte(0x1b)
 			case 'f':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte('\f')
 			case 'n':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte('\n')
 			case 'r':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte('\r')
 			case 't':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte('\t')
 			case 'v':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte('\v')
 			case 'x':
 				escaped, errMsg := l.readVariableHexEscape(1, 2)
 				if errMsg != "" {
 					return "", false, errMsg
 				}
-				raw.WriteString(escaped.raw)
 				decoded.WriteByte(escaped.byte)
 			case 'u':
 				escaped, errMsg := l.readFixedHexEscape(4)
 				if errMsg != "" {
 					return "", false, errMsg
 				}
-				raw.WriteString(escaped.raw)
 				decoded.WriteRune(escaped.rune)
 			default:
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteRune(next)
 			}
 		case '#':
-			raw.WriteRune(l.ch)
 			decoded.WriteRune(l.ch)
 			if l.peekRune() == '{' {
 				l.readRune()
-				raw.WriteRune(l.ch)
 				interpolated = true
-				if errMsg := l.consumeInterpolation(&raw); errMsg != "" {
-					return "", false, errMsg
+				if !l.skipInterpolationBody() {
+					if l.nestingRefused {
+						return "", false, interpolationTooDeepMessage
+					}
+					return "", false, "unterminated string"
 				}
 			}
 		default:
-			raw.WriteRune(l.ch)
 			decoded.WriteRune(l.ch)
 		}
 	}
@@ -1235,7 +1316,7 @@ func (l *lexer) readVariableHexEscape(minDigits, maxDigits int) (decodedEscape, 
 	if value > utf8.MaxRune || (value >= 0xd800 && value <= 0xdfff) {
 		return decodedEscape{}, "invalid Unicode escape in string"
 	}
-	return decodedEscape{raw: raw.String(), rune: value, byte: byte(value)}, ""
+	return decodedEscape{rune: value, byte: byte(value)}, ""
 }
 
 func hexRuneValue(r rune) rune {
@@ -1251,35 +1332,47 @@ func hexRuneValue(r rune) rune {
 	}
 }
 
-// consumeInterpolation reads the body of a "#{...}" interpolation that the
-// caller has just opened (the leading "#{" is already consumed, so l.ch holds
-// the "{") and appends every rune up to and including the matching "}" to raw.
-// The decoded builder is not updated because an interpolated string always
-// returns its raw text; the parser re-scans it with the same rules in
-// findStringInterpolationEnd.
+// maxInterpolationDepth bounds how deeply "#{...}" string interpolations may
+// nest. Every level is read twice over: the lexer drives a throwaway lexer
+// across the whole body to find the "}" that closes it, and the parser then
+// reparses that body from scratch, so the levels inside a given one are walked
+// again for each level outside it. A 1 MB source spent 113ms at one level,
+// 418ms at eight and 10.5s at 64, and 20,000 levels of a 100 KB source took
+// 23s and over a GB of live memory during compile, where no step or memory
+// quota reaches it (#46).
 //
-// It returns an error message when the input ends before the interpolation
-// closes.
-func (l *lexer) consumeInterpolation(raw *strings.Builder) string {
-	if !l.copyInterpolationBody(raw) {
-		return "unterminated string"
-	}
-	return ""
-}
+// Nesting a string inside its own interpolation is already unusual at two
+// levels and unheard of past three, so eight leaves real code untouched while
+// keeping the worst case a small multiple of what the same source costs
+// without the nesting. It is deliberately below maxTypeDepth: those bounds
+// guard recursion that costs a stack frame per level, while this one costs
+// another pass over the source.
+const maxInterpolationDepth = 8
 
-// copyInterpolationBody copies an in-progress "#{...}" interpolation body into
-// raw. It must be called with the opening "{" already consumed and written, so
-// l.ch holds that "{" and l.offset points at the first rune of the body. The
-// matching close brace is located with findStringInterpolationEnd, which drives
-// the lexer over the body so nested double- and single-quoted strings, further
-// interpolations, and percent-array literals (such as %W[#{%w[}]}]) balance
-// correctly instead of guessing where the span ends. The runes are then copied
-// one at a time to keep the lexer's line and column tracking accurate across the
-// (possibly multiline) span. It reports whether the interpolation closed before
-// the end of input.
-func (l *lexer) copyInterpolationBody(raw *strings.Builder) bool {
-	end, ok := findStringInterpolationEnd(l.input, l.offset, l.percentScan)
+const interpolationTooDeepMessage = "string interpolation nesting too deep"
+
+// skipInterpolationBody advances the lexer over an in-progress "#{...}"
+// interpolation body, stopping on the matching "}". It must be called with the
+// opening "{" already consumed, so l.ch holds that "{" and l.offset points at
+// the first rune of the body. The matching close brace is located with
+// findStringInterpolationEnd, which drives the lexer over the body so nested
+// double- and single-quoted strings, further interpolations, and percent-array
+// literals (such as %W[#{%w[}]}]) balance correctly instead of guessing where
+// the span ends. The runes are then stepped over one at a time to keep the
+// lexer's line and column tracking accurate across the (possibly multiline)
+// span.
+//
+// It reports whether the interpolation closed before the end of input, and
+// records on the lexer when what stopped it was maxInterpolationDepth.
+func (l *lexer) skipInterpolationBody() bool {
+	l.nestingRefused = false
+	if l.interpDepth >= maxInterpolationDepth {
+		l.nestingRefused = true
+		return false
+	}
+	end, ok, tooDeep := findStringInterpolationEnd(l.input, l.offset, l.percentScan, l.interpDepth+1)
 	if !ok {
+		l.nestingRefused = tooDeep
 		return false
 	}
 	for l.offset <= end {
@@ -1287,7 +1380,6 @@ func (l *lexer) copyInterpolationBody(raw *strings.Builder) bool {
 		if l.ch == 0 {
 			return false
 		}
-		raw.WriteRune(l.ch)
 	}
 	return true
 }
@@ -1390,7 +1482,7 @@ func (l *lexer) readPercentArrayLiteral(interpolating bool) ([]string, string) {
 		}
 		l.readRune()
 		if interpolating {
-			return splitInterpolatedPercentLiteralWords(raw.String(), l.percentScan), true
+			return splitInterpolatedPercentLiteralWords(raw.String(), l.percentScan, l.interpDepth), true
 		}
 		return splitPercentLiteralWords(raw.String(), open, close), true
 	}
@@ -1440,10 +1532,16 @@ func (l *lexer) readPercentArrayLiteral(interpolating bool) ([]string, string) {
 // error message when the interpolation is unterminated.
 func (l *lexer) consumePercentArrayInterpolation(raw *strings.Builder) string {
 	l.readRune() // consume '{'
-	raw.WriteRune(l.ch)
-	if !l.copyInterpolationBody(raw) {
+	start := l.currentOffset()
+	if !l.skipInterpolationBody() {
+		if l.nestingRefused {
+			return interpolationTooDeepMessage
+		}
 		return "unterminated string interpolation in percent array literal"
 	}
+	// The skip stops on the closing "}", which is one byte wide, so the span
+	// it stepped over ends one byte past where the lexer now sits.
+	raw.WriteString(l.input[start : l.currentOffset()+1])
 	return ""
 }
 
@@ -1626,18 +1724,20 @@ func (l *lexer) openBracket(tt ast.TokenType) {
 		frame.callArguments = true
 	}
 	l.bracketDepth++
-	l.bracketStack = append(l.bracketStack, frame)
+	l.bracketStack = l.bracketStack.push(frame)
 }
 
 func (l *lexer) closeBracket() {
 	if l.bracketDepth > 0 {
 		l.bracketDepth--
 	}
-	if len(l.bracketStack) > 0 {
-		l.bracketStack = l.bracketStack[:len(l.bracketStack)-1]
-	}
-	for len(l.ternaryStack) > 0 && l.ternaryStack[len(l.ternaryStack)-1].bracketDepth > l.bracketDepth {
-		l.ternaryStack = l.ternaryStack[:len(l.ternaryStack)-1]
+	l.bracketStack = l.bracketStack.pop()
+	for {
+		top, ok := l.ternaryStack.top()
+		if !ok || top.bracketDepth <= l.bracketDepth {
+			return
+		}
+		l.ternaryStack = l.ternaryStack.pop()
 	}
 }
 
@@ -1650,10 +1750,7 @@ func (l *lexer) currentBracketType() ast.TokenType {
 }
 
 func (l *lexer) currentBracketFrame() (bracketFrame, bool) {
-	if len(l.bracketStack) == 0 {
-		return bracketFrame{}, false
-	}
-	return l.bracketStack[len(l.bracketStack)-1], true
+	return l.bracketStack.top()
 }
 
 // colonClosesTernary reports whether the colon currently under l.ch is the
@@ -1671,15 +1768,16 @@ func (l *lexer) currentBracketFrame() (bracketFrame, bool) {
 // consequent's own leading symbol (flag ? :"a" : :"b") is in expression-start
 // position, so it is not mistaken for the separator.
 func (l *lexer) colonClosesTernary() bool {
-	if len(l.ternaryStack) == 0 {
+	top, ok := l.ternaryStack.top()
+	if !ok {
 		return false
 	}
-	top := &l.ternaryStack[len(l.ternaryStack)-1]
 	if top.bracketDepth != l.bracketDepth {
 		return false
 	}
-	if l.labelColonBelongsToParenlessKeywordCall(*top) && l.labelColonPrecedesTernarySeparator() {
+	if l.labelColonBelongsToParenlessKeywordCall(top) && l.labelColonPrecedesTernarySeparator() {
 		top.parenlessKeywordCall = true
+		l.ternaryStack = l.ternaryStack.replaceTop(top)
 		return false
 	}
 	return canEndExpressionToken(l.lastToken.Type)
@@ -1776,7 +1874,7 @@ func (m *ternaryScanMemo) record(key ternaryScanKey, answer bool) {
 // of 22 spaced labels, 226 bytes in all, took 877ms to lex, and 26 labels took
 // over a minute (#31, #32).
 func (l *lexer) labelColonPrecedesTernarySeparator() bool {
-	key := ternaryScanKey{offset: l.currentOffset(), depth: len(l.ternaryStack)}
+	key := ternaryScanKey{offset: l.currentOffset(), depth: l.ternaryStack.len()}
 	if answer, ok := l.ternaryScan.answers[key]; ok {
 		return answer
 	}
@@ -1797,20 +1895,18 @@ func (l *lexer) labelColonPrecedesTernarySeparator() bool {
 // different question on some inputs.
 func (l *lexer) scanForTernarySeparator(outerDepth int) bool {
 	scan := *l
-	scan.bracketStack = append([]bracketFrame(nil), l.bracketStack...)
-	scan.ternaryStack = append([]ternaryFrame(nil), l.ternaryStack...)
 	start := scan.currentOffset()
 	defer func() { noteTernaryScan(scan.currentOffset() - start) }()
 
 	scan.readRune()
 	for {
-		beforeDepth := len(scan.ternaryStack)
+		beforeDepth := scan.ternaryStack.len()
 		tok := scan.NextToken()
 		switch tok.Type {
 		case ast.TokenEOF, ast.TokenIllegal, ast.TokenSemicolon:
 			return false
 		}
-		if beforeDepth >= outerDepth && len(scan.ternaryStack) < outerDepth {
+		if beforeDepth >= outerDepth && scan.ternaryStack.len() < outerDepth {
 			return true
 		}
 	}
@@ -1979,7 +2075,7 @@ func isPercentWordEscapable(r, open, close rune) bool {
 // Interpolation spans are scanned with the same string-aware logic the parser
 // uses (findStringInterpolationEnd) so quotes and nested braces inside #{...}
 // do not prematurely terminate a word.
-func splitInterpolatedPercentLiteralWords(raw string, budget *percentScanBudget) []string {
+func splitInterpolatedPercentLiteralWords(raw string, budget *percentScanBudget, interpDepth int) []string {
 	var words []string
 	var sb strings.Builder
 	inWord := false
@@ -2005,7 +2101,7 @@ func splitInterpolatedPercentLiteralWords(raw string, budget *percentScanBudget)
 			}
 			inWord = true
 		case raw[i] == '#' && i+1 < len(raw) && raw[i+1] == '{':
-			end, ok := findStringInterpolationEnd(raw, i+2, budget)
+			end, ok, _ := findStringInterpolationEnd(raw, i+2, budget, interpDepth+1)
 			if !ok {
 				// Unterminated interpolation: copy the rest verbatim and let
 				// the parser report the error against the full entry.

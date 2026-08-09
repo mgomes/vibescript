@@ -261,11 +261,11 @@ func (p *parser) reprimeAt(offset int, last ast.Token) {
 }
 
 // parserSnapshot captures the parser state needed to roll back a speculative
-// parse. The lexer is captured by value, but its stack slices are mutable
-// references, so the snapshot deep-copies them; a value copy would share backing
-// arrays and let pushes or pops during speculation leak into the live lexer on
-// restore. errorCount records how many diagnostics existed before the
-// speculation so any added during it can be discarded on rollback.
+// parse. The lexer is captured by value; its bracket and pending-ternary stacks
+// are immutable (see frameStack), so the captured pointers keep naming what the
+// stacks held at capture no matter what the speculation pushes or pops.
+// errorCount records how many diagnostics existed before the speculation so any
+// added during it can be discarded on rollback.
 type parserSnapshot struct {
 	lexer      lexer
 	curToken   ast.Token
@@ -281,11 +281,8 @@ type parserSnapshot struct {
 // the basis for bounded speculative parsing: try a parse, and if it does
 // not pan out, restore and parse the alternative.
 func (p *parser) snapshot() parserSnapshot {
-	captured := *p.l
-	captured.bracketStack = append([]bracketFrame(nil), p.l.bracketStack...)
-	captured.ternaryStack = append([]ternaryFrame(nil), p.l.ternaryStack...)
 	return parserSnapshot{
-		lexer:      captured,
+		lexer:      *p.l,
 		curToken:   p.curToken,
 		peekToken:  p.peekToken,
 		peekPeek:   p.peekPeek,
@@ -297,14 +294,11 @@ func (p *parser) snapshot() parserSnapshot {
 }
 
 // restore rewinds the parser to a previously captured snapshot, discarding any
-// tokens consumed and diagnostics recorded since. The lexer's stack slices are
-// deep-copied again so the live lexer never shares the snapshot's backing arrays,
-// keeping a later push from corrupting the retained snapshot if it is restored
-// more than once.
+// tokens consumed and diagnostics recorded since. The snapshot stays usable
+// afterwards: a push onto a restored stack leaves the frames under it alone, so
+// the same snapshot can be restored again.
 func (p *parser) restore(s parserSnapshot) {
 	*p.l = s.lexer
-	p.l.bracketStack = append([]bracketFrame(nil), s.lexer.bracketStack...)
-	p.l.ternaryStack = append([]ternaryFrame(nil), s.lexer.ternaryStack...)
 	p.curToken = s.curToken
 	p.peekToken = s.peekToken
 	p.peekPeek = s.peekPeek
