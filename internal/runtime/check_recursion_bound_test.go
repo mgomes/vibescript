@@ -396,6 +396,123 @@ end
 	)
 }
 
+// TestCheckWarningsRecursionKeepsInvariantGuards pins how much the re-entry
+// walks forget. Both bodies reassign `x` to the value it already holds before
+// recursing, so no invocation can enter the branch `x` guards. Forgetting every
+// rebound local would make that branch look reachable and silently drop the
+// diagnostic each script should still report.
+func TestCheckWarningsRecursionKeepsInvariantGuards(t *testing.T) {
+	t.Parallel()
+
+	yieldGuard := compileScript(t, `
+def f()
+  x = false
+  done = false
+  h = -> {
+    if x
+      yield
+    elsif done
+      1
+    else
+      done = true
+      x = false
+      h.call
+    end
+  }
+  h.call
+  0
+end
+
+def main() -> string
+  f() { 1 }
+end
+`)
+	warnings := checkWarningsWithin(t, yieldGuard, "an invariant guard over a yield")
+	if len(warnings) != 1 || warnings[0].Message != "return value expected string, got int" {
+		t.Fatalf("expected the unreachable yield to leave f's summary exact, got %v", warnings)
+	}
+
+	writeGuard := compileScript(t, `
+def main() -> int
+  x = false
+  done = false
+  h = -> {
+    if x
+      JSON.stringify = -> { 1 }
+    elsif done
+      1
+    else
+      done = true
+      x = false
+      h.call
+    end
+  }
+  h.call
+  JSON.stringify({})
+end
+`)
+	warnings = checkWarningsWithin(t, writeGuard, "an invariant guard over a namespace write")
+	if len(warnings) != 1 || warnings[0].Message != "return value expected int, got string" {
+		t.Fatalf("expected the unreachable write to leave JSON.stringify exact, got %v", warnings)
+	}
+}
+
+// TestCheckWarningsRecursionKeepsIvarFactsItCannotWrite pins the ivar half.
+// Recursion is not itself an ivar effect: a body that changes only a local
+// keeps every unset-ivar fact, while a write the recursion enables is still
+// collected and widens the ivar it targets.
+func TestCheckWarningsRecursionKeepsIvarFactsItCannotWrite(t *testing.T) {
+	t.Parallel()
+
+	const prefix = `
+class User
+  property a: int
+  property b: int
+
+  def initialize()
+    done = false
+`
+	const suffix = `
+    @a = @b
+  end
+end
+
+def run()
+  User.new().a
+end
+`
+	noWrite := compileScript(t, prefix+`    h = -> {
+      if done
+        1
+      else
+        done = true
+        h.call
+      end
+    }
+    h.call
+`+suffix)
+	warnings := checkWarningsWithin(t, noWrite, "recursion that writes no ivar")
+	if len(warnings) != 1 || warnings[0].Message != "write to @a expected int, got nil" {
+		t.Fatalf("expected the unset fact for @b to survive recursion, got %v", warnings)
+	}
+
+	// The same shape writing @b on the branch the recursion enables must still
+	// widen it, so the narrowing did not trade the effect away.
+	write := compileScript(t, prefix+`    h = -> {
+      if done
+        @b = 2
+      else
+        done = true
+        h.call
+      end
+    }
+    h.call
+`+suffix)
+	if warnings := checkWarningsWithin(t, write, "recursion that writes an ivar"); len(warnings) != 0 {
+		t.Fatalf("expected the nested write to widen @b, got %v", warnings)
+	}
+}
+
 // forwardedSendChainSource builds `C.send(:send, ..., :build)` with depth
 // forwarding hops, the flat shape that made the forwarded-target resolver
 // recurse once per argument.

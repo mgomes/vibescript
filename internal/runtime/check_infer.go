@@ -5175,12 +5175,19 @@ func collectRegionIvarWriteTargets(target Expression, effects *regionIvarEffects
 	}
 }
 
+// maxRepeatedRegionBlockWalks caps how often one lambda body may be walked for
+// ivar effects while the walk it started is still running, matching the bound
+// the summary walk uses. The first walk uses the caller's facts; the second
+// runs under the state the recursive call left behind and so reaches the writes
+// the recursion enables; a third adds nothing the second did not reach.
+const maxRepeatedRegionBlockWalks = 2
+
 // collectRepeatedRegionIvarEffectsFromBlock unions in the ivar effects a
 // lambda body can produce each time the region repeats. A body reachable from
 // itself (`h = -> { h.call }; h.call`) would otherwise re-enter its own
-// statements once per nested call and never finish, so a body already on the
-// walk widens every unset ivar instead of descending again: the checker cannot
-// bound how often such a region runs, so it keeps no exact fact.
+// statements once per nested call and never finish. Re-entry collects the
+// writes the recursion can reach rather than declaring every ivar unknown, so
+// recursion that writes no ivar leaves exact facts standing.
 func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromBlock(
 	block *BlockLiteral,
 	effects *regionIvarEffects,
@@ -5188,18 +5195,27 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromBlock(
 	if block == nil {
 		return
 	}
-	if _, walking := c.repeatedRegionBlocksInWalk[block]; walking {
+	walks := c.repeatedRegionBlockWalks[block]
+	if walks >= maxRepeatedRegionBlockWalks {
 		effects.reentrant = true
-		effects.unknown = true
 		return
 	}
-	if c.repeatedRegionBlocksInWalk == nil {
-		c.repeatedRegionBlocksInWalk = make(map[*BlockLiteral]struct{})
+	if c.repeatedRegionBlockWalks == nil {
+		c.repeatedRegionBlockWalks = make(map[*BlockLiteral]int)
 	}
-	c.repeatedRegionBlocksInWalk[block] = struct{}{}
-	defer delete(c.repeatedRegionBlocksInWalk, block)
+	c.repeatedRegionBlockWalks[block] = walks + 1
+	defer func() {
+		if walks == 0 {
+			delete(c.repeatedRegionBlockWalks, block)
+			return
+		}
+		c.repeatedRegionBlockWalks[block] = walks
+	}()
 	popScope := c.pushBlockCheckScope(block)
 	defer popScope()
+	if walks > 0 {
+		effects.reentrant = true
+	}
 	for _, name := range block.ImplicitParams {
 		c.bindLocalTypeInCurrentFrame(name, nil)
 		c.bindLocalClassValue(name, "")

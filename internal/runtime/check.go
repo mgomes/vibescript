@@ -183,7 +183,7 @@ type scriptChecker struct {
 	pinnedInstanceOrigins      map[Expression]checkInstanceOriginsCapture
 	constructorInstanceFacts   map[Expression]checkInstanceClassFact
 	constructorIvarFacts       map[Expression]map[string]*TypeExpr
-	repeatedRegionBlocksInWalk map[*BlockLiteral]struct{}
+	repeatedRegionBlockWalks   map[*BlockLiteral]int
 	widenedIvarFacts           map[string]struct{}
 	instanceIvarFactsDirty     bool
 	assignmentReceiverCapture  *checkAssignmentReceiverCapture
@@ -18071,11 +18071,12 @@ func (c *scriptChecker) checkScriptCallInvokedLambdaSummaryYields(
 
 // maxSummaryYieldBlockWalks caps how often one lambda body may be re-checked
 // while the walk it started is still running. The first walk uses the caller's
-// facts. A nested invocation can change captured state and so reach a yield the
-// first walk pruned, so the second forgets the locals the body rebinds and
-// therefore leaves every branch a nested invocation could enable undecided. A
-// third adds nothing the second did not already reach, which bounds a body that
-// calls itself (#7).
+// facts, which prunes the branches those facts exclude. A nested invocation
+// runs under the state the recursive call left behind, so the second walk sees
+// the changed guards and reaches a yield the first pruned. A third adds nothing
+// the second did not already reach, which bounds a body that calls itself (#7).
+// The walks change no facts of their own, so a guard the recursion leaves
+// invariant keeps excluding the branches it excluded before.
 const maxSummaryYieldBlockWalks = 2
 
 // checkInvokedLambdaSummaryYields rechecks an executed lambda with local
@@ -18110,36 +18111,23 @@ func (c *scriptChecker) checkInvokedLambdaSummaryYields(function string, block *
 		return
 	}
 	scopeState := c.snapshotScopeState()
-	rebound := make(map[string]struct{})
-	collectLocalBindings(block.Body, rebound)
-	for name := range rebound {
-		c.bindLocalType(name, nil)
-		c.bindLocalClassValue(name, "")
-	}
 	c.checkBlockLiteral(function, block, true)
 	c.restoreScopeState(scopeState)
 }
 
 // applyReentrantLambdaNamespaceMutations records the namespace members a
-// lambda that reaches itself may rewrite. The ordinary scan walks the body
-// under the state of the first invocation, so a branch the recursion enables
-// (a false branch that sets `x = true` before calling itself, a true branch
-// that assigns `JSON.stringify`) is pruned and its write is never recorded.
-// Forgetting the locals the body rebinds leaves those branches undecided, so
-// the scan reaches every write a nested invocation could perform. Only a body
-// the region walk proved re-entrant takes this pass, which is a shape no
-// bounded walk reached before.
+// lambda that reaches itself may rewrite. The ordinary scan runs before the
+// recursive call has changed anything, so a branch the recursion enables (a
+// false branch that sets `x = true` before calling itself, a true branch that
+// assigns `JSON.stringify`) is still pruned and its write is never recorded.
+// Rescanning once the region walk has proved the body re-entrant reaches those
+// writes. Only that shape takes the pass, which is a shape no bounded walk
+// reached before.
 func (c *scriptChecker) applyReentrantLambdaNamespaceMutations(block *BlockLiteral) {
 	if block == nil {
 		return
 	}
 	scopeState := c.snapshotScopeState()
-	rebound := make(map[string]struct{})
-	collectLocalBindings(block.Body, rebound)
-	for name := range rebound {
-		c.bindLocalType(name, nil)
-		c.bindLocalClassValue(name, "")
-	}
 	scan := c.newNamespaceMutationScan()
 	scan.scanLambdaBlock(block)
 	c.restoreScopeState(scopeState)
