@@ -4545,3 +4545,48 @@ func TestHashPresentResultStaysReservedWhenACallbackDetachesIt(t *testing.T) {
 		})
 	}
 }
+
+// Present results are billed only when a callback is actually about to run.
+// Charging them merely because a proc or block was configured rejected a
+// lookup whose keys are all present -- no script code runs, nothing can detach
+// the aliases, and the result adds only an array slot on top of the receiver.
+// A callback returning its own key is likewise already paid for, since the key
+// stays pinned in the builtin's argument slice for the whole call.
+func TestHashLookupsDoNotChargeAliasesNoCallbackCanDetach(t *testing.T) {
+	t.Parallel()
+
+	const quota = 650 * 1024
+
+	sources := map[string]string{
+		"values_at with every key present": `
+    def run()
+      h = Hash.new { |hash, k| hash[k] = "z" * 10 }
+      h[:a] = "x" * 400000
+      h.values_at(:a)
+    end
+    `,
+		"fetch_values with every key present": `
+    def run()
+      h = { }
+      h[:a] = "x" * 400000
+      h.fetch_values(:a) { |k| "z" * 10 }
+    end
+    `,
+		"fetch_values block returning its key": `
+    def run()
+      k = "y" * 400000
+      { }.fetch_values(k) { |x| x }
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: quota}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+				t.Fatalf("a lookup whose real footprint fits the quota was rejected: %v", err)
+			}
+		})
+	}
+}
