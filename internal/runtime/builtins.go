@@ -508,15 +508,14 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 	if args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("%s expects a string format", name)
 	}
-	// Held through the render: the conversions are live until the output is
-	// built, and the checks in there walk the arguments, which hold the
-	// instances rather than what their to_s returned.
-	retainedAt := len(exec.retainedValues)
-	defer exec.releaseRetainedValues(retainedAt)
-	values, err := exec.formatStringConversionValues(args[1:], receiver, args, kwargs, block)
+	values, scratch, err := exec.formatStringConversionValues(args[1:], receiver, args, kwargs, block)
 	if err != nil {
 		return NewNil(), err
 	}
+	// Held through the render: the conversions are live until the output is
+	// built, and the checks in there walk the arguments, which hold the
+	// instances rather than what their to_s returned.
+	defer scratch.release()
 	return exec.formatStringValues(args[0].String(), values, receiver, args, kwargs, block)
 }
 
@@ -546,34 +545,47 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 // during the loop rather than only after it, and they stay registered until
 // the render is done because the strings are live that whole time. The caller
 // releases them.
-func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, error) {
+func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, *retainedOutputScratch, error) {
+	var acc *arrayBuildAccumulator
 	var converted []Value
+	scratch := newRetainedOutputScratch(exec)
 	for i, val := range values {
 		rendered, substituted, err := exec.instanceStringValue(val, Position{})
 		if err != nil {
-			return nil, err
+			scratch.release()
+			return nil, nil, err
 		}
 		if !substituted {
 			continue
 		}
-		// Registered rather than charged by length, and rather than reserved as
-		// a byte count. A conversion is live from here until the render is done,
-		// and it is held only in a Go local that no check can reach, so the pile
-		// grew unseen: every operand is converted before the pattern is read, and
-		// a rejected pattern returned before any check ran at all.
+		if acc == nil {
+			// Seeded at the first substitution, not at entry. Seeding walks the
+			// whole reachable graph, and most calls convert nothing: format("done"),
+			// or any call whose operands are all primitives, would pay for a walk it
+			// has no use for.
+			acc = newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+		}
+		// Priced against the seeded baseline rather than by length, so a to_s
+		// that hands back one of its own fields costs nothing and several
+		// operands sharing one string are charged once. The estimator does that
+		// deduplication in constant amortized time per conversion.
 		//
-		// Registering is what makes the accounting exact in both directions. The
-		// walk that counts it also deduplicates it, so a to_s handing back one of
-		// its own fields costs nothing, and a to_s that stores its result on its
-		// receiver is not counted once for the field and again for the copy.
-		exec.retainValue(rendered)
-		// Checked against the call roots, not just the execution's own: the
-		// arguments are a builtin's Go locals, so a plain check does not see
-		// the instances the conversions were taken from. Each side could fit on
-		// its own while together they did not, and a pattern that rejects
-		// returns before the render check that would have seen both.
-		//
-
+		// Reserved rather than registered as a live value. Registering is exact
+		// in both directions, but the estimator then walks every conversion held
+		// so far on every check a later to_s performs, and a to_s runs per
+		// operand: format with 800 substituted operands went from 0.6ms to
+		// 29ms, quadratic in the operand count, where a reservation is a scalar
+		// the walk reads once (#4).
+		if err := acc.add(rendered, 0); err != nil {
+			scratch.release()
+			return nil, nil, err
+		}
+		// The accumulator's own bound already weighs the conversions against a
+		// baseline that includes the arguments, so no root walk is needed per
+		// conversion; the reservation exists so that checks inside whatever
+		// to_s runs next see the pile too, and a reservation is a scalar the
+		// walk reads once.
+		scratch.reserve(acc.accumulatedBytes(0))
 		if converted == nil {
 			converted = make([]Value, len(values))
 			copy(converted, values)
@@ -581,26 +593,18 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 		converted[i] = rendered
 	}
 	if converted == nil {
-		return values, nil
+		scratch.release()
+		return values, nil, nil
 	}
-	// Checked once, here, rather than once per conversion. The walk covers
-	// every argument and every conversion held, so running it inside the loop
-	// made format("", a, a, ...) quadratic in its operand count, and pacing it
-	// by the bytes each conversion reported was worse than useless: aliases of
-	// one shared string each added its full length while the graph had not
-	// grown at all, and conversions that render empty never advanced it though
-	// each one still appends to the retained set.
-	//
-	// Once is enough because the conversions are registered rather than
-	// counted. Anything a later to_s allocates is weighed against them by that
-	// to_s's own checks, so what is left for this check is the pile itself, and
-	// it is complete only here. It runs before the pattern is read because a
-	// pattern that rejects returns before the render check that would
-	// otherwise have seen it.
+	// Walked once, at the end, against the call roots. The arguments are a
+	// builtin's Go locals, so nothing else weighs the conversions together with
+	// the instances they came from, and a pattern that rejects returns before
+	// the render check that would otherwise have done it.
 	if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
-		return nil, err
+		scratch.release()
+		return nil, nil, err
 	}
-	return converted, nil
+	return converted, scratch, nil
 }
 
 func formatStringValues(pattern string, values []Value) (Value, error) {
