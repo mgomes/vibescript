@@ -104,6 +104,37 @@ func TestSnapshotHashLiteralChargesTheGraphItWalks(t *testing.T) {
 	}
 }
 
+// coldMemoHashLiteralSource evaluates the literal inside a called function, so
+// every iteration pushes a distinct environment and bumps the root-set topology
+// version. That invalidates the base-walk memo before the accumulator's first
+// check, which is the case the discarded liveBase session hid.
+const coldMemoHashLiteralSource = "def mk()\n  {a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8}\nend\n\n" +
+	"def run(a, n)\n  t = 0\n  j = 0\n  while j < n\n    t = mk().length\n    j = j + 1\n  end\n  t\nend"
+
+// Sessions mode's quota check opened a base-walk session through liveBase and
+// then threw it away for a second one through sessionUsedBytes. When the memo
+// was cold the discarded session paid the whole-graph walk and warmed the memo,
+// so the session that was actually charged reported only its cheap replay: the
+// walk was both wasted and free. A loop whose literals each invalidate the memo
+// therefore re-walked an arbitrarily large host graph for a flat step count --
+// 611 steps whether the retained array held 100 elements or 10,000 (#1).
+func TestSessionHashLiteralChargesAColdBaseWalk(t *testing.T) {
+	const iterations, small, large = 20, 100, 10000
+	cfg := Config{MemoryQuotaBytes: 64 << 20}
+
+	atSmall := minStepQuotaToComplete(t, cfg, coldMemoHashLiteralSource, loopMemoArray(small), iterations, 1<<21)
+	atLarge := minStepQuotaToComplete(t, cfg, coldMemoHashLiteralSource, loopMemoArray(large), iterations, 1<<21)
+
+	// Half the ideal charge leaves room for the iterations whose memo survives
+	// and for the remainder each stepN rounds away.
+	want := atSmall + iterations*(large-small)/estimatorNodesPerStep/2
+	if atLarge < want {
+		t.Errorf("the same literal cost %d steps over a %d-element retained array and %d over a "+
+			"%d-element one; want at least %d, one step per %d nodes the cold base walk visits",
+			atSmall, small, atLarge, large, want, estimatorNodesPerStep)
+	}
+}
+
 // The charge must fall on walks that scale with host data, not on ordinary
 // literals: a hash written by hand walks a handful of nodes per entry, which
 // rounds to no steps at all. Pin that an everyday literal still evaluates

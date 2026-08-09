@@ -1978,11 +1978,21 @@ func hashLiteralKeyPayload(est *memoryEstimator, lookupKey HashLookupKey, key Va
 	return keyPayload
 }
 
+// checkQuota measures the literal so far and charges the walk doing so drove.
+// Sessions mode must not reach liveBase on the way: opening a session there and
+// then discarding it for sessionUsedBytes wasted the whole-graph walk a memo
+// miss pays AND hid it from the charge, because the discarded session left the
+// memo warm so the second one reported only its cheap replay. A loop whose
+// literals each invalidate the memo therefore re-walked an arbitrarily large
+// host graph for a flat step count (#1).
 func (acc *hashLiteralBuildAccumulator) checkQuota() error {
-	base, nodes := acc.liveBase()
-	used := saturatingAdd(base, acc.retained)
+	var used, nodes int
 	if acc.sessions {
 		used, nodes = acc.sessionUsedBytes(nil)
+	} else {
+		var base int
+		base, nodes = acc.liveBase()
+		used = saturatingAdd(base, acc.retained)
 	}
 	if used > acc.exec.memoryQuota {
 		return acc.exec.memoryQuotaExceededError()
