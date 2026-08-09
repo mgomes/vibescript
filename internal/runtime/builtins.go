@@ -1654,8 +1654,13 @@ func (exec *Execution) checkSleepDuration(duration time.Duration) error {
 	// each job runs on a fresh Execution: Tasks.map over a hundred items slept
 	// a hundred times the bound.
 	if !exec.sleepBudget.spend(duration) {
-		return guardLimitErrorf("sleep %s exceeds the host maximum of %s per call",
-			duration, exec.sleepBudget.limit)
+		// The remaining allowance is named, not just the limit: after earlier
+		// sleeps have spent part of the budget, reporting the request against
+		// the original limit reads as arithmetic that does not hold, since the
+		// rejected duration is often well under it.
+		left, limit := exec.sleepBudget.left()
+		return guardLimitErrorf("sleep %s exceeds the %s left of the host maximum of %s per call",
+			duration, left, limit)
 	}
 	return nil
 }
@@ -1692,6 +1697,23 @@ func (b *sleepBudget) spend(duration time.Duration) bool {
 	}
 	b.remaining -= duration
 	return true
+}
+
+// left reports the smallest allowance across this budget and everything above
+// it, with the limit that allowance came from. The binding constraint can be a
+// parent, so a message naming this budget alone would name the wrong bound.
+func (b *sleepBudget) left() (time.Duration, time.Duration) {
+	b.mu.Lock()
+	remaining, limit := b.remaining, b.limit
+	parent := b.parent
+	b.mu.Unlock()
+
+	if parent != nil {
+		if up, upLimit := parent.left(); up < remaining {
+			return up, upLimit
+		}
+	}
+	return remaining, limit
 }
 
 // atMost reports whether this budget is already no looser than limit, in which

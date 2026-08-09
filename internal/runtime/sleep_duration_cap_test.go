@@ -35,7 +35,7 @@ end`)
 		if err == nil {
 			t.Fatal("a sleep past the host maximum must be rejected")
 		}
-		if !strings.Contains(err.Error(), "exceeds the host maximum") {
+		if !strings.Contains(err.Error(), "exceeds the") {
 			t.Fatalf("sleep rejected for the wrong reason: %v", err)
 		}
 	case <-time.After(30 * time.Second):
@@ -71,7 +71,7 @@ end`
 	// 30s is inside the default minute and outside a tightened bound.
 	tight := compileScriptWithConfig(t, Config{MaxSleepDuration: time.Second}, src)
 	_, err := tight.Call(context.Background(), "run", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "exceeds the host maximum") {
+	if err == nil || !strings.Contains(err.Error(), "exceeds the") {
 		t.Fatalf("a tightened maximum must reject a 30s sleep, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "1s") {
@@ -96,7 +96,7 @@ end`)
 	if err == nil {
 		t.Fatal("a canceled context must still end the call")
 	}
-	if strings.Contains(err.Error(), "exceeds the host maximum") {
+	if strings.Contains(err.Error(), "exceeds the") {
 		t.Fatalf("Unlimited must admit the duration, got %v", err)
 	}
 }
@@ -128,7 +128,7 @@ end`)
 		if err == nil {
 			t.Fatal("repeated permitted sleeps must exhaust the call's budget")
 		}
-		if !strings.Contains(err.Error(), "exceeds the host maximum") {
+		if !strings.Contains(err.Error(), "exceeds the") {
 			t.Fatalf("rejected for the wrong reason: %v", err)
 		}
 	case <-time.After(30 * time.Second):
@@ -167,7 +167,7 @@ end`)
 		if err == nil {
 			t.Fatal("ten workers each sleeping must exhaust the tree's shared budget")
 		}
-		if !strings.Contains(err.Error(), "exceeds the host maximum") {
+		if !strings.Contains(err.Error(), "exceeds the") {
 			t.Fatalf("rejected for the wrong reason: %v", err)
 		}
 	case <-time.After(30 * time.Second):
@@ -204,7 +204,7 @@ end`)
 		if err == nil {
 			t.Fatal("the inner engine's own maximum must bound its script")
 		}
-		if !strings.Contains(err.Error(), "exceeds the host maximum") {
+		if !strings.Contains(err.Error(), "exceeds the") {
 			t.Fatalf("rejected for the wrong reason: %v", err)
 		}
 	case <-time.After(30 * time.Second):
@@ -291,5 +291,31 @@ func TestChainedBudgetsSpendAtomically(t *testing.T) {
 	}
 	if got := parent.remaining; got != time.Millisecond {
 		t.Fatalf("parent has %s left, want 1ms: an admitted sleep must spend every level", got)
+	}
+}
+
+// TestSleepRejectionNamesWhatIsLeft pins that a refusal reports the allowance
+// remaining, not just the configured limit.
+//
+// After earlier sleeps have spent part of the budget, naming the original limit
+// beside a much smaller rejected duration reads as arithmetic that does not
+// hold, and tells a script author nothing about why their sleep was refused.
+func TestSleepRejectionNamesWhatIsLeft(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MaxSleepDuration: 60 * time.Millisecond}, `def run()
+  sleep(0.05)
+  sleep(0.02)
+end`)
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatal("the second sleep must exhaust the budget")
+	}
+	// 20ms is well under the 60ms limit, so the limit alone explains nothing.
+	if !strings.Contains(err.Error(), "10ms left") {
+		t.Fatalf("the refusal must say what is left, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "60ms") {
+		t.Fatalf("the refusal must still name the configured limit, got: %v", err)
 	}
 }
