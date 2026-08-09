@@ -508,10 +508,14 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 	if args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("%s expects a string format", name)
 	}
-	values, err := exec.formatStringConversionValues(args[1:])
+	values, scratch, err := exec.formatStringConversionValues(args[1:], receiver, args, kwargs, block)
 	if err != nil {
 		return NewNil(), err
 	}
+	// Held through the render: the conversions are live until the output is
+	// built, and the checks in there walk the arguments, which hold the
+	// instances rather than what their to_s returned.
+	defer scratch.release()
 	return exec.formatStringValues(args[0].String(), values, receiver, args, kwargs, block)
 }
 
@@ -528,16 +532,67 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 // they must agree or the reservation the quota approved is not the one built.
 // It is safe for the numeric verbs because an instance is not a valid operand
 // for any of them either way.
-func (exec *Execution) formatStringConversionValues(values []Value) ([]Value, error) {
+//
+// Every argument is converted, including ones the pattern never uses, so a
+// script-defined to_s runs once per operand before the pattern has been looked
+// at. What it returns lands in a Go-local slice the estimator cannot reach:
+// each result passed its own check while the ones before it were invisible, and
+// a pattern that fails validation -- format("", *instances) -- returned the
+// error before any output check ran at all. Many instances whose to_s returns
+// an individually quota-sized string therefore accumulated unseen (#4).
+//
+// The conversions are registered as they accumulate, so the quota sees them
+// during the loop rather than only after it, and they stay registered until
+// the render is done because the strings are live that whole time. The caller
+// releases them.
+func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, *retainedOutputScratch, error) {
+	var acc *arrayBuildAccumulator
 	var converted []Value
+	var scratch *retainedOutputScratch
 	for i, val := range values {
 		rendered, substituted, err := exec.instanceStringValue(val, Position{})
 		if err != nil {
-			return nil, err
+			scratch.release()
+			return nil, nil, err
 		}
 		if !substituted {
 			continue
 		}
+		if acc == nil {
+			// Both built at the first substitution, not at entry. Seeding the
+			// accumulator walks the whole reachable graph and the scratch escapes
+			// to the caller, and most calls convert nothing: format("done"), or
+			// any call whose operands are all primitives, would pay for a walk
+			// and an allocation it has no use for.
+			acc = newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			scratch = newRetainedOutputScratch(exec)
+		}
+		// Priced against the seeded baseline rather than by length, so a to_s
+		// that hands back one of its own fields costs nothing and several
+		// operands sharing one string are charged once. The estimator does that
+		// deduplication in constant amortized time per conversion.
+		//
+		// Reserved rather than registered as a live value. Registering is exact
+		// in both directions, but the estimator then walks every conversion held
+		// so far on every check a later to_s performs, and a to_s runs per
+		// operand: format with 800 substituted operands went from 0.6ms to
+		// 29ms, quadratic in the operand count, where a reservation is a scalar
+		// the walk reads once (#4).
+		// The backing is charged alongside the payload. A call whose conversions
+		// are all empty or all aliases has no marginal payload at all, yet it
+		// still allocates one slot per operand, and that slice is a Go local no
+		// walk can reach: a pattern that rejects returned before anything had
+		// weighed it.
+		if err := acc.add(rendered, len(values)); err != nil {
+			scratch.release()
+			return nil, nil, err
+		}
+		// The accumulator's own bound already weighs the conversions against a
+		// baseline that includes the arguments, so no root walk is needed per
+		// conversion; the reservation exists so that checks inside whatever
+		// to_s runs next see the pile too, and a reservation is a scalar the
+		// walk reads once.
+		scratch.reserve(acc.accumulatedBytes(len(values)))
 		if converted == nil {
 			converted = make([]Value, len(values))
 			copy(converted, values)
@@ -545,9 +600,18 @@ func (exec *Execution) formatStringConversionValues(values []Value) ([]Value, er
 		converted[i] = rendered
 	}
 	if converted == nil {
-		return values, nil
+		scratch.release()
+		return values, nil, nil
 	}
-	return converted, nil
+	// Walked once, at the end, against the call roots. The arguments are a
+	// builtin's Go locals, so nothing else weighs the conversions together with
+	// the instances they came from, and a pattern that rejects returns before
+	// the render check that would otherwise have done it.
+	if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+		scratch.release()
+		return nil, nil, err
+	}
+	return converted, scratch, nil
 }
 
 func formatStringValues(pattern string, values []Value) (Value, error) {
