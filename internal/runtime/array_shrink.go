@@ -42,38 +42,91 @@ package runtime
 //
 // A copy also leaves the holder as the only thing keeping the old header alive,
 // which takes it out of reach of every root the estimator walks. The claim
-// carries the header for exactly that reason: while it is marked detached, the
-// graph walk charges it, so a block cannot drain its receiver, drop the result,
-// and build a second generation of the same size against a quota that has
-// forgotten the first.
+// takes the header over for exactly that reason: it keeps costing until the
+// frame holding it returns, so a block cannot drain its receiver, drop the
+// result, and build a second generation of the same size against a quota that
+// has forgotten the first.
 
-// heldArrayBacking is one frame's claim on an array element backing: the header
-// the frame captured, and the builtin depth it walks that header at. The depth
+// heldArrayBacking is one frame's claim on the array element headers it walks
+// across the script it runs, and the builtin depth it walks them at. The depth
 // is what lets a shrink tell an enclosing frame's claim from the claim its own
-// dispatch just recorded for it. detached marks a claim a shrink has already
-// copied away from, which is what makes the header worth accounting for.
+// dispatch just recorded for it.
+//
+// A frame the runtime wrote names the one backing it captured. A frame the
+// runtime did not write -- a capability method, or a builtin registered through
+// Engine.RegisterBuiltin -- cannot say what it captured: it may walk an array
+// reached through a hash, an object, or an outer array it was handed, so
+// `driver.walk({items: a}) { a.pop }` walked a header no named claim covered.
+// Those frames claim every backing instead.
+//
+// created holds the backings a shrink allocated while the claim was live. A
+// frame cannot be walking a backing that did not exist when it started, so
+// exempting them is what keeps a drain under a wildcard claim from copying on
+// every call. detached holds the headers a shrink did copy away from, which the
+// frame still walks and no root the estimator walks reaches any more.
 type heldArrayBacking struct {
 	id       uintptr
 	depth    int
-	elems    []Value
-	detached bool
+	wildcard bool
+	created  map[uintptr]struct{}
+	detached [][]Value
+	overflow int
 }
 
-// holdArrayBackings claims the element backing of every array a frame is about
-// to hold across the script it runs, and returns the mark releaseArrayBackings
-// takes to drop them again.
+// maxDetachedHeaders caps the headers one claim accounts for by walking them.
+//
+// A named claim orphans at most one, since the receiver moves off the backing
+// the claim names. A wildcard claim has no such bound: it matches every array
+// shrunk beneath it, including the ones the script builds and drops inside the
+// callback, and walking a list that grows with the callback would make each
+// memory check cost what the callback has done so far -- a loop shrinking 8000
+// short-lived arrays inside one host call took 8s for 24k charged steps. Past
+// the cap a header is charged as a flat reserved total instead, which costs
+// nothing per check and over-counts rather than under-counts, since it cannot
+// deduplicate against what the live graph already holds.
+const maxDetachedHeaders = 32
+
+// claims reports whether this frame may be walking the backing identified by
+// id.
+func (held *heldArrayBacking) claims(id uintptr) bool {
+	if !held.wildcard {
+		return held.id == id
+	}
+	_, made := held.created[id]
+	return !made
+}
+
+// recordDetached takes over the accounting for a header this claim's frame is
+// left holding alone.
+func (held *heldArrayBacking) recordDetached(exec *Execution, values []Value) {
+	if len(held.detached) < maxDetachedHeaders {
+		held.detached = append(held.detached, values)
+		return
+	}
+	held.overflow += exec.reserveLoopScratch(newMemoryEstimator().slice(values))
+}
+
+// holdArrayBackings claims the element backings a frame is about to hold across
+// the script it runs, and returns the mark releaseArrayBackings takes to drop
+// them again.
 //
 // A frame's receiver is the obvious one, but not the only one: a global builtin
 // and a capability method are dispatched with no receiver at all and drive their
-// block from an array argument, so `driver.walk(a) { a.pop }` walked a header
-// nothing had claimed. Keyword arguments reach a frame the same way.
+// block from an argument instead. Keyword arguments reach a frame the same way.
+// hostDriven frames take a wildcard claim covering all of it and more, since
+// what their Go body captured is not knowable from the call.
 //
 // The claims are taken where the driver captures the headers it will walk --
 // builtin dispatch for the member functions and adapters, the loop head for
 // `for x in a` -- so nothing has run in between that could have moved a value
 // onto a different backing.
-func (exec *Execution) holdArrayBackings(receiver Value, args []Value, kwargs map[string]Value) int {
+func (exec *Execution) holdArrayBackings(receiver Value, args []Value, kwargs map[string]Value, hostDriven bool) int {
 	mark := len(exec.heldArrayBackings)
+	if hostDriven {
+		exec.heldArrayBackings = append(exec.heldArrayBackings,
+			heldArrayBacking{depth: exec.builtinDepth, wildcard: true})
+		return mark
+	}
 	exec.holdArrayBacking(receiver)
 	for _, arg := range args {
 		exec.holdArrayBacking(arg)
@@ -88,24 +141,23 @@ func (exec *Execution) holdArrayBacking(val Value) {
 	if val.Kind() != KindArray {
 		return
 	}
-	elems := val.Array()
-	id := sliceBackingIdentity(elems)
+	id := sliceBackingIdentity(val.Array())
 	if id == 0 {
 		return
 	}
 	exec.heldArrayBackings = append(exec.heldArrayBackings,
-		heldArrayBacking{id: id, depth: exec.builtinDepth, elems: elems})
+		heldArrayBacking{id: id, depth: exec.builtinDepth})
 }
 
-// releaseArrayBackings drops every claim taken since mark. Dropping a detached
-// claim also bumps the mutation epoch: the header stops being live state at
-// that moment, and without the bump the base-walk memo would keep serving a
-// total that still includes it.
+// releaseArrayBackings drops every claim taken since mark. Dropping a claim
+// that had detached headers also bumps the mutation epoch: they stop being live
+// state at that moment, and without the bump the base-walk memo would keep
+// serving a total that still includes them.
 //
 // The released claims are cleared rather than only cut off. A claim carries the
-// header it walks, so shortening the stack would leave those pointers in its
-// backing, keeping the array reachable from the execution while a walk that
-// reads only the live claims stops counting it -- the very shape this file
+// headers it walks, so shortening the stack would leave those pointers in its
+// backing, keeping the arrays reachable from the execution while a walk that
+// reads only the live claims stops counting them -- the very shape this file
 // exists to fix. Running one iteration over a 48 MiB array and then dropping it
 // held all of it.
 func (exec *Execution) releaseArrayBackings(mark int) {
@@ -113,10 +165,12 @@ func (exec *Execution) releaseArrayBackings(mark int) {
 		return
 	}
 	released := exec.heldArrayBackings[mark:]
+	bumped := false
 	for _, held := range released {
-		if held.detached {
+		exec.releaseLoopScratch(held.overflow)
+		if !bumped && (len(held.detached) > 0 || held.overflow > 0) {
 			bumpMutationEpoch()
-			break
+			bumped = true
 		}
 	}
 	clear(released)
@@ -134,21 +188,21 @@ func (exec *Execution) releaseArrayBackings(mark int) {
 func (exec *Execution) detachedArrayBackingBytes(est *memoryEstimator) int {
 	total := 0
 	for _, held := range exec.heldArrayBackings {
-		if held.detached {
-			total += est.slice(held.elems)
+		for _, elems := range held.detached {
+			total += est.slice(elems)
 		}
 	}
 	return total
 }
 
-// detachArrayBackingClaims reports whether a frame enclosing the running one is
-// holding values' backing, and so may still read slots this frame is about to
+// detachArrayBackingClaims reports whether a frame enclosing the running one may
+// be walking values' backing, and so may still read slots this frame is about to
 // vacate. The running frame's own claim, recorded by its dispatch, sits at the
 // current builtin depth and is not an enclosing one.
 //
-// Every enclosing claim it finds is marked detached, because the shrink that
-// asked is about to move the receiver onto a fresh backing and leave those
-// holders as the only thing keeping this one alive.
+// Every enclosing claim it finds takes the header, because the shrink that asked
+// is about to move the receiver onto a fresh backing and leave those holders as
+// the only thing keeping this one alive.
 func (exec *Execution) detachArrayBackingClaims(values []Value) bool {
 	if exec == nil || len(exec.heldArrayBackings) == 0 {
 		return false
@@ -158,13 +212,36 @@ func (exec *Execution) detachArrayBackingClaims(values []Value) bool {
 		return false
 	}
 	found := false
-	for i, held := range exec.heldArrayBackings {
-		if held.id == id && held.depth < exec.builtinDepth {
-			exec.heldArrayBackings[i].detached = true
-			found = true
+	for i := range exec.heldArrayBackings {
+		held := &exec.heldArrayBackings[i]
+		if held.depth >= exec.builtinDepth || !held.claims(id) {
+			continue
 		}
+		held.recordDetached(exec, values)
+		found = true
 	}
 	return found
+}
+
+// noteArrayBackingCreated exempts a backing this shrink just allocated from
+// every wildcard claim. No frame already running can be walking storage that did
+// not exist when it started, and without the exemption a drain inside a
+// host-driven callback would copy the survivors on every call.
+func (exec *Execution) noteArrayBackingCreated(values []Value) {
+	id := sliceBackingIdentity(values)
+	if id == 0 {
+		return
+	}
+	for i := range exec.heldArrayBackings {
+		held := &exec.heldArrayBackings[i]
+		if !held.wildcard {
+			continue
+		}
+		if held.created == nil {
+			held.created = make(map[uintptr]struct{})
+		}
+		held.created[id] = struct{}{}
+	}
 }
 
 // shrinkArray narrows the receiver to arr[start:end] in place, leaving the
@@ -188,8 +265,9 @@ func shrinkArray(exec *Execution, receiver Value, arr []Value, start, end int,
 	if err := acc.reserveSlotArrays(len(window), pendingSlots); err != nil {
 		return err
 	}
-	detached := make([]Value, len(window))
-	copy(detached, window)
-	setArrayElems(receiver, detached)
+	fresh := make([]Value, len(window))
+	copy(fresh, window)
+	exec.noteArrayBackingCreated(fresh)
+	setArrayElems(receiver, fresh)
 	return nil
 }

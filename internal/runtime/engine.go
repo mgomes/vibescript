@@ -355,6 +355,9 @@ func (e *Engine) registerHostBuiltin(name string, builtin Value) {
 	e.builtinsMu.Lock()
 	defer e.builtinsMu.Unlock()
 
+	if b := valueBuiltin(builtin); b != nil {
+		b.hostDriven = true
+	}
 	e.builtins[name] = builtin
 	if e.hostBuiltins == nil {
 		e.hostBuiltins = make(map[string]struct{})
@@ -565,6 +568,7 @@ func cloneBuiltinValue(val Value) Value {
 		clonedBuiltin.DirectCallAliasPos = builtin.DirectCallAliasPos
 		clonedBuiltin.CapturedValues = builtin.CapturedValues
 		clonedBuiltin.Capability = builtin.Capability
+		clonedBuiltin.hostDriven = builtin.hostDriven
 		// A bound predicate's BoundReceiver and Fn both read one mutable cell, so a
 		// shallow copy that shares both stays consistent: the copy reads the same
 		// receiver, and a later two-phase clone rebuilds a fresh predicate around

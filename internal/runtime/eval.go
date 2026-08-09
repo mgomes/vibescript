@@ -3302,7 +3302,7 @@ func (exec *Execution) evalForLoop(stmt *ForStmt, env *Env, mode loopResultMode)
 		// enclosing-frame relation a dispatch claim expresses. That holds
 		// however far the body wanders, since a script function call in
 		// between leaves the builtin depth alone.
-		heldBackings := exec.holdArrayBackings(iterable, nil, nil)
+		heldBackings := exec.holdArrayBackings(iterable, nil, nil, false)
 		defer exec.releaseArrayBackings(heldBackings)
 		for _, item := range iterable.Array() {
 			if err := exec.step(); err != nil {

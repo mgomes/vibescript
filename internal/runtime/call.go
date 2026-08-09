@@ -306,7 +306,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// claimed alongside the receiver because an adapter or global builtin
 		// is dispatched without one and drives its block from an argument (see
 		// array_shrink.go).
-		heldBackings := exec.holdArrayBackings(receiver, args, kwargs)
+		heldBackings := exec.holdArrayBackings(receiver, args, kwargs, builtin.hostDriven)
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		exec.releaseArrayBackings(heldBackings)
 		exec.builtinDepth--

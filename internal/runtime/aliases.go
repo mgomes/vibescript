@@ -1096,6 +1096,14 @@ type Builtin struct {
 	// revokes the captured grant so a missing-key lookup cannot invoke a
 	// capability the re-entering call never granted.
 	Capability bool
+
+	// hostDriven marks a builtin whose Go body the runtime did not write: a
+	// capability method, or one registered through Engine.RegisterBuiltin. Such
+	// a body may capture an element header from anywhere it can reach before it
+	// calls back into the script, and the runtime cannot enumerate what it took,
+	// so its frame claims every backing rather than a named one (see
+	// array_shrink.go).
+	hostDriven bool
 }
 
 // BuiltinFunc is the Go function signature for built-in Vibescript functions.

@@ -290,21 +290,42 @@ func (arrayArgDriver) Bind(CapabilityBinding) (map[string]Value, error) {
 		}
 		return NewNil(), nil
 	}
+	// walkNested reaches the array through a container it was handed rather
+	// than being handed the array itself.
+	walkNested := func(exec *Execution, _ Value, args []Value, _ map[string]Value, block Value) (Value, error) {
+		inner := args[0]
+		if inner.Kind() == KindHash {
+			inner = inner.Hash()["items"]
+		} else {
+			inner = inner.Array()[0]
+		}
+		for _, item := range inner.Array() {
+			if _, err := exec.CallBlock(block, []Value{item}); err != nil {
+				return NewNil(), err
+			}
+		}
+		return NewNil(), nil
+	}
 	return map[string]Value{
 		"driver": NewObject(map[string]Value{
-			"walk":    NewBuiltin("driver.walk", walk),
-			"walk_kw": NewBuiltin("driver.walk_kw", walk),
+			"walk":       NewBuiltin("driver.walk", walk),
+			"walk_kw":    NewBuiltin("driver.walk_kw", walk),
+			"walk_in":    NewBuiltin("driver.walk_in", walkNested),
+			"walk_inner": NewBuiltin("driver.walk_inner", walkNested),
 		}),
 	}, nil
 }
 
-// TestArrayShrinkDuringCallbackKeepsSnapshot pins that the arguments a frame
-// holds are claimed like its receiver.
+// TestArrayShrinkDuringCallbackKeepsSnapshot pins that a host-driven frame is
+// claimed whatever it walks.
 //
 // A capability method and a global builtin are dispatched with no receiver, so
 // a driver that walks an array argument across exec.CallBlock had nothing
 // claiming the header it was reading, and a shrink from inside the block zeroed
-// slots it had not reached.
+// slots it had not reached. Naming the arguments was not enough either: the
+// array a host body walks can be reached through a hash, an object, or an outer
+// array it was handed, and the runtime cannot enumerate what a body it did not
+// write took hold of. Such a frame claims every backing instead.
 func TestArrayShrinkDuringCallbackKeepsSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -326,9 +347,29 @@ def keyword()
     a.pop
   end
   seen
+end
+
+def inside_hash()
+  a = [1, 2, 3]
+  seen = []
+  driver.walk_in({ items: a }) do |x|
+    seen.push(x)
+    a.pop
+  end
+  seen
+end
+
+def inside_array()
+  a = [1, 2, 3]
+  seen = []
+  driver.walk_inner([a]) do |x|
+    seen.push(x)
+    a.pop
+  end
+  seen
 end`)
 
-	for _, function := range []string{"positional", "keyword"} {
+	for _, function := range []string{"positional", "keyword", "inside_hash", "inside_array"} {
 		t.Run(function, func(t *testing.T) {
 			t.Parallel()
 
@@ -385,5 +426,91 @@ func TestDetachedSnapshotStaysOnTheQuota(t *testing.T) {
 end`)
 	if _, err := drains.Call(context.Background(), "run", []Value{seed}, CallOptions{}); err == nil {
 		t.Fatal("a drained snapshot the iterator still holds must stay on the quota")
+	}
+}
+
+// TestShrinkUnderWildcardClaimStaysLinear pins the exemption that keeps a
+// host-driven drain from copying on every call.
+//
+// A host-driven frame claims every backing, because what its Go body captured
+// is not knowable from the call. Taken literally that would copy the survivors
+// on every shrink and make a drain quadratic. It does not, because a frame
+// cannot be walking storage that did not exist when it started: the backing the
+// first copy allocates is exempt from the claim, so the rest of the drain zeroes
+// in place.
+func TestShrinkUnderWildcardClaimStaysLinear(t *testing.T) {
+	t.Parallel()
+
+	small := minStepsToDrainUnderDriver(t, 100)
+	large := minStepsToDrainUnderDriver(t, 400)
+	// Four times the elements costs about four times the steps when one copy is
+	// amortized over the drain, and about sixteen when every pop copies.
+	if limit := 6 * small; large > limit {
+		t.Fatalf("draining 400 elements under a host driver cost %d steps against %d for "+
+			"100; want at most %d, or the wildcard claim is copying every time",
+			large, small, limit)
+	}
+}
+
+// minStepsToDrainUnderDriver returns the smallest step quota that lets a pop
+// drain of an n-element array run to completion inside a host adapter's
+// callback.
+func minStepsToDrainUnderDriver(t *testing.T, n int) int {
+	t.Helper()
+
+	const src = `def run(a)
+  driver.walk(a) do |x|
+    a.pop
+  end
+  a.size
+end`
+	elems := make([]Value, n)
+	for i := range n {
+		elems[i] = NewInt(int64(i))
+	}
+
+	lo, hi := 1, 40*n*n
+	for lo < hi {
+		mid := (lo + hi) / 2
+		script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+		if _, err := script.Call(context.Background(), "run", []Value{NewArray(elems)}, CallOptions{
+			Capabilities: []CapabilityAdapter{arrayArgDriver{}},
+		}); err != nil {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
+
+// TestDetachedHeaderRecordIsBounded pins that one claim accounts for a bounded
+// number of headers by walking them.
+//
+// A wildcard claim matches every array shrunk beneath it, including the
+// short-lived ones a callback builds and drops, so the list of headers it holds
+// for accounting has no natural bound. Walking a list that grows with the
+// callback makes each memory check cost what the callback has done so far: a
+// loop shrinking 8000 short-lived arrays inside one host call took 8.0s against
+// a 0.8s baseline for the same script shape, on 24k charged steps. Past the cap
+// a header is charged as a flat reserved total, which costs nothing per check.
+func TestDetachedHeaderRecordIsBounded(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{}
+	held := &heldArrayBacking{wildcard: true}
+	for i := range maxDetachedHeaders * 3 {
+		held.recordDetached(exec, []Value{NewInt(int64(i))})
+	}
+
+	if len(held.detached) != maxDetachedHeaders {
+		t.Fatalf("claim walks %d headers, want at most %d", len(held.detached), maxDetachedHeaders)
+	}
+	if held.overflow <= 0 {
+		t.Fatal("headers past the cap must still be charged, as a reserved total")
+	}
+	if exec.reservedScratchBytes != held.overflow {
+		t.Fatalf("reserved %d bytes against a recorded overflow of %d",
+			exec.reservedScratchBytes, held.overflow)
 	}
 }
