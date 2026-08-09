@@ -346,3 +346,45 @@ func TestNestedFormatDoesNotLeaveItsBackingBehind(t *testing.T) {
 		t.Fatalf("compacting lost the outer value: %#v", exec.retainedValues[0])
 	}
 }
+
+// TestFormatReservesTheConvertedSliceItself pins that the slice holding the
+// conversions is weighed, not only what the conversions weigh.
+//
+// A call whose conversions are all empty or all aliases adds no payload at all,
+// yet it still allocates one slot per operand. That slice is a Go local no walk
+// reaches, and a pattern that rejects returns before the render check, so
+// nothing weighed it.
+func TestFormatReservesTheConvertedSliceItself(t *testing.T) {
+	t.Parallel()
+
+	const operands = 40000
+	var b strings.Builder
+	b.WriteString(`
+class Blank
+  def to_s
+    ""
+  end
+end
+
+def run()
+  a = Blank.new()
+  format(""`)
+	for range operands {
+		b.WriteString(", a")
+	}
+	b.WriteString(`)
+end`)
+
+	// One instance, no payload from any conversion, so the slot array is the
+	// only thing this call builds. The quota sits where that array is the
+	// deciding weight: below it everything is rejected either way, above it
+	// nothing is, and only here does counting the array change the answer.
+	script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: 2 << 20}, b.String())
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatal("the slice holding the conversions must be weighed")
+	}
+	if strings.Contains(err.Error(), "unused") {
+		t.Fatalf("rejected for the pattern rather than the memory it had built: %v", err)
+	}
+}

@@ -576,7 +576,12 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 		// operand: format with 800 substituted operands went from 0.6ms to
 		// 29ms, quadratic in the operand count, where a reservation is a scalar
 		// the walk reads once (#4).
-		if err := acc.add(rendered, 0); err != nil {
+		// The backing is charged alongside the payload. A call whose conversions
+		// are all empty or all aliases has no marginal payload at all, yet it
+		// still allocates one slot per operand, and that slice is a Go local no
+		// walk can reach: a pattern that rejects returned before anything had
+		// weighed it.
+		if err := acc.add(rendered, len(values)); err != nil {
 			scratch.release()
 			return nil, nil, err
 		}
@@ -585,7 +590,7 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 		// conversion; the reservation exists so that checks inside whatever
 		// to_s runs next see the pile too, and a reservation is a scalar the
 		// walk reads once.
-		scratch.reserve(acc.accumulatedBytes(0))
+		scratch.reserve(acc.accumulatedBytes(len(values)))
 		if converted == nil {
 			converted = make([]Value, len(values))
 			copy(converted, values)
