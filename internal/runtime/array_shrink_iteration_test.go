@@ -507,6 +507,24 @@ def push_after_pop()
   seen
 end
 
+def handed_back_push()
+  a = [1, 2, 3, 4]
+  seen = []
+  driver.walk_returned do |x|
+    if x == 0
+      a.pop
+      a.push(9)
+      a
+    else
+      seen.push(x)
+      a.pop
+      a.push(8)
+      0
+    end
+  end
+  seen
+end
+
 def handed_back()
   a = [1, 2, 3, 4]
   seen = []
@@ -523,20 +541,34 @@ def handed_back()
   seen
 end`)
 
-	for _, function := range []string{
-		"positional", "keyword", "inside_hash", "inside_array", "handed_back", "push_after_pop",
-	} {
-		t.Run(function, func(t *testing.T) {
+	cases := []struct {
+		function string
+		want     string
+	}{
+		{"positional", `[1, 2, 3]`},
+		{"keyword", `[1, 2, 3]`},
+		{"inside_hash", `[1, 2, 3]`},
+		{"inside_array", `[1, 2, 3]`},
+		{"handed_back", `[1, 2, 3]`},
+		{"push_after_pop", `[1, 2, 3]`},
+		// The frame walks storage a push allocated after the claim began, so
+		// the element it has yet to reach lives there. This is the case that
+		// rules out skipping the bound for storage that postdates the claim,
+		// which would otherwise return a pop-then-push rotation to linear.
+		{"handed_back_push", `[1, 2, 3, 9]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.function, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := script.Call(context.Background(), function, nil, CallOptions{
+			got, err := script.Call(context.Background(), tc.function, nil, CallOptions{
 				Capabilities: []CapabilityAdapter{arrayArgDriver{}},
 			})
 			if err != nil {
-				t.Fatalf("%s: %v", function, err)
+				t.Fatalf("%s: %v", tc.function, err)
 			}
-			if want := `[1, 2, 3]`; got.Inspect() != want {
-				t.Fatalf("%s yielded %s, want %s", function, got.Inspect(), want)
+			if got.Inspect() != tc.want {
+				t.Fatalf("%s yielded %s, want %s", tc.function, got.Inspect(), tc.want)
 			}
 		})
 	}
