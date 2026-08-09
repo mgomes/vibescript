@@ -4505,3 +4505,49 @@ func TestHashFetchValuesDoesNotDoubleChargeAMemoizingBlock(t *testing.T) {
 	}
 	compareArrays(t, got, want)
 }
+
+// A default proc is handed the receiver as its first parameter, so its checks
+// walk the memoized results through that binding even when the hash is an
+// inline temporary the environment never held. Pricing the reservation against
+// the execution roots alone missed that binding, left every result fully
+// reserved, and rejected the inline form at about half the quota the same hash
+// bound to a local accepted -- so both spellings are pinned together here.
+func TestHashValuesAtPricesAMemoizingTemporaryLikeALocal(t *testing.T) {
+	t.Parallel()
+
+	const per = 20000
+	const keys = 30
+	const memoized = per * keys
+	body := `Hash.new { |hash, k| hash[k] = "x" * ` + fmt.Sprint(per) + ` }`
+
+	sources := map[string]string{
+		"inline temporary receiver": `
+    def run()
+      ` + body + `.values_at(` + fetchValuesKeyList(keys) + `)
+    end
+    `,
+		"receiver bound to a local": `
+    def run()
+      h = ` + body + `
+      h.values_at(` + fetchValuesKeyList(keys) + `)
+    end
+    `,
+	}
+
+	want := make([]Value, 0, keys)
+	for range keys {
+		want = append(want, NewString(strings.Repeat("x", per)))
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: memoized + memoized/2}, src)
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("a memoizing values_at that fits one copy of its payload was rejected: %v", err)
+			}
+			compareArrays(t, got, want)
+		})
+	}
+}
