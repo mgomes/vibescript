@@ -949,10 +949,24 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.values_at key is unsupported hash key: %w", err)
 				}
 				if ok {
-					// A present value aliases memory the accumulator's baseline
-					// already counts through the receiver, so charging it would
-					// bill the receiver's payload a second time.
 					out[i] = value
+					// A present value aliases the receiver, which the baseline
+					// already counts -- but only for as long as the receiver keeps
+					// holding it. A default proc can clear or delete the entry
+					// while out still retains the payload, after which no walk
+					// reaches it and an unreserved 400KB result sat alongside a
+					// 700KB in-proc temporary under a 1MB quota. Charging it
+					// whenever a proc could run keeps it accounted through any
+					// later detach; with no proc no script code runs at all, so
+					// the alias cannot be broken and billing it would double the
+					// receiver's payload.
+					if hashDefaultProc(receiver).IsNil() {
+						continue
+					}
+					if err := acc.addConservative(value, len(out)); err != nil {
+						return NewNil(), err
+					}
+					retained.reserve(acc.accumulatedBytes(len(out)))
 					continue
 				}
 				// A missing key is a [] access: consult the hash's Ruby-style
@@ -1042,10 +1056,22 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.fetch_values key is unsupported hash key: %w", err)
 				}
 				if ok {
-					// A present value aliases memory the accumulator's baseline
-					// already counts through the receiver, so charging it would
-					// bill the receiver's payload a second time.
 					out[i] = value
+					// A present value aliases the receiver, which the baseline
+					// already counts -- but only for as long as the receiver keeps
+					// holding it. The block can clear or delete the entry while
+					// out still retains the payload, after which no walk reaches
+					// it. Charging it whenever a block could run keeps it
+					// accounted through any later detach; without a block a miss
+					// raises instead of running script code, so the alias cannot
+					// be broken and billing it would double the receiver's payload.
+					if valueBlock(block) == nil {
+						continue
+					}
+					if err := acc.addConservative(value, len(out)); err != nil {
+						return NewNil(), err
+					}
+					retained.reserve(acc.accumulatedBytes(len(out)))
 					continue
 				}
 				if valueBlock(block) == nil {
