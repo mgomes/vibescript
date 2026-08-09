@@ -153,6 +153,10 @@ func (exec *Execution) beginRegionBaseWalk(est *memoryEstimator, scalars int) ba
 		c.topo = exec.baseTopoVersion
 		c.regionBoundary = boundary
 		c.graphBytes = exec.estimateGraphBasePrefix(est, boundary, nil)
+		// Walked after the prefix and committed alongside it, so the driver's
+		// later results deduplicate against everything already counted and the
+		// checks between two of them pay nothing (see memory_output.go).
+		c.outputBytes = exec.outputWalkBytes(est)
 		c.journalBudget = sessionJournalBudget(est.identityCount())
 		c.valid = true
 	}
@@ -171,16 +175,21 @@ func (exec *Execution) beginRegionBaseWalk(est *memoryEstimator, scalars int) ba
 	for _, env := range exec.envStack[boundary:] {
 		suffix += est.env(env)
 	}
-	base := scalars + c.graphBytes + suffix
+	base := scalars + c.graphBytes + c.outputBytes + suffix
 
 	if estimatorVerify {
 		// Recompute the whole-stack reference and require the prefix memo plus the
 		// fresh suffix walk to equal it. Unlike the ordinary memo's oracle this runs
 		// on every region check, hit or miss, so a prefix left stale by a wrongly
 		// suppressed epoch bump is caught the instant a check observes it.
+		//
+		// Registered driver outputs are part of both sides. The reference walks
+		// them after the whole stack while the memo commits them between the
+		// prefix and the suffix; the estimator's total is a deduplicated union
+		// over identities, so the two orders agree.
 		refEst := newMemoryEstimator()
-		ref := exec.estimateGraphBase(refEst, nil)
-		if got := c.graphBytes + suffix; ref != got {
+		ref := exec.estimateGraphBase(refEst, nil) + exec.outputWalkBytes(refEst)
+		if got := c.graphBytes + c.outputBytes + suffix; ref != got {
 			// On divergence, recompute the prefix and suffix fresh so the panic can
 			// attribute the gap: a cachedPrefix below freshPrefix means the memo went
 			// stale (a prefix-reachable mutation skipped its epoch bump), while a
@@ -188,15 +197,17 @@ func (exec *Execution) beginRegionBaseWalk(est *memoryEstimator, scalars int) ba
 			// runs only on the failure path, so it costs nothing in a passing run.
 			freshEst := newMemoryEstimator()
 			freshPrefix := exec.estimateGraphBasePrefix(freshEst, boundary, nil)
+			freshOutputs := exec.outputWalkBytes(freshEst)
 			freshSuffix := 0
 			for _, env := range exec.envStack[boundary:] {
 				freshSuffix += freshEst.env(env)
 			}
 			panic(fmt.Sprintf(
-				"vibescript: block-region estimator mismatch: prefix+suffix=%d reference=%d "+
-					"(cachedPrefix=%d freshPrefix=%d suffix=%d freshSuffix=%d freshTotal=%d) "+
+				"vibescript: block-region estimator mismatch: prefix+outputs+suffix=%d reference=%d "+
+					"(cachedPrefix=%d freshPrefix=%d cachedOutputs=%d freshOutputs=%d suffix=%d freshSuffix=%d freshTotal=%d) "+
 					"(stackDepth=%d boundary=%d builtinDepth=%d regionBuiltinDepth=%d)",
-				got, ref, c.graphBytes, freshPrefix, suffix, freshSuffix, freshPrefix+freshSuffix,
+				got, ref, c.graphBytes, freshPrefix, c.outputBytes, freshOutputs, suffix, freshSuffix,
+				freshPrefix+freshOutputs+freshSuffix,
 				len(exec.envStack), boundary, exec.builtinDepth,
 				exec.blockRegionBuiltinDepth))
 		}

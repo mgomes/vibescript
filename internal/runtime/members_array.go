@@ -1225,13 +1225,24 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err := scratch.reserve(arraySlotBackingBytes(len(arr))); err != nil {
 				return NewNil(), err
 			}
+			// The retained payloads live in a Go-local slice the estimator has no
+			// root for, so a block's own memory checks measured a graph missing
+			// every result the loop had already kept. Registering the slice puts
+			// it in every one of those checks, re-derived as the block leaves it
+			// rather than priced once when the result was produced (see
+			// memory_output.go). Registered before the runner is built, like the
+			// backing reservation above, because the runner snapshots its bind
+			// baseline at construction.
+			var result []Value
+			exec.pushOutputWalkRoot(retainedValues(&result))
+			defer exec.popOutputWalkRoot()
 			runner, err := newBlockCallRunner(exec, block, "array.map", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
 			defer exec.beginBlockIterationRegion().end()
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
-			result := make([]Value, len(arr))
+			result = make([]Value, len(arr))
 			var blockArg [1]Value
 			for i, item := range arr {
 				if err := exec.step(); err != nil {
@@ -1243,14 +1254,8 @@ func arrayMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				result[i] = val
-				// Retained payloads live in the Go-local result slice before the
-				// returned array exists, so later block calls must charge them as
-				// scratch while they allocate their own transients.
-				retainedBefore := acc.retainedPayloadBytes()
+				exec.addRetainedOutput(val)
 				if err := acc.addConservativeToReservedBacking(val); err != nil {
-					return NewNil(), err
-				}
-				if err := scratch.reserve(acc.retainedPayloadBytes() - retainedBefore); err != nil {
 					return NewNil(), err
 				}
 			}

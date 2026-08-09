@@ -379,6 +379,17 @@ type baseWalkCache struct {
 	journal    estimatorJournal
 	prevFrozen *Env
 	graphBytes int
+	// outputBytes is what the registered driver outputs contribute on top of
+	// graphBytes, deduplicated against it and committed into the same
+	// seen-state (see memory_output.go). It is memoized rather than re-walked
+	// per check because a driver performs many checks between changes to its
+	// output: re-walking an n-element output at every one of them made
+	// array.map quadratic (4000 elements went from 3.4ms to 216ms). A driver
+	// commits each retained result's marginal through addRetainedOutput, and
+	// any mutation a callback performs bumps the mutation epoch, which discards
+	// the whole memo -- so a result a callback grew or detached is re-derived
+	// before the next check reads it.
+	outputBytes int
 	// journalBudget is the per-session journal limit derived from the
 	// committed walk's identity count (see sessionJournalBudget), refreshed
 	// whenever the graph walk is re-memoized.
@@ -515,7 +526,9 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		// one ever does, a throwaway estimator keeps the open session's
 		// committed state intact at the cost of one uncached walk.
 		est := newMemoryEstimator()
-		return baseWalkSession{exec: exec, est: est, base: exec.estimateMemoryUsageBase(est)}
+		base := exec.estimateMemoryUsageBase(est)
+		base = saturatingAdd(base, exec.outputWalkBytes(est))
+		return baseWalkSession{exec: exec, est: est, base: base}
 	}
 	globals := taskLazyGlobalsFromContext(exec.Context())
 	scalars := exec.estimateScalarBase()
@@ -540,7 +553,14 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		// is reserved for the memoized path below, where the graph is stable and
 		// single-goroutine. popEnv still keeps the committed prefix consistent here
 		// (it retracts on every pop), so the next memoized check resumes correctly.
-		return baseWalkSession{exec: exec, est: est, base: scalars + exec.estimateGraphBase(est, globals), walked0: walked0}
+		//
+		// Registered driver outputs are walked last, so they deduplicate against
+		// everything the graph walk committed (see memory_output.go). This is the
+		// branch a builtin's own callbacks run on, so it is where the accounting
+		// matters most.
+		base := scalars + exec.estimateGraphBase(est, globals)
+		base = saturatingAdd(base, exec.outputWalkBytes(est))
+		return baseWalkSession{exec: exec, est: est, base: base, walked0: walked0}
 	}
 	c := exec.baseWalkCache
 	if c == nil {
@@ -565,6 +585,10 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		c.topo = exec.baseTopoVersion
 		c.regionBoundary = noBlockRegion
 		c.graphBytes = exec.estimateGraphBaseFast(est, nil)
+		// Walked after the graph and committed alongside it, so a driver's later
+		// results deduplicate against everything already counted and a check
+		// between two of them pays nothing (see memory_output.go).
+		c.outputBytes = exec.outputWalkBytes(est)
 		c.journalBudget = sessionJournalBudget(est.identityCount())
 		c.valid = true
 	}
@@ -578,7 +602,7 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 	// this check, but the memo is valid only while the topology is unchanged, so
 	// the set still matches the stack. See memory_dormant.go.
 	est.dormant = exec.currentDormantSet()
-	return baseWalkSession{exec: exec, est: est, base: scalars + c.graphBytes, walked0: walked0, cached: true}
+	return baseWalkSession{exec: exec, est: est, base: scalars + c.graphBytes + c.outputBytes, walked0: walked0, cached: true}
 }
 
 // close ends a base-walk session. A memoized session rolls back every
