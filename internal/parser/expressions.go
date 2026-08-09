@@ -703,8 +703,7 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 		return false
 	}
 
-	scan := newLexerWithBudget(p.l.input, p.l.percentScan)
-	scan.seek(offset, ast.Token{})
+	scan := p.l.scanFrom(offset)
 
 	tok := scan.NextToken()
 	if tok.Type != ast.TokenAsterisk {

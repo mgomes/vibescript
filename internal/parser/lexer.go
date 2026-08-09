@@ -709,6 +709,29 @@ func (l *lexer) seek(offset int, last ast.Token) {
 	l.lastToken = last
 }
 
+// scanFrom returns a throwaway lexer over the same source, parked so the next
+// token it scans is the one beginning at offset. Whatever it reads leaves this
+// lexer's own position untouched.
+//
+// It shares the source replay and the label-colon record, which describe the
+// source rather than one lexer's progress through it. A fresh replay would put
+// back the walk from byte 0 that it exists to remove: every line-leading `*`
+// asks whether it opens a destructuring assignment, and rebuilding a line index
+// and a structural re-lex per question made 8,000 such lines, 48 KB, take 10.5s
+// and allocate 2.1 GB (#38).
+func (l *lexer) scanFrom(offset int) *lexer {
+	scan := &lexer{
+		input:       l.input,
+		percentScan: l.percentScan,
+		replay:      l.replay,
+		ternaryScan: l.ternaryScan,
+	}
+	// seek sets every field a rune-by-rune arrival would have left, so the
+	// zero line and column it starts from are never read.
+	scan.seek(offset, ast.Token{})
+	return scan
+}
+
 func (l *lexer) makeToken(tt ast.TokenType, literal string) ast.Token {
 	return ast.Token{Type: tt, Literal: literal, Pos: ast.Position{Line: l.line, Column: l.column}}
 }
