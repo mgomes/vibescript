@@ -14,6 +14,7 @@
   entries: 300 classes including one 4000-constant module, from 139KB of source,
   allocated 263MB before the first check after initialization could see it, and
   10,000 adoptions completed under a 5,000-step quota. Each module resolution
-  and each copied constant now costs a step, and the entries are charged against
-  the memory quota before they are inserted, so the work a mixin's constants
-  cost is bounded by the quotas rather than by how many classes include it.
+  and each copied constant now costs a step, and the copy measures itself
+  against the memory quota as it goes rather than once it is finished, so the
+  work a mixin's constants cost is bounded by the quotas rather than by how many
+  classes include it.

@@ -1349,8 +1349,8 @@ func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, p
 // not it has a body. Unmetered, 300 classes including one 4000-constant module
 // — a 139KB script — allocated 263MB before any check ran, and 10,000
 // adoptions completed under a 5,000-step quota. Each module resolution and
-// each copied constant is charged a step, and the entries are charged before
-// the map grows (#23).
+// each copied constant is charged a step, and the copy measures its own growth
+// as it goes rather than after it has finished (#23).
 func (exec *Execution) adoptIncludedModuleConstants(classDef *ClassDef, env *Env) error {
 	for _, moduleName := range classDef.IncludedModules {
 		if err := exec.step(); err != nil {
@@ -1367,11 +1367,32 @@ func (exec *Execution) adoptIncludedModuleConstants(classDef *ClassDef, env *Env
 		if err := exec.stepN(len(constants)); err != nil {
 			return err
 		}
-		if err := exec.chargeAdoptedConstants(classDef.ClassVars, constants); err != nil {
+		if err := exec.adoptModuleConstants(classDef.ClassVars, constants); err != nil {
 			return err
 		}
-		bumpMutationEpoch()
-		maps.Copy(classDef.ClassVars, constants)
+	}
+	return nil
+}
+
+// adoptModuleConstants copies one module's constants into the including class,
+// charging each new entry as it lands. The copy is written out rather than left
+// to maps.Copy so that a module large enough to matter is measured while it is
+// being inserted rather than only once it is whole: an insertion is a raw map
+// write, invisible to a memoized walk until chargeAdoptedConstant bumps the
+// epoch, and the deferred bump here covers whatever the last batch left
+// unmeasured.
+func (exec *Execution) adoptModuleConstants(into, from map[string]Value) error {
+	defer bumpMutationEpoch()
+	for name, val := range from {
+		_, present := into[name]
+		into[name] = val
+		if present {
+			// An overwrite reuses the entry an earlier include already paid for.
+			continue
+		}
+		if err := exec.chargeAdoptedConstant(name); err != nil {
+			return err
+		}
 	}
 	return nil
 }

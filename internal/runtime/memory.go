@@ -2525,43 +2525,52 @@ func (exec *Execution) releaseLoopScratch(delta int) {
 	exec.reservedScratchBytes -= delta
 }
 
-// chargeAdoptedConstants charges the memory a mixin's constant adoption is
-// about to add to the including class, before the entries exist (see
+// adoptedConstantCheckShare sets how much of the memory quota a mixin's
+// constant adoption may add between two measurements: it measures every time it
+// has inserted a 1/adoptedConstantCheckShare slice of the quota, so the copy
+// runs at most that slice past the limit before it is stopped. The share also
+// bounds the cost, because an adoption that keeps reaching it is itself bounded
+// by the quota: one call pays at most this many walks however many classes
+// include however many modules. An ordinary mixin adds a few hundred bytes of
+// constants, never reaches the first boundary, and so pays none.
+const adoptedConstantCheckShare = 64
+
+// chargeAdoptedConstant accounts for one class constant a mixin adoption has
+// just copied into an including class, and measures the live graph once the
+// entries copied since the last measurement fill a slice of the quota (see
 // adoptIncludedModuleConstants).
 //
-// Each newly adopted name becomes one more entry in the class's ClassVars map,
-// which the estimator charges through the class value the call root binds. The
-// per-entry terms mirror mapStructuralBytes so the projection and the walk it
-// anticipates cannot drift. Value payloads are left out on purpose: they are
-// aliases of the module's own constants, which that walk already counts.
+// Each adopted name is one more entry in the class's ClassVars map, which the
+// estimator charges through the class value the call root binds. The per-entry
+// terms mirror mapStructuralBytes so this accounting and the walk it defers to
+// cannot drift. Value payloads are left out on purpose: they are aliases of the
+// module's own constants, which that walk already counts.
 //
-// The projection accumulates across the call and is compared against the quota
-// on its own rather than folded into a live graph walk. A walk per include
-// would cost O(includes * graph) for a script with many small includes, and the
-// periodic walk inside step cannot stand in for it: a bulk stepN can jump the
-// step counter clean over the period boundary and skip it. What makes the
-// running sum sound on its own is that these entries are permanent — a class
-// adopts once per call and never drops a constant — so a call whose adoptions
-// alone fill the quota has already lost, whatever else it holds. Everything
-// sharing the quota with them stays the ordinary checks' business, which bounds
-// the adoption at one quota's worth on top of what those checks admit rather
-// than at nothing at all (#23).
-func (exec *Execution) chargeAdoptedConstants(dest, source map[string]Value) error {
+// The measurement is the ordinary whole-graph check, so the adoption is bounded
+// by the quota that remains rather than by the quota. Charging it against the
+// quota in isolation looked cheaper but let a call already holding most of its
+// allowance adopt a second allowance on top: 7 classes including one
+// 30,000-constant module allocated the same 47MB whether the call arrived
+// empty or with 12MB of globals bound. Measuring per entry instead would be far
+// too expensive, since every insertion invalidates the memoized base walk, and
+// measuring per include is not enough either, since one module can carry as
+// many constants as the source can spell. Batching by bytes bounds the
+// overshoot and the walks together (#23).
+func (exec *Execution) chargeAdoptedConstant(name string) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
-	added := 0
-	for name := range source {
-		if _, present := dest[name]; present {
-			continue
-		}
-		added = saturatingAdd(added, estimatedMapEntryBytes+estimatedValueBytes+estimatedStringHeaderBytes+len(name))
+	exec.adoptedConstantBytes = saturatingAdd(exec.adoptedConstantBytes,
+		estimatedMapEntryBytes+estimatedValueBytes+estimatedStringHeaderBytes+len(name))
+	if exec.adoptedConstantBytes < exec.memoryQuota/adoptedConstantCheckShare {
+		return nil
 	}
-	exec.adoptedConstantBytes = saturatingAdd(exec.adoptedConstantBytes, added)
-	if exec.adoptedConstantBytes > exec.memoryQuota {
-		return exec.memoryQuotaExceededError()
-	}
-	return nil
+	exec.adoptedConstantBytes = 0
+	// The insertions this batch counted are raw map writes, so nothing has
+	// invalidated a memoized base walk for them yet; the check below has to see
+	// them rather than resume a memo taken before they landed.
+	bumpMutationEpoch()
+	return exec.checkMemory()
 }
 
 type loopScratchReservation struct {

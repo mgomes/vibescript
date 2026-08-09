@@ -92,6 +92,50 @@ func TestMixinConstantAdoptionStopsAtTheMemoryQuota(t *testing.T) {
 	}
 }
 
+// TestMixinConstantAdoptionCountsWhatTheCallAlreadyHolds pins that the
+// adoption's budget is the quota that remains, not the whole quota. Modules
+// this large are copied in bulk, so the periodic walk inside step does not
+// catch them: charging the adoption against the quota in isolation let a call
+// already holding most of its allowance adopt a second allowance on top, and
+// the same script allocated the same amount whether it arrived empty or loaded.
+// It must now stop far earlier when it starts with less to spend (#23).
+func TestMixinConstantAdoptionCountsWhatTheCallAlreadyHolds(t *testing.T) {
+	const quota = 8 << 20
+	// Sized to leave only a fraction of the quota for the adoption. A string
+	// global binds eagerly into the call root, ahead of class initialization, so
+	// it is part of the graph every adoption check walks; a composite one would
+	// bind lazily and not be there yet.
+	globals := map[string]Value{"payload": NewString(strings.Repeat("p", 13<<19))}
+
+	source := mixinConstantAdoptionSource(16, 8000)
+	adoptionBytes := func(opts CallOptions) uint64 {
+		script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: quota}, source)
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		_, err := script.Call(context.Background(), "run", nil, opts)
+		runtime.ReadMemStats(&after)
+		if err == nil {
+			t.Fatal("the adoption stayed within the memory quota")
+		}
+		requireErrorContains(t, err, "memory quota exceeded")
+		return after.TotalAlloc - before.TotalAlloc
+	}
+
+	empty := adoptionBytes(CallOptions{})
+	loaded := adoptionBytes(CallOptions{Globals: globals})
+	if estimatorVerify {
+		t.Logf("estimator oracle enabled: skipping the comparison (%d empty, %d loaded)", empty, loaded)
+		return
+	}
+	// The loaded call also allocates its rebound payload, so the margin is what
+	// carries the point: most of its quota is gone before the first class body
+	// runs, and it must be stopped well before the empty call is.
+	if 2*loaded > empty {
+		t.Fatalf("a call holding most of the quota allocated %d bytes adopting constants against the %d an empty call did; the adoption is not measured against the quota that remains", loaded, empty)
+	}
+}
+
 // TestOrdinaryMixinConstantsStayWithinDefaultQuotas pins that the metering
 // above leaves a normal mixin alone: its constants are adopted, readable both
 // scoped and through an included method, and cost nothing a default-profile
