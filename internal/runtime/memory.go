@@ -105,6 +105,18 @@ type memoryEstimator struct {
 	// monotonic and survives reset: callers read differences around their own
 	// walk rather than an absolute, and a reset mid-walk would make a
 	// difference negative.
+	//
+	// Both of the estimator's recursive descents increment it: value for the
+	// reachable-value graph and env for the environment chain. Counting only
+	// values made the charge track a fraction of the walk rather than the walk,
+	// because a frame that binds nothing (or binds only lazy values) calls
+	// value zero times while still costing a seen-set probe and a parent-chain
+	// step. A literal under 64 nested zero-parameter block drivers walked
+	// 13,923,112 env frames against 38,431 values, so the counter saw 0.3% of
+	// the work (#1). Everything else the walk does is downstream of one of
+	// these two: the journal rollback and the seen-set reset are proportional
+	// to the identities a counted visit inserted, and the per-check scalar base
+	// is fixed overhead the walk does not drive.
 	walked int
 }
 
@@ -2874,6 +2886,7 @@ func capabilityContractScopeMemory(scopes map[*Builtin]*capabilityContractScope)
 }
 
 func (est *memoryEstimator) env(env *Env) int {
+	est.walked++
 	if env == nil {
 		return 0
 	}
