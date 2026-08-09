@@ -87,6 +87,21 @@ func arrayStorageIdentity(values []Value) uintptr {
 	return start + uintptr(cap(values))*unsafe.Sizeof(Value{})
 }
 
+// sliceWithinAllocation reports whether inner addresses a part of outer's
+// allocation. Containment rather than equality of identity, because the retain
+// path hands the array a window whose capacity stops at its length, which moves
+// the end that arrayStorageIdentity reads.
+func sliceWithinAllocation(outer, inner []Value) bool {
+	if cap(outer) == 0 || cap(inner) == 0 {
+		return false
+	}
+	size := unsafe.Sizeof(Value{})
+	outerStart := uintptr(unsafe.Pointer(unsafe.SliceData(outer)))
+	innerStart := uintptr(unsafe.Pointer(unsafe.SliceData(inner)))
+	return innerStart >= outerStart &&
+		innerStart+uintptr(cap(inner))*size <= outerStart+uintptr(cap(outer))*size
+}
+
 // heldArrayBacking is one frame's claim on the array element headers it walks
 // across the script it runs, and the builtin depth it walks them at. The depth
 // is what lets a shrink tell an enclosing frame's claim from the claim its own
@@ -256,9 +271,9 @@ func (held *heldArrayBacking) canRetain(full []Value, receiver Value) bool {
 // longer walked. The array alone is not enough either, since one array moves
 // between allocations as it grows.
 func (held *heldArrayBacking) holds(full []Value, receiver Value) bool {
-	id, owner := arrayStorageIdentity(full), arrayIdentity(receiver)
+	owner := arrayIdentity(receiver)
 	for _, already := range held.retained {
-		if already.owner == owner && arrayStorageIdentity(already.full) == id {
+		if already.owner == owner && sliceWithinAllocation(already.full, full) {
 			return true
 		}
 	}
@@ -303,7 +318,7 @@ func (retained retainedArrayBacking) reclaim(exec *Execution) error {
 		}
 		return nil
 	}
-	if arrayStorageIdentity(current) != arrayStorageIdentity(retained.full) {
+	if !sliceWithinAllocation(retained.full, current) {
 		return nil
 	}
 	if err := exec.chargeScanSteps(len(current)); err != nil {
@@ -329,13 +344,23 @@ func (retained retainedArrayBacking) reclaim(exec *Execution) error {
 // vacated slots would come back as nothing. Walking the elements charges those
 // payloads while still deduplicating each one against the rest of the graph, at
 // the cost of counting the fixed per-value bytes of the visible window twice.
+//
+// They are walked to the record's capacity, not its length. A record can be the
+// only thing rooting an allocation, and the length is only what the array
+// happened to show when the claim first saw it: storage held past that point
+// would be billed as the elements in front of it, which is the shape of the
+// finding this file exists for. The slot bytes are added whole for the same
+// reason, since the array's own accounting now covers only the window it shows
+// -- an overlap with what the array is charged for, which is the safe direction.
 func (exec *Execution) retainedArrayBackingBytes(est *memoryEstimator) int {
 	total := 0
 	for _, held := range exec.heldArrayBackings {
 		for _, retained := range held.retained {
-			for _, val := range retained.full {
+			whole := retained.full[:cap(retained.full)]
+			for _, val := range whole {
 				total += est.value(val)
 			}
+			total += valueSliceBackingBytes(len(whole))
 		}
 	}
 	return total
@@ -449,7 +474,19 @@ func shrinkArray(exec *Execution, receiver Value, arr []Value, start, end int,
 		// well as the safe one: a drain narrows the same storage over and
 		// over and never copies.
 		wildcard.retain(arr, receiver)
-		setArrayElems(receiver, window)
+		if start == end {
+			// An empty window would still address the storage, and a slice
+			// that shows nothing keeps the whole allocation alive for as long
+			// as the array holds it. Fresh empty storage lets go now; the
+			// claim goes on charging what the frame is still walking.
+			setArrayElems(receiver, []Value{})
+			return nil
+		}
+		// The window's capacity stops at its length, so a later push cannot
+		// reuse a slot inside what the frame is walking and rewrite an element
+		// it has yet to reach. That costs the push a reallocation and leaves
+		// the drain itself untouched, since narrowing never copies.
+		setArrayElems(receiver, arr[start:end:end])
 		return nil
 	}
 	// A frame the runtime wrote is walking this header, or a wildcard claim is

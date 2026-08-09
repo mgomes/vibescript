@@ -74,6 +74,28 @@ def shift_during_each()
   seen
 end
 
+def push_after_pop_each()
+  a = [1, 2, 3]
+  seen = []
+  a.each do |x|
+    seen.push(x)
+    a.pop
+    a.push(9)
+  end
+  seen
+end
+
+def push_after_pop_for_in()
+  a = [1, 2, 3]
+  seen = []
+  for x in a
+    seen.push(x)
+    a.pop
+    a.push(9)
+  end
+  seen
+end
+
 def drain(z)
   z.pop
 end
@@ -139,6 +161,8 @@ end`)
 		{"shift_during_reverse_each", `[3, 2, 1]`},
 		{"shift_count_during_reverse_each", `[4, 3, 2, 1]`},
 		{"shift_during_each", `[1, 2, 3]`},
+		{"push_after_pop_each", `[1, 2, 3]`},
+		{"push_after_pop_for_in", `[1, 2, 3]`},
 		{"pop_during_for_in", `[1, 2, 3]`},
 		{"pop_count_during_for_in", `[1, 2, 3, 4]`},
 		{"shift_during_for_in", `[1, 2, 3]`},
@@ -385,8 +409,22 @@ func (arrayArgDriver) Bind(CapabilityBinding) (map[string]Value, error) {
 		_, err := exec.CallBlock(block, []Value{NewArray(elems), NewArray(elems)})
 		return NewNil(), err
 	}
+	// walkSpare hands the script an array showing one element over storage whose
+	// spare capacity still holds payloads, which only host code can build.
+	walkSpare := func(exec *Execution, _ Value, args []Value, _ map[string]Value, block Value) (Value, error) {
+		elems := make([]Value, 4)
+		elems[0] = NewInt(1)
+		for i := 1; i < len(elems); i++ {
+			// Distinct strings: the estimator deduplicates payloads by identity,
+			// so one string in three slots would be charged once.
+			elems[i] = NewString(strings.Repeat(args[0].String(), 200_000+i))
+		}
+		_, err := exec.CallBlock(block, []Value{NewArray(elems[:1])})
+		return NewNil(), err
+	}
 	return map[string]Value{
 		"driver": NewObject(map[string]Value{
+			"walk_spare":       NewBuiltin("driver.walk_spare", walkSpare),
 			"walk_aliased":     NewBuiltin("driver.walk_aliased", walkAliased),
 			"walk_aliased_big": NewBuiltin("driver.walk_aliased_big", walkAliasedBig),
 			"walk":             NewBuiltin("driver.walk", walk),
@@ -410,6 +448,11 @@ func (arrayArgDriver) Bind(CapabilityBinding) (map[string]Value, error) {
 // write took hold of. Such a frame claims every backing instead -- including
 // storage created after it started, which it can be handed back as a callback
 // result.
+//
+// push_after_pop is the case that is not about what a shrink writes but about
+// what it leaves writable: narrowing in place left spare capacity inside the
+// frame's window, and a later push reused it and rewrote an element the frame
+// had yet to reach. Every one of these shapes yielded 1, 2, 9 on master.
 func TestArrayShrinkDuringCallbackKeepsSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -453,6 +496,17 @@ def inside_array()
   seen
 end
 
+def push_after_pop()
+  a = [1, 2, 3]
+  seen = []
+  driver.walk(a) do |x|
+    seen.push(x)
+    a.pop
+    a.push(9)
+  end
+  seen
+end
+
 def handed_back()
   a = [1, 2, 3, 4]
   seen = []
@@ -469,7 +523,9 @@ def handed_back()
   seen
 end`)
 
-	for _, function := range []string{"positional", "keyword", "inside_hash", "inside_array", "handed_back"} {
+	for _, function := range []string{
+		"positional", "keyword", "inside_hash", "inside_array", "handed_back", "push_after_pop",
+	} {
 		t.Run(function, func(t *testing.T) {
 			t.Parallel()
 
@@ -676,5 +732,39 @@ func TestRetainedHeaderRecordIsBounded(t *testing.T) {
 	if len(held.retained) != maxHeldArrayHeaders {
 		t.Fatalf("claim holds %d narrowed arrays, want at most %d",
 			len(held.retained), maxHeldArrayHeaders)
+	}
+}
+
+// TestRetainedBackingIsChargedByCapacity pins that a record charges the storage
+// it holds, not the window the array happened to show when the claim took it on.
+//
+// The record can be the only thing rooting an allocation. Billing it by that
+// window would let an array showing one element sit in front of storage full of
+// payloads and cost one element, which is the finding this file exists for
+// arrived at from the other end.
+func TestRetainedBackingIsChargedByCapacity(t *testing.T) {
+	t.Parallel()
+
+	// The hidden payloads are about 6 MiB and the second generation about 4;
+	// either fits under the quota alone and together they do not.
+	script := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: 8 << 20},
+		`def run(seed)
+  driver.walk_spare(seed) do |a|
+    a.pop
+    b = []
+    i = 0
+    while i < 2
+      b.push(seed * 200_000)
+      i = i + 1
+    end
+    b.size
+  end
+  0
+end`)
+	_, err := script.Call(context.Background(), "run", []Value{NewString("abcdefghij")}, CallOptions{
+		Capabilities: []CapabilityAdapter{arrayArgDriver{}},
+	})
+	if err == nil {
+		t.Fatal("storage held only by a retained record must be charged for what it holds")
 	}
 }
