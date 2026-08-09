@@ -176,3 +176,68 @@ end`)
 			float64(held)/(1<<20), float64(limit)/(1<<20))
 	}
 }
+
+// TestWildcardShrinkReclaimsOnRelease pins that a shrink beneath a host-driven
+// frame still frees what it removed, once the frame that may have been walking
+// it is done.
+//
+// Such a shrink cannot clear the slots it vacates while the frame is live, and
+// cannot move the array onto a copy either, since the frame can be handed the
+// copy back. It leaves the storage alone and narrows the array over it, so the
+// clearing is deferred to the moment the claim drops. Without that the removed
+// payloads would sit in the backing, reachable through the array and invisible
+// to the quota, which is the retention this whole file is about.
+//
+// The heap is sampled after the host call returns but while the array is still
+// script-reachable, which is the only window where the difference shows.
+//
+// Not parallel: it measures process-wide heap.
+func TestWildcardShrinkReclaimsOnRelease(t *testing.T) {
+	var samples []uint64
+	engine := MustNewEngine(Config{StepQuota: 50_000_000, MemoryQuotaBytes: Unlimited})
+	engine.RegisterBuiltin("probe_heap", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		var stats goruntime.MemStats
+		goruntime.GC()
+		goruntime.ReadMemStats(&stats)
+		samples = append(samples, stats.HeapAlloc)
+		return NewNil(), nil
+	})
+	script, err := engine.Compile(`def run(seed)
+  a = []
+  i = 0
+  while i < 100
+    a.push(seed * 100)
+    i = i + 1
+  end
+  probe_heap()
+  driver.walk(a) do |x|
+    a.pop(a.size)
+  end
+  probe_heap()
+  a.size
+end`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	seed := NewString(strings.Repeat("abcdefghij", 500))
+	got, err := script.Call(context.Background(), "run", []Value{seed}, CallOptions{
+		Capabilities: []CapabilityAdapter{arrayArgDriver{}},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got.Int() != 0 {
+		t.Fatalf("array holds %d elements after the drain, want 0", got.Int())
+	}
+	if len(samples) != 2 {
+		t.Fatalf("probe_heap ran %d times, want 2", len(samples))
+	}
+
+	// The fifty megabytes the drain removed must be gone once the claim drops.
+	freed := int64(samples[0]) - int64(samples[1])
+	if want := int64(32 << 20); freed < want {
+		t.Fatalf("the drain released %.2f MiB, want at least %.2f MiB",
+			float64(freed)/(1<<20), float64(want)/(1<<20))
+	}
+}

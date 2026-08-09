@@ -224,6 +224,48 @@ func TestShrinkDuringIterationStaysLinear(t *testing.T) {
 	}
 }
 
+// TestRetainedSnapshotStaysOnTheQuota pins that a shrink beneath a host-driven
+// frame keeps what it removed on the memory quota until the frame is done.
+//
+// Such a shrink leaves the storage untouched and narrows the array over it, so
+// the removed payloads stay reachable through the backing while the claim is
+// live. Charging only the window the array now shows would let a callback drain
+// its receiver and build a second generation of the same size against a quota
+// that had forgotten the first.
+func TestRetainedSnapshotStaysOnTheQuota(t *testing.T) {
+	t.Parallel()
+
+	// Eight half-megabyte strings fit the quota; two such generations do not.
+	const build = `  a = []
+  i = 0
+  while i < 8
+    a.push(seed * 100)
+    i = i + 1
+  end
+`
+	seed := NewString(strings.Repeat("abcdefghij", 500))
+	config := Config{StepQuota: 50_000_000, MemoryQuotaBytes: 6 << 20}
+
+	fits := compileScriptWithConfig(t, config, "def run(seed)\n"+build+"  a.size\nend")
+	if _, err := fits.Call(context.Background(), "run", []Value{seed}, CallOptions{}); err != nil {
+		t.Fatalf("one generation must fit under the quota: %v", err)
+	}
+
+	drains := compileScriptWithConfig(t, config, "def run(seed)\n"+build+`  b = []
+  driver.walk(a) do |x|
+    a.pop(a.size)
+    b.push(seed * 100)
+  end
+  b.size
+end`)
+	_, err := drains.Call(context.Background(), "run", []Value{seed}, CallOptions{
+		Capabilities: []CapabilityAdapter{arrayArgDriver{}},
+	})
+	if err == nil {
+		t.Fatal("a drained backing the callback still holds must stay on the quota")
+	}
+}
+
 // TestZeroCountShrinkDoesNoWork pins that pop(0) and shift(0) cost the same
 // whatever the receiver holds. They remove nothing, but they used to reach the
 // shrink path anyway, which inside an iterator copies the whole receiver and
@@ -306,12 +348,28 @@ func (arrayArgDriver) Bind(CapabilityBinding) (map[string]Value, error) {
 		}
 		return NewNil(), nil
 	}
+	// walkReturned takes an array back from its first callback and walks that
+	// header across later ones, so the header it holds is storage that did not
+	// exist when the frame started.
+	walkReturned := func(exec *Execution, _ Value, _ []Value, _ map[string]Value, block Value) (Value, error) {
+		got, err := exec.CallBlock(block, []Value{NewInt(0)})
+		if err != nil {
+			return NewNil(), err
+		}
+		for _, item := range got.Array() {
+			if _, err := exec.CallBlock(block, []Value{item}); err != nil {
+				return NewNil(), err
+			}
+		}
+		return NewNil(), nil
+	}
 	return map[string]Value{
 		"driver": NewObject(map[string]Value{
-			"walk":       NewBuiltin("driver.walk", walk),
-			"walk_kw":    NewBuiltin("driver.walk_kw", walk),
-			"walk_in":    NewBuiltin("driver.walk_in", walkNested),
-			"walk_inner": NewBuiltin("driver.walk_inner", walkNested),
+			"walk":          NewBuiltin("driver.walk", walk),
+			"walk_kw":       NewBuiltin("driver.walk_kw", walk),
+			"walk_in":       NewBuiltin("driver.walk_in", walkNested),
+			"walk_inner":    NewBuiltin("driver.walk_inner", walkNested),
+			"walk_returned": NewBuiltin("driver.walk_returned", walkReturned),
 		}),
 	}, nil
 }
@@ -325,7 +383,9 @@ func (arrayArgDriver) Bind(CapabilityBinding) (map[string]Value, error) {
 // slots it had not reached. Naming the arguments was not enough either: the
 // array a host body walks can be reached through a hash, an object, or an outer
 // array it was handed, and the runtime cannot enumerate what a body it did not
-// write took hold of. Such a frame claims every backing instead.
+// write took hold of. Such a frame claims every backing instead -- including
+// storage created after it started, which it can be handed back as a callback
+// result.
 func TestArrayShrinkDuringCallbackKeepsSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -367,9 +427,25 @@ def inside_array()
     a.pop
   end
   seen
+end
+
+def handed_back()
+  a = [1, 2, 3, 4]
+  seen = []
+  driver.walk_returned do |x|
+    if x == 0
+      a.pop
+      a
+    else
+      seen.push(x)
+      a.pop
+      0
+    end
+  end
+  seen
 end`)
 
-	for _, function := range []string{"positional", "keyword", "inside_hash", "inside_array"} {
+	for _, function := range []string{"positional", "keyword", "inside_hash", "inside_array", "handed_back"} {
 		t.Run(function, func(t *testing.T) {
 			t.Parallel()
 
@@ -499,12 +575,12 @@ func TestDetachedHeaderRecordIsBounded(t *testing.T) {
 
 	exec := &Execution{}
 	held := &heldArrayBacking{wildcard: true}
-	for i := range maxDetachedHeaders * 3 {
+	for i := range maxHeldArrayHeaders * 3 {
 		held.recordDetached(exec, []Value{NewInt(int64(i))})
 	}
 
-	if len(held.detached) != maxDetachedHeaders {
-		t.Fatalf("claim walks %d headers, want at most %d", len(held.detached), maxDetachedHeaders)
+	if len(held.detached) != maxHeldArrayHeaders {
+		t.Fatalf("claim walks %d headers, want at most %d", len(held.detached), maxHeldArrayHeaders)
 	}
 	if held.overflow <= 0 {
 		t.Fatal("headers past the cap must still be charged, as a reserved total")
