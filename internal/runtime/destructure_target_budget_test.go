@@ -19,6 +19,18 @@ func destructureRestTargetsSource(nested int) string {
 	return "def run(v, n)\n  " + strings.Join(targets, ", ") + " = v\n  a.length\nend"
 }
 
+// blockRestDestructureSource is destructureRestTargetsSource as a block
+// parameter list, which walks the same targets through the block's own bind
+// charge rather than through the statement path.
+func blockRestDestructureSource(nested int) string {
+	targets := make([]string, 0, nested+1)
+	targets = append(targets, "z")
+	for range nested {
+		targets = append(targets, "(*a)")
+	}
+	return "def run(v, n)\n  t = 0\n  v.each { |" + strings.Join(targets, ", ") + "| t = t + 1 }\n  t\nend"
+}
+
 // repeatedArrayValue returns an array of count references to one width-element
 // array, so the value's own footprint is a single backing however many targets
 // read it: what grows is the copying, not the memory the quota can see.
@@ -44,8 +56,9 @@ func TestNestedRestDestructureChargesTheSlotsItCopies(t *testing.T) {
 	const nested, narrowWidth, wideWidth = 256, 100, 20000
 	src := destructureRestTargetsSource(nested)
 
-	narrow := minStepQuotaToComplete(t, src, repeatedArrayValue(nested, narrowWidth), 1, 1<<22)
-	wide := minStepQuotaToComplete(t, src, repeatedArrayValue(nested, wideWidth), 1, 1<<22)
+	cfg := Config{MemoryQuotaBytes: 64 << 20}
+	narrow := minStepQuotaToComplete(t, cfg, src, repeatedArrayValue(nested, narrowWidth), 1, 1<<22)
+	wide := minStepQuotaToComplete(t, cfg, src, repeatedArrayValue(nested, wideWidth), 1, 1<<22)
 
 	// The last target reads past the end of the value and copies nothing, so
 	// nested-1 targets copy the extra width. Half the ideal charge leaves room
@@ -56,6 +69,35 @@ func TestNestedRestDestructureChargesTheSlotsItCopies(t *testing.T) {
 	if wide < want {
 		t.Errorf("the same statement cost %d steps over %d-element values and %d over %d-element ones; "+
 			"want at least %d, one step per %d slots the assignment copies",
+			narrow, narrowWidth, wide, wideWidth, want, destructureUnitsPerStep)
+	}
+}
+
+// The step quota and the memory quota are independent, and a block's bind charge
+// is built only when memory is bounded and the block binds a rest. Taking the
+// destructuring step charge from that charge therefore switched the CPU metering
+// off for the memory-unlimited, steps-finite configuration the CLI runs by
+// default: 256 nested rests in a block parameter list cost 12 steps over
+// 20k-element values, exactly what they cost over 100-element ones (#49). The
+// charge has to be installed from the execution instead.
+func TestBlockParamDestructureChargesWithoutAMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	const nested, narrowWidth, wideWidth = 256, 100, 20000
+	src := blockRestDestructureSource(nested)
+	cfg := Config{MemoryQuotaBytes: Unlimited}
+	yield := func(width int) Value {
+		return NewArray([]Value{repeatedArrayValue(nested, width)})
+	}
+
+	narrow := minStepQuotaToComplete(t, cfg, src, yield(narrowWidth), 1, 1<<22)
+	wide := minStepQuotaToComplete(t, cfg, src, yield(wideWidth), 1, 1<<22)
+
+	copied := (nested - 1) * (wideWidth - narrowWidth)
+	want := narrow + copied/destructureUnitsPerStep/2
+	if wide < want {
+		t.Errorf("with memory unlimited the same block cost %d steps over %d-element values and %d "+
+			"over %d-element ones; want at least %d, one step per %d slots the bind copies",
 			narrow, narrowWidth, wide, wideWidth, want, destructureUnitsPerStep)
 	}
 }

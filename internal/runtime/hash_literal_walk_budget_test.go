@@ -25,14 +25,17 @@ func hashLiteralLoopSource(pairs int, duplicateKeys bool) string {
 }
 
 // minStepQuotaToComplete binary-searches the smallest step quota at which src
-// completes, which is the observable total of everything the run charged.
-func minStepQuotaToComplete(t *testing.T, src string, arg Value, n, hi int) int {
+// completes, which is the observable total of everything the run charged. cfg
+// carries the rest of the configuration, so a test can pin what the step charge
+// must not depend on; its StepQuota is the search variable.
+func minStepQuotaToComplete(t *testing.T, cfg Config, src string, arg Value, n, hi int) int {
 	t.Helper()
 
 	lo := 1
 	for lo < hi {
 		mid := (lo + hi) / 2
-		script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: 64 << 20}, src)
+		cfg.StepQuota = mid
+		script := compileScriptWithConfig(t, cfg, src)
 		if _, err := script.Call(context.Background(), "run", []Value{arg, NewInt(int64(n))}, CallOptions{}); err != nil {
 			lo = mid + 1
 		} else {
@@ -86,8 +89,9 @@ func TestSnapshotHashLiteralChargesTheGraphItWalks(t *testing.T) {
 	baseWalkCacheDisabled.Store(true)
 	defer baseWalkCacheDisabled.Store(false)
 
-	atSmall := minStepQuotaToComplete(t, src, loopMemoArray(small), iterations, 1<<20)
-	atLarge := minStepQuotaToComplete(t, src, loopMemoArray(large), iterations, 1<<20)
+	cfg := Config{MemoryQuotaBytes: 64 << 20}
+	atSmall := minStepQuotaToComplete(t, cfg, src, loopMemoArray(small), iterations, 1<<20)
+	atLarge := minStepQuotaToComplete(t, cfg, src, loopMemoArray(large), iterations, 1<<20)
 
 	// Every iteration walks the extra elements once. Half the ideal charge
 	// leaves room for the per-charge remainder each stepN rounds away, while

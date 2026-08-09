@@ -2289,7 +2289,7 @@ func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value V
 		// yielded value, not the whole receiver).
 		return assignDestructureWithNormalizer(t, value, func(target Expression, value Value) error {
 			return exec.bindBlockParamTarget(env, target, value, charge, blk)
-		}, charge.destructureCharge(), func(element DestructureElement, value Value) (Value, error) {
+		}, charge.destructureCharge(exec), func(element DestructureElement, value Value) (Value, error) {
 			return exec.normalizeBlockDestructureElement(blk, element, value)
 		})
 	default:
@@ -2703,7 +2703,10 @@ const destructureUnitsPerStep = 64
 // the cancellation poll and periodic memory check that a long assignment
 // otherwise ran to completion without.
 func (exec *Execution) chargeDestructureScan(n int) error {
-	if n <= 0 {
+	// A nil execution has no quota to charge against, matching chargeStringScan:
+	// the walk is reachable from the static checker's speculative binding pass,
+	// and callers should not each have to remember that.
+	if exec == nil || n <= 0 {
 		return nil
 	}
 	exec.destructureScanResidue += n

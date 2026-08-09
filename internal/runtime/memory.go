@@ -2404,16 +2404,20 @@ func (c *blockBindCharge) projectRestWindow(count int) error {
 // identifiers and nested destructures (never an index or member write), so the
 // snapshot path that produces a live Go-stack slot array never runs during block
 // binding -- the only off-baseline memory is the rest backing this preflight gates.
-func (c *blockBindCharge) destructureCharge() destructureCharge {
-	if c == nil {
-		return destructureCharge{check: noopDestructureCheck, step: noopDestructureStep}
-	}
-	return destructureCharge{
-		check: func(count, _ int, _ Value) error {
+//
+// The step charge comes from exec rather than from c because the two quotas are
+// independent: newBlockBindCharge returns nil whenever memory is unlimited or
+// the block binds no rest, so taking the CPU metering from c left a block's
+// target walk and window copies free under the memory-unlimited, steps-finite
+// configuration the CLI runs by default (#49).
+func (c *blockBindCharge) destructureCharge(exec *Execution) destructureCharge {
+	charge := destructureCharge{check: noopDestructureCheck, step: exec.chargeDestructureScan}
+	if c != nil {
+		charge.check = func(count, _ int, _ Value) error {
 			return c.projectRestWindow(count)
-		},
-		step: c.exec.chargeDestructureScan,
+		}
 	}
+	return charge
 }
 
 // blockBindsRest reports whether any of the block's parameters destructure a value
