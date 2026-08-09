@@ -2694,9 +2694,6 @@ func (exec *Execution) estimateGraphTail(est *memoryEstimator, globals *taskLazy
 		total += group.jobPayloadMemory(est)
 		total += group.retainedResultMemory(est)
 	}
-	for _, val := range exec.retainedValues {
-		total += est.value(val)
-	}
 	if globals != nil {
 		total += globals.retainedSourceMemory(est)
 		total += globals.retainedCloneMemory(est)
@@ -3418,56 +3415,4 @@ func (est *memoryEstimator) objectWrapperBytes(val Value) int {
 		est.journal.objectData = append(est.journal.objectData, id)
 	}
 	return estimatedObjectDataBytes
-}
-
-// retainValue makes a value the estimator cannot otherwise reach part of this
-// execution's live set. releaseRetainedValues drops back to a depth taken
-// before the first retain.
-//
-// A builtin that holds results in a Go local while it goes on to run more
-// script code is invisible to every check that script performs: the value is
-// live, but no walk reaches it. Registering it is exact where reserving a byte
-// count is not, because the same walk that counts it also deduplicates it --
-// a string a script handed back from one of its own fields is already counted
-// through the roots and costs nothing more here.
-//
-// With no memory quota there is nothing to count against, so nothing is kept:
-// the release is written to be correct either way rather than conditional.
-func (exec *Execution) retainValue(val Value) {
-	if exec == nil || exec.memoryQuota <= 0 {
-		return
-	}
-	exec.retainedValues = append(exec.retainedValues, val)
-}
-
-func (exec *Execution) releaseRetainedValues(depth int) {
-	if exec == nil || len(exec.retainedValues) <= depth {
-		return
-	}
-	// Cleared before the length drops. Shortening a slice leaves its backing
-	// array holding the pointers, so the values would stay live to the garbage
-	// collector while this walk, which reads only the visible length, stopped
-	// counting them: exactly the retention this registration exists to expose.
-	clear(exec.retainedValues[depth:])
-	// A nested call can grow the backing far past what the outer one holds --
-	// an outer to_s that itself calls format, say -- and returning to a nonzero
-	// depth would leave that capacity reachable from the execution while the
-	// walk, which reads only the visible length, stopped counting it. Handing
-	// it back costs a copy of what is still held, which is small by definition
-	// whenever the check fires.
-	if depth > 0 && cap(exec.retainedValues) > 4*depth {
-		compacted := make([]Value, depth)
-		copy(compacted, exec.retainedValues)
-		exec.retainedValues = compacted
-		return
-	}
-	if depth == 0 {
-		// The backing itself is dropped once nothing is retained, rather than
-		// kept for reuse. A call with many operands grows it once, and holding
-		// that capacity for the rest of the script would be live memory no walk
-		// counts, which is the same shape one level further out.
-		exec.retainedValues = nil
-		return
-	}
-	exec.retainedValues = exec.retainedValues[:depth]
 }

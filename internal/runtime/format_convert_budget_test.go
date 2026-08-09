@@ -3,9 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
-	goruntime "runtime"
 	"strings"
-	"sync/atomic"
 	"testing"
 )
 
@@ -231,129 +229,6 @@ end`
 	}
 }
 
-// heapProbeCapability reports the process heap, measured from inside the
-// script so a value that is only reachable while the call is still running can
-// be observed at all.
-type heapProbeCapability struct{ heap *atomic.Int64 }
-
-func (c heapProbeCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
-	heap := c.heap
-	return map[string]Value{
-		"probe": NewObject(map[string]Value{
-			"heap": NewBuiltin("probe.heap", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
-				var stats goruntime.MemStats
-				goruntime.GC()
-				goruntime.ReadMemStats(&stats)
-				heap.Store(int64(stats.HeapAlloc))
-				return NewNil(), nil
-			}),
-		}),
-	}, nil
-}
-
-// TestFormatDoesNotRetainConversionsAfterTheyAreReleased pins that a released
-// conversion stops being reachable, not merely uncounted.
-//
-// The retained set is a stack, and shortening a Go slice leaves the pointers in
-// its backing array: the walk reads the visible length and stops counting the
-// conversion, while the collector goes on holding it. That is the same
-// retained-but-uncounted shape the registration exists to expose, and it is why
-// the slots are cleared rather than just dropped.
-//
-// The heap is sampled from inside the call, because the stale slot is
-// overwritten by the next conversion and the whole execution is gone by the
-// time Call returns -- so nothing about it is observable from outside.
-//
-// Not parallel: it measures process-wide heap.
-func TestFormatDoesNotRetainConversionsAfterTheyAreReleased(t *testing.T) {
-	script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: 64 << 20},
-		bigToStringClass+`
-def run()
-  format("%.1s", Big.new(8388608))
-  probe.heap()
-  0
-end`)
-
-	var during atomic.Int64
-	var before goruntime.MemStats
-	goruntime.GC()
-	goruntime.ReadMemStats(&before)
-	if _, err := script.Call(context.Background(), "run", nil,
-		callOptionsWithCapabilities(heapProbeCapability{heap: &during})); err != nil {
-		t.Fatalf("formatting failed: %v", err)
-	}
-
-	held := during.Load() - int64(before.HeapAlloc)
-	// The 8 MiB conversion is dead once format returns: nothing in the script
-	// holds it, so only a stale slot could.
-	if limit := int64(4 << 20); held > limit {
-		t.Fatalf("a released conversion still holds %.2f MiB, want under %.2f MiB",
-			float64(held)/(1<<20), float64(limit)/(1<<20))
-	}
-}
-
-// TestFormatDropsTheRetainedBackingWhenNothingIsHeld pins that the retained set
-// gives its backing array back once it is empty.
-//
-// A call with many operands grows that array once, and keeping the capacity for
-// the rest of the script is live memory no walk counts, since every check reads
-// only the visible length. That is the same retained-but-uncounted shape one
-// level further out than the values themselves.
-func TestFormatDropsTheRetainedBackingWhenNothingIsHeld(t *testing.T) {
-	t.Parallel()
-
-	exec := &Execution{ctx: context.Background(), memoryQuota: 1 << 30}
-	for range 4096 {
-		exec.retainValue(NewString("x"))
-	}
-	if cap(exec.retainedValues) == 0 {
-		t.Fatal("retaining values did not grow the backing, so the test proves nothing")
-	}
-	exec.releaseRetainedValues(0)
-	if got := cap(exec.retainedValues); got != 0 {
-		t.Fatalf("the retained backing still holds %d slots after everything was released", got)
-	}
-}
-
-// TestNestedFormatDoesNotLeaveItsBackingBehind pins that returning to a nonzero
-// retention depth hands back a backing the nested call grew.
-//
-// An outer to_s that itself formats can grow the retained set far past what the
-// outer call holds. Truncating the length leaves that capacity reachable from
-// the execution while the walk, which reads only the visible length, stops
-// counting it: the same retained-but-uncounted shape one level in.
-func TestNestedFormatDoesNotLeaveItsBackingBehind(t *testing.T) {
-	t.Parallel()
-
-	exec := &Execution{ctx: context.Background(), memoryQuota: 1 << 30}
-	exec.retainValue(NewString("outer"))
-	for range 4096 {
-		exec.retainValue(NewString("nested"))
-	}
-	grown := cap(exec.retainedValues)
-	if grown < 4096 {
-		t.Fatalf("the nested run did not grow the backing (cap %d), so the test proves nothing", grown)
-	}
-
-	exec.releaseRetainedValues(1)
-	if len(exec.retainedValues) != 1 {
-		t.Fatalf("released to depth %d, want 1", len(exec.retainedValues))
-	}
-	if got := cap(exec.retainedValues); got >= grown {
-		t.Fatalf("the nested backing is still held at cap %d after releasing to depth 1", got)
-	}
-	if exec.retainedValues[0].String() != "outer" {
-		t.Fatalf("compacting lost the outer value: %#v", exec.retainedValues[0])
-	}
-}
-
-// TestFormatReservesTheConvertedSliceItself pins that the slice holding the
-// conversions is weighed, not only what the conversions weigh.
-//
-// A call whose conversions are all empty or all aliases adds no payload at all,
-// yet it still allocates one slot per operand. That slice is a Go local no walk
-// reaches, and a pattern that rejects returns before the render check, so
-// nothing weighed it.
 func TestFormatReservesTheConvertedSliceItself(t *testing.T) {
 	t.Parallel()
 
