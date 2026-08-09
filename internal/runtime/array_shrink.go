@@ -345,25 +345,53 @@ func (retained retainedArrayBacking) reclaim(exec *Execution) error {
 // payloads while still deduplicating each one against the rest of the graph, at
 // the cost of counting the fixed per-value bytes of the visible window twice.
 //
-// They are walked to the record's capacity, not its length. A record can be the
-// only thing rooting an allocation, and the length is only what the array
-// happened to show when the claim first saw it: storage held past that point
-// would be billed as the elements in front of it, which is the shape of the
-// finding this file exists for. The slot bytes are added whole for the same
-// reason, since the array's own accounting now covers only the window it shows
-// -- an overlap with what the array is charged for, which is the safe direction.
+// What it adds is the part of the allocation the array no longer shows, and
+// only that part. The graph walk already reaches the array and charges the
+// window it shows, elements and slots alike, so walking the allocation whole
+// bills that window twice: draining 10,000 integers under a host driver was
+// rejected below 1,285,392 bytes when the array itself accounts for 645,432 and
+// the drain copies nothing, which is a quota turning away a program that fits.
+//
+// The part outside the window is charged to the allocation's capacity rather
+// than to the length the record was taken at, because a record can be the only
+// thing rooting an allocation and that length is merely what the array happened
+// to show at the time. Storage held past it would otherwise be billed as the
+// elements in front of it.
 func (exec *Execution) retainedArrayBackingBytes(est *memoryEstimator) int {
 	total := 0
 	for _, held := range exec.heldArrayBackings {
 		for _, retained := range held.retained {
 			whole := retained.full[:cap(retained.full)]
-			for _, val := range whole {
+			current := retained.receiver.Array()
+			head, shown := sliceOffsetWithin(whole, current)
+			for i, val := range whole {
+				if i >= head && i < head+shown {
+					continue
+				}
 				total += est.value(val)
 			}
-			total += valueSliceBackingBytes(len(whole))
+			if shown == 0 && cap(current) == 0 {
+				// The array shows none of this allocation, so nothing else
+				// accounts for any of it, base included.
+				total += valueSliceBackingBytes(len(whole))
+				continue
+			}
+			total += (len(whole) - cap(current)) * estimatedValueBytes
 		}
 	}
 	return total
+}
+
+// sliceOffsetWithin returns where inner starts within outer's allocation and how
+// many elements it shows there, or zero and zero when it is not part of it.
+func sliceOffsetWithin(outer, inner []Value) (offset, shown int) {
+	if !sliceWithinAllocation(outer, inner) {
+		return 0, 0
+	}
+	size := unsafe.Sizeof(Value{})
+	outerStart := uintptr(unsafe.Pointer(unsafe.SliceData(outer)))
+	innerStart := uintptr(unsafe.Pointer(unsafe.SliceData(inner)))
+	return int((innerStart - outerStart) / size), len(inner)
 }
 
 // detachedArrayBackingBytes is the memory of every header a shrink has copied

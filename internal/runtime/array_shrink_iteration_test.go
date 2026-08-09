@@ -800,3 +800,41 @@ end`)
 		t.Fatal("storage held only by a retained record must be charged for what it holds")
 	}
 }
+
+// TestRetainedBackingChargesOnlyWhatIsHidden pins that a record adds the part
+// of an allocation the array no longer shows, and not the part it does.
+//
+// The graph walk already reaches the array and charges the window it shows,
+// elements and slots alike. Adding the allocation whole on top bills that window
+// twice, which turns a drain that copies nothing into one that has to fit twice
+// the array: 10,000 integers needed 1,285,392 bytes against the 645,432 the
+// array itself accounts for. A quota that turns away a program which fits is a
+// defect in the same way as one that admits a program which does not.
+func TestRetainedBackingChargesOnlyWhatIsHidden(t *testing.T) {
+	t.Parallel()
+
+	const n = 10000
+	elems := make([]Value, n)
+	for i := range n {
+		elems[i] = NewInt(int64(i))
+	}
+
+	// Comfortably above what the array accounts for, comfortably below twice it.
+	const quota = 900 << 10
+	script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: quota},
+		`def run(a)
+  driver.walk(a) do |x|
+    a.pop
+  end
+  a.size
+end`)
+	got, err := script.Call(context.Background(), "run", []Value{NewArray(elems)}, CallOptions{
+		Capabilities: []CapabilityAdapter{arrayArgDriver{}},
+	})
+	if err != nil {
+		t.Fatalf("a drain that copies nothing must fit a quota the array fits in: %v", err)
+	}
+	if got.Int() != 0 {
+		t.Fatalf("array holds %d elements after the drain, want 0", got.Int())
+	}
+}
