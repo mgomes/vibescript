@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 )
 
@@ -256,7 +257,15 @@ type taskConcurrencyBudget struct {
 	// starved group only runs its deferred jobs when something waits on them
 	// -- and a parent blocked on a host signal its child produces never
 	// reaches that wait.
-	starved map[*taskGroup]struct{}
+	// starved is kept in registration order, oldest first, so a freed slot goes
+	// to whoever has waited longest instead of to whichever key Go's map
+	// iteration happens to yield. Selection order decides whether the tree makes
+	// progress: with three slots and two nested children, handing the slot to
+	// the child that is itself blocked leaves every slot waiting on the one
+	// that was never started. Waiting longest is not a guarantee of unblocking
+	// anything, but it is an order rather than a coin flip, and it cannot
+	// starve a group indefinitely.
+	starved []*taskGroup
 	// starvedGen advances on every registration, so a goroutine that found
 	// nothing can tell a group that registered while it looked from one that
 	// was already there and had nothing to give.
@@ -287,10 +296,10 @@ func (b *taskConcurrencyBudget) reserveOne() bool {
 func (b *taskConcurrencyBudget) markStarved(group *taskGroup) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.starved == nil {
-		b.starved = make(map[*taskGroup]struct{})
+	if slices.Contains(b.starved, group) {
+		return
 	}
-	b.starved[group] = struct{}{}
+	b.starved = append(b.starved, group)
 	b.starvedGen++
 }
 
@@ -304,7 +313,11 @@ func (b *taskConcurrencyBudget) starvedGeneration() uint64 {
 func (b *taskConcurrencyBudget) forget(group *taskGroup) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	delete(b.starved, group)
+	if i := slices.Index(b.starved, group); i >= 0 {
+		// Cleared before the length drops, so the entry does not keep a whole
+		// task group reachable from the pool for the rest of the tree's life.
+		b.starved = slices.Delete(b.starved, i, i+1)
+	}
 }
 
 // release returns a worker to the pool.
@@ -338,10 +351,10 @@ func (b *taskConcurrencyBudget) release(n int) {
 func (b *taskConcurrencyBudget) takeStarvedJob(from *taskGroup) (*taskGroup, *taskJob) {
 	b.mu.Lock()
 	waiting := make([]*taskGroup, 0, len(b.starved))
-	for group := range b.starved {
+	for _, group := range b.starved {
 		// The caller's own queue is not a candidate here: it is consulted
-		// afterwards, and letting it win at map-random order would undo the
-		// point of asking other groups first.
+		// afterwards, and letting it win would undo the point of asking other
+		// groups first.
 		if group == from {
 			continue
 		}

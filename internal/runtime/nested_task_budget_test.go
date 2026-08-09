@@ -836,3 +836,35 @@ end`)
 	assertTaskTreeMakesProgress(t, script,
 		"the freed slot went to a local sibling while the nested child that unblocks everything stayed queued")
 }
+
+// TestStarvedGroupsAreOfferedSlotsInRegistrationOrder pins that a freed slot
+// goes to whoever has waited longest, rather than to whichever group a map
+// happened to yield first.
+//
+// Which waiting group gets a slot decides whether the tree makes progress, so
+// the order has to be an order. This checks the property directly, because the
+// scripts that depend on it deadlock only for particular interleavings and so
+// make flaky end-to-end tests.
+func TestStarvedGroupsAreOfferedSlotsInRegistrationOrder(t *testing.T) {
+	t.Parallel()
+
+	budget := newTaskConcurrencyBudget(1)
+	first := &taskGroup{budget: budget, max: 1}
+	second := &taskGroup{budget: budget, max: 1}
+	third := &taskGroup{budget: budget, max: 1}
+
+	for _, group := range []*taskGroup{first, second, third} {
+		budget.markStarved(group)
+	}
+	// Registering again must not move a group to the back of the queue.
+	budget.markStarved(second)
+
+	if got := budget.starved; len(got) != 3 || got[0] != first || got[1] != second || got[2] != third {
+		t.Fatalf("waiting groups are not in registration order: %v", got)
+	}
+
+	budget.forget(second)
+	if got := budget.starved; len(got) != 2 || got[0] != first || got[1] != third {
+		t.Fatalf("forgetting a group disturbed the order of the rest: %v", got)
+	}
+}
