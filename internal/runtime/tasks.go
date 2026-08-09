@@ -322,6 +322,13 @@ func (b *taskConcurrencyBudget) release(n int) {
 // the caller already holds, and reports the group it belongs to. The slot
 // changes hands without changing count: the caller's group gives it up and the
 // starved group takes it.
+//
+// A group whose queue has drained is left registered rather than forgotten
+// here. Forgetting it raced with its own re-registration: a group can queue new
+// work and register again between the moment its queue reads as empty and the
+// moment it would be removed, and deleting that fresh registration leaves the
+// new job waiting with capacity idle. A stale entry costs one skipped iteration;
+// the group is forgotten when its scope closes.
 func (b *taskConcurrencyBudget) takeStarvedJob(from *taskGroup) (*taskGroup, *taskJob) {
 	b.mu.Lock()
 	waiting := make([]*taskGroup, 0, len(b.starved))
@@ -331,10 +338,7 @@ func (b *taskConcurrencyBudget) takeStarvedJob(from *taskGroup) (*taskGroup, *ta
 	b.mu.Unlock()
 
 	for _, group := range waiting {
-		job, drained := group.takeQueuedJob()
-		if drained {
-			b.forget(group)
-		}
+		job, _ := group.takeQueuedJob()
 		if job == nil {
 			continue
 		}
@@ -681,6 +685,10 @@ func (group *taskGroup) takeQueuedJob() (*taskJob, bool) {
 // waits on a nested child it cannot reach: the freed slot started a sibling
 // that waited on the same child, and the child stayed queued behind both.
 func (group *taskGroup) nextQueuedJob() (*taskGroup, *taskJob) {
+	// The reclaim below runs at most once. Groups whose queues have drained
+	// stay registered, so a set that still reports someone waiting is not proof
+	// that work exists, and retrying on that alone would spin.
+	reclaimed := false
 	for {
 		if owner, job := group.budget.takeStarvedJob(group); job != nil {
 			return owner, job
@@ -704,9 +712,10 @@ func (group *taskGroup) nextQueuedJob() (*taskGroup, *taskJob) {
 		// letting the slot go quiet there would leave it waiting with nothing
 		// to wake it. Re-taking the slot and looking again closes that window;
 		// losing the race for it is fine, because whoever won is doing this.
-		if !group.budget.hasStarved() || !group.budget.reserveOne() {
+		if reclaimed || !group.budget.hasStarved() || !group.budget.reserveOne() {
 			return nil, nil
 		}
+		reclaimed = true
 		group.mu.Lock()
 		group.running++
 		group.mu.Unlock()
