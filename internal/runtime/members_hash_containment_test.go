@@ -4449,105 +4449,56 @@ func TestHashValuesAtDoesNotDoubleChargeAStaticDefault(t *testing.T) {
 	}
 }
 
-// The memoizing `Hash.new { |h, k| h[k] = v }` idiom stores each result in the
-// receiver, so the walk inside the next proc call already visits it. Reserving
-// its payload as well counted the same bytes twice and rejected the call at
-// roughly half the real limit. The quota here holds one copy of the memoized
-// payload with room to spare and less than two, so only marginal pricing
-// admits it.
-func TestHashValuesAtDoesNotDoubleChargeAMemoizingDefaultProc(t *testing.T) {
+// A callback can detach a result it previously stored: here the first callback
+// memoizes a 400KB value into the hash, and the second clears the hash -- so
+// the payload is live only in the Go-local output -- before allocating a 700KB
+// temporary. The true peak is about 1.1MB against a 1MB quota, and nothing
+// reachable from the interpreter holds the detached 400KB, so only a
+// reservation that keeps pricing it rejects the pair.
+//
+// This is why the reservation charges what the accumulator billed rather than
+// the value's marginal over the live base: a marginal measured while the value
+// was still reachable stays stale once the callback drops it, and both builtins
+// then accepted the combined peak.
+func TestHashRetainedOutputStaysReservedWhenACallbackDetachesIt(t *testing.T) {
 	t.Parallel()
-
-	const per = 20000
-	const keys = 30
-	const memoized = per * keys
-
-	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: memoized + memoized/2}, `
-    def run()
-      h = Hash.new { |hash, k| hash[k] = "x" * `+fmt.Sprint(per)+` }
-      h.values_at(`+fetchValuesKeyList(keys)+`)
-    end
-    `)
-	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("a memoizing values_at that fits one copy of its payload was rejected: %v", err)
-	}
-	want := make([]Value, 0, keys)
-	for range keys {
-		want = append(want, NewString(strings.Repeat("x", per)))
-	}
-	compareArrays(t, got, want)
-}
-
-// fetch_values has the same shape: a block that memoizes into a hash it can
-// reach makes each result visible to the walk, so the reservation must not
-// charge it again.
-func TestHashFetchValuesDoesNotDoubleChargeAMemoizingBlock(t *testing.T) {
-	t.Parallel()
-
-	const per = 20000
-	const keys = 30
-	const memoized = per * keys
-
-	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: memoized + memoized/2}, `
-    def run()
-      h = { a: 1 }
-      h.fetch_values(`+fetchValuesKeyList(keys)+`) { |k| h[k] = "x" * `+fmt.Sprint(per)+` }
-    end
-    `)
-	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("a memoizing fetch_values that fits one copy of its payload was rejected: %v", err)
-	}
-	want := make([]Value, 0, keys)
-	for range keys {
-		want = append(want, NewString(strings.Repeat("x", per)))
-	}
-	compareArrays(t, got, want)
-}
-
-// A default proc is handed the receiver as its first parameter, so its checks
-// walk the memoized results through that binding even when the hash is an
-// inline temporary the environment never held. Pricing the reservation against
-// the execution roots alone missed that binding, left every result fully
-// reserved, and rejected the inline form at about half the quota the same hash
-// bound to a local accepted -- so both spellings are pinned together here.
-func TestHashValuesAtPricesAMemoizingTemporaryLikeALocal(t *testing.T) {
-	t.Parallel()
-
-	const per = 20000
-	const keys = 30
-	const memoized = per * keys
-	body := `Hash.new { |hash, k| hash[k] = "x" * ` + fmt.Sprint(per) + ` }`
 
 	sources := map[string]string{
-		"inline temporary receiver": `
+		"values_at default proc": `
     def run()
-      ` + body + `.values_at(` + fetchValuesKeyList(keys) + `)
+      h = Hash.new { |hash, k|
+        if k == :b
+          hash.clear
+          ("t" * 700000).length
+        else
+          hash[k] = "x" * 400000
+        end
+      }
+      h.values_at(:a, :b)
     end
     `,
-		"receiver bound to a local": `
+		"fetch_values block": `
     def run()
-      h = ` + body + `
-      h.values_at(` + fetchValuesKeyList(keys) + `)
+      h = { }
+      h.fetch_values(:a, :b) { |k|
+        if k == :b
+          h.clear
+          ("t" * 700000).length
+        else
+          h[k] = "x" * 400000
+        end
+      }
     end
     `,
-	}
-
-	want := make([]Value, 0, keys)
-	for range keys {
-		want = append(want, NewString(strings.Repeat("x", per)))
 	}
 
 	for name, src := range sources {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: memoized + memoized/2}, src)
-			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
-			if err != nil {
-				t.Fatalf("a memoizing values_at that fits one copy of its payload was rejected: %v", err)
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a detached retained result coexisting with an in-callback temporary exceeded the quota but was accepted")
 			}
-			compareArrays(t, got, want)
 		})
 	}
 }
