@@ -69,16 +69,28 @@ func TestInterpolationNestingAtTheCapParses(t *testing.T) {
 }
 
 // One past the cap is a parse error naming the nesting, reported against the
-// outermost string rather than as an unterminated one.
+// outermost string rather than as an unterminated one, and reported the same
+// way wherever the literal is written.
+//
+// The parenless-argument forms are the ones that took work: there the lexer
+// read the `%` as modulo and the parser second-guesses it with a speculative
+// scan, and a scan that answered "not a percent literal" to a refusal left the
+// `%` as modulo. The `#{` then opened a comment that swallowed the rest of the
+// line, so the source came back as whatever the remains of the line failed on.
 func TestInterpolationNestingPastTheCapIsRejected(t *testing.T) {
 	t.Parallel()
 
+	overCap := nestedInterpolation(maxInterpolationDepth, "a")
 	for _, tc := range []struct {
 		name string
 		src  string
 	}{
 		{"nested strings", nestedInterpolation(maxInterpolationDepth+1, "x")},
-		{"through a percent array literal", "x = %W[#{" + nestedInterpolation(maxInterpolationDepth, "a") + "}]"},
+		{"through a percent array literal", "x = %W[#{" + overCap + "}]"},
+		{"through a parenless percent array argument", "puts %W[#{" + overCap + "}]"},
+		{"through a parenless percent symbol argument", "puts %I[#{" + overCap + "}]"},
+		{"parenless with the interpolation mid-word", "puts %W[a#{" + overCap + "}b]"},
+		{"parenless across lines", "puts %W[a\n#{" + overCap + "}\nb]"},
 		// 100,004 bytes at 20,000 levels, the size the report used. Rejecting
 		// it takes under a millisecond.
 		{"the reported source", nestedInterpolation(20_000, "x")},

@@ -371,7 +371,16 @@ func (p *parser) percentArrayLiteralArgumentAt(pos ast.Position) bool {
 	if !ok || !offsetHasLeadingWhitespace(p.l.input, offset) {
 		return false
 	}
-	_, _, _, ok = scanPercentArrayLiteralAt(p.l.input, offset, p.l.percentScan, p.l.interpDepth)
+	_, _, _, ok, tooDeep := scanPercentArrayLiteralAt(p.l.input, offset, p.l.percentScan, p.l.interpDepth)
+	if tooDeep {
+		// The candidate is a percent literal; what cannot be read is its
+		// interpolation. Saying so keeps `puts %W[#{...}]` naming the nesting
+		// the way the same literal after an `=` does, rather than declining the
+		// probe and leaving the reader to work back from whatever the modulo
+		// reading of the line fails on (#46).
+		p.addParseError(pos, interpolationTooDeepMessage)
+		return false
+	}
 	return ok
 }
 
@@ -1075,7 +1084,14 @@ func findStringInterpolationEnd(raw string, start int, budget *percentScanBudget
 			return 0, false, lex.nestingRefused
 		case ast.TokenPercent:
 			percentOffset := start + lex.currentOffset() - 1
-			kind, _, endOffset, ok := scanPercentArrayLiteralAt(raw, percentOffset, budget, interpDepth)
+			kind, _, endOffset, ok, tooDeep := scanPercentArrayLiteralAt(raw, percentOffset, budget, interpDepth)
+			if tooDeep {
+				// A literal inside this body nests past the bound, so the body
+				// cannot be read whichever way the `%` goes. Reporting that
+				// rather than lexing on keeps the refusal travelling out to
+				// whoever asked for the interpolation's end.
+				return 0, false, true
+			}
 			if ok && interpolationPercentArrayArgumentScanCanAdvance(raw, endOffset) {
 				lex.seek(endOffset-start, ast.Token{Type: percentArrayLiteralTokenType(kind)})
 			}
@@ -1309,8 +1325,11 @@ func (p *parser) parsePercentArrayLiteralArgument() ast.Expression {
 	if !ok {
 		return nil
 	}
-	kind, entries, endOffset, ok := scanPercentArrayLiteralAt(p.l.input, offset, p.l.percentScan, p.l.interpDepth)
+	kind, entries, endOffset, ok, tooDeep := scanPercentArrayLiteralAt(p.l.input, offset, p.l.percentScan, p.l.interpDepth)
 	if !ok {
+		if tooDeep {
+			p.addParseError(pos, interpolationTooDeepMessage)
+		}
 		return nil
 	}
 	end := p.l.positionForOffset(endOffset)
@@ -1529,30 +1548,39 @@ func (b *percentScanBudget) record(walked int, found bool) {
 	b.remaining -= walked
 }
 
-func scanPercentArrayLiteralAt(input string, start int, budget *percentScanBudget, interpDepth int) (rune, []string, int, bool) {
+// scanPercentArrayLiteralAt second-guesses a `%` the lexer tokenized as modulo,
+// reporting the literal it opens when it opens one.
+//
+// tooDeep says the candidate is a percent literal whose interpolation nests
+// past maxInterpolationDepth, which is not the same answer as "not a literal":
+// declining it silently would leave the `%` reading as modulo, and the `#{`
+// that follows then opens a comment that swallows the rest of the line, so the
+// source would be reported as whatever the remains of the line fail on instead
+// of as the nesting the identical literal after an `=` reports (#46).
+func scanPercentArrayLiteralAt(input string, start int, budget *percentScanBudget, interpDepth int) (kind rune, entries []string, end int, found, tooDeep bool) {
 	if start < 0 || start >= len(input) || input[start] != '%' {
-		return 0, nil, 0, false
+		return 0, nil, 0, false, false
 	}
 	if budget.spent() {
-		return 0, nil, 0, false
+		return 0, nil, 0, false, false
 	}
 	idx := start + 1
 	if idx >= len(input) {
-		return 0, nil, 0, false
+		return 0, nil, 0, false, false
 	}
 	kind, width := utf8.DecodeRuneInString(input[idx:])
 	if kind != 'w' && kind != 'i' && kind != 'W' && kind != 'I' {
-		return 0, nil, 0, false
+		return 0, nil, 0, false, false
 	}
 	interpolating := kind == 'W' || kind == 'I'
 	idx += width
 	if idx >= len(input) {
-		return 0, nil, 0, false
+		return 0, nil, 0, false, false
 	}
 	open, width := utf8.DecodeRuneInString(input[idx:])
 	close, paired := percentLiteralClose(open)
 	if close == 0 {
-		return 0, nil, 0, false
+		return 0, nil, 0, false, false
 	}
 	idx += width
 
@@ -1581,13 +1609,13 @@ func scanPercentArrayLiteralAt(input string, start int, budget *percentScanBudge
 			raw.WriteRune(r)
 			raw.WriteByte('{')
 			idx++
-			end, ok, _ := findStringInterpolationEnd(input, idx, budget, interpDepth+1)
+			end, ok, tooDeep := findStringInterpolationEnd(input, idx, budget, interpDepth+1)
 			if !ok {
 				// An unterminated interpolation is only reported once the lexer
 				// driving it has reached the end of the input, so the walk this
 				// scan is charged for runs to there too.
 				budget.record(len(input)-start, false)
-				return 0, nil, 0, false
+				return 0, nil, 0, false, tooDeep
 			}
 			raw.WriteString(input[idx : end+1])
 			idx = end + 1
@@ -1601,15 +1629,15 @@ func scanPercentArrayLiteralAt(input string, start int, budget *percentScanBudge
 			if depth == 0 {
 				budget.record(idx-start, true)
 				if interpolating {
-					return kind, splitInterpolatedPercentLiteralWords(raw.String(), budget, interpDepth), idx, true
+					return kind, splitInterpolatedPercentLiteralWords(raw.String(), budget, interpDepth), idx, true, false
 				}
-				return kind, splitPercentLiteralWords(raw.String(), open, close), idx, true
+				return kind, splitPercentLiteralWords(raw.String(), open, close), idx, true, false
 			}
 		}
 		raw.WriteRune(r)
 	}
 	budget.record(len(input)-start, false)
-	return 0, nil, 0, false
+	return 0, nil, 0, false, false
 }
 
 func offsetHasLeadingWhitespace(input string, offset int) bool {
