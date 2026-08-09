@@ -314,3 +314,35 @@ func TestFormatDropsTheRetainedBackingWhenNothingIsHeld(t *testing.T) {
 		t.Fatalf("the retained backing still holds %d slots after everything was released", got)
 	}
 }
+
+// TestNestedFormatDoesNotLeaveItsBackingBehind pins that returning to a nonzero
+// retention depth hands back a backing the nested call grew.
+//
+// An outer to_s that itself formats can grow the retained set far past what the
+// outer call holds. Truncating the length leaves that capacity reachable from
+// the execution while the walk, which reads only the visible length, stops
+// counting it: the same retained-but-uncounted shape one level in.
+func TestNestedFormatDoesNotLeaveItsBackingBehind(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), memoryQuota: 1 << 30}
+	exec.retainValue(NewString("outer"))
+	for range 4096 {
+		exec.retainValue(NewString("nested"))
+	}
+	grown := cap(exec.retainedValues)
+	if grown < 4096 {
+		t.Fatalf("the nested run did not grow the backing (cap %d), so the test proves nothing", grown)
+	}
+
+	exec.releaseRetainedValues(1)
+	if len(exec.retainedValues) != 1 {
+		t.Fatalf("released to depth %d, want 1", len(exec.retainedValues))
+	}
+	if got := cap(exec.retainedValues); got >= grown {
+		t.Fatalf("the nested backing is still held at cap %d after releasing to depth 1", got)
+	}
+	if exec.retainedValues[0].String() != "outer" {
+		t.Fatalf("compacting lost the outer value: %#v", exec.retainedValues[0])
+	}
+}

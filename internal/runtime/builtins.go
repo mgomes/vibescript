@@ -542,12 +542,22 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 // error before any output check ran at all. Many instances whose to_s returns
 // an individually quota-sized string therefore accumulated unseen (#4).
 //
-// The conversions are reserved as they accumulate, so the quota fires during
-// the loop rather than after it, and the reservation is held until the render
-// is done because the strings stay live that whole time. The caller releases
-// it.
+// The conversions are registered as they accumulate, so the quota sees them
+// during the loop rather than only after it, and they stay registered until
+// the render is done because the strings are live that whole time. The caller
+// releases them.
 func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, error) {
 	var converted []Value
+	// checkEvery paces the root walk below. A quota of zero means unbounded, in
+	// which case the walk does nothing useful and the threshold is set past
+	// anything the loop can accumulate.
+	checkEvery := exec.memoryQuota / 64
+	if exec.memoryQuota <= 0 {
+		checkEvery = math.MaxInt
+	} else if checkEvery < 1 {
+		checkEvery = 1
+	}
+	sinceCheck := 0
 	for i, val := range values {
 		rendered, substituted, err := exec.instanceStringValue(val, Position{})
 		if err != nil {
@@ -572,8 +582,20 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 		// the instances the conversions were taken from. Each side could fit on
 		// its own while together they did not, and a pattern that rejects
 		// returns before the render check that would have seen both.
-		if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
-			return nil, err
+		//
+		// Checked once per slice of the quota rather than once per conversion.
+		// The walk covers every argument and every conversion held so far, so
+		// running it after each one made format("", a, a, ...) quadratic in its
+		// operand count. Waiting until the conversions have added a
+		// sixty-fourth of the quota bounds both the overshoot and the number of
+		// walks a call can perform, the same way mixin constant adoption paces
+		// its own checks.
+		sinceCheck += len(rendered.String())
+		if sinceCheck >= checkEvery {
+			sinceCheck = 0
+			if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+				return nil, err
+			}
 		}
 		if converted == nil {
 			converted = make([]Value, len(values))

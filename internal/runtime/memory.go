@@ -3449,6 +3449,18 @@ func (exec *Execution) releaseRetainedValues(depth int) {
 	// collector while this walk, which reads only the visible length, stopped
 	// counting them: exactly the retention this registration exists to expose.
 	clear(exec.retainedValues[depth:])
+	// A nested call can grow the backing far past what the outer one holds --
+	// an outer to_s that itself calls format, say -- and returning to a nonzero
+	// depth would leave that capacity reachable from the execution while the
+	// walk, which reads only the visible length, stopped counting it. Handing
+	// it back costs a copy of what is still held, which is small by definition
+	// whenever the check fires.
+	if depth > 0 && cap(exec.retainedValues) > 4*depth {
+		compacted := make([]Value, depth)
+		copy(compacted, exec.retainedValues)
+		exec.retainedValues = compacted
+		return
+	}
 	if depth == 0 {
 		// The backing itself is dropped once nothing is retained, rather than
 		// kept for reuse. A call with many operands grows it once, and holding
