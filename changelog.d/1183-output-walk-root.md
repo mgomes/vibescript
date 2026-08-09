@@ -10,5 +10,6 @@
   receiver and the arguments. Results that alias memory the walk already reaches
   are no longer charged twice, which the `hash.map` and `array.map` scratch
   reservations did. Costs are unchanged: the roots are memoized alongside the
-  reachable graph, and `VIBES_ESTIMATOR_VERIFY` re-derives every commit from
-  scratch.
+  reachable graph, the lookups drive their callback the way the block iterators
+  already do so their misses keep that memo, and `VIBES_ESTIMATOR_VERIFY`
+  re-derives every commit from scratch.
