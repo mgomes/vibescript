@@ -165,9 +165,9 @@ type scriptChecker struct {
 	retryExitSites             *[]checkStateSnapshot
 	implicitReturnLeaves       map[Statement]struct{}
 	implicitReturnStates       map[Statement]checkStateSnapshot
-	returnAnalyses             map[returnSummaryCacheKey]functionReturnAnalysis
+	returnAnalyzes             map[returnSummaryCacheKey]functionReturnAnalysis
 	returnAnalysisContextBytes int
-	memberFreeReturnAnalyses   map[returnSummaryCacheKey]functionReturnAnalysis
+	memberFreeReturnAnalyzes   map[returnSummaryCacheKey]functionReturnAnalysis
 	namespaceMemberReads       uint64
 	summaryInProgress          map[returnSummaryCacheKey]struct{}
 	bindingCompletionProbes    map[Expression]struct{}

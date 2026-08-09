@@ -121,7 +121,7 @@ end
 `, strings.TrimSuffix(strings.Repeat("0, ", args), ", "))
 }
 
-// Modelling a rest parameter rebuilt the whole aggregate at every supplied
+// Modeling a rest parameter rebuilt the whole aggregate at every supplied
 // argument, so a call with one static value per argument kept a single
 // alternative and still copied 1 + 2 + ... + N expressions to reach it (#9).
 // This counts allocated bytes because the copies are the allocation.

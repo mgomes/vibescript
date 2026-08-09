@@ -179,7 +179,7 @@ func (c *scriptChecker) scriptCallableInstanceOrigins(
 
 // scriptFunctionCallMayComplete reports whether an owned script function has
 // any normal result for this call shape. Foreign functions and recursive
-// in-progress analyses remain gradual.
+// in-progress analyzes remain gradual.
 func (c *scriptChecker) scriptFunctionCallMayComplete(
 	call *CallExpr,
 	target staticCallable,
@@ -373,12 +373,12 @@ func (c *scriptChecker) functionReturnAnalysis(
 		paramFacts,
 		blockAvailable,
 	)
-	if analysis, ok := c.memberFreeReturnAnalyses[memberFreeKey]; ok {
+	if analysis, ok := c.memberFreeReturnAnalyzes[memberFreeKey]; ok {
 		return analysis
 	}
 	key := memberFreeKey
 	key.context = c.runtimeNamespaceMembersKey() + "\x01" + key.context
-	if analysis, ok := c.returnAnalyses[key]; ok {
+	if analysis, ok := c.returnAnalyzes[key]; ok {
 		// This summary was computed by a walk that read the recorded members,
 		// so the caller reusing it inherits that dependence.
 		c.namespaceMemberReads++
@@ -447,21 +447,21 @@ func (c *scriptChecker) retainReturnAnalysis(
 	analysis functionReturnAnalysis,
 ) {
 	if c.namespaceMemberReads == memberReadsBefore {
-		if c.memberFreeReturnAnalyses == nil {
-			c.memberFreeReturnAnalyses = make(map[returnSummaryCacheKey]functionReturnAnalysis)
+		if c.memberFreeReturnAnalyzes == nil {
+			c.memberFreeReturnAnalyzes = make(map[returnSummaryCacheKey]functionReturnAnalysis)
 		}
-		c.memberFreeReturnAnalyses[memberFreeKey] = analysis
+		c.memberFreeReturnAnalyzes[memberFreeKey] = analysis
 		return
 	}
-	if c.returnAnalyses == nil {
-		c.returnAnalyses = make(map[returnSummaryCacheKey]functionReturnAnalysis)
+	if c.returnAnalyzes == nil {
+		c.returnAnalyzes = make(map[returnSummaryCacheKey]functionReturnAnalysis)
 	}
 	if c.returnAnalysisContextBytes+len(key.context) > maxRetainedSummaryContextBytes {
-		clear(c.returnAnalyses)
+		clear(c.returnAnalyzes)
 		c.returnAnalysisContextBytes = 0
 	}
 	c.returnAnalysisContextBytes += len(key.context)
-	c.returnAnalyses[key] = analysis
+	c.returnAnalyzes[key] = analysis
 }
 
 // returnSummaryCallShapeKey separates summaries computed under different module
