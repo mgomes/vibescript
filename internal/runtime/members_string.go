@@ -2630,26 +2630,33 @@ func (e stringCharSetEntry) indexOfSegment(text string, seg stringRuneSegment) (
 	return int(seg.r - e.lowRune), true
 }
 
-func (s stringCharSetSpec) containsSegment(text string, seg stringRuneSegment) bool {
-	for _, entry := range s.entries {
+// containsSegment reports whether seg falls inside the set, and how many
+// entries it compared to decide. Every character-set lookup returns that probe
+// count so the caller can bill it: the entry list grows with the caller's
+// character-set argument while the surrounding loop charges one step per
+// receiver character, so the comparisons themselves are the only part of the
+// cost that is not already metered (see chargeStringCharSetProbes, #26).
+func (s stringCharSetSpec) containsSegment(text string, seg stringRuneSegment) (bool, int) {
+	for i, entry := range s.entries {
 		if entry.containsSegment(text, seg) {
-			return true
+			return true, i + 1
 		}
 	}
-	return false
+	return false, len(s.entries)
 }
 
-func (s stringCharSetSpec) matchesSegment(text string, seg stringRuneSegment) bool {
-	matched := s.containsSegment(text, seg)
+func (s stringCharSetSpec) matchesSegment(text string, seg stringRuneSegment) (bool, int) {
+	matched, probes := s.containsSegment(text, seg)
 	if s.negated {
-		return !matched
+		return !matched, probes
 	}
-	return matched
+	return matched, probes
 }
 
-func (s stringCharSetSpec) orderedIndexSegment(text string, seg stringRuneSegment) (int, bool) {
+func (s stringCharSetSpec) orderedIndexSegment(text string, seg stringRuneSegment) (int, bool, int) {
 	if s.negated {
-		return math.MaxInt, !s.containsSegment(text, seg)
+		matched, probes := s.containsSegment(text, seg)
+		return math.MaxInt, !matched, probes
 	}
 	index := 0
 	matchIndex := 0
@@ -2663,38 +2670,41 @@ func (s stringCharSetSpec) orderedIndexSegment(text string, seg stringRuneSegmen
 		index = saturatingAdd(index, count)
 	}
 	if matched {
-		return matchIndex, true
+		return matchIndex, true, len(s.entries)
 	}
-	return 0, false
+	return 0, false, len(s.entries)
 }
 
-func (s stringCharSetSpec) tokenAt(index int) stringCharSetToken {
+func (s stringCharSetSpec) tokenAt(index int) (stringCharSetToken, int) {
 	if index < 0 {
 		index = 0
 	}
 	if index >= s.length {
 		index = s.length - 1
 	}
-	for _, entry := range s.entries {
+	for i, entry := range s.entries {
 		count := entry.length()
 		if index < count {
 			if entry.rawBytes {
-				return stringCharSetToken{rawByte: entry.lowByte + byte(index), rawBytes: true}
+				return stringCharSetToken{rawByte: entry.lowByte + byte(index), rawBytes: true}, i + 1
 			}
-			return stringCharSetToken{r: entry.lowRune + rune(index)}
+			return stringCharSetToken{r: entry.lowRune + rune(index)}, i + 1
 		}
 		index -= count
 	}
-	return stringCharSetToken{}
+	return stringCharSetToken{}, len(s.entries)
 }
 
-func stringCharSetsMatchSegment(specs []stringCharSetSpec, text string, seg stringRuneSegment) bool {
+func stringCharSetsMatchSegment(specs []stringCharSetSpec, text string, seg stringRuneSegment) (bool, int) {
+	probes := 0
 	for _, spec := range specs {
-		if !spec.matchesSegment(text, seg) {
-			return false
+		matched, n := spec.matchesSegment(text, seg)
+		probes += n
+		if !matched {
+			return false, probes
 		}
 	}
-	return true
+	return true, probes
 }
 
 func stringRuneBytes(r rune) int {
@@ -2810,6 +2820,39 @@ func (exec *Execution) chargeStringScan(n int) error {
 	return exec.stepN(steps)
 }
 
+// chargeStringCharSetProbes bills n character-set entry comparisons against the
+// step quota, carrying the sub-step remainder on the execution.
+//
+// count, delete, tr and squeeze charge one step per receiver character but
+// compare that character against every entry of every character set, so their
+// real cost is the product of the two arguments while their charge follows only
+// one of them. Over a fixed 100 KB receiver, growing the character set from 1
+// entry to 8192 moved count from 1.8ms to 750ms and tr from 1.6ms to 5.9s, and
+// both charged exactly 100,000 steps either way (#26). What one step bought
+// therefore grew with the caller's argument: 7.5us of tr at 1024 entries and
+// 59us at 8192, against 232ns once the comparisons are billed. An entry
+// comparison is a bounds check on one rune, so it bills at
+// stringScanBytesPerStep like any other byte-scale scan.
+//
+// Rounding each call down on its own would bill nothing at all here: a single
+// segment probes far fewer entries than one step covers, so every charge would
+// truncate to zero and the product would stay free. Carrying the remainder the
+// way chargeEqualityScanBytes does settles whole steps as the per-segment tails
+// accumulate, which leaves ordinary calls -- "hello".delete("l") probes five
+// entries in total -- costing nothing.
+func (exec *Execution) chargeStringCharSetProbes(n int) error {
+	if exec == nil || n <= 0 {
+		return nil
+	}
+	exec.charSetProbeResidue += n
+	steps := exec.charSetProbeResidue / stringScanBytesPerStep
+	if steps <= 0 {
+		return nil
+	}
+	exec.charSetProbeResidue -= steps * stringScanBytesPerStep
+	return exec.stepN(steps)
+}
+
 func stringCountChars(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, error) {
 	const method = "string.count"
 	if len(args) == 0 {
@@ -2838,7 +2881,11 @@ func stringCountChars(exec *Execution, receiver Value, args []Value, kwargs map[
 		if err := exec.step(); err != nil {
 			return 0, err
 		}
-		if stringCharSetsMatchSegment(specs, text, seg) {
+		matched, probes := stringCharSetsMatchSegment(specs, text, seg)
+		if err := exec.chargeStringCharSetProbes(probes); err != nil {
+			return 0, err
+		}
+		if matched {
 			count++
 		}
 	}
@@ -2872,7 +2919,11 @@ func stringDeleteChars(exec *Execution, receiver Value, args []Value, kwargs map
 		if err := exec.step(); err != nil {
 			return "", err
 		}
-		if !stringCharSetsMatchSegment(specs, text, seg) {
+		matched, probes := stringCharSetsMatchSegment(specs, text, seg)
+		if err := exec.chargeStringCharSetProbes(probes); err != nil {
+			return "", err
+		}
+		if !matched {
 			projectedBytes = saturatingAdd(projectedBytes, seg.end-seg.start)
 		}
 	}
@@ -2881,10 +2932,16 @@ func stringDeleteChars(exec *Execution, receiver Value, args []Value, kwargs map
 	}
 	var b strings.Builder
 	b.Grow(projectedBytes)
+	// The output pass repeats every comparison the sizing pass made, so it is
+	// charged again rather than riding free on the first pass's charge (#26).
 	for i := 0; i < len(text); {
 		seg := nextStringRuneSegment(text, i)
 		i = seg.end
-		if !stringCharSetsMatchSegment(specs, text, seg) {
+		matched, probes := stringCharSetsMatchSegment(specs, text, seg)
+		if err := exec.chargeStringCharSetProbes(probes); err != nil {
+			return "", err
+		}
+		if !matched {
 			b.WriteString(text[seg.start:seg.end])
 		}
 	}
@@ -2925,7 +2982,10 @@ func stringTrChars(exec *Execution, receiver Value, args []Value, kwargs map[str
 		if err := exec.step(); err != nil {
 			return "", err
 		}
-		index, matched := source.orderedIndexSegment(text, seg)
+		index, matched, probes := source.orderedIndexSegment(text, seg)
+		if err := exec.chargeStringCharSetProbes(probes); err != nil {
+			return "", err
+		}
 		if !matched {
 			projectedBytes = saturatingAdd(projectedBytes, seg.end-seg.start)
 			continue
@@ -2933,22 +2993,35 @@ func stringTrChars(exec *Execution, receiver Value, args []Value, kwargs map[str
 		if replacement.length == 0 {
 			continue
 		}
-		projectedBytes = saturatingAdd(projectedBytes, stringCharSetTokenBytes(replacement.tokenAt(index)))
+		token, tokenProbes := replacement.tokenAt(index)
+		if err := exec.chargeStringCharSetProbes(tokenProbes); err != nil {
+			return "", err
+		}
+		projectedBytes = saturatingAdd(projectedBytes, stringCharSetTokenBytes(token))
 	}
 	if err := exec.checkProjectedStringBytesWithCallRoots(projectedBytes, receiver, args, kwargs, block); err != nil {
 		return "", err
 	}
 	var b strings.Builder
 	b.Grow(projectedBytes)
+	// The output pass repeats every comparison the sizing pass made, so it is
+	// charged again rather than riding free on the first pass's charge (#26).
 	for i := 0; i < len(text); {
 		seg := nextStringRuneSegment(text, i)
 		i = seg.end
-		index, matched := source.orderedIndexSegment(text, seg)
+		index, matched, probes := source.orderedIndexSegment(text, seg)
+		if err := exec.chargeStringCharSetProbes(probes); err != nil {
+			return "", err
+		}
 		switch {
 		case !matched:
 			b.WriteString(text[seg.start:seg.end])
 		case replacement.length > 0:
-			writeStringCharSetToken(&b, replacement.tokenAt(index))
+			token, tokenProbes := replacement.tokenAt(index)
+			if err := exec.chargeStringCharSetProbes(tokenProbes); err != nil {
+				return "", err
+			}
+			writeStringCharSetToken(&b, token)
 		}
 	}
 	return b.String(), nil
@@ -2980,7 +3053,10 @@ func stringSqueezeChars(exec *Execution, receiver Value, args []Value, kwargs ma
 		if err := exec.step(); err != nil {
 			return "", err
 		}
-		squeezed := hasPrevious && stringRuneSegmentsEqual(text, seg, previous) && (len(specs) == 0 || stringCharSetsMatchSegment(specs, text, seg))
+		squeezed, err := stringSqueezeSegment(exec, specs, text, seg, previous, hasPrevious)
+		if err != nil {
+			return "", err
+		}
 		if !squeezed {
 			projectedBytes = saturatingAdd(projectedBytes, seg.end-seg.start)
 		}
@@ -2993,10 +3069,15 @@ func stringSqueezeChars(exec *Execution, receiver Value, args []Value, kwargs ma
 	var b strings.Builder
 	b.Grow(projectedBytes)
 	hasPrevious = false
+	// The output pass repeats every comparison the sizing pass made, so it is
+	// charged again rather than riding free on the first pass's charge (#26).
 	for i := 0; i < len(text); {
 		seg := nextStringRuneSegment(text, i)
 		i = seg.end
-		squeezed := hasPrevious && stringRuneSegmentsEqual(text, seg, previous) && (len(specs) == 0 || stringCharSetsMatchSegment(specs, text, seg))
+		squeezed, err := stringSqueezeSegment(exec, specs, text, seg, previous, hasPrevious)
+		if err != nil {
+			return "", err
+		}
 		if !squeezed {
 			b.WriteString(text[seg.start:seg.end])
 		}
@@ -3004,6 +3085,24 @@ func stringSqueezeChars(exec *Execution, receiver Value, args []Value, kwargs ma
 		hasPrevious = true
 	}
 	return b.String(), nil
+}
+
+// stringSqueezeSegment reports whether seg collapses into the segment before
+// it, charging the character-set comparisons the decision needs (#26). A run
+// only collapses when the repeated character is in every set, so the sets are
+// consulted -- and billed -- once per repeat.
+func stringSqueezeSegment(exec *Execution, specs []stringCharSetSpec, text string, seg, previous stringRuneSegment, hasPrevious bool) (bool, error) {
+	if !hasPrevious || !stringRuneSegmentsEqual(text, seg, previous) {
+		return false, nil
+	}
+	if len(specs) == 0 {
+		return true, nil
+	}
+	matched, probes := stringCharSetsMatchSegment(specs, text, seg)
+	if err := exec.chargeStringCharSetProbes(probes); err != nil {
+		return false, err
+	}
+	return matched, nil
 }
 
 // isRubyStripSpace reports whether b is one of the ASCII whitespace bytes that

@@ -141,6 +141,9 @@ type Execution struct {
 	// equalityScanResidue carries the sub-step remainder of equality byte
 	// charges across comparisons (see chargeEqualityScanBytes).
 	equalityScanResidue int
+	// charSetProbeResidue carries the sub-step remainder of character-set
+	// entry comparisons across segments (see chargeStringCharSetProbes).
+	charSetProbeResidue int
 	// equalityScratchCheck caches the equality scratch validator closure
 	// (see equalityScratchValidatorFunc). Lazily initialized.
 	equalityScratchCheck func(int, Value, Value) error
