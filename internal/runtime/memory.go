@@ -2525,6 +2525,45 @@ func (exec *Execution) releaseLoopScratch(delta int) {
 	exec.reservedScratchBytes -= delta
 }
 
+// chargeAdoptedConstants charges the memory a mixin's constant adoption is
+// about to add to the including class, before the entries exist (see
+// adoptIncludedModuleConstants).
+//
+// Each newly adopted name becomes one more entry in the class's ClassVars map,
+// which the estimator charges through the class value the call root binds. The
+// per-entry terms mirror mapStructuralBytes so the projection and the walk it
+// anticipates cannot drift. Value payloads are left out on purpose: they are
+// aliases of the module's own constants, which that walk already counts.
+//
+// The projection accumulates across the call and is compared against the quota
+// on its own rather than folded into a live graph walk. A walk per include
+// would cost O(includes * graph) for a script with many small includes, and the
+// periodic walk inside step cannot stand in for it: a bulk stepN can jump the
+// step counter clean over the period boundary and skip it. What makes the
+// running sum sound on its own is that these entries are permanent — a class
+// adopts once per call and never drops a constant — so a call whose adoptions
+// alone fill the quota has already lost, whatever else it holds. Everything
+// sharing the quota with them stays the ordinary checks' business, which bounds
+// the adoption at one quota's worth on top of what those checks admit rather
+// than at nothing at all (#23).
+func (exec *Execution) chargeAdoptedConstants(dest, source map[string]Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	added := 0
+	for name := range source {
+		if _, present := dest[name]; present {
+			continue
+		}
+		added = saturatingAdd(added, estimatedMapEntryBytes+estimatedValueBytes+estimatedStringHeaderBytes+len(name))
+	}
+	exec.adoptedConstantBytes = saturatingAdd(exec.adoptedConstantBytes, added)
+	if exec.adoptedConstantBytes > exec.memoryQuota {
+		return exec.memoryQuotaExceededError()
+	}
+	return nil
+}
+
 type loopScratchReservation struct {
 	exec     *Execution
 	baseline int

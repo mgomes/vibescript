@@ -1312,7 +1312,9 @@ func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, p
 	// Included module constants are adopted before the body runs so the body
 	// can read them and its own assignments win; later includes were recorded
 	// after earlier ones, so overwriting in order applies Ruby's precedence.
-	exec.adoptIncludedModuleConstants(classDef, parent)
+	if err := exec.adoptIncludedModuleConstants(classDef, parent); err != nil {
+		return err
+	}
 	if len(classDef.Body) > 0 {
 		env := newEnv(parent)
 		env.classBody = true
@@ -1340,15 +1342,38 @@ func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, p
 // state. Modules always initialize before the classes that include them —
 // include requires the module to be declared earlier in source — so their
 // constants are populated by the time they are adopted.
-func (exec *Execution) adoptIncludedModuleConstants(classDef *ClassDef, env *Env) {
+//
+// Both loops run over counts a small script sets independently: N classes
+// including a module of M constants perform N*M lookups and permanent map
+// insertions, and every class with an included module reaches here whether or
+// not it has a body. Unmetered, 300 classes including one 4000-constant module
+// — a 139KB script — allocated 263MB before any check ran, and 10,000
+// adoptions completed under a 5,000-step quota. Each module resolution and
+// each copied constant is charged a step, and the entries are charged before
+// the map grows (#23).
+func (exec *Execution) adoptIncludedModuleConstants(classDef *ClassDef, env *Env) error {
 	for _, moduleName := range classDef.IncludedModules {
+		if err := exec.step(); err != nil {
+			return err
+		}
 		moduleVal, ok := env.Get(moduleName)
 		if !ok || moduleVal.Kind() != KindClass {
 			continue
 		}
+		constants := valueClass(moduleVal).ClassVars
+		if len(constants) == 0 {
+			continue
+		}
+		if err := exec.stepN(len(constants)); err != nil {
+			return err
+		}
+		if err := exec.chargeAdoptedConstants(classDef.ClassVars, constants); err != nil {
+			return err
+		}
 		bumpMutationEpoch()
-		maps.Copy(classDef.ClassVars, valueClass(moduleVal).ClassVars)
+		maps.Copy(classDef.ClassVars, constants)
 	}
+	return nil
 }
 
 func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctionRebinder, fn *ScriptFunction, args []Value, keywords map[string]Value) (*Env, error) {
