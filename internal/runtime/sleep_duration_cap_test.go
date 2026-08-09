@@ -81,7 +81,7 @@ end`
 
 // TestUnlimitedSleepMaximumOptsOut pins that a host can remove the bound.
 //
-// The sleep is not waited out: the context is cancelled immediately, so a
+// The sleep is not waited out: the context is canceled immediately, so a
 // context error proves the duration was admitted, where the bound would have
 // rejected it before the timer started.
 func TestUnlimitedSleepMaximumOptsOut(t *testing.T) {
@@ -94,7 +94,7 @@ end`)
 	cancel()
 	_, err := script.Call(ctx, "run", nil, CallOptions{})
 	if err == nil {
-		t.Fatal("a cancelled context must still end the call")
+		t.Fatal("a canceled context must still end the call")
 	}
 	if strings.Contains(err.Error(), "exceeds the host maximum") {
 		t.Fatalf("Unlimited must admit the duration, got %v", err)
