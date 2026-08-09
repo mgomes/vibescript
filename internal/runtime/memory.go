@@ -1370,6 +1370,12 @@ func chargeRetainedLookupOutput(exec *Execution, acc *arrayBuildAccumulator, ret
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
+	// The prefix is walked again on every callback, so the traversal is charged
+	// to the step quota like any other per-element scan in the runtime. Without
+	// it a large splatted key list bought quadratic estimator work for free.
+	if err := exec.stepN(len(held)); err != nil {
+		return err
+	}
 	est := newMemoryEstimator()
 	for _, root := range stableRoots {
 		if valueHoldsNoDetachableParts(root) {
@@ -1383,7 +1389,9 @@ func chargeRetainedLookupOutput(exec *Execution, acc *arrayBuildAccumulator, ret
 	if err := acc.checkRetainedPayloadBytes(slotCount, total); err != nil {
 		return err
 	}
-	retained.reserve(saturatingAdd(total, arraySlotBackingBytes(slotCount)))
+	// set, not reserve: repricing has to follow the output down as well as up,
+	// or a result a callback emptied keeps being charged at its old size.
+	retained.set(saturatingAdd(total, arraySlotBackingBytes(slotCount)))
 	return nil
 }
 
@@ -3376,6 +3384,24 @@ func (r *retainedOutputScratch) reserve(total int) {
 		return
 	}
 	r.exec.reserveLoopScratch(total - r.reserved)
+	r.reserved = total
+}
+
+// set moves the reservation to total in either direction. A driver that
+// reprices its retained output needs the decrease as much as the increase: a
+// callback can shrink a value it returned earlier, and a reservation that only
+// ever rose went on charging the old size, rejecting a later callback whose
+// real footprint fit. The increase applies the delta reserveLoopScratch
+// actually took, so the pair stays balanced under saturation.
+func (r *retainedOutputScratch) set(total int) {
+	if r == nil || r.exec == nil || total < 0 || total == r.reserved {
+		return
+	}
+	if total > r.reserved {
+		r.reserved += r.exec.reserveLoopScratch(total - r.reserved)
+		return
+	}
+	r.exec.releaseLoopScratch(r.reserved - total)
 	r.reserved = total
 }
 
