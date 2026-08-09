@@ -5254,10 +5254,7 @@ func stringMemberTransforms(property string) (Value, error) {
 	}
 }
 
-// detachSubstrings replaces every element of subs with a copy that does not
-// keep text's backing allocation alive. Elements are windows onto text; one a
-// caller already rebuilt independently -- stringRuneSlice does that for invalid
-// UTF-8 -- is copied again, which is wasteful but not wrong.
+// clonedWindow copies sub out of text's backing allocation.
 //
 // A Go substring holds its whole backing, while the memory estimator prices a
 // string by its own length. A script could therefore keep a one-byte slice of
@@ -5265,60 +5262,60 @@ func stringMemberTransforms(property string) (Value, error) {
 // under an 8 MiB quota, by byteslice (#2), by a bracket read (#36), by a
 // partition component (#42) and by slice (#50) alike.
 //
-// Every proper slice is copied, not just a small one. A threshold looks
-// tempting -- a slice keeping most of its source wastes little -- but the
+// Every proper window is copied, not just a small one. A threshold looks
+// tempting -- a window keeping most of its source wastes little -- but the
 // waste composes: `s = s.slice(0, s.length / 2)` repeated keeps at least half
 // each time and so never trips a threshold, while every intermediate result
 // still points at the original allocation. Copying unconditionally is what
 // makes a string's footprint equal its length, which is the property the
-// estimator prices against. Only an element as long as text itself is left
-// alone, because a window that long has no backing to detach from. An empty
-// window is copied like any other: strings.Clone yields the shared empty string
-// for it, so a component charged zero bytes cannot pin a megabyte.
+// estimator prices against. Only a window as long as text itself is left alone,
+// because a window that long has no backing to detach from. An empty window is
+// copied like any other: strings.Clone yields the shared empty string for it, so
+// a component charged zero bytes cannot pin a megabyte.
 //
-// The bytes are reserved before they are allocated. A copy is live alongside
+// The copy is unpriced here; pricing belongs to whoever knows the whole result.
+// detachedSubstring reserves a single copy, and detachedPartitionValue projects
+// an entire three-element array.
+func clonedWindow(text, sub string) string {
+	if len(sub) == len(text) {
+		return sub
+	}
+	return strings.Clone(sub)
+}
+
+// detachedSubstring returns sub detached from text's backing, priced as the one
+// string value the caller is about to build from it.
+//
+// The bytes are reserved before they are allocated. The copy is live alongside
 // the string it was taken from, and for an ephemeral receiver --
 // `s.reverse.slice(...)` -- that receiver is reachable only from the Go stack,
-// so the pre-call check sees no copy and the post-call check no longer sees
-// the receiver. Folding the copies into the reserved scratch and rechecking
-// the live call roots is what prices that peak. All of them are reserved
-// together because a caller taking more than one holds them all at once
-// (String#partition returns a head and a tail); reserving them one at a time
-// would price only the largest.
-func detachSubstrings(exec *Execution, text string, subs []string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
-	copied := 0
-	detaching := false
-	for _, sub := range subs {
-		if len(sub) == len(text) {
-			continue
-		}
-		copied += len(sub)
-		detaching = true
-	}
-	if !detaching {
-		return nil
+// so the pre-call check sees no copy and the post-call check no longer sees the
+// receiver. Folding the copy into the reserved scratch and rechecking the live
+// call roots is what prices that peak.
+//
+// The value header is reserved with the bytes. The caller wraps the copy the
+// moment this returns, by which point the reservation is gone and the receiver
+// is once again invisible, so a reservation covering only the payload leaves
+// that last allocation unweighed.
+func detachedSubstring(exec *Execution, text, sub string, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
+	if len(sub) == len(text) {
+		return sub, nil
 	}
 	// Some builtins are reachable without an execution, and those have no quota
 	// to reserve against.
 	if exec != nil {
-		delta := exec.reserveLoopScratch(copied)
+		delta := exec.reserveLoopScratch(saturatingAdd(len(sub), estimatedValueBytes+estimatedStringHeaderBytes))
 		defer exec.releaseLoopScratch(delta)
 		if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
-			return err
+			return "", err
 		}
 	}
-	for i, sub := range subs {
-		if len(sub) == len(text) {
-			continue
-		}
-		subs[i] = strings.Clone(sub)
-	}
-	return nil
+	return clonedWindow(text, sub), nil
 }
 
 // detachedPartitionValue builds the three-element result String#partition and
 // String#rpartition return, with the head and tail copied out of the receiver's
-// backing (see detachSubstrings).
+// backing (see clonedWindow).
 //
 // Both components are windows onto the receiver, so a separator near either edge
 // leaves the retained side tiny while it pins the whole receiver: keeping
@@ -5331,16 +5328,43 @@ func detachSubstrings(exec *Execution, text string, subs []string, receiver Valu
 // shared zero value there, but that is a property of the payload and not of the
 // component.
 //
-// The separator is the argument rather than a window onto the receiver, so it
-// has no backing to detach from. The copies take no charge of their own:
-// chargeStringScanBeforeCall already billed the receiver's length, and the head
-// and tail are disjoint windows onto it.
+// The whole result is projected up front rather than the copies being reserved
+// and released around them. Both copies stay live in Go locals while the array
+// is built, the receiver may be ephemeral, and a reservation that ends before
+// NewArray leaves the array's own structure weighed against neither: the same
+// script needed 2,008,673 bytes of quota before this and needs 2,008,873 now.
+//
+// The copies take no step charge of their own: chargeStringScanBeforeCall
+// already billed the receiver's length, and the head and tail are disjoint
+// windows onto it.
 func detachedPartitionValue(exec *Execution, receiver Value, head, sep, tail string, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-	parts := [2]string{head, tail}
-	if err := detachSubstrings(exec, receiver.String(), parts[:], receiver, args, kwargs, block); err != nil {
-		return NewNil(), err
+	text := receiver.String()
+	if exec != nil {
+		if err := exec.checkProjectedPartitionBytes(text, head, tail, receiver, args, kwargs, block); err != nil {
+			return NewNil(), err
+		}
 	}
-	return NewArray([]Value{NewString(parts[0]), NewString(sep), NewString(parts[1])}), nil
+	return NewArray([]Value{
+		NewString(clonedWindow(text, head)),
+		NewString(sep),
+		NewString(clonedWindow(text, tail)),
+	}), nil
+}
+
+// checkProjectedPartitionBytes rejects a partition result before any part of it
+// exists: the two detached components, the three string values wrapping them,
+// and the three-slot array, all weighed together against the call's live roots.
+//
+// stringSplitPartPayloadBytes computes each component the way split already
+// does, which is exactly the rule here: a component that still shares the
+// receiver's backing (the whole string, when the separator is absent) or is
+// empty costs only its header, because clonedWindow allocates nothing for it.
+// The separator is the argument's own string, already counted among the roots,
+// so only the value header wrapping it is new.
+func (exec *Execution) checkProjectedPartitionBytes(text, head, tail string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	payload := saturatingAdd(stringSplitPartPayloadBytes(text, head), stringSplitPartPayloadBytes(text, tail))
+	payload = saturatingAdd(payload, estimatedStringHeaderBytes)
+	return exec.checkProjectedArrayBytesWithCallRoots(3, payload, receiver, args, kwargs, block)
 }
 
 // detachedWindow returns w's characters as a string that does not hold text's
@@ -5352,15 +5376,6 @@ func detachedWindow(exec *Execution, text string, w stringWindow, receiver Value
 		return w.text, nil
 	}
 	return detachedSubstring(exec, text, w.text, receiver, args, kwargs, block)
-}
-
-// detachedSubstring returns the single-slice form of detachSubstrings.
-func detachedSubstring(exec *Execution, text, sub string, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
-	subs := [1]string{sub}
-	if err := detachSubstrings(exec, text, subs[:], receiver, args, kwargs, block); err != nil {
-		return "", err
-	}
-	return subs[0], nil
 }
 
 // detachedByteslice detaches a String#byteslice result and bills the copy.

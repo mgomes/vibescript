@@ -273,10 +273,7 @@ func TestEmptyComponentsAreDetachedToo(t *testing.T) {
 	t.Parallel()
 
 	text := strings.Repeat("x", 4<<10)
-	parts := []string{text[:0], text[len(text):]}
-	if err := detachSubstrings(nil, text, parts, NewString(text), nil, nil, NewNil()); err != nil {
-		t.Fatalf("detaching failed: %v", err)
-	}
+	parts := []string{clonedWindow(text, text[:0]), clonedWindow(text, text[len(text):])}
 	for i, part := range parts {
 		if part != "" {
 			t.Fatalf("component %d = %q, want it to stay empty", i, part)
@@ -451,5 +448,62 @@ end`); err != nil {
   (seed * 200).slice(0, 1, junk: seed * 200)
 end`); err != nil {
 		t.Fatalf("receiver plus keyword argument alone must fit under the quota: %v", err)
+	}
+}
+
+// TestPartitionResultIsPricedWithItsArray pins that a partition is weighed
+// against the array it returns, not just against the copies that fill it.
+//
+// The copies were reserved and the reservation released before NewArray ran, so
+// the two components stayed live in Go locals while the three string values and
+// the three-slot array were allocated, with an ephemeral receiver invisible to
+// both the pre-call and post-call checks. Nothing ever weighed that peak.
+//
+// The bound is measured rather than written down: a String#slice over the same
+// receiver copies the same bytes and builds one string value instead of three
+// plus an array, so the quota that exactly fits it is by construction too small
+// for the partition. Before the fix the partition ran under it anyway.
+//
+// Not parallel: it binary-searches quotas, which is slow enough to keep off the
+// parallel set.
+func TestPartitionResultIsPricedWithItsArray(t *testing.T) {
+	seed := strings.Repeat("abcdefghij", 500)
+	call := func(source string, quota int) error {
+		script := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: quota}, source)
+		_, err := script.Call(context.Background(), "run", []Value{NewString(seed)}, CallOptions{})
+		return err
+	}
+	// The same receiver and the same copied bytes, wrapped in one value.
+	const sliced = `def run(seed)
+  ("a|" + seed * 200).slice(2, seed.length * 200)
+end`
+	const partitioned = `def run(seed)
+  ("a|" + seed * 200).partition("|")
+end`
+
+	lo, hi := 1, 8<<20
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if call(sliced, mid) != nil {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	fits := lo
+	if err := call(sliced, fits); err != nil {
+		t.Fatalf("the slice must fit under its own minimum quota %d: %v", fits, err)
+	}
+
+	if err := call(partitioned, fits); err == nil {
+		t.Fatalf("a partition needs three string values and a three-slot array beyond the copies "+
+			"a slice makes, so it must not fit the slice's minimum quota of %d", fits)
+	}
+
+	// Room for that structure and nothing else is all it takes, so the rejection
+	// above is the array rather than a blanket refusal. The gap measured 138
+	// bytes here.
+	if err := call(partitioned, fits+1024); err != nil {
+		t.Fatalf("the partition must fit once there is room for its array: %v", err)
 	}
 }
