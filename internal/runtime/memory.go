@@ -1331,35 +1331,6 @@ func (acc *arrayBuildAccumulator) addToReservedBacking(val Value) error {
 	return nil
 }
 
-// seedConservativeRoots marks roots the conservative charge must not bill a
-// second time. addConservative skips the build baseline on purpose, so that a
-// callback growing a receiver-owned container in place stays visible; but a
-// call argument is pinned on the builtin's Go frame for the whole call and no
-// callback can detach it, so a result aliasing one is already paid for by the
-// baseline. Without this, `fetch_values(key) { |k| k }` billed a 400KB key
-// twice and was rejected under a quota its real footprint fits easily.
-//
-// Only roots that hold their whole payload themselves qualify, and this filters
-// for that rather than trusting callers: an array is a supported hash key
-// (value.NewHashLookupKey), and seeding one marked its elements as already seen,
-// so a callback could return an element, a later callback could clear the array,
-// and the detached payload was then invisible to both the live-base walk and the
-// reservation while the output still held it.
-func (acc *arrayBuildAccumulator) seedConservativeRoots(roots []Value) {
-	if acc.exec.memoryQuota <= 0 || len(roots) == 0 {
-		return
-	}
-	for _, root := range roots {
-		if !valueHoldsNoDetachableParts(root) {
-			continue
-		}
-		if acc.result == nil {
-			acc.result = newMemoryEstimator()
-		}
-		acc.result.value(root)
-	}
-}
-
 // valueHoldsNoDetachableParts reports whether a value's payload is entirely its
 // own, with no contained Value that script code could remove from it. Only these
 // are safe to seed as stable roots; every container kind is excluded because a
@@ -1371,6 +1342,49 @@ func valueHoldsNoDetachableParts(val Value) bool {
 	default:
 		return false
 	}
+}
+
+// chargeRetainedLookupOutput prices everything a lookup builtin's Go-local
+// output currently holds and reserves it, so the memory checks inside the
+// callback that is about to run account for it. held is the filled prefix of
+// that output, slotCount its backing capacity, and stableRoots the call
+// arguments.
+//
+// The total is re-measured on every call rather than accumulated across the
+// build, because a retained result does not stay what it was when it was first
+// priced. A callback can push into an array it returned earlier, making the
+// result larger; it can delete or clear the entry a result aliased, making the
+// result the only thing holding that payload. An incremental total captured at
+// charge time goes stale in both directions, and each direction was separately
+// exploitable: a grown result and a detached one both sat unpriced alongside a
+// large in-callback temporary. Measuring immediately before script code runs is
+// the only point where the answer is guaranteed current, and it is also the only
+// point where it matters, since nothing else can change what the output holds.
+//
+// A fresh estimator per call keeps the pricing conservative: a result that
+// aliases receiver-owned memory is charged in full rather than deduplicated
+// against a baseline the callback can invalidate. Only arguments that hold no
+// detachable parts are seeded, so a callback returning its own scalar key is not
+// billed for memory the baseline already covers.
+func chargeRetainedLookupOutput(exec *Execution, acc *arrayBuildAccumulator, retained *retainedOutputScratch, held []Value, slotCount int, stableRoots []Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	est := newMemoryEstimator()
+	for _, root := range stableRoots {
+		if valueHoldsNoDetachableParts(root) {
+			est.value(root)
+		}
+	}
+	total := 0
+	for _, val := range held {
+		total = saturatingAdd(total, est.valuePayload(val))
+	}
+	if err := acc.checkRetainedPayloadBytes(slotCount, total); err != nil {
+		return err
+	}
+	retained.reserve(saturatingAdd(total, arraySlotBackingBytes(slotCount)))
+	return nil
 }
 
 // addConservative charges a block-produced result without deduplicating it

@@ -927,10 +927,6 @@ func hashMemberQuery(property string) (Value, error) {
 			// exec.reservedScratchBytes without the output backing, which the
 			// reservation would otherwise charge a second time.
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
-			// The keys stay pinned on this frame for the whole call, so a
-			// callback returning one retains nothing the baseline has not
-			// already paid for.
-			acc.seedConservativeRoots(args)
 			if err := acc.reserveSlots(len(args)); err != nil {
 				return NewNil(), err
 			}
@@ -944,10 +940,6 @@ func hashMemberQuery(property string) (Value, error) {
 			retained := newRetainedOutputScratch(exec)
 			defer retained.release()
 			retained.reserve(acc.accumulatedBytes(len(out)))
-			// out[chargedThrough:] holds present values not yet billed. They stay
-			// unbilled until a proc is about to run, and any left at the end need
-			// no charge at all: nothing can detach them before the builtin returns.
-			chargedThrough := 0
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -958,11 +950,9 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 				if ok {
 					// Left uncharged here: it aliases the receiver, which the
-					// baseline already counts, and it needs its own accounting
-					// only once script code gets a chance to detach it. Charging
-					// every present value as soon as the hash merely had a proc
-					// configured rejected an all-present values_at that allocates
-					// nothing but the array slot.
+					// baseline already counts. It is priced only if a proc later
+					// gets the chance to detach it, which the charge below does
+					// for the whole retained prefix at once.
 					out[i] = value
 					continue
 				}
@@ -970,41 +960,20 @@ func hashMemberQuery(property string) (Value, error) {
 				// default (a default value, or a default proc invoked with the
 				// hash and key, which may store) rather than filling nil, matching
 				// MRI's Hash#values_at.
-				ranProc := !hashDefaultProc(receiver).IsNil()
-				if ranProc {
-					// The proc is about to run and can clear or delete the
-					// receiver, detaching every present value out still holds, so
-					// those aliases are accounted now -- immediately before script
-					// code can break them, and no earlier.
-					for _, prev := range out[chargedThrough:i] {
-						if err := acc.addConservative(prev, len(out)); err != nil {
-							return NewNil(), err
-						}
+				if !hashDefaultProc(receiver).IsNil() {
+					// A proc is about to run, so everything retained so far is
+					// priced now, at the last moment its size and reachability
+					// are still known to be current. With no proc nothing runs,
+					// so a static default needs no charge at all.
+					if err := chargeRetainedLookupOutput(exec, acc, retained, out[:i], len(out), args); err != nil {
+						return NewNil(), err
 					}
-					retained.reserve(acc.accumulatedBytes(len(out)))
 				}
 				resolved, err := exec.hashDefaultForKey(receiver, arg)
 				if err != nil {
 					return NewNil(), err
 				}
 				out[i] = resolved
-				// The conservative charge skips baseline deduplication so a proc
-				// that grows a receiver-owned container in place stays visible to
-				// the quota. A static default runs no script code at all, so there
-				// is nothing to catch, and pricing it that way billed the one
-				// default object again on top of the receiver that already holds
-				// it -- a 400KB default charged 800KB and rejected a values_at
-				// that fit its real footprint by a wide margin.
-				if ranProc {
-					err = acc.addConservative(resolved, len(out))
-				} else {
-					err = acc.add(resolved, len(out))
-				}
-				if err != nil {
-					return NewNil(), err
-				}
-				chargedThrough = i + 1
-				retained.reserve(acc.accumulatedBytes(len(out)))
 			}
 			return NewArray(out), nil
 		}), nil
@@ -1042,10 +1011,6 @@ func hashMemberQuery(property string) (Value, error) {
 			// exec.reservedScratchBytes without the output backing, which the
 			// reservation would otherwise charge a second time.
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
-			// The keys stay pinned on this frame for the whole call, so a
-			// callback returning one retains nothing the baseline has not
-			// already paid for.
-			acc.seedConservativeRoots(args)
 			if err := acc.reserveSlots(len(args)); err != nil {
 				return NewNil(), err
 			}
@@ -1061,10 +1026,6 @@ func hashMemberQuery(property string) (Value, error) {
 			retained := newRetainedOutputScratch(exec)
 			defer retained.release()
 			retained.reserve(acc.accumulatedBytes(len(out)))
-			// out[chargedThrough:] holds present values not yet billed. They stay
-			// unbilled until the block is about to run, and any left at the end
-			// need no charge: nothing can detach them before the builtin returns.
-			chargedThrough := 0
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -1075,38 +1036,27 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 				if ok {
 					// Left uncharged here: it aliases the receiver, which the
-					// baseline already counts, and it needs its own accounting
-					// only once the block gets a chance to detach it. Charging
-					// every present value as soon as a block was merely supplied
-					// rejected an all-present fetch_values that allocates nothing
-					// but the array slot.
+					// baseline already counts. It is priced only if the block
+					// later gets the chance to detach it, which the charge below
+					// does for the whole retained prefix at once.
 					out[i] = value
 					continue
 				}
 				if valueBlock(block) == nil {
 					return NewNil(), fmt.Errorf("hash.fetch_values key not found: %s", formatMissingHashKey(arg))
 				}
-				// The block is about to run and can clear or delete the receiver,
-				// detaching every present value out still holds, so those aliases
-				// are accounted now -- immediately before script code can break
-				// them, and no earlier.
-				for _, prev := range out[chargedThrough:i] {
-					if err := acc.addConservative(prev, len(out)); err != nil {
-						return NewNil(), err
-					}
+				// The block is about to run, so everything retained so far is
+				// priced now, at the last moment its size and reachability are
+				// still known to be current.
+				if err := chargeRetainedLookupOutput(exec, acc, retained, out[:i], len(out), args); err != nil {
+					return NewNil(), err
 				}
-				retained.reserve(acc.accumulatedBytes(len(out)))
 				blockArg := [1]Value{arg}
 				blockValue, err := exec.CallBlock(block, blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
 				out[i] = blockValue
-				if err := acc.addConservative(blockValue, len(out)); err != nil {
-					return NewNil(), err
-				}
-				chargedThrough = i + 1
-				retained.reserve(acc.accumulatedBytes(len(out)))
 			}
 			return NewArray(out), nil
 		}), nil
