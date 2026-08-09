@@ -179,6 +179,8 @@ type scriptChecker struct {
 	summaryYieldCollector      *returnSummaryCollector
 	summaryYieldBlock          *BlockLiteral
 	summaryYieldBlockWalks     map[*BlockLiteral]int
+	storedBlockWalkStatements  map[*BlockLiteral]uint64
+	walkedStatements           uint64
 	summaryYieldsActive        bool
 	summaryBlockAvailable      bool
 	pinnedExpressionFacts      map[Expression]*TypeExpr
@@ -3193,6 +3195,7 @@ func (c *scriptChecker) recordNonCompletingExpression() {
 }
 
 func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, stmt Statement) {
+	c.walkedStatements++
 	c.predeclareStatementLiveNames(stmt)
 	defer c.postdeclareStatementLiveNames(stmt)
 	switch typed := stmt.(type) {
@@ -9063,6 +9066,24 @@ func (c *scriptChecker) blockImplicitResultFact(statements []Statement) *TypeExp
 	return unionTypeExprs(collector.arms...)
 }
 
+// maxStoredBlockResultStatements caps the statements one stored block's body
+// may be walked for its result fact across a check. A literal block is walked
+// once per call site it is written at, but a block reached through a stored
+// callable is written once and walked again at every site that passes it, so
+// the two halves of `callback = proc do ... end` and `items.fill(&callback)`
+// multiply: 50 body statements filled 50 times allocated 34MB, 100 by 100
+// allocated 160MB, and 200 by 200 allocated 831MB, quadrupling per doubling
+// inside CheckWarnings where no script step or memory quota applies.
+//
+// The walk reads the whole captured scope, so its result cannot be reused
+// across sites without proving that scope unchanged. Past the cap the result
+// reads as inexact instead, which is the same answer the walk already returns
+// for a body it cannot decide, so a site past the cap can lose a diagnostic but
+// can never gain one. The cap leaves an ordinary proc -- a handful of
+// statements -- thousands of sites before it binds, and holds the pairs above
+// at 65MB and 87MB, roughly 30 statements walked per statement of source (#10).
+const maxStoredBlockResultStatements = 4000
+
 func (c *scriptChecker) blockLiteralValuesResult(
 	function string,
 	blocks []checkBlockLiteralValue,
@@ -9075,10 +9096,15 @@ func (c *scriptChecker) blockLiteralValuesResult(
 		if blockValue.lambda && lambdaLiteralArity(blockValue.block) != 1 {
 			continue
 		}
+		if c.storedBlockWalkStatements[blockValue.block] > maxStoredBlockResultStatements {
+			return checkBlockResult{mayComplete: true}
+		}
 		var result checkBlockResult
+		walkedBefore := c.walkedStatements
 		c.withSuppressedWarnings(func() {
 			result = c.checkBlockLiteral(function, blockValue.block, blockValue.lambda)
 		})
+		c.noteStoredBlockResultWalk(blockValue.block, c.walkedStatements-walkedBefore)
 		if !result.exact {
 			return checkBlockResult{mayComplete: true}
 		}
@@ -9095,6 +9121,14 @@ func (c *scriptChecker) blockLiteralValuesResult(
 		exact:       true,
 		mayComplete: true,
 	}
+}
+
+func (c *scriptChecker) noteStoredBlockResultWalk(block *BlockLiteral, walked uint64) {
+	noteCheckWork(int(walked))
+	if c.storedBlockWalkStatements == nil {
+		c.storedBlockWalkStatements = make(map[*BlockLiteral]uint64)
+	}
+	c.storedBlockWalkStatements[block] += walked
 }
 
 // checkCapturedBlockLiteral validates a constructor's retained block without

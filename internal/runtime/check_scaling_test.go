@@ -259,3 +259,62 @@ end
 		t.Fatalf("a reassigned namespace member left the callee decided: %v", warnings)
 	}
 }
+
+func storedBlockFillSource(n int) string {
+	var body strings.Builder
+	for i := range n {
+		fmt.Fprintf(&body, "    v%d = index + %d\n", i, i)
+	}
+	return fmt.Sprintf(`
+def f(items: array<int>)
+  callback = proc do |index|
+%s    1
+  end
+%send
+`, body.String(), strings.Repeat("  items.fill(&callback)\n", n))
+}
+
+// A block reached through a stored callable is written once and walked again
+// for its result at every site that passes it, so a proc body and the sites
+// passing it multiplied: N body statements filled N times walked N*N (#10).
+func TestCheckStoredBlockResultWalksStayLinear(t *testing.T) {
+	small := measureCheckWork(t, storedBlockFillSource(200))
+	large := measureCheckWork(t, storedBlockFillSource(400))
+
+	// Measured 4,020 then 4,010 statements walked, which is the cap plus the
+	// walk that reached it. Before, the same pair walked 40,200 and 160,400, a
+	// 3.99x step. The assertion allows up to 3x so it states the complexity
+	// rather than pinning counts.
+	if large > small*3 {
+		t.Fatalf("doubling the source walked %d stored block statements against %d -- over 3x,"+
+			" so resolving a stored block's result is superlinear in the sites passing it again", large, small)
+	}
+}
+
+// The cap has to leave ordinary code alone: a proc of a few statements is
+// walked for its result at thousands of sites before it binds, and every one of
+// those sites still decides the receiver's element type exactly, which is what
+// the append below contradicts.
+func TestStoredBlockFillKeepsResultDiagnostics(t *testing.T) {
+	source := func(sites int) string {
+		return fmt.Sprintf(`
+def f(items: array<int>)
+  callback = proc do |index|
+    1
+  end
+%s  items << true
+end
+`, strings.Repeat("  items.fill(&callback)\n", sites))
+	}
+	const want = "write to items expected element int, got bool"
+
+	requireCheckWarning(t, compileScript(t, source(1)).CheckWarnings(), want)
+	requireCheckWarning(t, compileScript(t, source(1000)).CheckWarnings(), want)
+
+	// Past the cap the result reads as inexact, which weakens the receiver's
+	// fact. That can only cost the diagnostic above, never produce another.
+	warnings := compileScript(t, storedBlockFillSource(200)+"").CheckWarnings()
+	if len(warnings) != 0 {
+		t.Fatalf("a stored block past the walk cap reported %v", warnings)
+	}
+}
