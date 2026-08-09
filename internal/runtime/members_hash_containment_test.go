@@ -4502,3 +4502,46 @@ func TestHashRetainedOutputStaysReservedWhenACallbackDetachesIt(t *testing.T) {
 		})
 	}
 }
+
+// The same detach hazard reaches values the receiver already held. A present
+// key is answered by aliasing the receiver, so its payload is charged only
+// through the baseline -- and a callback can then clear the hash, leaving the
+// alias live solely in the Go-local output. Here :a contributes 400KB, the :b
+// callback clears the hash and allocates 700KB, and the 1MB quota must reject
+// the pair even though no walk can still reach the detached value.
+func TestHashPresentResultStaysReservedWhenACallbackDetachesIt(t *testing.T) {
+	t.Parallel()
+
+	sources := map[string]string{
+		"values_at default proc": `
+    def run()
+      h = Hash.new { |hash, k|
+        hash.clear
+        ("t" * 700000).length
+      }
+      h[:a] = "x" * 400000
+      h.values_at(:a, :b)
+    end
+    `,
+		"fetch_values block": `
+    def run()
+      h = { }
+      h[:a] = "x" * 400000
+      h.fetch_values(:a, :b) { |k|
+        h.clear
+        ("t" * 700000).length
+      }
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a detached present result coexisting with an in-callback temporary exceeded the quota but was accepted")
+			}
+		})
+	}
+}
