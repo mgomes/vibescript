@@ -58,8 +58,12 @@ func (c *scriptChecker) blockParamTargetMayBind(
 	if !ok {
 		return true
 	}
+	layout, decomposed := blockDestructureLayoutFor(value, destructure)
 	for i, element := range destructure.Elements {
-		elementValue := blockDestructureElementType(value, destructure, i)
+		var elementValue *TypeExpr
+		if decomposed {
+			elementValue = layout.elementType(i)
+		}
 		if element.Type != nil && typeExprsDisjoint(elementValue, element.Type, resolve) {
 			return false
 		}
@@ -70,20 +74,36 @@ func (c *scriptChecker) blockParamTargetMayBind(
 	return true
 }
 
-func blockDestructureElementType(
+// blockDestructureLayout is the part of a destructuring bind that every element
+// of one target shares: the positional values the destructured value supplies,
+// and the rest element that decides which window each position reads from.
+type blockDestructureLayout struct {
+	values    []*TypeExpr
+	elements  int
+	restIndex int
+}
+
+// blockDestructureLayoutFor decomposes value against target, reporting false
+// when the value carries no exact positional facts for the target to read.
+//
+// Deriving this once per bind is what keeps a wide destructured block parameter
+// affordable. Resolving each element on its own re-decomposed the value and
+// rescanned the whole target for its rest element, so a parameter like
+// `(x1, ..., xN, *rest)` on an array.fill block cost N*N element inspections
+// during CheckWarnings, before any runtime step or memory quota applies. A
+// 2,000-target parameter inspected 4.0M elements and a 4,000-target one 16.0M,
+// quadrupling per doubling; they inspect 2,002 and 4,002 now, and checking the
+// 8,000-target case fell from 47ms to 5ms (#6).
+func blockDestructureLayoutFor(
 	value *TypeExpr,
 	target *DestructureTarget,
-	index int,
-) *TypeExpr {
-	if target == nil || index < 0 || index >= len(target.Elements) {
-		return nil
-	}
-	if value == nil {
-		return nil
+) (blockDestructureLayout, bool) {
+	if target == nil || value == nil {
+		return blockDestructureLayout{}, false
 	}
 	arms, exact := typeExprArms(value, 0)
 	if !exact || len(arms) == 0 {
-		return nil
+		return blockDestructureLayout{}, false
 	}
 	values := []*TypeExpr{value}
 	if elements, exact := exactBlockRestElementTypes(value); exact {
@@ -91,45 +111,69 @@ func blockDestructureElementType(
 	} else {
 		for _, arm := range arms {
 			if arm.Kind == TypeArray {
-				return nil
+				return blockDestructureLayout{}, false
 			}
 		}
 	}
-	// A known scalar destructures as a one-element sequence; an exact rest
-	// array retains every generated position. Mirror
-	// assignDestructureWithNormalizer's rest window so leading, rest, and
-	// trailing targets see the same value (or nil/empty-array padding) the
-	// runtime binds.
-	restIndex := -1
+	layout := blockDestructureLayout{
+		values:    values,
+		elements:  len(target.Elements),
+		restIndex: -1,
+	}
 	for i, element := range target.Elements {
 		if element.Rest {
-			restIndex = i
+			layout.restIndex = i
 			break
 		}
 	}
-	if restIndex < 0 {
-		if index < len(values) {
-			return values[index]
+	noteCheckWork(len(target.Elements) + len(values))
+	return layout, true
+}
+
+// elementType returns the value bound at one target position. A known scalar
+// destructures as a one-element sequence; an exact rest array retains every
+// generated position. The rest window mirrors assignDestructureWithNormalizer
+// so leading, rest, and trailing targets see the same value (or nil/empty-array
+// padding) the runtime binds.
+func (l blockDestructureLayout) elementType(index int) *TypeExpr {
+	if index < 0 || index >= l.elements {
+		return nil
+	}
+	if l.restIndex < 0 {
+		if index < len(l.values) {
+			return l.values[index]
 		}
 		return checkTypeNil
 	}
-	restStart := min(restIndex, len(values))
-	restEnd := max(restStart, len(values)-(len(target.Elements)-restIndex-1))
+	restStart := min(l.restIndex, len(l.values))
+	restEnd := max(restStart, len(l.values)-(l.elements-l.restIndex-1))
 	switch {
-	case index < restIndex:
-		if index < len(values) {
-			return values[index]
+	case index < l.restIndex:
+		if index < len(l.values) {
+			return l.values[index]
 		}
 		return checkTypeNil
-	case index == restIndex:
-		return exactBlockRestType(values[restStart:restEnd])
+	case index == l.restIndex:
+		return exactBlockRestType(l.values[restStart:restEnd])
 	default:
-		valueIndex := restEnd + (index - restIndex - 1)
-		if valueIndex < len(values) {
-			return values[valueIndex]
+		valueIndex := restEnd + (index - l.restIndex - 1)
+		if valueIndex < len(l.values) {
+			return l.values[valueIndex]
 		}
 		return checkTypeNil
 	}
+}
+
+func blockDestructureElementType(
+	value *TypeExpr,
+	target *DestructureTarget,
+	index int,
+) *TypeExpr {
+	layout, decomposed := blockDestructureLayoutFor(value, target)
+	if !decomposed {
+		return nil
+	}
+	return layout.elementType(index)
 }
 
 func exactBlockRestType(elements []*TypeExpr) *TypeExpr {
