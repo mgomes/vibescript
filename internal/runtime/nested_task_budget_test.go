@@ -856,8 +856,14 @@ func TestStarvedGroupsAreOfferedSlotsInRegistrationOrder(t *testing.T) {
 	for _, group := range []*taskGroup{first, second, third} {
 		budget.markStarved(group)
 	}
-	// Registering again must not move a group to the back of the queue.
+	// Registering again must not move a group to the back of the queue, but it
+	// must still advance the generation: a group stays listed after its queue
+	// drains, so a repeat registration is how new work announces itself.
+	genBefore := budget.starvedGeneration()
 	budget.markStarved(second)
+	if budget.starvedGeneration() == genBefore {
+		t.Fatal("re-registering a listed group did not advance the wakeup generation")
+	}
 
 	if got := budget.starved; len(got) != 3 || got[0] != first || got[1] != second || got[2] != third {
 		t.Fatalf("waiting groups are not in registration order: %v", got)

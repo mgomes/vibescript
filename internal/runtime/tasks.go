@@ -296,11 +296,16 @@ func (b *taskConcurrencyBudget) reserveOne() bool {
 func (b *taskConcurrencyBudget) markStarved(group *taskGroup) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// The generation advances even when the group is already listed. A group
+	// stays registered after its queue drains, so a repeat registration is how
+	// new work announces itself: suppressing the bump there let a finishing
+	// worker sample the generation, see the stale entry with an empty queue,
+	// and release its slot while the enqueue it raced with was left waiting.
+	b.starvedGen++
 	if slices.Contains(b.starved, group) {
 		return
 	}
 	b.starved = append(b.starved, group)
-	b.starvedGen++
 }
 
 // starvedGeneration reports how many registrations the pool has seen.
