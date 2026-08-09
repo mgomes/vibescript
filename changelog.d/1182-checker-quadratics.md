@@ -13,6 +13,7 @@
   Refining a witnessed literal shape now stops at 64 fields (2,000
   `h[:kN] = 1` writes: 520MB against 11.8MB) and one stored block's body is
   walked for its result at most 4,000 statements per check (a 200-statement proc
-  filled 200 times: 831MB against 87MB). Those two weaken the fact past their
-  bound, which is the answer the checker already gives for a receiver it cannot
-  decide, so they can cost a diagnostic but never produce one.
+  filled 200 times: 831MB against 87MB). Past their bound both weaken the fact,
+  and the block walk also leaves the call unable to complete, since the walk it
+  skipped could have proved the body always raises and cut the code after the
+  fill. Both can therefore cost a diagnostic but never produce one.

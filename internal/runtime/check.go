@@ -5514,9 +5514,20 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				blockResult = c.blockLiteralValuesResult(function, blocks)
 			}
 		}
-		if callMayComplete && arrayFillBlockCall &&
-			blockResult.exact && !blockResult.mayComplete {
-			callMayComplete = c.arrayFillCallMayCompleteWithoutInvokingBlock(typed)
+		// A body proved never to complete leaves the fill reachable only where it
+		// can finish without invoking the block. A body the checker declined to
+		// walk cannot claim even that much: the walk it skipped could have
+		// proved the body never completes, and the same skipping weakens the
+		// receiver the without-invoking test reads, so the call is left unable
+		// to complete rather than able to. Assuming otherwise would make code
+		// that proof would have cut reachable, and diagnose it.
+		if callMayComplete {
+			switch {
+			case blockResult.undecided:
+				callMayComplete = false
+			case arrayFillBlockCall && blockResult.exact && !blockResult.mayComplete:
+				callMayComplete = c.arrayFillCallMayCompleteWithoutInvokingBlock(typed)
+			}
 		}
 		c.callArgumentFacts = previousFacts
 		c.callArgumentHints = previousHints
@@ -8835,6 +8846,11 @@ type checkBlockResult struct {
 	fact        *TypeExpr
 	exact       bool
 	mayComplete bool
+	// undecided marks a result the checker declined to compute rather than one
+	// a walk decided as unknown. The walk it skipped could have proved the body
+	// never completes, so a caller reading this must stay as conservative about
+	// reaching the code after the call as that proof would have left it (#10).
+	undecided bool
 }
 
 // checkBlockLiteral walks a block or lambda body. localReturns marks blocks
@@ -9077,11 +9093,14 @@ func (c *scriptChecker) blockImplicitResultFact(statements []Statement) *TypeExp
 //
 // The walk reads the whole captured scope, so its result cannot be reused
 // across sites without proving that scope unchanged. Past the cap the result
-// reads as inexact instead, which is the same answer the walk already returns
-// for a body it cannot decide, so a site past the cap can lose a diagnostic but
-// can never gain one. The cap leaves an ordinary proc -- a handful of
-// statements -- thousands of sites before it binds, and holds the pairs above
-// at 65MB and 87MB, roughly 30 statements walked per statement of source (#10).
+// reads as undecided instead: the written element is unknown, which weakens the
+// receiver, and the call is left unable to complete. Both are the answers the
+// skipped walk could least afford to contradict -- it might have proved the
+// body always raises, which cuts the code after the fill -- so a site past the
+// cap can lose a diagnostic but can never gain one. The cap leaves an ordinary
+// proc -- a handful of statements -- thousands of sites before it binds, and
+// holds the pairs above at 65MB and 87MB, roughly 30 statements walked per
+// statement of source (#10).
 const maxStoredBlockResultStatements = 4000
 
 func (c *scriptChecker) blockLiteralValuesResult(
@@ -9097,7 +9116,7 @@ func (c *scriptChecker) blockLiteralValuesResult(
 			continue
 		}
 		if c.storedBlockWalkStatements[blockValue.block] > maxStoredBlockResultStatements {
-			return checkBlockResult{mayComplete: true}
+			return checkBlockResult{mayComplete: true, undecided: true}
 		}
 		var result checkBlockResult
 		walkedBefore := c.walkedStatements

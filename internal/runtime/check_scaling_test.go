@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -316,5 +317,63 @@ end
 	warnings := compileScript(t, storedBlockFillSource(200)+"").CheckWarnings()
 	if len(warnings) != 0 {
 		t.Fatalf("a stored block past the walk cap reported %v", warnings)
+	}
+}
+
+// rescuedStoredBlockFillSource repeats a fill of the same stored block inside a
+// rescue so that a body which always raises still lets the next site be
+// reached, which is what lets the sites accumulate against the walk cap before
+// the unrescued fill at the end.
+func rescuedStoredBlockFillSource(body, sites int, result string) string {
+	var statements strings.Builder
+	for i := range body {
+		fmt.Fprintf(&statements, "    v%d = index + %d\n", i, i)
+	}
+	guarded := strings.Repeat(`  begin
+    items.fill(&callback)
+  rescue
+    nil
+  end
+`, sites)
+	return fmt.Sprintf(`
+def take(v: int)
+  v
+end
+
+def f()
+  items = [1, 2, 3]
+  callback = proc do |index|
+%s    %s
+  end
+%s  items.fill(&callback)
+  take("bad")
+end
+`, statements.String(), result, guarded)
+}
+
+// Declining the walk must report no more than performing it would. A stored
+// block that always raises leaves the code after the fill unreachable, so the
+// call to take is never diagnosed -- and a run of sites long enough to exhaust
+// the walk cap must not make it reachable again by assuming the body it skipped
+// completes (#10).
+func TestStoredBlockWalkCapAddsNoDiagnostics(t *testing.T) {
+	for _, result := range []string{`raise "boom"`, "1"} {
+		t.Run(result, func(t *testing.T) {
+			underCap := checkWarningMessages(compileScript(t, rescuedStoredBlockFillSource(10, 10, result)).CheckWarnings())
+			overCap := checkWarningMessages(compileScript(t, rescuedStoredBlockFillSource(100, 100, result)).CheckWarnings())
+
+			for _, message := range overCap {
+				if !slices.Contains(underCap, message) {
+					t.Fatalf("exhausting the walk cap reported %q, which the same shape under the"+
+						" cap does not: %v against %v", message, overCap, underCap)
+				}
+			}
+		})
+	}
+
+	// The raising body is the shape the cap could have made reachable, so pin
+	// it directly rather than only as a subset.
+	if messages := checkWarningMessages(compileScript(t, rescuedStoredBlockFillSource(100, 100, `raise "boom"`)).CheckWarnings()); len(messages) != 0 {
+		t.Fatalf("code after a fill whose block always raises was diagnosed: %v", messages)
 	}
 }
