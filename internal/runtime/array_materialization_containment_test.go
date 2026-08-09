@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	runtimemetrics "runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -894,4 +895,86 @@ func largeSymbolArray(n int) Value {
 		values[i] = NewSymbol("k" + strconv.Itoa(i))
 	}
 	return NewArray(values)
+}
+
+// restWindowReceiver builds a receiver whose last element is a wide array, so a
+// destructuring block binds a cheap rest for every earlier element and one huge
+// rest at the end -- after the loop has retained payload from all the others.
+func restWindowReceiver(narrow, wide int) Value {
+	elems := make([]Value, 0, narrow+1)
+	for range narrow {
+		elems = append(elems, NewArray([]Value{NewInt(1), NewInt(2)}))
+	}
+	inner := make([]Value, wide)
+	for i := range inner {
+		inner[i] = NewInt(int64(i))
+	}
+	return NewArray(append(elems, NewArray(inner)))
+}
+
+// allocatedDuringCall reports the bytes src cumulatively allocates for one
+// rejected call, which is how a preflight is observed: a gate that rejects
+// before the allocation and one that rejects after it agree on the error and
+// differ only here.
+func allocatedDuringCall(t *testing.T, src string, quota int, arg Value) uint64 {
+	t.Helper()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: quota}, src)
+	runtimemetrics.GC()
+	var before, after runtimemetrics.MemStats
+	runtimemetrics.ReadMemStats(&before)
+	if _, err := script.Call(context.Background(), "run", []Value{arg}, CallOptions{}); err == nil {
+		t.Fatalf("a peak above the %d-byte quota was accepted", quota)
+	}
+	runtimemetrics.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// A rest-collecting destructure parameter copies its window into a fresh backing
+// before binding it, and the bind charge preflights that copy so an over-budget
+// window is rejected instead of materialized. The charge's baseline is snapshotted
+// once, before the first callback, and tracked what the loop had accumulated since
+// only through exec.reservedScratchBytes -- which was where the drivers used to put
+// their retained results. Registering those results as walk roots instead left the
+// preflight weighing a 16MB window against a baseline missing 5.8MB of retained
+// output, so the copy was allocated and only a later body check noticed.
+//
+// Both bounds are measured, not assumed: the floor run rejects on the first block
+// body, before any wide window exists, so the difference between the two runs is
+// what this call allocated for its retained results and, if the gate is blind, one
+// whole window on top.
+//
+// Not parallel: process-wide allocation counters.
+func TestBlockRestWindowPreflightSeesRetainedOutput(t *testing.T) {
+	const narrow = 29
+	const wide = 500_000
+	const payload = 200_000
+
+	receiver := restWindowReceiver(narrow, wide)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 40, memoryQuota: 1 << 40}
+	receiverBytes := probe.estimateMemoryUsage(receiver)
+	window := estimatedValueBytes + estimatedSliceBaseBytes + (wide-1)*estimatedValueBytes
+	retained := narrow * (payload + estimatedStringHeaderBytes)
+
+	// Between "the receiver and one window fit" and "the receiver, the retained
+	// results, and one window do not", so only a preflight that sees the retained
+	// results rejects the window before it is copied.
+	quota := receiverBytes + window + retained/2
+	if quota <= receiverBytes+window || quota >= receiverBytes+window+retained {
+		t.Fatalf("quota %d must fit receiver+window %d and reject receiver+retained+window %d",
+			quota, receiverBytes+window, receiverBytes+window+retained)
+	}
+
+	src := fmt.Sprintf("def run(a)\n  a.map { |(head, *tail)| \"y\" * %d }\nend", payload)
+	floor := allocatedDuringCall(t, src, receiverBytes+4096, receiver)
+	got := allocatedDuringCall(t, src, quota, receiver)
+
+	// The call legitimately allocates its retained results; it must not also
+	// allocate the window the quota cannot afford.
+	budget := uint64(retained + window/2)
+	if got-floor > budget {
+		t.Fatalf("array.map allocated %d bytes beyond the %d-byte floor; want under %d, so the "+
+			"%d-byte rest window was materialized before the preflight rejected it",
+			got-floor, floor, budget, window)
+	}
 }

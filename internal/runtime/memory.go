@@ -2305,14 +2305,19 @@ type blockBindCharge struct {
 	selfReserved    int
 }
 
-// liveBaseline is the construction-time baseline plus any scratch reserved
-// since, which is what the call is really being weighed against.
+// liveBaseline is the construction-time baseline plus everything the driver has
+// accumulated since, which is what the call is really being weighed against:
+// scratch it has reserved, and the results it has retained into a registered
+// output root (see memory_output.go). Both were the same quantity while the
+// drivers reserved their results as scratch; a registered output is invisible to
+// the reservation counter, so a bind charge that read only that counter weighed
+// a rest window against a baseline missing every result the loop had kept.
 func (c *blockBindCharge) liveBaseline() int {
-	growth := c.exec.reservedScratchBytes - c.reservedAtStart - c.selfReserved
-	if growth <= 0 {
-		return c.baseline
+	baseline := c.baseline
+	if growth := c.exec.reservedScratchBytes - c.reservedAtStart - c.selfReserved; growth > 0 {
+		baseline = saturatingAdd(baseline, growth)
 	}
-	return saturatingAdd(c.baseline, growth)
+	return saturatingAdd(baseline, c.exec.retainedOutputBytes())
 }
 
 // noteSelfReservation records the scratch callBlock reserved for this call's
