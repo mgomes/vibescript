@@ -3,7 +3,7 @@
   script step or memory quota can meter it. Binding a destructured block
   parameter re-derived the same decomposition and rest element for every
   element, so a 4,000-target `(x1, ..., xN, *rest)` inspected 16.0M elements
-  against 4,002 now. Modelling a rest parameter rebuilt every aggregate at every
+  against 4,002 now. Modeling a rest parameter rebuilt every aggregate at every
   argument, so `sink(0, 0, ...)` against `def sink(*xs)` allocated 274MB at
   2,000 arguments against 5.5MB now. Return summaries were keyed by a context
   naming every namespace member recorded as possibly reassigned, rebuilt on each
