@@ -4832,7 +4832,7 @@ func TestHashLookupsChargeAResultAliasingAnEphemeralKey(t *testing.T) {
 }
 
 // hashOfIndexedInts builds a receiver whose sorted key order matches its value
-// order, so a block can key its behaviour on which entry it is looking at.
+// order, so a block can key its behavior on which entry it is looking at.
 func hashOfIndexedInts(count int) Value {
 	entries := make(map[string]Value, count)
 	for i := range count {
@@ -4843,3 +4843,69 @@ func hashOfIndexedInts(count int) Value {
 
 
 
+
+// missingKeyList renders count missing symbol keys as an argument list wide
+// enough for the memo's cost to show.
+func missingKeyList(count int) string {
+	keys := make([]string, count)
+	for i := range keys {
+		keys[i] = fmt.Sprintf(":m%04d", i)
+	}
+	return strings.Join(keys, ", ")
+}
+
+// lookupEstimatorVisits counts the graph nodes the estimator visits while src
+// runs under an enforced memory quota. Node counts are exact and machine
+// independent, unlike the wall clock this regression would otherwise be pinned
+// with.
+func lookupEstimatorVisits(t *testing.T, src string) uint64 {
+	t.Helper()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 64 << 20, StepQuota: Unlimited}, src)
+	estimatorVisits.Store(0)
+	estimatorVisitCounting.Store(true)
+	defer estimatorVisitCounting.Store(false)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	return estimatorVisits.Load()
+}
+
+// Registering the retained output makes every base walk that misses the memo
+// re-walk every result the lookup has kept, so the lookup is only affordable
+// while the memo survives its callbacks. It does not survive a raw CallBlock:
+// that pushes a fresh scope per call, and the push and its parameter binds move
+// the topology and the mutation epoch, discarding the memo on every miss. Both
+// lookups therefore drive their callback through a block-call runner inside a
+// block-iteration region, the way the map drivers do, so doubling the misses
+// roughly doubles the walk instead of quadrupling it.
+//
+// Not parallel: the estimator visit counter is process-wide.
+func TestHashLookupCallbacksKeepTheBaseWalkMemo(t *testing.T) {
+	if estimatorVerify {
+		t.Skip("the estimator oracle re-derives a reference walk per retained result, which is deliberately quadratic")
+	}
+
+	const small, large = 400, 800
+	sources := map[string]string{
+		"fetch_values block": "def run()\n  h = { }\n  h.fetch_values(%s) { |k| \"xxxxxxxxxxxxxxxx\" }.length\nend",
+		"values_at default proc": "def run()\n  h = Hash.new { |g, k| \"xxxxxxxxxxxxxxxx\" }\n" +
+			"  h.values_at(%s).length\nend",
+	}
+
+	for name, tmpl := range sources {
+		t.Run(name, func(t *testing.T) {
+			atSmall := lookupEstimatorVisits(t, fmt.Sprintf(tmpl, missingKeyList(small)))
+			atLarge := lookupEstimatorVisits(t, fmt.Sprintf(tmpl, missingKeyList(large)))
+			// Linear growth is 2x for a doubling. The headroom keeps the bound on
+			// the complexity class rather than the exact node count, while staying
+			// far below the 4x a per-miss re-walk of the retained output produces.
+			if atLarge > atSmall*3 {
+				t.Errorf("estimator visited %d nodes for %d misses and %d for %d; doubling the "+
+					"misses should roughly double the walk, so the callback is still "+
+					"discarding the base-walk memo and re-walking the retained output",
+					atSmall, small, atLarge, large)
+			}
+		})
+	}
+}
