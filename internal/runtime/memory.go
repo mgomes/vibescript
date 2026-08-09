@@ -3515,7 +3515,10 @@ func (acc *arrayBuildAccumulator) accumulatedBytes(backingCap int) int {
 
 // retainedOutputScratch keeps a loop's accumulated output reserved as scratch,
 // raising the reservation as the output grows and releasing all of it when the
-// loop ends.
+// loop ends. A driver whose output is a base-walk root (see memory_output.go)
+// needs neither, since the estimator reaches its results directly; this remains
+// for the builders that cannot afford the walk a root costs them, which
+// format's per-operand to_s conversions measured as quadratic.
 type retainedOutputScratch struct {
 	exec     *Execution
 	reserved int

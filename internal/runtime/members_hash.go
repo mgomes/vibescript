@@ -923,7 +923,19 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.values_at does not accept keyword arguments")
 			}
-			out := make([]Value, len(args))
+			// A default proc is script code, and everything the lookup has
+			// resolved so far lives in a Go-local slice its memory checks cannot
+			// reach: each proc was measured against a graph missing every earlier
+			// result, so a run of individually permitted defaults could pile up
+			// past the quota. Reserving the slots and registering the slice as a
+			// walk root puts the whole retained output in every check the proc
+			// performs, re-derived as the proc leaves it (see memory_output.go).
+			backing := exec.reserveLoopScratch(arraySlotBackingBytes(len(args)))
+			defer exec.releaseLoopScratch(backing)
+			var out []Value
+			exec.pushOutputWalkRoot(retainedValues(&out))
+			defer exec.popOutputWalkRoot()
+			out = make([]Value, len(args))
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -933,7 +945,13 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.values_at key is unsupported hash key: %w", err)
 				}
 				if ok {
+					// Charged as retained output even though it aliases the
+					// receiver: a later proc can delete the entry or clear the
+					// hash, and then nothing reachable holds the payload while
+					// this slot still does. The estimator deduplicates it against
+					// the receiver for as long as the alias lasts.
 					out[i] = value
+					exec.addRetainedOutput(value)
 					continue
 				}
 				// A missing key is a [] access: consult the hash's Ruby-style
@@ -945,6 +963,7 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out[i] = resolved
+				exec.addRetainedOutput(resolved)
 			}
 			return NewArray(out), nil
 		}), nil
@@ -978,7 +997,19 @@ func hashMemberQuery(property string) (Value, error) {
 		}), nil
 	case "fetch_values":
 		return NewAutoBuiltin("hash.fetch_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			out := make([]Value, len(args))
+			// The block runs once per missing key and every result stays in a
+			// Go-local slice the checks inside the next block call cannot reach,
+			// so a block returning an individually permitted value passed its own
+			// check each time while the slice still held all the earlier ones.
+			// Reserving the slots and registering the slice as a walk root puts
+			// the whole retained output in every one of those checks, re-derived
+			// as the block leaves it (see memory_output.go).
+			backing := exec.reserveLoopScratch(arraySlotBackingBytes(len(args)))
+			defer exec.releaseLoopScratch(backing)
+			var out []Value
+			exec.pushOutputWalkRoot(retainedValues(&out))
+			defer exec.popOutputWalkRoot()
+			out = make([]Value, len(args))
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -988,7 +1019,13 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.fetch_values key is unsupported hash key: %w", err)
 				}
 				if ok {
+					// Charged as retained output even though it aliases the
+					// receiver: a later block call can delete the entry or clear
+					// the hash, and then nothing reachable holds the payload while
+					// this slot still does. The estimator deduplicates it against
+					// the receiver for as long as the alias lasts.
 					out[i] = value
+					exec.addRetainedOutput(value)
 					continue
 				}
 				if valueBlock(block) == nil {
@@ -1000,6 +1037,7 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out[i] = blockValue
+				exec.addRetainedOutput(blockValue)
 			}
 			return NewArray(out), nil
 		}), nil
@@ -2829,12 +2867,17 @@ func hashMemberTransforms(property string) (Value, error) {
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 
 			// The reservation is what makes the backing visible to checks that
-			// run inside the block body, which cannot see a Go-local slice. It
-			// is raised before the runner is constructed because the runner
+			// run inside the block body, which cannot see a Go-local slice, and
+			// registering the slice does the same for the results it holds:
+			// their footprint is re-derived by each of those checks rather
+			// than priced when the block returned (see memory_output.go). Both
+			// happen before the runner is constructed because the runner
 			// snapshots its bind baseline once, at construction.
-			retained := newRetainedOutputScratch(exec)
-			defer retained.release()
-			retained.reserve(arraySlotBackingBytes(hashEntryCount(receiver)))
+			backing := exec.reserveLoopScratch(arraySlotBackingBytes(hashEntryCount(receiver)))
+			defer exec.releaseLoopScratch(backing)
+			var out []Value
+			exec.pushOutputWalkRoot(retainedValues(&out))
+			defer exec.popOutputWalkRoot()
 
 			runner, err := newBlockCallRunner(exec, block, "hash.map", receiver, nil, kwargs)
 			if err != nil {
@@ -2855,12 +2898,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := acc.reserveSlots(count); err != nil {
 					return NewNil(), err
 				}
-				out := make([]Value, 0, count)
-				// Reserve the preallocated backing before the first block call,
-				// not after it returns: the backing is live from the make above,
-				// so a block allocating its large temporary on the very first
-				// entry would otherwise be measured without it.
-				retained.reserve(acc.accumulatedBytes(cap(out)))
+				out = make([]Value, 0, count)
 				var blockArg [1]Value
 				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
@@ -2891,10 +2929,10 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					out = append(out, val)
+					exec.addRetainedOutput(val)
 					if err := acc.addConservative(val, cap(out)); err != nil {
 						return NewNil(), err
 					}
-					retained.reserve(acc.accumulatedBytes(cap(out)))
 				}
 				return NewArray(out), nil
 			}
@@ -2920,10 +2958,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err := acc.reserveSlots(len(entries)); err != nil {
 				return NewNil(), err
 			}
-			out := make([]Value, 0, len(entries))
-			// Reserve the preallocated backing before the first block call; see
-			// the typed branch above.
-			retained.reserve(acc.accumulatedBytes(cap(out)))
+			out = make([]Value, 0, len(entries))
 			var blockArg [1]Value
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
@@ -2968,10 +3003,10 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out = append(out, val)
+				exec.addRetainedOutput(val)
 				if err := acc.addConservative(val, cap(out)); err != nil {
 					return NewNil(), err
 				}
-				retained.reserve(acc.accumulatedBytes(cap(out)))
 			}
 			return NewArray(out), nil
 		}), nil
@@ -2983,6 +3018,20 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.map_with_index does not take keyword arguments")
 			}
+			// The accumulator is built first, so its baseline snapshots
+			// exec.reservedScratchBytes before the reservation below. Both the
+			// reservation and the walk root are raised before the runner, which
+			// snapshots its bind baseline once at construction: together they make
+			// the Go-local result visible to the checks that run inside the block,
+			// the reservation covering the preallocated backing and the registered
+			// slice covering the results it holds, re-derived at each of those
+			// checks (see memory_output.go).
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			backing := exec.reserveLoopScratch(arraySlotBackingBytes(hashEntryCount(receiver)))
+			defer exec.releaseLoopScratch(backing)
+			var out []Value
+			exec.pushOutputWalkRoot(retainedValues(&out))
+			defer exec.popOutputWalkRoot()
 			runner, err := newBlockCallRunner(exec, block, "hash.map_with_index", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
@@ -2990,14 +3039,13 @@ func hashMemberTransforms(property string) (Value, error) {
 			defer exec.beginBlockIterationRegion().end()
 			if hashHasTypedEntries(receiver) {
 				count := receiver.HashLen()
-				acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 				if err := acc.reserveScratch(sortedHashEntryBufferBytes(count)); err != nil {
 					return NewNil(), err
 				}
 				if err := acc.reserveSlots(count); err != nil {
 					return NewNil(), err
 				}
-				out := make([]Value, 0, count)
+				out = make([]Value, 0, count)
 				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
 				for i, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
@@ -3018,6 +3066,7 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					out = append(out, val)
+					exec.addRetainedOutput(val)
 					if err := acc.addConservative(val, cap(out)); err != nil {
 						return NewNil(), err
 					}
@@ -3032,7 +3081,6 @@ func hashMemberTransforms(property string) (Value, error) {
 			// baseline includes the live receiver and block (held on the Go stack during
 			// the call), and reserveScratch folds in the sorted key list that stays live
 			// for the whole build so it is charged alongside the accumulating result.
-			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 			if err := acc.reserveScratch(sortedKeyBufferBytes(len(entries))); err != nil {
 				return NewNil(), err
 			}
@@ -3047,7 +3095,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err := acc.reserveSlots(len(entries)); err != nil {
 				return NewNil(), err
 			}
-			out := make([]Value, 0, len(entries))
+			out = make([]Value, 0, len(entries))
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for i, key := range sortedHashKeysInto(entries, keyBuf[:]) {
@@ -3081,6 +3129,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out = append(out, val)
+				exec.addRetainedOutput(val)
 				if err := acc.addConservative(val, cap(out)); err != nil {
 					return NewNil(), err
 				}
@@ -3425,6 +3474,16 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
 				}
+				// The transformed values live in the entry buffer until the result
+				// hash is published, and the buffer is a Go local no walk root
+				// reaches, so the checks inside a later block call measured a graph
+				// missing every value the loop had already produced. Registering the
+				// transformed prefix puts it in each of those checks, re-derived as
+				// the block leaves it (see memory_output.go). Registered before the
+				// runner, whose bind baseline is snapshotted once at construction.
+				var staged []HashEntry
+				exec.pushOutputWalkRoot(retainedEntryValues(&staged))
+				defer exec.popOutputWalkRoot()
 				runner, err := newBlockCallRunner(exec, block, "hash.transform_values", receiver, nil, kwargs)
 				if err != nil {
 					return NewNil(), err
@@ -3463,6 +3522,10 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					ordered[i].Value = nextValue
+					// The prefix grows by exactly this value; everything past it is
+					// still the receiver's own, reachable through the receiver.
+					staged = ordered[:i+1]
+					exec.addRetainedOutput(nextValue)
 					if !deferBuild {
 						// Copying the entry canonicalizes its key; bill the
 						// payload before the walk.
@@ -3506,6 +3569,15 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
+			// The block results live in the Go-local out map until the builtin
+			// returns, so the checks inside a later block call measured a graph
+			// missing every value the loop had already produced. Registering the map
+			// puts it in each of those checks, re-derived as the block leaves it
+			// (see memory_output.go). Registered before the runner, whose bind
+			// baseline is snapshotted once at construction.
+			var out map[string]Value
+			exec.pushOutputWalkRoot(retainedMapValues(&out))
+			defer exec.popOutputWalkRoot()
 			runner, err := newBlockCallRunner(exec, block, "hash.transform_values", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
@@ -3531,7 +3603,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// the accumulator's baseline reads through estimateMemoryUsageBase), so the
 			// accumulator charges only the per-entry payloads beyond those slots.
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
-			out := make(map[string]Value, len(entries))
+			out = make(map[string]Value, len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
@@ -3550,6 +3622,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out[key] = nextValue
+				exec.addRetainedOutput(nextValue)
 				if err := acc.add(nextValue); err != nil {
 					return NewNil(), err
 				}
