@@ -983,7 +983,7 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				retainedBytes = saturatingAdd(retainedBytes,
-					exec.retainedOutputDelta(acc.retainedPayloadBytes()-charged, resolved, block))
+					exec.retainedOutputDelta(acc.retainedPayloadBytes()-charged, resolved, block, receiver))
 				retained.reserve(saturatingAdd(retainedBytes, arraySlotBackingBytes(len(out))))
 			}
 			return NewArray(out), nil
@@ -1067,7 +1067,7 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				retainedBytes = saturatingAdd(retainedBytes,
-					exec.retainedOutputDelta(acc.retainedPayloadBytes()-charged, blockValue, block))
+					exec.retainedOutputDelta(acc.retainedPayloadBytes()-charged, blockValue, block, NewNil()))
 				retained.reserve(saturatingAdd(retainedBytes, arraySlotBackingBytes(len(out))))
 			}
 			return NewArray(out), nil

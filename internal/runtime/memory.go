@@ -1111,18 +1111,30 @@ func (exec *Execution) valueReachableFromLiveBase(value, block Value) bool {
 	return reachable
 }
 
-// valueMarginalOverLiveBase prices what value adds beyond exec's reachable
-// roots: ~0 when the graph already holds it, its full footprint when it lives
-// only on a Go frame. It is the marginal newBlockBindCharge takes for a call
-// root (ephemeralRootBytes), measured at the moment a value is retained rather
-// than once at bind time.
-func (exec *Execution) valueMarginalOverLiveBase(value, block Value) int {
+// valueMarginalOverLiveBase prices what value adds beyond everything the checks
+// inside the next block call can reach: ~0 when they already hold it, its full
+// footprint when it lives only on a Go frame. It is the marginal
+// newBlockBindCharge takes for a call root (ephemeralRootBytes), measured at the
+// moment a value is retained rather than once at bind time.
+//
+// block carries its own captured environment. bound is a root the invocation
+// passes as an argument -- the receiver a default proc receives as its first
+// parameter -- which those checks walk through the binding even when the
+// receiver is a temporary the environment itself never held. Omitting it priced
+// a result memoized into an inline `Hash.new { |h, k| h[k] = v }` as
+// unreachable, so it stayed fully reserved while the proc's own checks counted
+// it through the receiver, rejecting the call at about half the quota that the
+// same hash bound to a local accepted.
+func (exec *Execution) valueMarginalOverLiveBase(value, block, bound Value) int {
 	if exec.memoryQuota <= 0 || value.Kind() == KindNil {
 		return 0
 	}
 	s := exec.beginBaseWalk()
 	if !block.IsNil() {
 		s.est.value(block)
+	}
+	if bound.Kind() != KindNil {
+		s.est.value(bound)
 	}
 	marginal := s.est.probe(value)
 	s.close()
@@ -1145,11 +1157,17 @@ func (exec *Execution) valueMarginalOverLiveBase(value, block Value) int {
 // call returns the same object, while a result the graph cannot reach stays
 // fully reserved -- which is the accumulation the reservation was added to
 // bound.
-func (exec *Execution) retainedOutputDelta(charged int, value, block Value) int {
+//
+// bound is the call root the next invocation binds as a parameter, or nil when
+// it binds none: a default proc is handed the receiver, so a result stored
+// there is visible to its checks, while a Hash#fetch_values block receives only
+// the key and can reach the receiver only by capturing it, which block already
+// covers.
+func (exec *Execution) retainedOutputDelta(charged int, value, block, bound Value) int {
 	if charged <= 0 {
 		return 0
 	}
-	if marginal := exec.valueMarginalOverLiveBase(value, block); marginal < charged {
+	if marginal := exec.valueMarginalOverLiveBase(value, block, bound); marginal < charged {
 		return marginal
 	}
 	return charged
