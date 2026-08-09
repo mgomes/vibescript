@@ -3449,5 +3449,13 @@ func (exec *Execution) releaseRetainedValues(depth int) {
 	// collector while this walk, which reads only the visible length, stopped
 	// counting them: exactly the retention this registration exists to expose.
 	clear(exec.retainedValues[depth:])
+	if depth == 0 {
+		// The backing itself is dropped once nothing is retained, rather than
+		// kept for reuse. A call with many operands grows it once, and holding
+		// that capacity for the rest of the script would be live memory no walk
+		// counts, which is the same shape one level further out.
+		exec.retainedValues = nil
+		return
+	}
 	exec.retainedValues = exec.retainedValues[:depth]
 }

@@ -291,3 +291,26 @@ end`)
 			float64(held)/(1<<20), float64(limit)/(1<<20))
 	}
 }
+
+// TestFormatDropsTheRetainedBackingWhenNothingIsHeld pins that the retained set
+// gives its backing array back once it is empty.
+//
+// A call with many operands grows that array once, and keeping the capacity for
+// the rest of the script is live memory no walk counts, since every check reads
+// only the visible length. That is the same retained-but-uncounted shape one
+// level further out than the values themselves.
+func TestFormatDropsTheRetainedBackingWhenNothingIsHeld(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), memoryQuota: 1 << 30}
+	for range 4096 {
+		exec.retainValue(NewString("x"))
+	}
+	if cap(exec.retainedValues) == 0 {
+		t.Fatal("retaining values did not grow the backing, so the test proves nothing")
+	}
+	exec.releaseRetainedValues(0)
+	if got := cap(exec.retainedValues); got != 0 {
+		t.Fatalf("the retained backing still holds %d slots after everything was released", got)
+	}
+}
