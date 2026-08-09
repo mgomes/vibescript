@@ -95,9 +95,23 @@ type Config struct {
 	DefaultTaskConcurrency int
 	MaxTaskConcurrency     int
 
-	// MaxSleepDuration bounds a single sleep call. Zero selects the default;
-	// Unlimited removes the bound, which is only safe when the host passes a
-	// context with a deadline to every Call.
+	// MaxSleepDuration is the total time one Call may spend sleeping, not a
+	// limit on each sleep. The budget is shared by everything the call drives,
+	// including task workers, so a hundred permitted sleeps exhaust it exactly
+	// as one long sleep would; a single sleep past the whole budget is
+	// rejected on its own. A call that re-enters another engine spends that
+	// engine's budget as well as this one, and neither is spent by a sleep
+	// either of them refuses.
+	//
+	// A budget rather than a per-statement limit because a per-statement limit
+	// bounds nothing: `loop { sleep(60) }` parks a worker for years, one
+	// permitted sleep at a time, and neither the step nor the memory quota
+	// advances while it waits.
+	//
+	// Zero selects the default; Unlimited removes the bound, which is only
+	// safe when the host passes a context with a deadline to every Call. An
+	// unlimited engine still spends a budget it inherited from a bounded
+	// caller.
 	MaxSleepDuration time.Duration
 
 	// DevMode enables development-time module reloading. When true, every
