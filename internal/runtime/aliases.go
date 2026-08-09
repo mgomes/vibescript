@@ -494,13 +494,14 @@ type hostValueCloneState struct {
 	// those distinct clones would wrongly report not-identical; caching the clone
 	// keeps aliases of one enum member identical across the host boundary.
 	enums map[*EnumDef]*EnumDef
-	// propertyTypes caches the clone of a property contract keyed on the source
+	// propertyTypes caches the clone of a type expression keyed on the source
 	// *TypeExpr. Unlike the caches above this one is not about identity but
-	// about size: an unannotated ivar parameter points at the contract its
-	// class declares once, so a class with many `def mN(@x)` methods reaches
-	// one node from every one of them, and copying it per parameter made the
-	// clone O(methods * type size) of a type the source spells once (#16).
-	propertyTypes ast.PropertyTypeMemo
+	// about size: an unannotated ivar parameter points at the contract its class
+	// declares once, and a method mixed in from a module is a shallow copy that
+	// leaves every including class reaching the module's own annotations. Both
+	// made the clone copy a type the source spells once per parameter and per
+	// class (#16).
+	propertyTypes ast.TypeExprMemo
 }
 
 type hostValueScanState struct {
@@ -673,7 +674,7 @@ func cloneValueForHost(val Value) Value {
 		plainBuiltins: make(map[*Builtin]Value),
 		functions:     make(map[*ScriptFunction]*ScriptFunction),
 		enums:         make(map[*EnumDef]*EnumDef),
-		propertyTypes: ast.NewPropertyTypeMemo(),
+		propertyTypes: ast.NewTypeExprMemo(),
 	}
 	return cloneValueForHostWithState(val, state)
 }
@@ -826,8 +827,8 @@ func cloneFunctionForHostWithState(fn *ScriptFunction, state hostValueCloneState
 		state.functions[fn] = clone
 	}
 	*clone = *fn
-	clone.Params = ast.CloneParamsWithPropertyTypes(fn.Params, state.propertyTypes)
-	clone.ReturnTy = cloneTypeExpr(fn.ReturnTy)
+	clone.Params = ast.CloneParamsWithTypeMemo(fn.Params, state.propertyTypes)
+	clone.ReturnTy = ast.CloneTypeExprWithMemo(fn.ReturnTy, state.propertyTypes)
 	clone.Body = cloneStatements(fn.Body)
 	clone.Env = cloneEnvForHost(fn.Env, state)
 	return clone

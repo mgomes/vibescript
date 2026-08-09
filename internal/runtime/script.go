@@ -278,8 +278,15 @@ func (s *Script) Classes() []*ClassDef {
 	}
 	slices.Sort(names)
 	out := make([]*ClassDef, 0, len(names))
+	// One memo for the whole snapshot, not one per class. A module's methods are
+	// copied into every including class by shallow copy, and re-resolving the
+	// contract against the including class lands on the module's own node again,
+	// so all of them share one contract. A per-class memo would copy a wide
+	// module property once per include and put the O(classes * type size) blowup
+	// back, just spelled with `include` instead of with methods (#16).
+	propertyTypes := ast.NewTypeExprMemo()
 	for _, name := range names {
-		out = append(out, cloneClassForSnapshot(s.classes[name]))
+		out = append(out, cloneClassForSnapshot(s.classes[name], propertyTypes))
 	}
 	return out
 }
@@ -412,19 +419,22 @@ func cloneEnumsForCall(enums map[string]*EnumDef) map[string]*EnumDef {
 // surrounding snapshot has already copied so a class's methods share one copy
 // per property rather than one per parameter; it may be nil for a lone
 // function, which has nothing to share with.
-func cloneFunctionForSnapshot(fn *ScriptFunction, propertyTypes ast.PropertyTypeMemo) *ScriptFunction {
+func cloneFunctionForSnapshot(fn *ScriptFunction, propertyTypes ast.TypeExprMemo) *ScriptFunction {
 	if fn == nil {
 		return nil
 	}
 	clone := *fn
-	clone.Params = ast.CloneParamsWithPropertyTypes(fn.Params, propertyTypes)
-	clone.ReturnTy = cloneTypeExpr(fn.ReturnTy)
+	clone.Params = ast.CloneParamsWithTypeMemo(fn.Params, propertyTypes)
+	clone.ReturnTy = ast.CloneTypeExprWithMemo(fn.ReturnTy, propertyTypes)
 	clone.Body = cloneStatements(fn.Body)
 	clone.Env = nil
 	return &clone
 }
 
-func cloneClassForSnapshot(classDef *ClassDef) *ClassDef {
+// cloneClassForSnapshot detaches a class for a caller that asked the script to
+// describe itself. propertyTypes spans the whole snapshot so contracts shared
+// between classes — which is what a mixed-in property is — stay one copy.
+func cloneClassForSnapshot(classDef *ClassDef, propertyTypes ast.TypeExprMemo) *ClassDef {
 	if classDef == nil {
 		return nil
 	}
@@ -438,10 +448,6 @@ func cloneClassForSnapshot(classDef *ClassDef) *ClassDef {
 		IncludedModules: classDef.IncludedModules,
 		Body:            cloneStatements(classDef.Body),
 	}
-	// One memo for the whole class: every unannotated ivar parameter across its
-	// methods points at the same accessor-declared contract, so the snapshot
-	// copies each contract once and hands the same copy to all of them.
-	propertyTypes := ast.NewPropertyTypeMemo()
 	for methodName, method := range classDef.Methods {
 		classClone.Methods[methodName] = cloneFunctionForSnapshot(method, propertyTypes)
 	}

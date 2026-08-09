@@ -213,3 +213,151 @@ end
 		t.Fatalf("cloned initialize's @cb param property contract = %v, want the function type", contract)
 	}
 }
+
+// mixinPropertyCloneSource builds one module holding a wide property type and
+// many classes that include it. A mixed-in method is a shallow copy, so every
+// including class reaches the module's own annotation nodes: one type the
+// source spells once, reachable from as many classes as the source cares to
+// declare.
+func mixinPropertyCloneSource(classes, fields int, returnClasses bool) string {
+	var b strings.Builder
+	b.WriteString("module Wide\n  property x: { ")
+	for i := range fields {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "field_number_%06d: int", i)
+	}
+	b.WriteString(" }\n  def helper(@x)\n  end\nend\n")
+	for i := range classes {
+		fmt.Fprintf(&b, "class Holder%04d\n  include Wide\nend\n", i)
+	}
+	b.WriteString("\ndef build\n")
+	if !returnClasses {
+		b.WriteString("  1\n")
+	} else {
+		b.WriteString("  [")
+		for i := range classes {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "Holder%04d", i)
+		}
+		b.WriteString("]\n")
+	}
+	b.WriteString("end\n")
+	return b.String()
+}
+
+// TestHostClonedMixinClassesShareOnePropertyContract pins that the per-clone
+// memo spans the whole returned graph rather than each class in it. Including a
+// module copies its methods by shallow copy, so N including classes reach one
+// annotation node; a memo scoped per class would copy a wide module property
+// once per include and put the blowup back, spelled with `include` instead of
+// with methods. 200 classes including one 400-field property retained 34MB of
+// host clone from a 19KB script and retain 0.3MB now (#16).
+func TestHostClonedMixinClassesShareOnePropertyContract(t *testing.T) {
+	t.Parallel()
+
+	const classes = 8
+	script := compileScriptDefault(t, mixinPropertyCloneSource(classes, 4, true))
+	compiledContract := script.classes["Holder0000"].Methods["helper"].Params[0].PropertyType
+	if compiledContract == nil {
+		t.Fatal("the mixed-in helper resolved no property contract")
+	}
+
+	returned := callScript(t, context.Background(), script, "build", nil, CallOptions{}).Array()
+	if len(returned) != classes {
+		t.Fatalf("build returned %d classes, want %d", len(returned), classes)
+	}
+
+	var contract, accessorType *TypeExpr
+	for i, val := range returned {
+		classDef := valueClass(val)
+		if classDef == nil {
+			t.Fatalf("returned[%d] is not a class", i)
+		}
+		got := classDef.Methods["helper"].Params[0].PropertyType
+		setter := classDef.Methods["x="].Params[0].Type
+		if got == nil || setter == nil {
+			t.Fatalf("returned[%d] lost its property types", i)
+		}
+		if got == compiledContract {
+			t.Fatalf("returned[%d] carries the compiled script's own contract node", i)
+		}
+		if contract == nil {
+			contract, accessorType = got, setter
+			continue
+		}
+		if got != contract {
+			t.Fatalf("returned[%d] has its own copy %p of the contract; the clone already made %p", i, got, contract)
+		}
+		if setter != accessorType {
+			t.Fatalf("returned[%d] has its own copy %p of the accessor annotation; the clone already made %p", i, setter, accessorType)
+		}
+	}
+}
+
+// TestClassSnapshotSharesMixinContractsAcrossClasses pins the same for the
+// Classes() snapshot, whose memo has to span the whole call and not one class.
+func TestClassSnapshotSharesMixinContractsAcrossClasses(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, mixinPropertyCloneSource(4, 4, false))
+	compiledContract := script.classes["Holder0000"].Methods["helper"].Params[0].PropertyType
+
+	var contract *TypeExpr
+	seen := 0
+	for _, classDef := range script.Classes() {
+		if !strings.HasPrefix(classDef.Name, "Holder") {
+			continue
+		}
+		seen++
+		got := classDef.Methods["helper"].Params[0].PropertyType
+		if got == nil {
+			t.Fatalf("%s lost its property contract", classDef.Name)
+		}
+		if got == compiledContract {
+			t.Fatalf("%s carries the compiled script's own contract node", classDef.Name)
+		}
+		if contract == nil {
+			contract = got
+		} else if got != contract {
+			t.Fatalf("%s has its own copy %p of the contract; the snapshot already made %p", classDef.Name, got, contract)
+		}
+	}
+	if seen != 4 {
+		t.Fatalf("the snapshot returned %d including classes, want 4", seen)
+	}
+}
+
+// TestHostClonedMixinContractDoesNotScaleWithClassCount pins the memory the
+// sharing above buys: returning many classes that include one wide-property
+// module must not retain a copy of that property per class.
+func TestHostClonedMixinContractDoesNotScaleWithClassCount(t *testing.T) {
+	hostCloneBytes := func(classes int) uint64 {
+		script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: Unlimited},
+			mixinPropertyCloneSource(classes, 400, true))
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		result, err := script.Call(context.Background(), "build", nil, CallOptions{})
+		if err != nil {
+			t.Fatalf("call with %d classes failed: %v", classes, err)
+		}
+		runtime.ReadMemStats(&after)
+		runtime.KeepAlive(result)
+		return after.TotalAlloc - before.TotalAlloc
+	}
+
+	few := hostCloneBytes(2)
+	many := hostCloneBytes(128)
+	// 64 times the classes cost 64 more class clones, which is real but small
+	// and fixed per class; what must not scale is the property type they all
+	// name. Unmemoized this measured ~43x the two-class clone against the ~4x
+	// the per-class structure alone accounts for.
+	if limit := 8 * few; many > limit {
+		t.Fatalf("host clone allocated %d bytes for 128 including classes, want at most %d (%d bytes for two)", many, limit, few)
+	}
+	t.Logf("host clone allocated %d bytes for two including classes and %d for 128", few, many)
+}

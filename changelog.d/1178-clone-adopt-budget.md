@@ -4,10 +4,14 @@
   copied that whole type expression again for every parameter that named it. A
   38KB script with a 1000-field property type and 500 such methods therefore
   retained 80MB, allocated inside the host clone after the run had ended, where
-  no quota could observe it. A clone now copies each contract once and gives
-  that copy to every parameter naming the property, so the same script retains
-  0.5MB and the copy is still the clone's own: editing a contract on a class
-  from `Classes()` cannot reach the compiled script that later calls run.
+  no quota could observe it. Including a module multiplied the same type again,
+  since a mixed-in method is a shallow copy and every including class reaches
+  the module's own annotations: 200 classes including one 400-field property
+  retained 34MB from a 19KB script. A clone now copies each type expression once
+  for the whole operation and gives that copy to every parameter and class
+  reaching it, so those scripts retain 0.5MB and 0.3MB. The copy is still the
+  clone's own: editing a contract on a class from `Classes()` cannot reach the
+  compiled script that later calls run.
 - **Fixed: adopting a module's constants into an including class is now
   metered.** Every class with an included module runs class-body initialization
   whether or not it has a body, and the constant adoption that runs there was
