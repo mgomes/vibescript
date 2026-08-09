@@ -4690,3 +4690,87 @@ func TestHashLookupsRepriceResultsThatGrowAfterBeingCharged(t *testing.T) {
 		})
 	}
 }
+
+// Repricing walks the retained prefix before every callback, so a lookup with
+// many missing keys does quadratic estimator work. That work is charged to the
+// step quota like any other per-element scan, so it cannot run for free: a
+// finite quota stops it, and only an unlimited one lets it finish.
+func TestHashLookupsMeterTheRepricingScan(t *testing.T) {
+	t.Parallel()
+
+	const keys = 800
+	names := make([]string, keys)
+	for i := range names {
+		names[i] = fmt.Sprintf(":m%04d", i)
+	}
+	src := "def run()\n  h = { }\n  h.fetch_values(" + strings.Join(names, ", ") + ") { |x| 1 }\nend"
+
+	for _, quota := range []int{5000, 50000} {
+		t.Run(fmt.Sprintf("step_quota_%d", quota), func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: quota, MemoryQuotaBytes: 64 << 20}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("the repricing scan ran without being charged against a %d-step quota", quota)
+			}
+		})
+	}
+
+	t.Run("unlimited_steps_completes", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 64 << 20}, src)
+		got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+		if err != nil {
+			t.Fatalf("metering rejected a lookup with an unlimited step quota: %v", err)
+		}
+		if len(got.Array()) != keys {
+			t.Fatalf("result has %d elements, want %d", len(got.Array()), keys)
+		}
+	})
+}
+
+// Repricing has to follow the retained output down as well as up. The first
+// callback returns a 400KB array, the second empties it, and the third
+// allocates 700KB: by then the retained result holds almost nothing, so a
+// reservation still pinned at the original size wrongly rejected the call.
+func TestHashLookupsLowerTheReservationWhenAResultShrinks(t *testing.T) {
+	t.Parallel()
+
+	body := `
+        if k == :a
+          a
+        elsif k == :b
+          a.clear
+          1
+        else
+          ("t" * 700000).length
+        end`
+
+	sources := map[string]string{
+		"fetch_values block": `
+    def run()
+      a = ["x" * 400000]
+      h = { }
+      h.fetch_values(:a, :b, :c) { |k|` + body + `
+      }
+    end
+    `,
+		"values_at default proc": `
+    def run()
+      a = ["x" * 400000]
+      h = Hash.new { |hash, k|` + body + `
+      }
+      h.values_at(:a, :b, :c)
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+				t.Fatalf("a lookup whose retained result had shrunk was rejected: %v", err)
+			}
+		})
+	}
+}
