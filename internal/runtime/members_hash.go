@@ -923,7 +923,19 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.values_at does not accept keyword arguments")
 			}
-			out := make([]Value, len(args))
+			// A default proc is script code, and everything the lookup has
+			// resolved so far lives in a Go-local slice its memory checks cannot
+			// reach: each proc was measured against a graph missing every earlier
+			// result, so a run of individually permitted defaults could pile up
+			// past the quota. Reserving the slots and registering the slice as a
+			// walk root puts the whole retained output in every check the proc
+			// performs, re-derived as the proc leaves it (see memory_output.go).
+			backing := exec.reserveLoopScratch(arraySlotBackingBytes(len(args)))
+			defer exec.releaseLoopScratch(backing)
+			var out []Value
+			exec.pushOutputWalkRoot(retainedValues(&out))
+			defer exec.popOutputWalkRoot()
+			out = make([]Value, len(args))
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -933,7 +945,13 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.values_at key is unsupported hash key: %w", err)
 				}
 				if ok {
+					// Charged as retained output even though it aliases the
+					// receiver: a later proc can delete the entry or clear the
+					// hash, and then nothing reachable holds the payload while
+					// this slot still does. The estimator deduplicates it against
+					// the receiver for as long as the alias lasts.
 					out[i] = value
+					exec.addRetainedOutput(value)
 					continue
 				}
 				// A missing key is a [] access: consult the hash's Ruby-style
@@ -945,6 +963,7 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out[i] = resolved
+				exec.addRetainedOutput(resolved)
 			}
 			return NewArray(out), nil
 		}), nil
@@ -978,7 +997,19 @@ func hashMemberQuery(property string) (Value, error) {
 		}), nil
 	case "fetch_values":
 		return NewAutoBuiltin("hash.fetch_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			out := make([]Value, len(args))
+			// The block runs once per missing key and every result stays in a
+			// Go-local slice the checks inside the next block call cannot reach,
+			// so a block returning an individually permitted value passed its own
+			// check each time while the slice still held all the earlier ones.
+			// Reserving the slots and registering the slice as a walk root puts
+			// the whole retained output in every one of those checks, re-derived
+			// as the block leaves it (see memory_output.go).
+			backing := exec.reserveLoopScratch(arraySlotBackingBytes(len(args)))
+			defer exec.releaseLoopScratch(backing)
+			var out []Value
+			exec.pushOutputWalkRoot(retainedValues(&out))
+			defer exec.popOutputWalkRoot()
+			out = make([]Value, len(args))
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -988,7 +1019,13 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.fetch_values key is unsupported hash key: %w", err)
 				}
 				if ok {
+					// Charged as retained output even though it aliases the
+					// receiver: a later block call can delete the entry or clear
+					// the hash, and then nothing reachable holds the payload while
+					// this slot still does. The estimator deduplicates it against
+					// the receiver for as long as the alias lasts.
 					out[i] = value
+					exec.addRetainedOutput(value)
 					continue
 				}
 				if valueBlock(block) == nil {
@@ -1000,6 +1037,7 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out[i] = blockValue
+				exec.addRetainedOutput(blockValue)
 			}
 			return NewArray(out), nil
 		}), nil
