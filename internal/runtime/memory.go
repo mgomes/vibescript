@@ -526,9 +526,7 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		// one ever does, a throwaway estimator keeps the open session's
 		// committed state intact at the cost of one uncached walk.
 		est := newMemoryEstimator()
-		base := exec.estimateMemoryUsageBase(est)
-		base = saturatingAdd(base, exec.outputWalkBytes(est))
-		return baseWalkSession{exec: exec, est: est, base: base}
+		return baseWalkSession{exec: exec, est: est, base: exec.estimateMemoryUsageBase(est)}
 	}
 	globals := taskLazyGlobalsFromContext(exec.Context())
 	scalars := exec.estimateScalarBase()
@@ -2303,21 +2301,34 @@ type blockBindCharge struct {
 	// already carries, from being counted twice.
 	reservedAtStart int
 	selfReserved    int
+	// retainedAtStart is what the registered output roots held when the charge
+	// was built, which baseline already carries through estimateMemoryUsageBase.
+	// liveBaseline adds only the growth beyond it, the same way it treats the
+	// scratch reservation: a charge built inside an outer driver's callback would
+	// otherwise count that driver's retained results twice.
+	retainedAtStart int
 }
 
 // liveBaseline is the construction-time baseline plus everything the driver has
 // accumulated since, which is what the call is really being weighed against:
-// scratch it has reserved, and the results it has retained into a registered
-// output root (see memory_output.go). Both were the same quantity while the
-// drivers reserved their results as scratch; a registered output is invisible to
-// the reservation counter, so a bind charge that read only that counter weighed
-// a rest window against a baseline missing every result the loop had kept.
+// scratch it has reserved, and results it has retained into a registered output
+// root (see memory_output.go). Both were the same quantity while the drivers
+// reserved their results as scratch; a registered output does not move the
+// reservation counter, so a charge reading only that counter weighed a rest
+// window against a baseline missing every result the loop had kept.
+//
+// Both are counted as growth beyond what the snapshot already carried, because
+// this charge can be built inside another driver's callback, where the baseline
+// already includes that driver's retained results.
 func (c *blockBindCharge) liveBaseline() int {
 	baseline := c.baseline
 	if growth := c.exec.reservedScratchBytes - c.reservedAtStart - c.selfReserved; growth > 0 {
 		baseline = saturatingAdd(baseline, growth)
 	}
-	return saturatingAdd(baseline, c.exec.retainedOutputBytes())
+	if growth := c.exec.retainedOutputBytes() - c.retainedAtStart; growth > 0 {
+		baseline = saturatingAdd(baseline, growth)
+	}
+	return baseline
 }
 
 // noteSelfReservation records the scratch callBlock reserved for this call's
@@ -2371,6 +2382,7 @@ func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []
 		baseline:           baseline,
 		ephemeralRootBytes: baseline - base,
 		reservedAtStart:    exec.reservedScratchBytes,
+		retainedAtStart:    exec.retainedOutputBytes(),
 	}
 }
 
@@ -2779,8 +2791,30 @@ func (r *loopScratchReservation) release() {
 	r.delta = 0
 }
 
+// estimateMemoryUsageBase is the live base a snapshot is taken against: the
+// scalar state, the reachable graph, and the Go-local outputs registered as walk
+// roots (see memory_output.go). The roots belong here for the same reason the
+// reserved scratch does -- they are live bytes a builtin is holding -- and
+// putting them here rather than at each snapshot site means an accumulator built
+// inside a driver's callback sees what that driver has already retained, which
+// is what the drivers used to get for free while they reserved their results as
+// scratch.
+//
+// The one rule a caller must respect: this is a SNAPSHOT, so a builder that also
+// tracks its own retained output incrementally must take it before registering
+// that output, or price only the growth since. Otherwise its own results are
+// counted twice, once in the snapshot and once in its running total. Every
+// driver takes its snapshot while its output is still empty; blockBindCharge,
+// which re-reads the roots as its loop proceeds, subtracts what the snapshot
+// already carried (see liveBaseline).
+//
+// The per-check walks do not come through here: they compose the same parts
+// themselves in beginBaseWalk, where the roots are memoized rather than
+// re-walked.
 func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
-	return exec.estimateScalarBase() + exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.Context()))
+	total := exec.estimateScalarBase()
+	total += exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.Context()))
+	return saturatingAdd(total, exec.outputWalkBytes(est))
 }
 
 // estimateGraphBase is the reference walk: the root, every env-stack frame, and
