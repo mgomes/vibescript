@@ -781,3 +781,58 @@ end`)
 		t.Fatalf("%d tasks ran at once against a host cap of 2; the root goroutine holds no slot", got)
 	}
 }
+
+// TestAFreedSlotReachesAStarvedChildBeforeALocalSibling pins which waiting
+// group a freed slot goes to.
+//
+// Every waiting group's work is unrunnable by definition, so the choice decides
+// whether the tree makes progress. A nested child is what a blocked parent is
+// waiting on; a sibling of that parent is waiting on nothing in particular.
+// Handing the slot to the sibling deadlocks while handing it to the child does
+// not, and both fit the same cap: the child runs beside the blocked parent,
+// finishes, and the sibling runs after the parent it unblocked has gone.
+//
+// The ordering is forced rather than raced. The quick task holds its slot until
+// the parent signals that the child is queued, so the slot is freed with both
+// groups waiting and the choice is the only thing under test.
+func TestAFreedSlotReachesAStarvedChildBeforeALocalSibling(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MaxTaskConcurrency: 2}, `def child(n)
+  probe.open_gate(9)
+  n
+end
+
+def holder(n)
+  Tasks.run(max: 1) do |tasks|
+    c = tasks.spawn(:child, 1)
+    probe.open_gate(5)
+    probe.await_gate(9)
+    c.value
+  end
+end
+
+def quick(n)
+  probe.await_gate(5)
+  n
+end
+
+def sibling(n)
+  probe.await_gate(9)
+  n
+end
+
+def run()
+  Tasks.run(max: 2) do |tasks|
+    a = tasks.spawn(:holder, 1)
+    q = tasks.spawn(:quick, 2)
+    b = tasks.spawn(:sibling, 3)
+    q.value
+    a.value
+    b.value
+  end
+end`)
+
+	assertTaskTreeMakesProgress(t, script,
+		"the freed slot went to a local sibling while the nested child that unblocks everything stayed queued")
+}

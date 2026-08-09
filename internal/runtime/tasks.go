@@ -665,33 +665,36 @@ func (group *taskGroup) takeQueuedJob() (*taskJob, bool) {
 	return job, len(group.deferred) == 0
 }
 
-// nextQueuedJob finds the next job for the slot the caller holds: this group's
-// own queue first, then any group waiting for capacity. It returns nil once
+// nextQueuedJob finds the next job for the slot the caller holds: a group
+// waiting for capacity first, then this group's own queue. It returns nil once
 // there is nothing left, having given the slot back to the pool.
 //
 // Work moves to the slot rather than a goroutine being started for it. The
 // finishing goroutine has not unwound yet, so starting a successor from its
 // tail would run two goroutines against one slot, which is one more script at
-// once than the pool allowed. This group's own queue comes first because the
-// slot is one this group was already allowed.
+// once than the pool allowed.
+//
+// A group waiting for capacity comes first because it may be the only thing
+// that can unblock the rest. Its work is queued precisely because nothing can
+// run it, while this group's own queue will be served by any of its slots that
+// frees. Preferring the local queue deadlocked the shape where a running task
+// waits on a nested child it cannot reach: the freed slot started a sibling
+// that waited on the same child, and the child stayed queued behind both.
 func (group *taskGroup) nextQueuedJob() (*taskGroup, *taskJob) {
-	group.mu.Lock()
-	// Queued work still runs after close: closing stops new spawns, and work
-	// already admitted has to run or the wait for it never returns.
-	if len(group.deferred) > 0 && group.running <= group.max {
-		job := group.deferred[0]
-		group.deferred = group.deferred[1:]
-		group.mu.Unlock()
-		return group, job
-	}
-	group.mu.Unlock()
-
 	for {
 		if owner, job := group.budget.takeStarvedJob(group); job != nil {
 			return owner, job
 		}
 
 		group.mu.Lock()
+		// Queued work still runs after close: closing stops new spawns, and
+		// work already admitted has to run or the wait for it never returns.
+		if len(group.deferred) > 0 && group.running <= group.max {
+			job := group.deferred[0]
+			group.deferred = group.deferred[1:]
+			group.mu.Unlock()
+			return group, job
+		}
 		group.running--
 		group.mu.Unlock()
 		group.budget.release(1)
