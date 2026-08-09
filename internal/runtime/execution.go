@@ -453,6 +453,18 @@ func (exec *Execution) pushEnv(env *Env) {
 	}
 	if exec.memoryQuota > 0 && env != nil && !exec.isBaseEnv(env.parent) {
 		exec.nonBaseParentDepth++
+		// Retract at the push, not at the walk that reads the counter.
+		// envStackGraphBytes is the only reader that retracts, and beginBaseWalk
+		// routes around it whenever a Go builtin, a task group, or lazy task
+		// globals are live — which is exactly the state a builtin driving a script
+		// block is in, so the retraction never ran for the scope that most needs
+		// it. A block reached through `cb.call` rebound a dormant caller's compact
+		// Int to a 400KB string: the assignment's own check took the bypass
+		// reference walk and measured it correctly, then the next memoized check
+		// in the caller charged 4030 bytes where the reference walk charged
+		// 404046, because dormantBytes still held the frame's scalar-only 245 and
+		// dormantSet skipped it (#20).
+		exec.retractAllDormant()
 	}
 	exec.envStack = append(exec.envStack, env)
 }

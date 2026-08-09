@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -119,6 +120,79 @@ func TestReconcileDormantSkipsNonScalarFrame(t *testing.T) {
 	if exec.dormant[0].env != exec.envStack[0] {
 		t.Fatalf("committed frame is not the bottom scalar frame")
 	}
+}
+
+// dormantRebindPayload is the byte count of each string the rebinding fixtures
+// allocate. Two of them are live at once, so a walk that trusts a stale dormant
+// total charges roughly half of what the reference walk charges.
+const dormantRebindPayload = 400_000
+
+// dormantRebindSource builds a program where a dormant frame is rebound from a
+// scope the estimator's fast path must not skip. `outer` holds one compact-Int
+// local, which is exactly the shape that qualifies its frame as dormant, and
+// hands `sink` a closure over it. `sink` runs that closure through reentry, so
+// the rebind happens under whichever construct reentry names, then allocates a
+// payload of its own. Both payloads are live at `hog.size`, so a walk that still
+// charges `outer` its committed scalar-only total sees only one of them.
+func dormantRebindSource(reentry string) string {
+	payload := fmt.Sprint(dormantRebindPayload)
+	return `
+def sink(cb)
+` + reentry + `
+  hog = "B" * ` + payload + `
+  hog.size
+end
+
+def outer()
+  small = 0
+  sink(-> { small = "A" * ` + payload + ` })
+  small.size
+end
+`
+}
+
+// callDormantRebind compiles and runs a dormantRebindSource program under quota.
+func callDormantRebind(t *testing.T, src string, quota int) (Value, error) {
+	t.Helper()
+	engine := MustNewEngine(Config{StepQuota: Unlimited, MemoryQuotaBytes: quota, RecursionLimit: 10_000})
+	script, err := engine.CompileSnippet(src, "__main__")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	return script.Call(context.Background(), "outer", nil, CallOptions{})
+}
+
+// requireDormantRebindCharged asserts that both payloads are charged at once: a
+// quota with room for one of them plus the surrounding graph must reject the
+// program, while a quota with room for both must run it to completion. Only the
+// pair proves the accounting rather than a program that cannot run at all.
+func requireDormantRebindCharged(t *testing.T, src string) {
+	t.Helper()
+	const oneFits = dormantRebindPayload + 200_000
+	if _, err := callDormantRebind(t, src, oneFits); err == nil {
+		t.Fatalf("quota of %d bytes admitted two live %d-byte payloads", oneFits, dormantRebindPayload)
+	} else {
+		requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
+	}
+	got, err := callDormantRebind(t, src, 4*dormantRebindPayload)
+	if err != nil {
+		t.Fatalf("generous quota rejected the program: %v", err)
+	}
+	if got.Kind() != KindInt || got.Int() != dormantRebindPayload {
+		t.Fatalf("outer() = %v, want %d", got, dormantRebindPayload)
+	}
+}
+
+// TestDormantPrefixRetractsOnBuiltinBlockRebind covers #20: a builtin invoking a
+// script block runs every check on beginBaseWalk's bypass, which walks the
+// reference estimate and never reaches the retraction envStackGraphBytes does. A
+// block that rebound a dormant caller's Int to a 400KB string left the caller
+// committed at 245 bytes, so the next memoized check in the caller charged 4030
+// bytes where the reference walk charged 404046 and the program ran to
+// completion under a 404638-byte quota instead of the 804361 it now needs.
+func TestDormantPrefixRetractsOnBuiltinBlockRebind(t *testing.T) {
+	t.Parallel()
+	requireDormantRebindCharged(t, dormantRebindSource("  cb.call"))
 }
 
 // TestDormantEstimatorFibUnderQuota runs naive fib through the real interpreter

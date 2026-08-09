@@ -207,9 +207,17 @@ func (exec *Execution) retractDormantBeyond(length int) {
 }
 
 // retractAllDormant drops the entire committed prefix, returning the estimator to
-// a plain full-stack walk. It runs whenever a non-base-parent scope is active
-// (nonBaseParentDepth != 0): such a scope could rebind a dormant frame, so no
-// frame's contribution is provably stable and none may stay committed.
+// a plain full-stack walk. A scope whose parent is not a base env could rebind a
+// dormant frame, so once one is live no frame's contribution is provably stable
+// and none may stay committed.
+//
+// pushEnv calls it as such a scope enters the stack rather than leaving it to the
+// walk that reads nonBaseParentDepth, because most walks never reach that read:
+// beginBaseWalk routes past envStackGraphBytes whenever a builtin, a task group,
+// or lazy task globals are live, and a builtin driving a script block is the
+// commonest way to put a rebinding scope on the stack at all (#20).
+// envStackGraphBytes still calls it so a walk that does get there first cannot
+// serve a prefix the push has not yet retracted.
 func (exec *Execution) retractAllDormant() {
 	if len(exec.dormant) == 0 {
 		return
