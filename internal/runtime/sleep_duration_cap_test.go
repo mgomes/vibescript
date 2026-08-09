@@ -35,7 +35,7 @@ end`)
 		if err == nil {
 			t.Fatal("a sleep past the host maximum must be rejected")
 		}
-		if !strings.Contains(err.Error(), "exceeds host maximum") {
+		if !strings.Contains(err.Error(), "exceeds the host maximum") {
 			t.Fatalf("sleep rejected for the wrong reason: %v", err)
 		}
 	case <-time.After(30 * time.Second):
@@ -71,7 +71,7 @@ end`
 	// 30s is inside the default minute and outside a tightened bound.
 	tight := compileScriptWithConfig(t, Config{MaxSleepDuration: time.Second}, src)
 	_, err := tight.Call(context.Background(), "run", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "exceeds host maximum") {
+	if err == nil || !strings.Contains(err.Error(), "exceeds the host maximum") {
 		t.Fatalf("a tightened maximum must reject a 30s sleep, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "1s") {
@@ -96,7 +96,42 @@ end`)
 	if err == nil {
 		t.Fatal("a cancelled context must still end the call")
 	}
-	if strings.Contains(err.Error(), "exceeds host maximum") {
+	if strings.Contains(err.Error(), "exceeds the host maximum") {
 		t.Fatalf("Unlimited must admit the duration, got %v", err)
+	}
+}
+
+// TestSleepIsBudgetedAcrossTheCall pins that the bound limits the call rather
+// than one statement.
+//
+// A per-statement limit bounds nothing on its own: a loop of individually
+// permitted sleeps parks a worker for as long as it likes, and the step quota
+// only advances between them (#29).
+func TestSleepIsBudgetedAcrossTheCall(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MaxSleepDuration: 30 * time.Millisecond}, `def run()
+  i = 0
+  while i < 100
+    sleep(0.01)
+    i = i + 1
+  end
+  i
+end`)
+	done := make(chan error, 1)
+	go func() {
+		_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("repeated permitted sleeps must exhaust the call's budget")
+		}
+		if !strings.Contains(err.Error(), "exceeds the host maximum") {
+			t.Fatalf("rejected for the wrong reason: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the call is still sleeping, so the budget did not bound it")
 	}
 }

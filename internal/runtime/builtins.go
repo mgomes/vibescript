@@ -1620,6 +1620,7 @@ func builtinSleep(exec *Execution, receiver Value, args []Value, kwargs map[stri
 	defer timer.Stop()
 	select {
 	case <-timer.C:
+		exec.sleptTotal += duration
 		return NewInt(int64(duration / time.Second)), nil
 	case <-exec.Context().Done():
 		return NewNil(), exec.Context().Err()
@@ -1639,10 +1640,17 @@ func (exec *Execution) checkSleepDuration(duration time.Duration) error {
 		return nil
 	}
 	limit := exec.engine.config.MaxSleepDuration
-	if limit <= 0 || duration <= limit {
+	if limit <= 0 {
 		return nil
 	}
-	return guardLimitErrorf("sleep %s exceeds host maximum %s", duration, limit)
+	// Budgeted across the call, not checked per statement. A per-statement
+	// limit bounds one sleep and nothing else: `loop { sleep(60) }` parks a
+	// worker for years, one permitted sleep at a time, and the step quota
+	// advances only between them.
+	if duration > limit-exec.sleptTotal {
+		return guardLimitErrorf("sleep %s exceeds the host maximum of %s per call", duration, limit)
+	}
+	return nil
 }
 
 func valueToSleepDuration(val Value) (time.Duration, error) {
