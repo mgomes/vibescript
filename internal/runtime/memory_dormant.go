@@ -35,6 +35,11 @@ var estimatorVerify = false
 // When nonBaseParentDepth is non-zero the optimization disengages entirely and
 // the estimator falls back to the reference full-stack walk, so the fast path is
 // only ever taken where its immutability invariant provably holds.
+//
+// Both mechanisms behind that second condition — raising the counter and
+// dropping the committed prefix — run at the push, in pushEnv (see
+// retractAllDormant), so the invariant holds for every walk path rather than for
+// the one path that happens to read the counter (#19, #20).
 
 // dormantFrame records one committed dormant env: the stack slots it occupies
 // (a frame is pushed once per call plus once per evalStatements body scope, all
@@ -207,9 +212,17 @@ func (exec *Execution) retractDormantBeyond(length int) {
 }
 
 // retractAllDormant drops the entire committed prefix, returning the estimator to
-// a plain full-stack walk. It runs whenever a non-base-parent scope is active
-// (nonBaseParentDepth != 0): such a scope could rebind a dormant frame, so no
-// frame's contribution is provably stable and none may stay committed.
+// a plain full-stack walk. A scope whose parent is not a base env could rebind a
+// dormant frame, so once one is live no frame's contribution is provably stable
+// and none may stay committed.
+//
+// pushEnv calls it as such a scope enters the stack rather than leaving it to the
+// walk that reads nonBaseParentDepth, because most walks never reach that read:
+// beginBaseWalk routes past envStackGraphBytes whenever a builtin, a task group,
+// or lazy task globals are live, and a builtin driving a script block is the
+// commonest way to put a rebinding scope on the stack at all (#20).
+// envStackGraphBytes still calls it so a walk that does get there first cannot
+// serve a prefix the push has not yet retracted.
 func (exec *Execution) retractAllDormant() {
 	if len(exec.dormant) == 0 {
 		return

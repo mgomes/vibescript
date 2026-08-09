@@ -426,15 +426,39 @@ func (exec *Execution) markValidatedCapabilityReturn(method string, result Value
 }
 
 func (exec *Execution) pushEnv(env *Env) {
+	// The non-base-parent bookkeeping runs ahead of the region branch below so no
+	// push can skip it. A block-iteration region re-walks every scope it pushes
+	// fresh on each check, but not the frames those scopes can *reach*: a helper
+	// that runs a pure iterator such as array.each over a block closed on its
+	// caller rebinds a scalar in that caller, which may already be committed
+	// dormant. With the region skipping this, nonBaseParentDepth stayed zero for
+	// the whole iteration and the committed total was never retracted, so the
+	// fixture below ran under a 404,951-byte quota while retaining two live
+	// 400KB strings; it now needs the 804,361 bytes it actually holds (#19).
+	if exec.memoryQuota > 0 && env != nil && !exec.isBaseEnv(env.parent) {
+		exec.nonBaseParentDepth++
+		// Retract at the push, not at the walk that reads the counter.
+		// envStackGraphBytes is the only reader that retracts, and beginBaseWalk
+		// routes around it whenever a Go builtin, a task group, or lazy task
+		// globals are live — which is exactly the state a builtin driving a script
+		// block is in, so the retraction never ran for the scope that most needs
+		// it. A block reached through `cb.call` rebound a dormant caller's compact
+		// Int to a 400KB string: the assignment's own check took the bypass
+		// reference walk and measured it correctly, then the next memoized check
+		// in the caller charged 4030 bytes where the reference walk charged
+		// 404046, because dormantBytes still held the frame's scalar-only 245 and
+		// dormantSet skipped it (#20).
+		exec.retractAllDormant()
+	}
 	if exec.blockRegionActive && env != nil {
 		// Every scope pushed inside an active block-iteration region is part of
 		// the region's active suffix: the base walk re-walks it fresh each check
 		// (see memory_blockregion.go), so its binding writes are epoch-neutral
-		// and its push neither changes the memoized prefix nor the dormant
-		// prefix's shape. Skipping the topo bump keeps the prefix memo valid
-		// across every iteration; popEnv skips it symmetrically under the same
-		// blockRegionActive condition, so the counters stay balanced regardless
-		// of a mid-region capture stripping neutrality.
+		// and its push does not change the memoized prefix. Skipping the topo
+		// bump keeps the prefix memo valid across every iteration; popEnv skips
+		// it symmetrically under the same blockRegionActive condition, so the
+		// two stay balanced regardless of a mid-region capture stripping
+		// neutrality.
 		//
 		// Restore neutrality unless a closure already captured this frame during
 		// pre-push argument or default binding: revokeBlockRegionNeutrality
@@ -450,9 +474,6 @@ func (exec *Execution) pushEnv(env *Env) {
 	}
 	if !exec.pushingDuplicateTop(env) {
 		exec.baseTopoVersion++
-	}
-	if exec.memoryQuota > 0 && env != nil && !exec.isBaseEnv(env.parent) {
-		exec.nonBaseParentDepth++
 	}
 	exec.envStack = append(exec.envStack, env)
 }
@@ -495,15 +516,30 @@ func (exec *Execution) popEnv() {
 		return
 	}
 	env := exec.envStack[len(exec.envStack)-1]
+	// Mirrors pushEnv: the decrement is taken ahead of the region branch on the
+	// same test as the increment, so the two pair up whatever the region state
+	// was at either end.
+	if exec.memoryQuota > 0 && env != nil && !exec.isBaseEnv(env.parent) {
+		if estimatorVerify && exec.nonBaseParentDepth <= 0 {
+			// This decrement must pair with an increment from the same scope's
+			// push. An underflow means a scope was pushed and popped through
+			// asymmetric branches — the failure mode when the region skip was keyed
+			// on a flag a mid-region capture could revoke — which can later drive
+			// the counter back to zero while a non-base scope is live and wrongly
+			// re-engage the dormant-frame memo. Trip loudly under the oracle.
+			panic("runtime: nonBaseParentDepth underflow on env pop")
+		}
+		exec.nonBaseParentDepth--
+	}
 	if exec.blockRegionActive && env != nil {
-		// A block-iteration region scope: its push skipped the topo and
-		// non-base-parent bookkeeping (see pushEnv), so its pop must too. The
-		// decision is keyed on blockRegionActive, not the scope's epochNeutral
-		// flag, so it holds even when a mid-region capture revoked neutrality —
-		// push and pop of one scope always see the same region state, so the
-		// skips stay balanced. Clear the transient neutrality so a scope that
-		// escapes the region (captured by a closure and re-pushed later, perhaps
-		// outside any region) does not carry it past the region that justified it.
+		// A block-iteration region scope: its push skipped the topo bump (see
+		// pushEnv), so its pop must too. The decision is keyed on
+		// blockRegionActive, not the scope's epochNeutral flag, so it holds even
+		// when a mid-region capture revoked neutrality — push and pop of one scope
+		// always see the same region state, so the skips stay balanced. Clear the
+		// transient neutrality so a scope that escapes the region (captured by a
+		// closure and re-pushed later, perhaps outside any region) does not carry
+		// it past the region that justified it.
 		//
 		// Do NOT clear neutralityRevoked here: a capture is a property of the frame
 		// for its whole lifetime, not of a single push. A call frame is pushed
@@ -519,18 +555,6 @@ func (exec *Execution) popEnv() {
 	}
 	if !exec.poppingDuplicateTop() {
 		exec.baseTopoVersion++
-	}
-	if exec.memoryQuota > 0 && env != nil && !exec.isBaseEnv(env.parent) {
-		if estimatorVerify && exec.nonBaseParentDepth <= 0 {
-			// This decrement must pair with an increment from the same scope's
-			// push. An underflow means a scope was pushed and popped through
-			// asymmetric branches — the failure mode when the region skip was keyed
-			// on a flag a mid-region capture could revoke — which can later drive
-			// the counter back to zero while a non-base scope is live and wrongly
-			// re-engage the dormant-frame memo. Trip loudly under the oracle.
-			panic("runtime: nonBaseParentDepth underflow on env pop")
-		}
-		exec.nonBaseParentDepth--
 	}
 	exec.envStack = exec.envStack[:len(exec.envStack)-1]
 	if len(exec.dormant) > 0 {
