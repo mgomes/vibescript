@@ -4590,3 +4590,53 @@ func TestHashLookupsDoNotChargeAliasesNoCallbackCanDetach(t *testing.T) {
 		})
 	}
 }
+
+// An array is a supported hash key, so a key argument is not automatically a
+// stable root. The first callback returns a large element of the array key; a
+// later callback clears that array, detaching the element while the output
+// still holds it, then allocates a temporary. Treating the whole key as seen
+// hid the detached payload from both the walk and the reservation.
+func TestHashLookupsRejectDetachedElementsOfAnArrayKey(t *testing.T) {
+	t.Parallel()
+
+	sources := map[string]string{
+		"fetch_values block": `
+    def run()
+      k = ["x" * 400000]
+      h = { }
+      h.fetch_values(k, :b) { |x|
+        if x == :b
+          k.clear
+          ("t" * 700000).length
+        else
+          x[0]
+        end
+      }
+    end
+    `,
+		"values_at default proc": `
+    def run()
+      k = ["x" * 400000]
+      h = Hash.new { |hash, x|
+        if x == :b
+          k.clear
+          ("t" * 700000).length
+        else
+          x[0]
+        end
+      }
+      h.values_at(k, :b)
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a detached array-key element coexisting with an in-callback temporary exceeded the quota but was accepted")
+			}
+		})
+	}
+}
