@@ -4381,7 +4381,7 @@ func (c *scriptChecker) blockLiteralValueBindingOutcome(
 			typed,
 			value,
 			func(Expression, Value) error { return nil },
-			destructureCharge{check: noopDestructureCheck, step: noopDestructureStep, liveRoot: value},
+			destructureCharge{check: noopDestructureCheck, step: noopDestructureStep, readBack: uncachedDestructureReadBack, liveRoot: value},
 			func(element DestructureElement, elementValue Value) (Value, error) {
 				return normalizeValueForType(
 					elementValue,

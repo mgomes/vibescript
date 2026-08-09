@@ -155,6 +155,11 @@ type Execution struct {
 	// work charges across one assignment's targets (see
 	// chargeDestructureScan).
 	destructureScanResidue int
+	// destructureReadBack memoizes each destructuring target's snapshot
+	// decision, which is a property of its syntax and so is constant for the
+	// whole call (see destructureReadBackFact). Lazily initialized; bounded by
+	// the program's own target count, not by how often they are assigned.
+	destructureReadBack map[*DestructureTarget]bool
 	// equalityScratchCheck caches the equality scratch validator closure
 	// (see equalityScratchValidatorFunc). Lazily initialized.
 	equalityScratchCheck func(int, Value, Value) error

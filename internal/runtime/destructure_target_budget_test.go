@@ -102,6 +102,63 @@ func TestBlockParamDestructureChargesWithoutAMemoryQuota(t *testing.T) {
 	}
 }
 
+// nestedIndexTargetSource builds a target nested depth deep whose deepest leaf
+// is an index write. That is the shape that makes the snapshot decision rescan:
+// at every level the scan recurses the whole remaining subtree looking for a
+// container write, and only finds one at the bottom.
+func nestedIndexTargetSource(depth int) string {
+	inner := "a[0], b"
+	for range depth {
+		inner = "(" + inner + "), b"
+	}
+	return "def run(v, n)\n  a = [0, 0]\n  b = 0\n  j = 0\n  while j < n\n    z, (" +
+		inner + ") = v\n    j = j + 1\n  end\n  b\nend"
+}
+
+// nestedValue matches that target: an array at every level, since the scan only
+// runs when the right-hand side of that level is an array.
+func nestedValue(depth int) Value {
+	v := NewArray([]Value{NewInt(1), NewInt(2)})
+	for range depth {
+		v = NewArray([]Value{v, NewInt(0)})
+	}
+	return NewArray([]Value{NewInt(0), v})
+}
+
+// Whether a target needs a defensive snapshot of its right-hand side is a
+// property of its syntax, but it was recomputed at every level of every
+// assignment, and the scan recurses over the whole remaining subtree. A target
+// nested d deep therefore did O(d squared) helper visits per assignment while
+// the per-level charge bills O(d), and destructuring nesting has no depth cap.
+// 200 iterations over a 4000-deep target did 1,604,401,800 scan visits for a
+// loop costing tens of thousands of steps; memoizing the fact per execution
+// leaves 8,022,009, the one scan the whole call now pays (#49).
+func TestNestedDestructureScansItsTargetOncePerCall(t *testing.T) {
+	t.Parallel()
+
+	const depth = 1000
+	cfg := Config{MemoryQuotaBytes: 64 << 20}
+	src := nestedIndexTargetSource(depth)
+
+	once := minStepQuotaToComplete(t, cfg, src, nestedValue(depth), 1, 1<<26)
+	repeated := minStepQuotaToComplete(t, cfg, src, nestedValue(depth), 200, 1<<26)
+
+	// The scan visits about depth squared over two nodes. Half of the ideal
+	// charge leaves room for the sub-step remainder while staying far above the
+	// couple of hundred steps an uncharged scan leaves.
+	wantScan := depth * depth / 2 / destructureUnitsPerStep / 2
+	if once < wantScan {
+		t.Errorf("one assignment over a %d-deep target cost %d steps; want at least %d, one step per "+
+			"%d nodes the snapshot scan visits", depth, once, wantScan, destructureUnitsPerStep)
+	}
+	// Repeating the assignment must not repeat the scan. Recomputing it per
+	// iteration would bill 200 scans instead of one.
+	if repeated > once*10 {
+		t.Errorf("1 assignment cost %d steps and 200 cost %d; the snapshot decision is syntax, so "+
+			"it must be scanned once per target rather than once per assignment", once, repeated)
+	}
+}
+
 // The charge is amortized so that everyday destructuring keeps costing what it
 // did: a handful of targets and a short rest window round to no steps at all.
 // Pin that such an assignment still binds what Ruby's rules say it does inside
