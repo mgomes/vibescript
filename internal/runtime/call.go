@@ -1470,7 +1470,6 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 	exec.callStack = exec.callStackArr[:0]
 	exec.receiverStack = exec.receiverStackArr[:0]
 	exec.envStack = exec.envStackArr[:0]
-	exec.heldArrayBackings = exec.heldArrayBackingsArr[:0]
 	exec.validatedCapabilityArgs = exec.validatedCapabilityArgsArr[:0]
 	return exec
 }

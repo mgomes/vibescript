@@ -235,7 +235,12 @@ type Execution struct {
 	// heldArrayBackings is the stack of array element backings the live
 	// builtin frames are holding across the script code they invoke. See
 	// array_shrink.go: an in-place shrink consults it to decide whether it may
-	// zero the slots it vacates or must copy the survivors out instead.
+	// zero the slots it vacates, or must leave them alone instead.
+	//
+	// It has no inline backing, unlike the always-used per-call stacks below.
+	// A claim is only ever pushed for an array receiver or argument, so giving
+	// every execution room for eight of them put 896 bytes on the shortest
+	// possible call whether or not the script ever touched an array.
 	heldArrayBackings []heldArrayBacking
 
 	// Inline backing storage for the always-used per-call stacks, so a
@@ -244,7 +249,6 @@ type Execution struct {
 	callStackArr               [8]callFrame
 	receiverStackArr           [8]Value
 	envStackArr                [8]*Env
-	heldArrayBackingsArr       [8]heldArrayBacking
 	validatedCapabilityArgsArr [4]string
 	loopDepth                  int
 	blockDepth                 int
