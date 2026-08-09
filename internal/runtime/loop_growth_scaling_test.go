@@ -194,6 +194,17 @@ func TestGrowthLoopEstimateMatchesUncachedWalk(t *testing.T) {
 			arg: loopMemoArray,
 		},
 		{
+			// Keys first seen AFTER a duplicate switched the accumulator into
+			// replacement accounting, with one of them not last. Snapshot mode
+			// never charged such a key its entry structure at all, because
+			// rebuildRetainedEntries only counts the entries that existed when
+			// replacement began, while sessions mode charged every one but the
+			// last. The two modes must price the entry the same.
+			name: "literal with new keys after a duplicate",
+			src:  "def run(a, n)\n  h = {x: 1, x: 2, y: 3, z: 4}\n  h.length\nend",
+			arg:  func(int) Value { return NewNil() },
+		},
+		{
 			// Replacing a large value: the old allocation stays in the
 			// unpublished hash until the write, so admission must hold both.
 			name: "literal replacing a large value",

@@ -1828,8 +1828,19 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 		// stays in the unpublished hash until the write lands, so the
 		// transient peak holds both allocations.
 		candidate := hashLiteralEntry{key: key, lookupKey: lookupKey, value: val}
+		// A replacement reuses the entry that is already there, but a key this
+		// literal has not seen adds one. Its structural bytes have to be part of
+		// what admission weighs, not added after it passes: on the final pair
+		// nothing checks again, so a quota with less headroom than one entry's
+		// structure admitted a hash that lands over it. addDistinctEntry, the
+		// neighboring path, has always folded them in (#1).
+		entryStructural := 0
+		if _, replacingExisting := current[canonical]; !replacingExisting {
+			entryStructural = acc.typedEntryStructuralBytes()
+		}
 		used, nodes := acc.sessionUsedBytes(current, func(est *memoryEstimator) int {
-			return saturatingAdd(hashLiteralKeyPayload(est, candidate.lookupKey, candidate.key), est.valuePayload(candidate.value))
+			payload := saturatingAdd(hashLiteralKeyPayload(est, candidate.lookupKey, candidate.key), est.valuePayload(candidate.value))
+			return saturatingAdd(entryStructural, payload)
 		})
 		if used > acc.exec.memoryQuota {
 			return acc.exec.memoryQuotaExceededError()
@@ -1837,9 +1848,7 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 		if err := acc.exec.chargeEstimatorWalk(nodes); err != nil {
 			return err
 		}
-		if _, replacedExisting := current[canonical]; !replacedExisting {
-			acc.retained = saturatingAdd(acc.retained, acc.typedEntryStructuralBytes())
-		}
+		acc.retained = saturatingAdd(acc.retained, entryStructural)
 		// The post-replacement set never exceeds the admitted peak, so no
 		// second check is needed here; the caller's write makes current that
 		// set and later entries re-measure it anyway.
@@ -1853,7 +1862,16 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 
 	keyPayload, valuePayload, entryNodes := acc.entryPayloads(lookupKey, key, val)
 	nodes += entryNodes
-	incoming := saturatingAdd(keyPayload, valuePayload)
+	// The snapshot path had the same gap as the sessions one above, and kept it
+	// permanently rather than only across the last pair: a key first seen in
+	// replacement mode was never charged its entry structure at all, because
+	// rebuildRetainedEntries only counts the entries that existed when
+	// replacement began.
+	entryStructural := 0
+	if _, replacingExisting := current[canonical]; !replacingExisting {
+		entryStructural = acc.typedEntryStructuralBytes()
+	}
+	incoming := saturatingAdd(entryStructural, saturatingAdd(keyPayload, valuePayload))
 	base, baseNodes := acc.liveBase()
 	nodes += baseNodes
 	if used := saturatingAdd(saturatingAdd(base, acc.retained), incoming); used > acc.exec.memoryQuota {
@@ -1873,6 +1891,9 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 		acc.keyPayloads = make(map[string]int)
 		acc.valuePayloads = make(map[string]int)
 	}
+	// keyPayloads and valuePayloads are the subtractable per-key totals a later
+	// replacement of this same key retracts, so the structure charged above
+	// stays out of them: the entry it paid for outlives every replacement.
 	acc.keyPayloads[canonical] = keyPayload
 	acc.valuePayloads[canonical] = valuePayload
 	return acc.checkQuota(current)
