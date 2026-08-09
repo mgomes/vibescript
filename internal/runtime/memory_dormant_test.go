@@ -195,6 +195,17 @@ func TestDormantPrefixRetractsOnBuiltinBlockRebind(t *testing.T) {
 	requireDormantRebindCharged(t, dormantRebindSource("  cb.call"))
 }
 
+// TestDormantPrefixRetractsOnBlockRegionRebind covers #19: a block-iteration
+// region skipped the non-base-parent bookkeeping for every scope it pushed, so a
+// pure iterator running a block closed on a dormant caller never retracted that
+// caller's committed total. Rebinding the caller's Int to a 400KB string through
+// array.each left the program running under a 404,951-byte quota while holding
+// two live 400KB strings; it now needs 804,361.
+func TestDormantPrefixRetractsOnBlockRegionRebind(t *testing.T) {
+	t.Parallel()
+	requireDormantRebindCharged(t, dormantRebindSource("  [1].each do |i|\n    cb.call\n  end"))
+}
+
 // TestDormantEstimatorFibUnderQuota runs naive fib through the real interpreter
 // under a finite memory quota so the estimator walks on every call. Under the
 // oracle (VIBES_ESTIMATOR_VERIFY=1, set by TestMain) each walk self-verifies

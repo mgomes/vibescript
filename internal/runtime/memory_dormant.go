@@ -35,6 +35,11 @@ var estimatorVerify = false
 // When nonBaseParentDepth is non-zero the optimization disengages entirely and
 // the estimator falls back to the reference full-stack walk, so the fast path is
 // only ever taken where its immutability invariant provably holds.
+//
+// Both mechanisms behind that second condition — raising the counter and
+// dropping the committed prefix — run at the push, in pushEnv (see
+// retractAllDormant), so the invariant holds for every walk path rather than for
+// the one path that happens to read the counter (#19, #20).
 
 // dormantFrame records one committed dormant env: the stack slots it occupies
 // (a frame is pushed once per call plus once per evalStatements body scope, all
