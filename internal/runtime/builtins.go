@@ -1656,23 +1656,44 @@ func (exec *Execution) checkSleepDuration(duration time.Duration) error {
 	return nil
 }
 
-// sleepBudget is the sleeping time one call tree shares.
+// sleepBudget is the sleeping time one call tree shares. A nested engine with
+// a tighter bound gets its own, chained to the outer one so that sleeping
+// inside it spends both: the inner host's limit constrains the inner script,
+// and the outer host's still bounds the call as a whole.
 type sleepBudget struct {
 	mu        sync.Mutex
 	remaining time.Duration
+	parent    *sleepBudget
 }
 
-// spend takes duration from the budget, reporting false when the tree has
-// spent its allowance. Nothing is deducted on refusal, so a rejected sleep
-// leaves the budget for whatever else the tree still has to do.
+// spend takes duration from this budget and every budget above it, reporting
+// false when any of them cannot afford it. Nothing is deducted unless all of
+// them can, so a refusal leaves every allowance for whatever else the tree
+// still has to do.
 func (b *sleepBudget) spend(duration time.Duration) bool {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if duration > b.remaining {
+		b.mu.Unlock()
 		return false
 	}
 	b.remaining -= duration
+	b.mu.Unlock()
+
+	if b.parent != nil && !b.parent.spend(duration) {
+		b.mu.Lock()
+		b.remaining += duration
+		b.mu.Unlock()
+		return false
+	}
 	return true
+}
+
+// cap reports whether this budget is already no looser than limit, in which
+// case a callee with that limit can share it rather than chaining a new one.
+func (b *sleepBudget) cap(limit time.Duration) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.remaining <= limit
 }
 
 // sleepBudgetForCall returns the budget a call runs under, inheriting the one
@@ -1686,8 +1707,17 @@ func sleepBudgetForCall(ctx context.Context, limit time.Duration) (context.Conte
 	if limit <= 0 {
 		return ctx, nil
 	}
+	// An inherited budget is capped at this engine's own limit rather than
+	// taken as given. A capability adapter can re-enter a script on a
+	// different engine, and the callee's host set its bound for its own
+	// reasons: inheriting a looser allowance would let an outer engine lend
+	// the inner one permission its configuration refuses.
 	if shared := sleepBudgetFromContext(ctx); shared != nil {
-		return ctx, shared
+		if shared.cap(limit) {
+			return ctx, shared
+		}
+		inner := &sleepBudget{remaining: limit, parent: shared}
+		return contextWithSleepBudget(ctx, inner), inner
 	}
 	budget := &sleepBudget{remaining: limit}
 	return contextWithSleepBudget(ctx, budget), budget

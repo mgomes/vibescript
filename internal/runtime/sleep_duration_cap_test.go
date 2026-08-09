@@ -174,3 +174,67 @@ end`)
 		t.Fatal("the tree is still sleeping, so the budget is not shared")
 	}
 }
+
+// TestNestedEngineKeepsItsOwnTighterSleepBudget pins that a call re-entered on
+// another engine is bound by that engine's limit, not by whatever the outer one
+// allowed.
+//
+// A capability adapter can run a script on a different engine, and the callee's
+// host set its bound for its own reasons. Inheriting the outer allowance let a
+// loose engine lend a strict one permission its configuration refuses (#29).
+func TestNestedEngineKeepsItsOwnTighterSleepBudget(t *testing.T) {
+	t.Parallel()
+
+	inner := compileScriptWithConfig(t, Config{MaxSleepDuration: time.Millisecond}, `def run()
+  sleep(0.05)
+end`)
+
+	// The outer budget is generous enough to admit the inner sleep on its own,
+	// so only the inner engine's own limit can reject it.
+	outerBudget := &sleepBudget{remaining: time.Second}
+	ctx := contextWithSleepBudget(context.Background(), outerBudget)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := inner.Call(ctx, "run", nil, CallOptions{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("the inner engine's own maximum must bound its script")
+		}
+		if !strings.Contains(err.Error(), "exceeds the host maximum") {
+			t.Fatalf("rejected for the wrong reason: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the inner call is still sleeping, so its own maximum did not bound it")
+	}
+
+	// The rejected sleep must not have been deducted from the outer allowance.
+	if got := outerBudget.remaining; got != time.Second {
+		t.Fatalf("a refused sleep spent %s of the outer budget", time.Second-got)
+	}
+}
+
+// TestNestedEngineStillSpendsTheOuterBudget pins the other direction: a nested
+// call that is within its own limit still draws on the budget above it, so a
+// tree cannot escape the outer bound by re-entering repeatedly.
+func TestNestedEngineStillSpendsTheOuterBudget(t *testing.T) {
+	t.Parallel()
+
+	inner := compileScriptWithConfig(t, Config{MaxSleepDuration: 10 * time.Millisecond}, `def run()
+  sleep(0.005)
+end`)
+
+	// Room for one nested sleep and not two.
+	outerBudget := &sleepBudget{remaining: 7 * time.Millisecond}
+	ctx := contextWithSleepBudget(context.Background(), outerBudget)
+
+	if _, err := inner.Call(ctx, "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("a sleep inside both limits must run: %v", err)
+	}
+	if _, err := inner.Call(ctx, "run", nil, CallOptions{}); err == nil {
+		t.Fatal("repeated nested calls must exhaust the outer budget")
+	}
+}
