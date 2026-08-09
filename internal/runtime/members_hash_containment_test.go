@@ -4774,3 +4774,48 @@ func TestHashLookupsLowerTheReservationWhenAResultShrinks(t *testing.T) {
 		})
 	}
 }
+
+// A key argument lives only in the builtin's Go-local slice, which the walk
+// inside a callback cannot reach. Deducting arguments from the retained total
+// therefore left a result that aliases one neither reserved nor walkable: the
+// first callback returns its own 400KB key, and the second allocates 700KB
+// against a 1MB quota with the two coexisting.
+func TestHashLookupsReserveAResultAliasingAnEphemeralKey(t *testing.T) {
+	t.Parallel()
+
+	sources := map[string]string{
+		"fetch_values block": `
+    def run()
+      { }.fetch_values("x" * 400000, :b) { |k|
+        if k == :b
+          ("t" * 700000).length
+        else
+          k
+        end
+      }
+    end
+    `,
+		"values_at default proc": `
+    def run()
+      h = Hash.new { |hash, k|
+        if k == :b
+          ("t" * 700000).length
+        else
+          k
+        end
+      }
+      h.values_at("x" * 400000, :b)
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a retained result aliasing an ephemeral key exceeded the quota but was accepted")
+			}
+		})
+	}
+}
