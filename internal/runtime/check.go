@@ -13114,6 +13114,41 @@ func (c *scriptChecker) writeVariadicStaticValueKey(
 	}
 }
 
+// appendVariadicAlternativeValues extends every rest aggregate built so far
+// with the static values one supplied argument may evaluate to.
+//
+// The aggregates were rebuilt from scratch at every argument: each alternative
+// copied its whole prefix before appending. maxAlternatives caps how many
+// alternatives exist, not how long one is, so a call whose arguments each have
+// a single static value kept exactly one alternative and still copied
+// 1 + 2 + ... + N expressions to build it. `sink(0, 0, ...)` against
+// `def sink(*xs)` therefore allocated 19MB at 500 arguments, 71MB at 1,000, and
+// 274MB at 2,000, quadrupling per doubling, inside CheckWarnings where no
+// script quota applies. Appending in place leaves that at 1.3MB, 2.7MB, and
+// 5.5MB (#9).
+//
+// Only an argument with more than one static value branches, and branching is
+// self-limiting: each one multiplies the alternative count, which the caller's
+// cap stops after a handful, so the copies branching costs stay bounded by that
+// cap rather than by the argument count.
+func appendVariadicAlternativeValues[T any](alternatives [][]T, values []T) [][]T {
+	if len(values) == 1 {
+		for i := range alternatives {
+			alternatives[i] = append(alternatives[i], values[0])
+		}
+		return alternatives
+	}
+	next := make([][]T, 0, len(alternatives)*len(values))
+	for _, prefix := range alternatives {
+		for _, value := range values {
+			branch := make([]T, len(prefix), len(prefix)+1)
+			copy(branch, prefix)
+			next = append(next, append(branch, value))
+		}
+	}
+	return next
+}
+
 // bindVariadicReachableParamFacts mirrors the runtime's rest parameter binding
 // so indexing the aggregate can recover exact evaluated argument identities.
 func (c *scriptChecker) bindVariadicReachableParamFacts(
@@ -13144,7 +13179,7 @@ func (c *scriptChecker) bindVariadicReachableParamFacts(
 				usedKeywords[param.Name] = struct{}{}
 			}
 		case ParamRest:
-			alternatives := []*ArrayLiteral{{Position: view.pos}}
+			alternatives := [][]Expression{nil}
 			exact := true
 			for _, arg := range view.args[argIndex:] {
 				values, ok := c.evaluatedCallArgumentStaticAlternatives(arg)
@@ -13152,24 +13187,12 @@ func (c *scriptChecker) bindVariadicReachableParamFacts(
 					exact = false
 					break
 				}
-				next := make([]*ArrayLiteral, 0, len(alternatives)*len(values))
-				for _, prefix := range alternatives {
-					for _, value := range values {
-						next = append(next, &ArrayLiteral{
-							Elements: append(
-								append([]Expression(nil), prefix.Elements...),
-								value,
-							),
-							Position: view.pos,
-						})
-					}
-				}
-				alternatives = next
+				alternatives = appendVariadicAlternativeValues(alternatives, values)
 			}
 			if exact && param.Name != "" {
 				staticVals := make([]Expression, len(alternatives))
-				for i, alternative := range alternatives {
-					staticVals[i] = alternative
+				for i, elements := range alternatives {
+					staticVals[i] = &ArrayLiteral{Elements: elements, Position: view.pos}
 				}
 				staticVals = c.internVariadicParamStaticValues(fn, param, staticVals)
 				facts[param.Name] = checkReachableParamFact{
@@ -13179,7 +13202,7 @@ func (c *scriptChecker) bindVariadicReachableParamFacts(
 			}
 			argIndex = len(view.args)
 		case ParamKeywordRest:
-			alternatives := []*HashLiteral{{Position: view.pos}}
+			alternatives := [][]HashPair{nil}
 			exact := true
 			for i, kwarg := range view.kwargs {
 				if _, used := usedKeywords[kwarg.Name]; used ||
@@ -13191,30 +13214,22 @@ func (c *scriptChecker) bindVariadicReachableParamFacts(
 					exact = false
 					break
 				}
-				next := make([]*HashLiteral, 0, len(alternatives)*len(values))
-				for _, prefix := range alternatives {
-					for _, value := range values {
-						next = append(next, &HashLiteral{
-							Pairs: append(
-								append([]HashPair(nil), prefix.Pairs...),
-								HashPair{
-									Key: &StringLiteral{
-										Value:    kwarg.Name,
-										Position: kwarg.Value.Pos(),
-									},
-									Value: value,
-								},
-							),
-							Position: view.pos,
-						})
+				pairs := make([]HashPair, len(values))
+				for i, value := range values {
+					pairs[i] = HashPair{
+						Key: &StringLiteral{
+							Value:    kwarg.Name,
+							Position: kwarg.Value.Pos(),
+						},
+						Value: value,
 					}
 				}
-				alternatives = next
+				alternatives = appendVariadicAlternativeValues(alternatives, pairs)
 			}
 			if exact && param.Name != "" {
 				staticVals := make([]Expression, len(alternatives))
-				for i, alternative := range alternatives {
-					staticVals[i] = alternative
+				for i, pairs := range alternatives {
+					staticVals[i] = &HashLiteral{Pairs: pairs, Position: view.pos}
 				}
 				staticVals = c.internVariadicParamStaticValues(fn, param, staticVals)
 				facts[param.Name] = checkReachableParamFact{
