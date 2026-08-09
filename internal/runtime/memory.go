@@ -1690,11 +1690,6 @@ type hashLiteralBuildAccumulator struct {
 	// est is the snapshot mode's private estimator, seeded with a reference
 	// walk at construction; nil in sessions mode.
 	est *memoryEstimator
-	// sessionEntries records the entries retained so far in sessions mode;
-	// addDistinctEntry replays their identities into each session walk so a
-	// new entry deduplicates against the union of the reachable base and the
-	// literal's own earlier payloads.
-	sessionEntries []hashLiteralEntry
 	// base holds the structural constants (wrapper, map base, backing slots)
 	// in sessions mode, plus the construction-time reference walk in snapshot
 	// mode.
@@ -1759,17 +1754,19 @@ func (acc *hashLiteralBuildAccumulator) reserveBacking(capacity int) error {
 		return nil
 	}
 	acc.base = saturatingAdd(acc.base, saturatingMul(capacity, estimatedMapEntryStructuralBytes))
-	return acc.checkQuota()
+	// No entries exist yet, so the replay set the sessions path measures is
+	// empty.
+	return acc.checkQuota(nil)
 }
 
-func (acc *hashLiteralBuildAccumulator) addDistinctEntry(lookupKey HashLookupKey, key, val Value) error {
+func (acc *hashLiteralBuildAccumulator) addDistinctEntry(current map[string]hashLiteralEntry, lookupKey HashLookupKey, key, val Value) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
 
 	if acc.sessions {
 		entryStructural := acc.typedEntryStructuralBytes()
-		used, nodes := acc.sessionUsedBytes(func(est *memoryEstimator) int {
+		used, nodes := acc.sessionUsedBytes(current, func(est *memoryEstimator) int {
 			payload := saturatingAdd(hashLiteralKeyPayload(est, lookupKey, key), est.valuePayload(val))
 			return saturatingAdd(entryStructural, payload)
 		})
@@ -1780,7 +1777,6 @@ func (acc *hashLiteralBuildAccumulator) addDistinctEntry(lookupKey HashLookupKey
 			return err
 		}
 		acc.retained = saturatingAdd(acc.retained, entryStructural)
-		acc.sessionEntries = append(acc.sessionEntries, hashLiteralEntry{key: key, lookupKey: lookupKey, value: val})
 		return nil
 	}
 
@@ -1788,7 +1784,7 @@ func (acc *hashLiteralBuildAccumulator) addDistinctEntry(lookupKey HashLookupKey
 	acc.retained = saturatingAdd(acc.retained, acc.typedEntryStructuralBytes())
 	acc.retained = saturatingAdd(acc.retained, hashLiteralKeyPayload(acc.est, lookupKey, key))
 	acc.retained = saturatingAdd(acc.retained, acc.est.valuePayload(val))
-	if err := acc.checkQuota(); err != nil {
+	if err := acc.checkQuota(current); err != nil {
 		return err
 	}
 	return acc.exec.chargeEstimatorWalk(acc.est.walked - before)
@@ -1820,7 +1816,7 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 		// stays in the unpublished hash until the write lands, so the
 		// transient peak holds both allocations.
 		candidate := hashLiteralEntry{key: key, lookupKey: lookupKey, value: val}
-		used, nodes := acc.sessionUsedBytes(func(est *memoryEstimator) int {
+		used, nodes := acc.sessionUsedBytes(current, func(est *memoryEstimator) int {
 			return saturatingAdd(hashLiteralKeyPayload(est, candidate.lookupKey, candidate.key), est.valuePayload(candidate.value))
 		})
 		if used > acc.exec.memoryQuota {
@@ -1829,23 +1825,12 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 		if err := acc.exec.chargeEstimatorWalk(nodes); err != nil {
 			return err
 		}
-		entries := make([]hashLiteralEntry, 0, len(current)+1)
-		replacedExisting := false
-		for c, entry := range current {
-			if c == canonical {
-				entries = append(entries, candidate)
-				replacedExisting = true
-				continue
-			}
-			entries = append(entries, entry)
-		}
-		if !replacedExisting {
-			entries = append(entries, candidate)
+		if _, replacedExisting := current[canonical]; !replacedExisting {
 			acc.retained = saturatingAdd(acc.retained, acc.typedEntryStructuralBytes())
 		}
 		// The post-replacement set never exceeds the admitted peak, so no
-		// second check is needed here; later entries re-measure it anyway.
-		acc.sessionEntries = entries
+		// second check is needed here; the caller's write makes current that
+		// set and later entries re-measure it anyway.
 		acc.replacing = true
 		return nil
 	}
@@ -1878,7 +1863,7 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 	}
 	acc.keyPayloads[canonical] = keyPayload
 	acc.valuePayloads[canonical] = valuePayload
-	return acc.checkQuota()
+	return acc.checkQuota(current)
 }
 
 // rebuildRetainedEntries re-measures every entry retained so far and reports the
@@ -1932,19 +1917,27 @@ func (acc *hashLiteralBuildAccumulator) entryPayloads(lookupKey HashLookupKey, k
 }
 
 // sessionUsedBytes measures the literal's retained set against the live base
-// inside one session. The prior entries' payloads are re-measured in
-// insertion order rather than carried as a running total: each walk
-// deduplicates against the current reachable graph and the earlier entries,
-// so a payload that a later value expression published into a root — making
-// the base start counting it — stops being counted in the retained side too,
-// exactly as the reference walk's union dedup behaves. measure, when
-// non-nil, prices the candidate entry against the same union. In sessions
-// mode acc.retained holds only the arithmetic structural bytes.
-func (acc *hashLiteralBuildAccumulator) sessionUsedBytes(measure func(est *memoryEstimator) int) (int, int) {
+// inside one session. The prior entries' payloads are re-measured rather than
+// carried as a running total: each walk deduplicates against the current
+// reachable graph and the earlier entries, so a payload that a later value
+// expression published into a root, making the base start counting it, stops
+// being counted in the retained side too, exactly as the reference walk's union
+// dedup behaves. measure, when non-nil, prices the candidate entry against the
+// same union. In sessions mode acc.retained holds only the arithmetic
+// structural bytes.
+//
+// current is the builder's own canonical-key entry map, borrowed rather than
+// mirrored into the accumulator. Keeping a second copy cost 128 bytes a pair
+// that no quota projection could see, bounded only by the source while the
+// width cap stood and unbounded once it went, plus a whole second copy while a
+// replacement rebuilt it (#1). The replay set is order independent: the
+// estimator's union total does not depend on which entry it reaches an identity
+// through.
+func (acc *hashLiteralBuildAccumulator) sessionUsedBytes(current map[string]hashLiteralEntry, measure func(est *memoryEstimator) int) (int, int) {
 	s := acc.exec.beginBaseWalk()
 	defer s.close()
 	retained := 0
-	for _, prior := range acc.sessionEntries {
+	for _, prior := range current {
 		retained = saturatingAdd(retained, hashLiteralKeyPayload(s.est, prior.lookupKey, prior.key))
 		retained = saturatingAdd(retained, s.est.valuePayload(prior.value))
 	}
@@ -1985,10 +1978,10 @@ func hashLiteralKeyPayload(est *memoryEstimator, lookupKey HashLookupKey, key Va
 // memo warm so the second one reported only its cheap replay. A loop whose
 // literals each invalidate the memo therefore re-walked an arbitrarily large
 // host graph for a flat step count (#1).
-func (acc *hashLiteralBuildAccumulator) checkQuota() error {
+func (acc *hashLiteralBuildAccumulator) checkQuota(current map[string]hashLiteralEntry) error {
 	var used, nodes int
 	if acc.sessions {
-		used, nodes = acc.sessionUsedBytes(nil)
+		used, nodes = acc.sessionUsedBytes(current, nil)
 	} else {
 		var base int
 		base, nodes = acc.liveBase()

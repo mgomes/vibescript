@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -132,6 +133,64 @@ func TestSessionHashLiteralChargesAColdBaseWalk(t *testing.T) {
 		t.Errorf("the same literal cost %d steps over a %d-element retained array and %d over a "+
 			"%d-element one; want at least %d, one step per %d nodes the cold base walk visits",
 			atSmall, small, atLarge, large, want, estimatorNodesPerStep)
+	}
+}
+
+// hashLiteralRewriteSource writes every key once and then rewrites all of them,
+// so the accumulator spends the second half in replacement mode against a
+// full-width entry map. That is the shape the replay rebuild was quadratic in.
+func hashLiteralRewriteSource(pairs int) string {
+	parts := make([]string, 0, 2*pairs)
+	for pass := range 2 {
+		for i := range pairs {
+			parts = append(parts, fmt.Sprintf("k%d: %d", i, i+pass))
+		}
+	}
+	return "def run(a, n)\n  t = 0\n  j = 0\n  while j < n\n    t = ({" +
+		strings.Join(parts, ", ") + "}).length\n    j = j + 1\n  end\n  t\nend"
+}
+
+// literalBuildBytes reports the bytes a run allocates in total. Allocation is a
+// poor proxy for walk complexity, which is why the scaling tests count estimator
+// visits instead, but here the transient buffer IS what is being measured, and
+// TotalAlloc is cumulative and exact rather than a live-heap sample.
+func literalBuildBytes(t *testing.T, src string, iterations int) uint64 {
+	t.Helper()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 64 << 20, StepQuota: Unlimited}, src)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	if _, err := script.Call(context.Background(), "run", []Value{loopMemoArray(100), NewInt(int64(iterations))}, CallOptions{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// The accumulator mirrored the builder's canonical-key entry map into a replay
+// slice of its own and rebuilt that slice from scratch on every replacement.
+// Neither buffer is reachable from an environment, so no quota projection could
+// see either, and the width cap was the only thing bounding them -- removing it
+// made them unbounded. A literal that writes k keys and then rewrites them all
+// allocated O(k squared) transient bytes: 20 evaluations of a 256-pair one
+// allocated 219,517,016 bytes and quadrupled every time the width doubled.
+// Replaying from the builder's map instead removes both buffers, so quadrupling
+// the width must now roughly quadruple the allocation (#1).
+//
+// Not parallel: TotalAlloc is process wide.
+func TestHashLiteralReplayDoesNotMirrorTheEntryMap(t *testing.T) {
+	const iterations, narrow, wide = 20, 64, 256
+
+	atNarrow := literalBuildBytes(t, hashLiteralRewriteSource(narrow), iterations)
+	atWide := literalBuildBytes(t, hashLiteralRewriteSource(wide), iterations)
+
+	// Linear growth is 4x for a 4x width. Allow generous headroom so the bound
+	// tracks the complexity class, while staying far below the 15x a quadratic
+	// rebuild produced.
+	if atWide > atNarrow*8 {
+		t.Errorf("a %d-pair rewrite allocated %d bytes and a %d-pair one %d; quadrupling the width "+
+			"should roughly quadruple the allocation, so the accumulator is still mirroring and "+
+			"rebuilding a replay buffer per pair", narrow, atNarrow, wide, atWide)
 	}
 }
 

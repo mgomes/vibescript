@@ -585,7 +585,7 @@ func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, v
 			if replacing || acc.replacing {
 				err = acc.replaceEntry(key, lookupKey, keyVal, val, entries)
 			} else {
-				err = acc.addDistinctEntry(lookupKey, keyVal, val)
+				err = acc.addDistinctEntry(entries, lookupKey, keyVal, val)
 			}
 			if err != nil {
 				return NewNil(), err
