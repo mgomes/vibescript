@@ -182,3 +182,80 @@ func requireCheckWarning(t *testing.T, warnings []CheckWarning, want string) {
 	}
 	t.Fatalf("expected the warning %q, got %v", want, warnings)
 }
+
+func namespaceWriteCallSource(writes int, callee string) string {
+	var body strings.Builder
+	for i := range writes {
+		fmt.Fprintf(&body, "  JSON.m%d = 1\n", i)
+		body.WriteString("  take(callee())\n")
+	}
+	return fmt.Sprintf(`
+def callee()
+  %s
+end
+
+def take(x: int)
+  x
+end
+
+def main()
+%send
+`, callee, body.String())
+}
+
+// A return summary was cached under a context naming every recorded namespace
+// member, so a script that assigns a new member before each call to an
+// unannotated function in a typed position re-sorted and re-joined the whole
+// member list for every call, and kept the result as a map key (#18).
+func TestCheckReturnSummaryContextStaysLinear(t *testing.T) {
+	small := measureCheckWork(t, namespaceWriteCallSource(400, "1"))
+	large := measureCheckWork(t, namespaceWriteCallSource(800, "1"))
+
+	// Measured 2 member names joined at both sizes: the callee's summary never
+	// reads the recorded members, so it is kept under a context that does not
+	// name them and the list is never built again. Before, the same pair joined
+	// 721,800 and 2,883,600 names, a 4.00x step. The assertion allows up to 3x
+	// so it states the complexity rather than pinning counts.
+	if large > small*3 {
+		t.Fatalf("doubling the namespace writes joined %d member names against %d -- over 3x,"+
+			" so keying a return summary is superlinear in the recorded members again", large, small)
+	}
+}
+
+// A summary that does read the recorded members still has to be separated by
+// them: the namespace write below turns a statically known class method into a
+// dynamic one, and the callee's result has to stop being a known string at that
+// point rather than staying whatever the earlier call proved.
+func TestNamespaceDependentReturnSummarySeparatesContexts(t *testing.T) {
+	const callee = `
+def take(v: int)
+  v
+end
+
+def stringified()
+  JSON.stringify(1)
+end
+`
+	before := compileScript(t, callee+`
+def f()
+  take(stringified())
+  JSON.stringify = 1
+  take(stringified())
+end
+`)
+	warnings := before.CheckWarnings()
+	requireCheckWarning(t, warnings, "call to take argument v expected int, got string")
+	if len(warnings) != 1 {
+		t.Fatalf("only the call before the namespace write is decided, got %v", warnings)
+	}
+
+	after := compileScript(t, callee+`
+def f()
+  JSON.stringify = 1
+  take(stringified())
+end
+`)
+	if warnings := after.CheckWarnings(); len(warnings) != 0 {
+		t.Fatalf("a reassigned namespace member left the callee decided: %v", warnings)
+	}
+}

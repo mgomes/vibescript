@@ -166,6 +166,9 @@ type scriptChecker struct {
 	implicitReturnLeaves       map[Statement]struct{}
 	implicitReturnStates       map[Statement]checkStateSnapshot
 	returnAnalyses             map[returnSummaryCacheKey]functionReturnAnalysis
+	returnAnalysisContextBytes int
+	memberFreeReturnAnalyses   map[returnSummaryCacheKey]functionReturnAnalysis
+	namespaceMemberReads       uint64
 	summaryInProgress          map[returnSummaryCacheKey]struct{}
 	bindingCompletionProbes    map[Expression]struct{}
 	blockLiteralBindingDepth   int
@@ -2120,28 +2123,40 @@ func (c *scriptChecker) reachableFunctionCheckContextKey(
 }
 
 func (c *scriptChecker) runtimeCheckContextKey() string {
+	return c.runtimeBindingContextKey() + "\x00" + c.runtimeNamespaceMembersKey()
+}
+
+// runtimeBindingContextKey names the module bindings and the class-constant
+// opacity a check runs under. It is the part of the runtime context that does
+// not grow with the namespace members a script assigns.
+func (c *scriptChecker) runtimeBindingContextKey() string {
 	root := c.runtimeTypeRoot
 	if root == nil {
 		root = c.typeRoot
 	}
-	memberSet := cloneCheckStringSet(c.runtimeNamespaceMembers)
-	if memberSet == nil && len(c.classConstantContext.namespaceMembers) > 0 {
-		memberSet = make(map[string]struct{}, len(c.classConstantContext.namespaceMembers))
-	}
-	for member := range c.classConstantContext.namespaceMembers {
-		memberSet[member] = struct{}{}
-	}
-	members := make([]string, 0, len(memberSet))
-	for member := range memberSet {
-		members = append(members, member)
-	}
-	slices.Sort(members)
 	return fmt.Sprintf(
-		"%s\x00%t\x00%s",
+		"%s\x00%t",
 		moduleCheckContextKey(root),
 		c.opaqueClassConstants || c.classConstantContext.opaque,
-		strings.Join(members, "\x00"),
 	)
+}
+
+// runtimeNamespaceMembersKey names every namespace member recorded as possibly
+// reassigned. It costs one pass over the recorded members, so a caller that can
+// answer without naming them should not ask.
+func (c *scriptChecker) runtimeNamespaceMembersKey() string {
+	members := make([]string, 0, len(c.runtimeNamespaceMembers)+len(c.classConstantContext.namespaceMembers))
+	for member := range c.runtimeNamespaceMembers {
+		members = append(members, member)
+	}
+	for member := range c.classConstantContext.namespaceMembers {
+		if _, recorded := c.runtimeNamespaceMembers[member]; !recorded {
+			members = append(members, member)
+		}
+	}
+	noteCheckWork(len(members))
+	slices.Sort(members)
+	return strings.Join(members, "\x00")
 }
 
 func cloneReachableParamFacts(facts map[string]checkReachableParamFact) map[string]checkReachableParamFact {
@@ -12774,18 +12789,7 @@ func (c *scriptChecker) classValueHasDynamicCallableMembers(classDef *ClassDef) 
 	if len(classDef.ClassVars) > 0 || c.opaqueClassConstants || c.classConstantContext.opaque {
 		return true
 	}
-	prefix := classDef.Name + "."
-	for member := range c.classConstantContext.namespaceMembers {
-		if strings.HasPrefix(member, prefix) {
-			return true
-		}
-	}
-	for member := range c.runtimeNamespaceMembers {
-		if strings.HasPrefix(member, prefix) {
-			return true
-		}
-	}
-	return false
+	return c.recordedNamespaceMemberPrefix(classDef.Name + ".")
 }
 
 func classValueMemberMayOverride(classDef *ClassDef, member string) bool {
@@ -18302,11 +18306,36 @@ func (c *scriptChecker) namespaceMemberMutated(namespace, property string) bool 
 	if c.scopeHas(memberName) {
 		return true
 	}
+	return c.recordedNamespaceMember(memberName)
+}
+
+// recordedNamespaceMember and recordedNamespaceMemberPrefix are the only reads
+// of the recorded member sets that a walk's answers depend on; everything else
+// touching those sets either writes them or names them for a cache key. Both
+// note the read so a return summary can tell whether its result depends on
+// which members are recorded (#18).
+func (c *scriptChecker) recordedNamespaceMember(memberName string) bool {
+	c.namespaceMemberReads++
 	if _, ok := c.classConstantContext.namespaceMembers[memberName]; ok {
 		return true
 	}
 	_, ok := c.runtimeNamespaceMembers[memberName]
 	return ok
+}
+
+func (c *scriptChecker) recordedNamespaceMemberPrefix(prefix string) bool {
+	c.namespaceMemberReads++
+	for member := range c.classConstantContext.namespaceMembers {
+		if strings.HasPrefix(member, prefix) {
+			return true
+		}
+	}
+	for member := range c.runtimeNamespaceMembers {
+		if strings.HasPrefix(member, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *scriptChecker) scopeHas(key string) bool {
