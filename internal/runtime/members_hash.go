@@ -993,7 +993,9 @@ func hashMemberQuery(property string) (Value, error) {
 				if procRunner != nil {
 					procArgs[0] = receiver
 					procArgs[1] = arg
-					resolved, err = procRunner.call(procArgs[:])
+					// Charged per call for the reason fetch_values documents below:
+					// the key is a Go-frame value a named rest can copy from.
+					resolved, err = procRunner.callWithChargedRoots(procArgs[:], arg)
 				} else {
 					resolved, err = exec.hashDefaultForKey(receiver, arg)
 				}
@@ -1081,7 +1083,13 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.fetch_values key not found: %s", formatMissingHashKey(arg))
 				}
 				blockArg := [1]Value{arg}
-				blockValue, err := runner.call(blockArg[:])
+				// The key is charged as a per-call root, not left to the runner's
+				// one-time baseline: it lives only in the builtin's Go argument
+				// slice, and a block destructuring it with a named rest copies a
+				// window sized to it. Weighing that window against a baseline the
+				// key is missing from let an ephemeral array key's copy be
+				// allocated before anything accounted for the key itself.
+				blockValue, err := runner.callWithChargedRoots(blockArg[:], arg)
 				if err != nil {
 					return NewNil(), err
 				}
