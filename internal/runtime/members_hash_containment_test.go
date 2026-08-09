@@ -4640,3 +4640,53 @@ func TestHashLookupsRejectDetachedElementsOfAnArrayKey(t *testing.T) {
 		})
 	}
 }
+
+// A retained result does not stay the size it was when it was priced. The
+// first callback returns an empty array, so it costs almost nothing; the
+// second pushes 400KB into that array and then clears the box holding it, so
+// the payload is both larger than it was priced at and reachable only through
+// the output; the third allocates 700KB. A total accumulated at charge time
+// misses the growth, so only re-measuring before each callback rejects this.
+func TestHashLookupsRepriceResultsThatGrowAfterBeingCharged(t *testing.T) {
+	t.Parallel()
+
+	body := `
+        if k == :a
+          box[0]
+        elsif k == :b
+          box[0].push("x" * 400000)
+          box.clear
+          1
+        else
+          ("t" * 700000).length
+        end`
+
+	sources := map[string]string{
+		"fetch_values block": `
+    def run()
+      box = [[]]
+      h = { }
+      h.fetch_values(:a, :b, :c) { |k|` + body + `
+      }
+    end
+    `,
+		"values_at default proc": `
+    def run()
+      box = [[]]
+      h = Hash.new { |hash, k|` + body + `
+      }
+      h.values_at(:a, :b, :c)
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a result that grew after being charged exceeded the quota but was accepted")
+			}
+		})
+	}
+}
