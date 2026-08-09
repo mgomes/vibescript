@@ -548,16 +548,6 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 // releases them.
 func (exec *Execution) formatStringConversionValues(values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) ([]Value, error) {
 	var converted []Value
-	// checkEvery paces the root walk below. A quota of zero means unbounded, in
-	// which case the walk does nothing useful and the threshold is set past
-	// anything the loop can accumulate.
-	checkEvery := exec.memoryQuota / 64
-	if exec.memoryQuota <= 0 {
-		checkEvery = math.MaxInt
-	} else if checkEvery < 1 {
-		checkEvery = 1
-	}
-	sinceCheck := 0
 	for i, val := range values {
 		rendered, substituted, err := exec.instanceStringValue(val, Position{})
 		if err != nil {
@@ -583,20 +573,7 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 		// its own while together they did not, and a pattern that rejects
 		// returns before the render check that would have seen both.
 		//
-		// Checked once per slice of the quota rather than once per conversion.
-		// The walk covers every argument and every conversion held so far, so
-		// running it after each one made format("", a, a, ...) quadratic in its
-		// operand count. Waiting until the conversions have added a
-		// sixty-fourth of the quota bounds both the overshoot and the number of
-		// walks a call can perform, the same way mixin constant adoption paces
-		// its own checks.
-		sinceCheck += len(rendered.String())
-		if sinceCheck >= checkEvery {
-			sinceCheck = 0
-			if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
-				return nil, err
-			}
-		}
+
 		if converted == nil {
 			converted = make([]Value, len(values))
 			copy(converted, values)
@@ -605,6 +582,23 @@ func (exec *Execution) formatStringConversionValues(values []Value, receiver Val
 	}
 	if converted == nil {
 		return values, nil
+	}
+	// Checked once, here, rather than once per conversion. The walk covers
+	// every argument and every conversion held, so running it inside the loop
+	// made format("", a, a, ...) quadratic in its operand count, and pacing it
+	// by the bytes each conversion reported was worse than useless: aliases of
+	// one shared string each added its full length while the graph had not
+	// grown at all, and conversions that render empty never advanced it though
+	// each one still appends to the retained set.
+	//
+	// Once is enough because the conversions are registered rather than
+	// counted. Anything a later to_s allocates is weighed against them by that
+	// to_s's own checks, so what is left for this check is the pile itself, and
+	// it is complete only here. It runs before the pattern is read because a
+	// pattern that rejects returns before the render check that would
+	// otherwise have seen it.
+	if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+		return nil, err
 	}
 	return converted, nil
 }
