@@ -550,3 +550,54 @@ func TestConfigSummaryReportsTheSleepingBudget(t *testing.T) {
 		t.Fatalf("summary omits the unlimited bound: %s", unbounded.ConfigSummary())
 	}
 }
+
+// bindSleepingCapability re-enters a second, unbounded engine from inside Bind,
+// the way an adapter that resolves its surface by running a script would.
+type bindSleepingCapability struct {
+	inner *Script
+	err   error
+}
+
+func (c *bindSleepingCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	_, c.err = c.inner.Call(binding.Context, "run", nil, CallOptions{})
+	return map[string]Value{"probe": NewInt(1)}, nil
+}
+
+// TestCheckedCallBoundsSleepingInsideCapabilityBinding pins that the budget
+// covers the static preflight, not only the execution after it.
+//
+// CheckedCall binds capabilities twice: once to resolve the globals the gate
+// checks against, and again when the call it gates actually runs. The budget
+// was established by Call, so the preflight bind ran without one, and an
+// adapter that re-enters an unbounded engine on its binding context parked
+// there indefinitely -- inside the API whose entire purpose is to refuse to
+// execute anything it cannot vouch for (#29).
+func TestCheckedCallBoundsSleepingInsideCapabilityBinding(t *testing.T) {
+	t.Parallel()
+
+	inner := compileScriptWithConfig(t, Config{MaxSleepDuration: Unlimited}, `def run()
+  sleep(9223372036)
+end`)
+	adapter := &bindSleepingCapability{inner: inner}
+	outer := compileScriptWithConfig(t, Config{MaxSleepDuration: 10 * time.Millisecond}, `def run()
+  1
+end`)
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := outer.CheckedCall(context.Background(), "run", nil,
+			CallOptions{Capabilities: []CapabilityAdapter{adapter}})
+		done <- err
+	}()
+	select {
+	case <-done:
+		if adapter.err == nil {
+			t.Fatal("the nested call slept its whole duration: the preflight bind inherited no budget")
+		}
+		if !strings.Contains(adapter.err.Error(), "exceeds the") {
+			t.Fatalf("the nested sleep failed for the wrong reason: %v", adapter.err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the preflight bind is still sleeping, so the gate did not bound it")
+	}
+}
