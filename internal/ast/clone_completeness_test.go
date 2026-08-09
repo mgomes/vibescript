@@ -82,11 +82,17 @@ func clonePrototypes() []Node {
 	}
 }
 
-// sharedCloneFieldExemptions lists field paths (e.g. "ClassStmt.Modules")
-// that a clone may deliberately share with its original, each with a written
-// justification. Every AST field is currently deep-copied, so the list is
-// empty; think hard before adding to it.
-var sharedCloneFieldExemptions = map[string]string{}
+// sharedCloneFieldExemptions lists fields a clone may deliberately share with
+// its original, keyed by declaring type and field name (e.g.
+// "ClassStmt.Modules") so one justification covers every path that reaches the
+// field. Each needs a written justification; think hard before adding to it.
+var sharedCloneFieldExemptions = map[string]string{
+	"Param.PropertyType": "Not this param's own annotation but a reference to the property contract " +
+		"declared once on the class's generated accessor, so every unannotated ivar param naming that " +
+		"property points at the same node. Type expressions are immutable after compilation, and copying " +
+		"this one per param turned a type the source spelled once into O(params * type size) of clone " +
+		"(#16). See cloneParams.",
+}
 
 // TestClonePrototypesCoverAllNodeTypes cross-checks the prototype registry
 // against the package source so a new node type cannot be added without also
@@ -259,10 +265,6 @@ func assertTopLevelFieldsPopulated(t *testing.T, name string, v reflect.Value) {
 func assertNoSharedMutableState(t *testing.T, path string, original, clone reflect.Value) {
 	t.Helper()
 
-	if reason, ok := sharedCloneFieldExemptions[path]; ok {
-		_ = reason
-		return
-	}
 	if original.Kind() != clone.Kind() {
 		return // DeepEqual already reported the divergence.
 	}
@@ -308,8 +310,13 @@ func assertNoSharedMutableState(t *testing.T, path string, original, clone refle
 		}
 		assertNoSharedMutableState(t, path, original.Elem(), clone.Elem())
 	case reflect.Struct:
-		for i := 0; i < original.NumField(); i++ {
-			assertNoSharedMutableState(t, path+"."+original.Type().Field(i).Name, original.Field(i), clone.Field(i))
+		owner := original.Type().Name()
+		for i := range original.NumField() {
+			field := original.Type().Field(i).Name
+			if _, exempt := sharedCloneFieldExemptions[owner+"."+field]; exempt {
+				continue
+			}
+			assertNoSharedMutableState(t, path+"."+field, original.Field(i), clone.Field(i))
 		}
 	}
 }

@@ -24,13 +24,26 @@ func cloneParams(params []Param) []Param {
 	out := make([]Param, len(params))
 	for i, param := range params {
 		out[i] = Param{
-			Name:         param.Name,
-			Kind:         param.Kind,
-			Type:         cloneTypeExpr(param.Type),
-			DefaultVal:   cloneExpression(param.DefaultVal),
-			IsIvar:       param.IsIvar,
-			Target:       cloneExpression(param.Target),
-			PropertyType: cloneTypeExpr(param.PropertyType),
+			Name:       param.Name,
+			Kind:       param.Kind,
+			Type:       cloneTypeExpr(param.Type),
+			DefaultVal: cloneExpression(param.DefaultVal),
+			IsIvar:     param.IsIvar,
+			Target:     cloneExpression(param.Target),
+			// PropertyType is deliberately SHARED with the source param rather
+			// than copied. Unlike the other fields it is not this param's own
+			// annotation: it is a reference to the property contract declared
+			// once on the class's generated accessor, so every unannotated ivar
+			// param naming that property points at the same node. Type
+			// expressions are immutable after compilation — every refinement in
+			// the checker clones before it mutates — so sharing is
+			// indistinguishable from copying, while copying made the clone
+			// O(params * type size) from a source that only ever spelled the
+			// type once. Host-cloning a class returned to the host copies every
+			// method, so a 1000-field `property x` plus 500 `def mN(@x)`
+			// methods retained 80MB from a 38KB script; sharing holds that at
+			// 0.5MB (#16).
+			PropertyType: param.PropertyType,
 		}
 	}
 	return out
