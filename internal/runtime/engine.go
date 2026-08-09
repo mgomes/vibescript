@@ -17,6 +17,16 @@ const (
 	defaultMaxSourceBytes     = 1 << 20
 	defaultTaskConcurrency    = 4
 	defaultMaxTaskConcurrency = 64
+	// defaultMaxSleepDuration bounds a single sleep call.
+	//
+	// sleep honors context cancellation, but Script.Call accepts a nil context
+	// and substitutes context.Background(), so an embedder that relies on the
+	// engine's own quotas had nothing bounding wall-clock at all: one
+	// sleep(9223372036) parks a worker for centuries while the step and memory
+	// quotas sit idle (#29). A minute is far longer than any sleep a sandboxed
+	// script needs and far shorter than a parked worker matters; hosts that
+	// genuinely want unbounded sleeps set Unlimited.
+	defaultMaxSleepDuration = time.Minute
 )
 
 // The zero-value Config quota default is the low profile: an embedder that sets
@@ -53,6 +63,20 @@ func resolveQuota(value, def int) int {
 	}
 }
 
+// resolveSleepDuration maps Config.MaxSleepDuration to its effective value,
+// mirroring resolveQuota: zero selects def, a negative value (Unlimited)
+// resolves to zero, which the sleep builtin reads as unbounded.
+func resolveSleepDuration(value, def time.Duration) time.Duration {
+	switch {
+	case value == 0:
+		return def
+	case value < 0:
+		return 0
+	default:
+		return value
+	}
+}
+
 // Config controls interpreter execution bounds and enforcement modes.
 type Config struct {
 	StepQuota              int
@@ -70,6 +94,11 @@ type Config struct {
 	MaxSourceBytes         int
 	DefaultTaskConcurrency int
 	MaxTaskConcurrency     int
+
+	// MaxSleepDuration bounds a single sleep call. Zero selects the default;
+	// Unlimited removes the bound, which is only safe when the host passes a
+	// context with a deadline to every Call.
+	MaxSleepDuration time.Duration
 
 	// DevMode enables development-time module reloading. When true, every
 	// require revalidates its cached module against the source file's
@@ -126,6 +155,7 @@ func NewEngine(cfg Config) (*Engine, error) {
 	if cfg.MaxSourceBytes == 0 {
 		cfg.MaxSourceBytes = defaultMaxSourceBytes
 	}
+	cfg.MaxSleepDuration = resolveSleepDuration(cfg.MaxSleepDuration, defaultMaxSleepDuration)
 	if cfg.MaxTaskConcurrency <= 0 {
 		cfg.MaxTaskConcurrency = defaultMaxTaskConcurrency
 	}

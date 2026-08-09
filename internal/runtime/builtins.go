@@ -1606,6 +1606,9 @@ func builtinSleep(exec *Execution, receiver Value, args []Value, kwargs map[stri
 	if err != nil {
 		return NewNil(), err
 	}
+	if err := exec.checkSleepDuration(duration); err != nil {
+		return NewNil(), err
+	}
 	if duration <= 0 {
 		if err := exec.checkContext(); err != nil {
 			return NewNil(), err
@@ -1621,6 +1624,25 @@ func builtinSleep(exec *Execution, receiver Value, args []Value, kwargs map[stri
 	case <-exec.Context().Done():
 		return NewNil(), exec.Context().Err()
 	}
+}
+
+// checkSleepDuration rejects a sleep longer than the host allows.
+//
+// sleep honors context cancellation, but Script.Call substitutes
+// context.Background() for a nil context, so a host that relies on the
+// engine's own quotas had nothing bounding wall-clock: the step and memory
+// quotas do not advance while a worker is parked (#29). The bound is the
+// host's to set, and Unlimited removes it for hosts that pass a deadline
+// themselves.
+func (exec *Execution) checkSleepDuration(duration time.Duration) error {
+	if exec == nil || exec.engine == nil {
+		return nil
+	}
+	limit := exec.engine.config.MaxSleepDuration
+	if limit <= 0 || duration <= limit {
+		return nil
+	}
+	return guardLimitErrorf("sleep %s exceeds host maximum %s", duration, limit)
 }
 
 func valueToSleepDuration(val Value) (time.Duration, error) {
