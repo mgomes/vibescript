@@ -257,6 +257,10 @@ type taskConcurrencyBudget struct {
 	// -- and a parent blocked on a host signal its child produces never
 	// reaches that wait.
 	starved map[*taskGroup]struct{}
+	// starvedGen advances on every registration, so a goroutine that found
+	// nothing can tell a group that registered while it looked from one that
+	// was already there and had nothing to give.
+	starvedGen uint64
 }
 
 func newTaskConcurrencyBudget(limit int) *taskConcurrencyBudget {
@@ -287,12 +291,14 @@ func (b *taskConcurrencyBudget) markStarved(group *taskGroup) {
 		b.starved = make(map[*taskGroup]struct{})
 	}
 	b.starved[group] = struct{}{}
+	b.starvedGen++
 }
 
-func (b *taskConcurrencyBudget) hasStarved() bool {
+// starvedGeneration reports how many registrations the pool has seen.
+func (b *taskConcurrencyBudget) starvedGeneration() uint64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return len(b.starved) > 0
+	return b.starvedGen
 }
 
 func (b *taskConcurrencyBudget) forget(group *taskGroup) {
@@ -333,6 +339,12 @@ func (b *taskConcurrencyBudget) takeStarvedJob(from *taskGroup) (*taskGroup, *ta
 	b.mu.Lock()
 	waiting := make([]*taskGroup, 0, len(b.starved))
 	for group := range b.starved {
+		// The caller's own queue is not a candidate here: it is consulted
+		// afterwards, and letting it win at map-random order would undo the
+		// point of asking other groups first.
+		if group == from {
+			continue
+		}
 		waiting = append(waiting, group)
 	}
 	b.mu.Unlock()
@@ -685,11 +697,13 @@ func (group *taskGroup) takeQueuedJob() (*taskJob, bool) {
 // waits on a nested child it cannot reach: the freed slot started a sibling
 // that waited on the same child, and the child stayed queued behind both.
 func (group *taskGroup) nextQueuedJob() (*taskGroup, *taskJob) {
-	// The reclaim below runs at most once. Groups whose queues have drained
-	// stay registered, so a set that still reports someone waiting is not proof
-	// that work exists, and retrying on that alone would spin.
-	reclaimed := false
 	for {
+		// Sampled before looking, so the check after releasing distinguishes a
+		// group that registered while this goroutine searched from one that was
+		// already registered with nothing to give. Groups whose queues have
+		// drained stay registered, so the set being non-empty proves nothing
+		// and retrying on that alone would spin.
+		gen := group.budget.starvedGeneration()
 		if owner, job := group.budget.takeStarvedJob(group); job != nil {
 			return owner, job
 		}
@@ -712,10 +726,9 @@ func (group *taskGroup) nextQueuedJob() (*taskGroup, *taskJob) {
 		// letting the slot go quiet there would leave it waiting with nothing
 		// to wake it. Re-taking the slot and looking again closes that window;
 		// losing the race for it is fine, because whoever won is doing this.
-		if reclaimed || !group.budget.hasStarved() || !group.budget.reserveOne() {
+		if group.budget.starvedGeneration() == gen || !group.budget.reserveOne() {
 			return nil, nil
 		}
-		reclaimed = true
 		group.mu.Lock()
 		group.running++
 		group.mu.Unlock()
