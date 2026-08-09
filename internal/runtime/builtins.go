@@ -1620,12 +1620,27 @@ func builtinSleep(exec *Execution, receiver Value, args []Value, kwargs map[stri
 
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
+	started := time.Now()
 	select {
 	case <-timer.C:
 		return NewInt(int64(duration / time.Second)), nil
 	case <-exec.Context().Done():
+		// A sibling task failing cancels this worker mid-sleep, and that
+		// failure is rescuable, so the call can go on to sleep again. Give back
+		// what the timer never used, measured rather than assumed: a sleep
+		// canceled at the last moment used nearly all of its reservation.
+		exec.refundUnsleptTime(duration, time.Since(started))
 		return NewNil(), exec.Context().Err()
 	}
+}
+
+// refundUnsleptTime returns the unused part of a reservation to the call's
+// sleeping budget.
+func (exec *Execution) refundUnsleptTime(reserved, slept time.Duration) {
+	if exec == nil || exec.sleepBudget == nil {
+		return
+	}
+	exec.sleepBudget.refund(reserved - slept)
 }
 
 // checkSleepDuration rejects a sleep longer than the host allows.
@@ -1706,6 +1721,40 @@ func (b *sleepBudget) spend(duration time.Duration) bool {
 	}
 	b.remaining -= duration
 	return true
+}
+
+// refund returns time a sleep reserved but did not use to every budget the
+// reservation was taken from.
+//
+// spend deducts the whole request before the sleep begins, because the budget
+// has to refuse a sleep before it happens rather than discover afterwards that
+// it was too long. A sleep cut short by context cancellation therefore leaves
+// the difference deducted although the tree never spent it, and since an
+// ordinary task failure is rescuable, a script that carries on is then refused
+// sleeps the host would have allowed. What is bounded is time actually spent
+// sleeping, and returning the unused remainder is what keeps the accounting
+// equal to that.
+//
+// Each level is clamped to its own limit so a refund can never leave a budget
+// holding more than the host granted. The lock is released before the parent is
+// credited: a concurrent spend may then see this budget refunded and its parent
+// not, which refuses a sleep the tree could afford rather than admitting one it
+// could not.
+func (b *sleepBudget) refund(duration time.Duration) {
+	if duration <= 0 {
+		return
+	}
+	b.mu.Lock()
+	b.remaining += duration
+	if b.remaining > b.limit {
+		b.remaining = b.limit
+	}
+	parent := b.parent
+	b.mu.Unlock()
+
+	if parent != nil {
+		parent.refund(duration)
+	}
 }
 
 // left reports the smallest allowance across this budget and everything above

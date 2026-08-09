@@ -324,6 +324,88 @@ func TestNonPositiveSleepNeverCreditsTheBudget(t *testing.T) {
 	}
 }
 
+// TestRefundReturnsUnusedTimeToEveryLevel pins that a refund credits the whole
+// chain a spend was taken from, and never past a level's own limit.
+func TestRefundReturnsUnusedTimeToEveryLevel(t *testing.T) {
+	t.Parallel()
+
+	parent := &sleepBudget{limit: time.Second, remaining: time.Second}
+	budget := &sleepBudget{limit: 500 * time.Millisecond, remaining: 500 * time.Millisecond, parent: parent}
+
+	if !budget.spend(400 * time.Millisecond) {
+		t.Fatal("a sleep both budgets can afford must be admitted")
+	}
+	budget.refund(300 * time.Millisecond)
+
+	if got := budget.remaining; got != 400*time.Millisecond {
+		t.Fatalf("budget holds %s, want 400ms: the refund must return exactly what went unused", got)
+	}
+	if got := parent.remaining; got != 900*time.Millisecond {
+		t.Fatalf("parent holds %s, want 900ms: a spend takes from every level, so a refund must return to every level", got)
+	}
+
+	budget.refund(time.Hour)
+	if got := budget.remaining; got != 500*time.Millisecond {
+		t.Fatalf("budget holds %s, want its 500ms limit: a refund must not leave more than the host granted", got)
+	}
+	if got := parent.remaining; got != time.Second {
+		t.Fatalf("parent holds %s, want its 1s limit", got)
+	}
+}
+
+// TestCanceledSleepKeepsWhatItDidNotUse pins that a sleep cut short by a
+// sibling's failure gives its reservation back.
+//
+// The budget is spent before the sleep, since a sleep has to be refused before
+// it happens rather than measured after. A worker canceled mid-sleep therefore
+// left the whole reservation deducted for time the tree never spent, and because
+// a task failure is rescuable, the script that carried on was refused sleeps its
+// host would have allowed (#29).
+func TestCanceledSleepKeepsWhatItDidNotUse(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t,
+		Config{MaxSleepDuration: 700 * time.Millisecond, MaxTaskConcurrency: 4},
+		`def nap(n)
+  if n == 0
+    raise "boom"
+  end
+  sleep(0.5)
+  n
+end
+
+def run()
+  begin
+    Tasks.map([0, 1], max: 2, with: :nap)
+  rescue
+    nil
+  end
+  sleep(0.4)
+  :finished
+end`)
+
+	done := make(chan Value, 1)
+	failed := make(chan error, 1)
+	go func() {
+		result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+		if err != nil {
+			failed <- err
+			return
+		}
+		done <- result
+	}()
+	select {
+	case result := <-done:
+		if result.Kind() != KindSymbol || result.String() != "finished" {
+			t.Fatalf("run returned %s, want :finished", result.String())
+		}
+	case err := <-failed:
+		t.Fatalf("the sleep after the canceled one was refused, so its reservation was never returned: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the call is still running")
+	}
+}
+
 // TestSleepRejectionNamesWhatIsLeft pins that a refusal reports the allowance
 // remaining, not just the configured limit.
 //
