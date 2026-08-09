@@ -916,14 +916,14 @@ func restWindowReceiver(narrow, wide int) Value {
 // rejected call, which is how a preflight is observed: a gate that rejects
 // before the allocation and one that rejects after it agree on the error and
 // differ only here.
-func allocatedDuringCall(t *testing.T, src string, quota int, arg Value) uint64 {
+func allocatedDuringCall(t *testing.T, src string, quota int, args ...Value) uint64 {
 	t.Helper()
 
 	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: quota}, src)
 	runtimemetrics.GC()
 	var before, after runtimemetrics.MemStats
 	runtimemetrics.ReadMemStats(&before)
-	if _, err := script.Call(context.Background(), "run", []Value{arg}, CallOptions{}); err == nil {
+	if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err == nil {
 		t.Fatalf("a peak above the %d-byte quota was accepted", quota)
 	}
 	runtimemetrics.ReadMemStats(&after)
@@ -976,5 +976,67 @@ func TestBlockRestWindowPreflightSeesRetainedOutput(t *testing.T) {
 		t.Fatalf("array.map allocated %d bytes beyond the %d-byte floor; want under %d, so the "+
 			"%d-byte rest window was materialized before the preflight rejected it",
 			got-floor, floor, budget, window)
+	}
+}
+
+// intArray builds a receiver of count distinct ints, cheap enough that a test
+// weighing payloads is not measuring the receiver.
+func intArray(count int) Value {
+	elems := make([]Value, count)
+	for i := range elems {
+		elems[i] = NewInt(int64(i))
+	}
+	return NewArray(elems)
+}
+
+// A build accumulator snapshots the live base when it is constructed, and a
+// driver's callback can construct one: an inner array.map_with_index started
+// from inside an outer array.map weighs its own results against that snapshot.
+// The snapshot has to include what the outer driver has already retained, or the
+// inner build gets the whole quota to itself and materializes a second pile on
+// top of the first. That used to come for free, because the outer results sat in
+// exec.reservedScratchBytes, which the snapshot reads; registering them as walk
+// roots moved them somewhere estimateMemoryUsageBase had to be taught about.
+//
+// The outer loop retains 900KB and the inner build allocates 100KB per element
+// under a 1MB quota, so a snapshot that sees the outer pile stops the inner
+// build after roughly one element and a blind one lets it reach a full quota's
+// worth. Both runs are rejected either way -- the returned inner array is walked
+// when .length is called on it -- so what separates them is what was allocated
+// before that, which is the whole point of gating a build per element.
+//
+// Not parallel: process-wide allocation counters.
+func TestNestedBuildAccumulatorSeesOuterRetainedOutput(t *testing.T) {
+	const outerCount = 10
+	const innerCount = 30
+	const payload = 100_000
+	const quota = 1 << 20
+
+	outerPile := (outerCount - 1) * payload
+	src := fmt.Sprintf(`
+def run(a, b)
+  a.map { |x|
+    if x == %d
+      b.map_with_index { |y, i| "z" * %d }.length
+    else
+      "y" * %d
+    end
+  }
+end
+`, outerCount-1, payload, payload)
+
+	outer, inner := intArray(outerCount), intArray(innerCount)
+	// Rejected before the outer loop retains anything, so this is the cost of
+	// reaching the loop at all.
+	floor := allocatedDuringCall(t, src, payload*2, outer, inner)
+	got := allocatedDuringCall(t, src, quota, outer, inner)
+
+	// The outer pile is legitimately held; the inner build may allocate a few
+	// elements before the per-element gate trips, but not a quota's worth.
+	budget := uint64(outerPile + 4*payload)
+	if got-floor > budget {
+		t.Fatalf("the nested build allocated %d bytes beyond the %d-byte floor; want under %d, so "+
+			"its accumulator weighed %d bytes of results against a baseline missing the outer "+
+			"loop's retained %d", got-floor, floor, budget, payload*innerCount, outerPile)
 	}
 }
