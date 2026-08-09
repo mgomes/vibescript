@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"slices"
+
+	"github.com/mgomes/vibescript/internal/ast"
 )
 
 func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallOptions) (Value, error) {
@@ -251,7 +253,7 @@ func (s *Script) Function(name string) (*ScriptFunction, bool) {
 	if !ok {
 		return nil, false
 	}
-	return cloneFunctionForSnapshot(fn), true
+	return cloneFunctionForSnapshot(fn, nil), true
 }
 
 // Functions returns compiled functions in deterministic name order.
@@ -263,7 +265,7 @@ func (s *Script) Functions() []*ScriptFunction {
 	slices.Sort(names)
 	out := make([]*ScriptFunction, 0, len(names))
 	for _, name := range names {
-		out = append(out, cloneFunctionForSnapshot(s.functions[name]))
+		out = append(out, cloneFunctionForSnapshot(s.functions[name], nil))
 	}
 	return out
 }
@@ -276,8 +278,15 @@ func (s *Script) Classes() []*ClassDef {
 	}
 	slices.Sort(names)
 	out := make([]*ClassDef, 0, len(names))
+	// One memo for the whole snapshot, not one per class. A module's methods are
+	// copied into every including class by shallow copy, and re-resolving the
+	// contract against the including class lands on the module's own node again,
+	// so all of them share one contract. A per-class memo would copy a wide
+	// module property once per include and put the O(classes * type size) blowup
+	// back, just spelled with `include` instead of with methods (#16).
+	propertyTypes := ast.NewTypeExprMemo()
 	for _, name := range names {
-		out = append(out, cloneClassForSnapshot(s.classes[name]))
+		out = append(out, cloneClassForSnapshot(s.classes[name], propertyTypes))
 	}
 	return out
 }
@@ -405,19 +414,27 @@ func cloneEnumsForCall(enums map[string]*EnumDef) map[string]*EnumDef {
 	return cloned
 }
 
-func cloneFunctionForSnapshot(fn *ScriptFunction) *ScriptFunction {
+// cloneFunctionForSnapshot detaches a function for a caller that asked the
+// script to describe itself. propertyTypes carries the property contracts the
+// surrounding snapshot has already copied so a class's methods share one copy
+// per property rather than one per parameter; it may be nil for a lone
+// function, which has nothing to share with.
+func cloneFunctionForSnapshot(fn *ScriptFunction, propertyTypes ast.TypeExprMemo) *ScriptFunction {
 	if fn == nil {
 		return nil
 	}
 	clone := *fn
-	clone.Params = cloneParams(fn.Params)
-	clone.ReturnTy = cloneTypeExpr(fn.ReturnTy)
+	clone.Params = ast.CloneParamsWithTypeMemo(fn.Params, propertyTypes)
+	clone.ReturnTy = ast.CloneTypeExprWithMemo(fn.ReturnTy, propertyTypes)
 	clone.Body = cloneStatements(fn.Body)
 	clone.Env = nil
 	return &clone
 }
 
-func cloneClassForSnapshot(classDef *ClassDef) *ClassDef {
+// cloneClassForSnapshot detaches a class for a caller that asked the script to
+// describe itself. propertyTypes spans the whole snapshot so contracts shared
+// between classes — which is what a mixed-in property is — stay one copy.
+func cloneClassForSnapshot(classDef *ClassDef, propertyTypes ast.TypeExprMemo) *ClassDef {
 	if classDef == nil {
 		return nil
 	}
@@ -432,10 +449,10 @@ func cloneClassForSnapshot(classDef *ClassDef) *ClassDef {
 		Body:            cloneStatements(classDef.Body),
 	}
 	for methodName, method := range classDef.Methods {
-		classClone.Methods[methodName] = cloneFunctionForSnapshot(method)
+		classClone.Methods[methodName] = cloneFunctionForSnapshot(method, propertyTypes)
 	}
 	for methodName, method := range classDef.ClassMethods {
-		classClone.ClassMethods[methodName] = cloneFunctionForSnapshot(method)
+		classClone.ClassMethods[methodName] = cloneFunctionForSnapshot(method, propertyTypes)
 	}
 	return classClone
 }

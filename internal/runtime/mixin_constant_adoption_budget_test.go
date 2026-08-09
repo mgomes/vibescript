@@ -1,0 +1,219 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+// mixinConstantAdoptionSource builds one module of constants and a run of
+// bodyless classes that include it, so class-body initialization performs
+// classes*constants constant adoptions from a source that spells each constant
+// once.
+func mixinConstantAdoptionSource(classes, constants int) string {
+	var b strings.Builder
+	b.WriteString("module Limits\n")
+	for i := range constants {
+		fmt.Fprintf(&b, "  CONSTANT_NUMBER_%06d = %d\n", i, i)
+	}
+	b.WriteString("end\n")
+	for i := range classes {
+		fmt.Fprintf(&b, "class Holder%06d\n  include Limits\nend\n", i)
+	}
+	b.WriteString("\ndef run\n  1\nend\n")
+	return b.String()
+}
+
+// TestMixinConstantAdoptionChargesSteps pins that adopting a module's constants
+// into an including class is metered work. Every class with an included module
+// runs class-body initialization even with no body of its own, and the adoption
+// loops used to charge nothing at all: 10,000 adoptions completed under a
+// 5,000-step quota (#23).
+func TestMixinConstantAdoptionChargesSteps(t *testing.T) {
+	t.Parallel()
+
+	const (
+		classes   = 100
+		constants = 100
+		quota     = 5_000
+	)
+	script := compileScriptWithConfig(t,
+		Config{StepQuota: quota, MemoryQuotaBytes: Unlimited},
+		mixinConstantAdoptionSource(classes, constants))
+
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("%d constant adoptions completed under a %d step quota; the adoption is not charged", classes*constants, quota)
+	}
+	requireErrorContains(t, err, "step quota exceeded")
+}
+
+// TestMixinConstantAdoptionStopsAtTheMemoryQuota pins that the adoption stops
+// allocating once the entries it has added fill the memory quota, instead of
+// building the whole classes*constants map population and only then meeting a
+// check. The entries are permanent class constants, so a 139KB script that
+// adopted 1.2M of them allocated 263MB before the first check ran; scaling the
+// class count now leaves the allocation flat because both runs stop at the same
+// quota (#23).
+func TestMixinConstantAdoptionStopsAtTheMemoryQuota(t *testing.T) {
+	adoptionBytes := func(classes int) uint64 {
+		script := compileScriptWithConfig(t, Config{StepQuota: Unlimited},
+			mixinConstantAdoptionSource(classes, 4000))
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+		runtime.ReadMemStats(&after)
+		if err == nil {
+			t.Fatalf("%d classes adopting 4000 constants each stayed within the memory quota", classes)
+		}
+		requireErrorContains(t, err, "memory quota exceeded")
+		return after.TotalAlloc - before.TotalAlloc
+	}
+
+	few := adoptionBytes(100)
+	many := adoptionBytes(400)
+	if estimatorVerify {
+		// The oracle recomputes a full reference walk on every check, so under it
+		// the allocation total measures the verification rather than the
+		// adoption: it grows with the checks the fix added and with the graph
+		// they walk. The rejections above still run here; only their cost is
+		// unreadable.
+		t.Logf("estimator oracle enabled: skipping the scaling comparison (%d and %d bytes)", few, many)
+		return
+	}
+	// Four times the classes adopt four times the constants, but both runs are
+	// rejected by the same quota, so both stop having allocated the same amount.
+	// Unmetered, the second run allocated proportionally more.
+	if limit := 2 * few; many > limit {
+		t.Fatalf("400 including classes allocated %d bytes, want at most %d (%d bytes for 100 classes)", many, limit, few)
+	}
+}
+
+// TestMixinConstantAdoptionCountsWhatTheCallAlreadyHolds pins that the
+// adoption's budget is the quota that remains, not the whole quota. Modules
+// this large are copied in bulk, so the periodic walk inside step does not
+// catch them: charging the adoption against the quota in isolation let a call
+// already holding most of its allowance adopt a second allowance on top, and
+// the same script allocated the same amount whether it arrived empty or loaded.
+// It must now stop far earlier when it starts with less to spend (#23).
+func TestMixinConstantAdoptionCountsWhatTheCallAlreadyHolds(t *testing.T) {
+	const quota = 8 << 20
+	// Sized to leave only a fraction of the quota for the adoption. A string
+	// global binds eagerly into the call root, ahead of class initialization, so
+	// it is part of the graph every adoption check walks; a composite one would
+	// bind lazily and not be there yet.
+	globals := map[string]Value{"payload": NewString(strings.Repeat("p", 13<<19))}
+
+	source := mixinConstantAdoptionSource(16, 8000)
+	adoptionBytes := func(opts CallOptions) uint64 {
+		script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: quota}, source)
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		_, err := script.Call(context.Background(), "run", nil, opts)
+		runtime.ReadMemStats(&after)
+		if err == nil {
+			t.Fatal("the adoption stayed within the memory quota")
+		}
+		requireErrorContains(t, err, "memory quota exceeded")
+		return after.TotalAlloc - before.TotalAlloc
+	}
+
+	empty := adoptionBytes(CallOptions{})
+	loaded := adoptionBytes(CallOptions{Globals: globals})
+	if estimatorVerify {
+		t.Logf("estimator oracle enabled: skipping the comparison (%d empty, %d loaded)", empty, loaded)
+		return
+	}
+	// The loaded call also allocates its rebound payload, so the margin is what
+	// carries the point: most of its quota is gone before the first class body
+	// runs, and it must be stopped well before the empty call is.
+	if 2*loaded > empty {
+		t.Fatalf("a call holding most of the quota allocated %d bytes adopting constants against the %d an empty call did; the adoption is not measured against the quota that remains", loaded, empty)
+	}
+}
+
+// TestRequiredModuleConstantAdoptionIsMetered pins that the adoption is
+// bounded inside a required module too. Until require publishes its exports,
+// the module's environment is only a Go local, so the classes it is building
+// hang off no root the estimator walks: every check inside its initialization
+// measured a graph that did not contain them, and the whole
+// classes-by-constants expansion passed unnoticed however large it grew (#23).
+// It reads process-wide allocation, so like the two measurements above it must
+// not run in parallel with anything else.
+func TestRequiredModuleConstantAdoptionIsMetered(t *testing.T) {
+	dir := tempModuleTree(t, moduleFile{
+		path:    "wide.vibe",
+		content: mixinConstantAdoptionSource(300, 4000),
+	})
+	engine := MustNewEngine(Config{
+		ModulePaths: []string{dir},
+		StepQuota:   Unlimited,
+	})
+	script := compileScriptWithEngine(t, engine, `def run
+  require("wide")
+  1
+end`)
+
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{AllowRequire: true})
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatal("a required module adopted 1.2M class constants within the memory quota")
+	}
+	requireErrorContains(t, err, "memory quota exceeded")
+
+	if estimatorVerify {
+		t.Logf("estimator oracle enabled: skipping the allocation bound (%d bytes)", after.TotalAlloc-before.TotalAlloc)
+		return
+	}
+	// Unrooted, the same module ran the adoption to completion and allocated
+	// the full expansion before anything stopped it.
+	const limit = 128 << 20
+	if got := after.TotalAlloc - before.TotalAlloc; got > limit {
+		t.Fatalf("requiring the module allocated %d bytes, want at most %d", got, limit)
+	}
+}
+
+// TestOrdinaryMixinConstantsStayWithinDefaultQuotas pins that the metering
+// above leaves a normal mixin alone: its constants are adopted, readable both
+// scoped and through an included method, and cost nothing a default-profile
+// call notices.
+func TestOrdinaryMixinConstantsStayWithinDefaultQuotas(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+module Limits
+  MAX = 9
+  LABEL = "limit"
+end
+
+class Config
+  include Limits
+
+  def describe
+    "#{LABEL}:#{MAX}"
+  end
+end
+
+def run
+  [Config::MAX, Config::LABEL, Config.new.describe]
+end
+`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{}).Array()
+	want := []Value{NewInt(9), NewString("limit"), NewString("limit:9")}
+	if len(got) != len(want) {
+		t.Fatalf("run returned %d values, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if !got[i].Equal(w) {
+			t.Fatalf("run[%d] = %v, want %v", i, got[i], w)
+		}
+	}
+}

@@ -7,6 +7,47 @@ func CloneParams(params []Param) []Param {
 	return cloneParams(params)
 }
 
+// TypeExprMemo carries the type expressions one clone operation has already
+// copied, keyed by the node they were copied from. See CloneParamsWithTypeMemo.
+type TypeExprMemo map[*TypeExpr]*TypeExpr
+
+// NewTypeExprMemo returns a memo for a single clone operation. A memo must not
+// outlive the clone it belongs to, or a later clone would hand out nodes owned
+// by an earlier one.
+func NewTypeExprMemo() TypeExprMemo {
+	return make(TypeExprMemo)
+}
+
+// CloneParamsWithTypeMemo deep-copies params like CloneParams, but copies each
+// distinct type expression only once across the whole clone and reuses that
+// copy everywhere the source reached the same node.
+//
+// Two kinds of sharing make that worth doing, and neither is visible from a
+// single param. A param's PropertyType is not its own annotation: it points at
+// the contract the class's generated accessor declares once, so every
+// unannotated ivar param naming that property carries the same node. And a
+// method mixed in from a module is a shallow copy, so every class including
+// that module reaches the module's own annotation nodes. Copying per param and
+// per class turned a type the source spells once into O(params * type size) and
+// O(classes * type size): host-cloning a class with a 1000-field property type
+// and 500 `def mN(@x)` methods retained 80MB from a 38KB script. Memoizing
+// holds that at 0.5MB while still giving the clone nodes of its own, so a
+// caller that mutates a returned snapshot cannot reach back into the compiled
+// script (#16).
+//
+// A nil memo copies every node, which is what the plain clone entry points do:
+// they clone one statement or expression, where nothing is shared to begin
+// with.
+func CloneParamsWithTypeMemo(params []Param, memo TypeExprMemo) []Param {
+	return cloneParamsWithTypeMemo(params, memo)
+}
+
+// CloneTypeExprWithMemo copies one type expression through the same memo, for
+// the nodes that hang off a function rather than off a param (its return type).
+func CloneTypeExprWithMemo(ty *TypeExpr, memo TypeExprMemo) *TypeExpr {
+	return cloneTypeExprMemoized(ty, memo)
+}
+
 // CloneTypeExpr returns a deep copy of the given type expression.
 func CloneTypeExpr(ty *TypeExpr) *TypeExpr {
 	return cloneTypeExpr(ty)
@@ -18,6 +59,10 @@ func CloneStatements(statements []Statement) []Statement {
 }
 
 func cloneParams(params []Param) []Param {
+	return cloneParamsWithTypeMemo(params, nil)
+}
+
+func cloneParamsWithTypeMemo(params []Param, memo TypeExprMemo) []Param {
 	if params == nil {
 		return nil
 	}
@@ -26,14 +71,26 @@ func cloneParams(params []Param) []Param {
 		out[i] = Param{
 			Name:         param.Name,
 			Kind:         param.Kind,
-			Type:         cloneTypeExpr(param.Type),
+			Type:         cloneTypeExprMemoized(param.Type, memo),
 			DefaultVal:   cloneExpression(param.DefaultVal),
 			IsIvar:       param.IsIvar,
 			Target:       cloneExpression(param.Target),
-			PropertyType: cloneTypeExpr(param.PropertyType),
+			PropertyType: cloneTypeExprMemoized(param.PropertyType, memo),
 		}
 	}
 	return out
+}
+
+func cloneTypeExprMemoized(ty *TypeExpr, memo TypeExprMemo) *TypeExpr {
+	if ty == nil || memo == nil {
+		return cloneTypeExpr(ty)
+	}
+	if clone, ok := memo[ty]; ok {
+		return clone
+	}
+	clone := cloneTypeExpr(ty)
+	memo[ty] = clone
+	return clone
 }
 
 func cloneTypeExpr(ty *TypeExpr) *TypeExpr {
