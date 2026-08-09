@@ -319,3 +319,57 @@ end`)
 		t.Fatalf("the refusal must still name the configured limit, got: %v", err)
 	}
 }
+
+// TestQuotaProfilesScaleTheSleepingBudget pins that the sleeping bound moves
+// with the profile ladder rather than being fixed under it.
+//
+// The CLI selects these profiles and runs the developer's own scripts, so the
+// most generous rung has to lift the sleeping bound as it lifts steps and
+// memory: a developer waiting on their own script is not a sandbox escape.
+func TestQuotaProfilesScaleTheSleepingBudget(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		profile string
+		want    time.Duration
+	}{
+		{profile: "low", want: time.Minute},
+		{profile: "medium", want: 10 * time.Minute},
+		{profile: "high", want: time.Hour},
+		{profile: "xhigh", want: Unlimited},
+	} {
+		got, ok := QuotaProfileByName(tc.profile)
+		if !ok {
+			t.Fatalf("profile %q is missing", tc.profile)
+		}
+		if got.MaxSleepDuration != tc.want {
+			t.Fatalf("profile %q allows %v of sleeping, want %v", tc.profile, got.MaxSleepDuration, tc.want)
+		}
+	}
+}
+
+// TestConfigSummaryReportsTheSleepingBudget pins that the advertised summary
+// distinguishes engines that differ only in their sleeping bound, since hosts
+// use it for diagnostics and configuration audits.
+func TestConfigSummaryReportsTheSleepingBudget(t *testing.T) {
+	t.Parallel()
+
+	bounded, err := NewEngine(Config{MaxSleepDuration: time.Millisecond})
+	if err != nil {
+		t.Fatalf("bounded engine: %v", err)
+	}
+	unbounded, err := NewEngine(Config{MaxSleepDuration: Unlimited})
+	if err != nil {
+		t.Fatalf("unbounded engine: %v", err)
+	}
+	if bounded.ConfigSummary() == unbounded.ConfigSummary() {
+		t.Fatalf("engines differing only in sleeping bound advertise the same summary: %s",
+			bounded.ConfigSummary())
+	}
+	if !strings.Contains(bounded.ConfigSummary(), "sleep=1ms") {
+		t.Fatalf("summary omits the configured bound: %s", bounded.ConfigSummary())
+	}
+	if !strings.Contains(unbounded.ConfigSummary(), "sleep=unlimited") {
+		t.Fatalf("summary omits the unlimited bound: %s", unbounded.ConfigSummary())
+	}
+}

@@ -1,9 +1,12 @@
 package runtime
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
-// QuotaProfile is a named bundle of the three execution quotas — step, memory,
-// and recursion. Profiles let a host or the CLI select a coherent budget by
+// QuotaProfile is a named bundle of the execution quotas: step, memory,
+// recursion, and the time a call may spend sleeping. Profiles let a host or the CLI select a coherent budget by
 // name instead of tuning each quota independently. A profile's quota values use
 // the same conventions as Config: a positive value is an explicit limit and
 // Unlimited disables that quota.
@@ -21,16 +24,19 @@ type QuotaProfile struct {
 	StepQuota        int
 	MemoryQuotaBytes int
 	RecursionLimit   int
+	MaxSleepDuration time.Duration
 }
 
 // The named quota profiles. Values are deliberately generous relative to the
 // embedding-API defaults: the CLI, which selects these, runs the developer's
 // own scripts and is not a sandbox.
 var (
-	ProfileLow    = QuotaProfile{Name: "low", StepQuota: 1_000_000, MemoryQuotaBytes: 16 << 20, RecursionLimit: 256}
-	ProfileMedium = QuotaProfile{Name: "medium", StepQuota: 20_000_000, MemoryQuotaBytes: 128 << 20, RecursionLimit: 1_000}
-	ProfileHigh   = QuotaProfile{Name: "high", StepQuota: 200_000_000, MemoryQuotaBytes: 512 << 20, RecursionLimit: 4_000}
-	ProfileXHigh  = QuotaProfile{Name: "xhigh", StepQuota: Unlimited, MemoryQuotaBytes: Unlimited, RecursionLimit: 10_000}
+	ProfileLow    = QuotaProfile{Name: "low", StepQuota: 1_000_000, MemoryQuotaBytes: 16 << 20, RecursionLimit: 256, MaxSleepDuration: time.Minute}
+	ProfileMedium = QuotaProfile{Name: "medium", StepQuota: 20_000_000, MemoryQuotaBytes: 128 << 20, RecursionLimit: 1_000, MaxSleepDuration: 10 * time.Minute}
+	ProfileHigh   = QuotaProfile{Name: "high", StepQuota: 200_000_000, MemoryQuotaBytes: 512 << 20, RecursionLimit: 4_000, MaxSleepDuration: time.Hour}
+	// A developer waiting on their own script is not a sandbox escape, so the
+	// most generous rung lifts the sleeping bound as it lifts steps and memory.
+	ProfileXHigh = QuotaProfile{Name: "xhigh", StepQuota: Unlimited, MemoryQuotaBytes: Unlimited, RecursionLimit: 10_000, MaxSleepDuration: Unlimited}
 )
 
 // quotaProfiles lists the profiles in ascending order of generosity. Lookup and

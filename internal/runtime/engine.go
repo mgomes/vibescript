@@ -640,11 +640,20 @@ func (e *Engine) Execute(ctx context.Context, script string) error {
 
 // ConfigSummary provides a human-readable description of the interpreter limits.
 func (e *Engine) ConfigSummary() string {
-	summary := fmt.Sprintf("steps=%s memory=%s recursion=%s strict_effects=%t tasks=%d/%d", quotaSummary(e.config.StepQuota, ""), quotaSummary(e.config.MemoryQuotaBytes, "B"), quotaSummary(e.config.RecursionLimit, ""), e.config.StrictEffects, e.config.DefaultTaskConcurrency, e.config.MaxTaskConcurrency)
+	summary := fmt.Sprintf("steps=%s memory=%s recursion=%s sleep=%s strict_effects=%t tasks=%d/%d", quotaSummary(e.config.StepQuota, ""), quotaSummary(e.config.MemoryQuotaBytes, "B"), quotaSummary(e.config.RecursionLimit, ""), sleepSummary(e.config.MaxSleepDuration), e.config.StrictEffects, e.config.DefaultTaskConcurrency, e.config.MaxTaskConcurrency)
 	if e.config.DevMode {
 		summary += " dev_mode=true"
 	}
 	return summary
+}
+
+// sleepSummary renders the resolved sleeping budget for ConfigSummary. A
+// resolved zero means unbounded, matching how every enforcement site reads it.
+func sleepSummary(limit time.Duration) string {
+	if limit <= 0 {
+		return "unlimited"
+	}
+	return limit.String()
 }
 
 // quotaSummary renders a resolved quota for ConfigSummary: a positive quota

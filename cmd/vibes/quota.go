@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mgomes/vibescript/vibes"
 	"github.com/urfave/cli/v3"
@@ -22,6 +23,7 @@ type quotaConfig struct {
 	stepQuota      int
 	memoryQuota    int
 	recursionLimit int
+	maxSleep       time.Duration
 }
 
 // applyTo writes the resolved quota values onto cfg, leaving every other field
@@ -30,6 +32,7 @@ func (q quotaConfig) applyTo(cfg *vibes.Config) {
 	cfg.StepQuota = q.stepQuota
 	cfg.MemoryQuotaBytes = q.memoryQuota
 	cfg.RecursionLimit = q.recursionLimit
+	cfg.MaxSleepDuration = q.maxSleep
 }
 
 // quotaFlagValues carries parsed values together with whether each override
@@ -98,6 +101,7 @@ func (q quotaFlagValues) resolve() (quotaConfig, error) {
 	resolved := quotaConfig{
 		stepQuota:      profile.StepQuota,
 		memoryQuota:    profile.MemoryQuotaBytes,
+		maxSleep:       profile.MaxSleepDuration,
 		recursionLimit: profile.RecursionLimit,
 	}
 	if q.stepQuotaSet {
