@@ -3303,9 +3303,21 @@ func (exec *Execution) evalForLoop(stmt *ForStmt, env *Env, mode loopResultMode)
 		// however far the body wanders, since a script function call in
 		// between leaves the builtin depth alone.
 		heldBackings := exec.holdArrayBackings(iterable, nil, nil, false)
-		// A named claim never holds narrowed storage to move off, so dropping
-		// this one cannot fail.
-		defer func() { _ = exec.releaseArrayBackings(heldBackings) }()
+		defer func() {
+			// Dropping this claim moves nothing and so cannot fail: only a
+			// wildcard claim ever holds narrowed storage, only a host-driven
+			// frame takes one, and every such frame drops its own claims on
+			// its way out, before a defer at this mark can run.
+			//
+			// That invariant is real but it is not local to this line, and the
+			// symptom of losing it would be storage the quota has forgotten --
+			// the very retention this mechanism exists to prevent, and the
+			// hardest kind to trace back here. Trip loudly under the oracle
+			// rather than discard the error on the strength of the comment.
+			if err := exec.releaseArrayBackings(heldBackings); estimatorVerify && err != nil {
+				panic(fmt.Sprintf("runtime: for-in claim released narrowed storage: %v", err))
+			}
+		}()
 		for _, item := range iterable.Array() {
 			if err := exec.step(); err != nil {
 				return NewNil(), false, exec.wrapError(err, stmt.Pos())
