@@ -1736,24 +1736,25 @@ func (b *sleepBudget) spend(duration time.Duration) bool {
 // equal to that.
 //
 // Each level is clamped to its own limit so a refund can never leave a budget
-// holding more than the host granted. The lock is released before the parent is
-// credited: a concurrent spend may then see this budget refunded and its parent
-// not, which refuses a sleep the tree could afford rather than admitting one it
-// could not.
+// holding more than the host granted.
+//
+// This budget's lock is held across the parent's credit, in the same child to
+// parent order spend takes, so the whole chain is published at once. Releasing
+// it first let a concurrent worker pass the child check against the refunded
+// allowance and then fail at a parent that had not been credited yet, so it was
+// refused a sleep both levels could afford.
 func (b *sleepBudget) refund(duration time.Duration) {
 	if duration <= 0 {
 		return
 	}
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.remaining += duration
 	if b.remaining > b.limit {
 		b.remaining = b.limit
 	}
-	parent := b.parent
-	b.mu.Unlock()
-
-	if parent != nil {
-		parent.refund(duration)
+	if b.parent != nil {
+		b.parent.refund(duration)
 	}
 }
 

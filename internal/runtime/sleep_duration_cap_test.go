@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -403,6 +404,37 @@ end`)
 		t.Fatalf("the sleep after the canceled one was refused, so its reservation was never returned: %v", err)
 	case <-time.After(30 * time.Second):
 		t.Fatal("the call is still running")
+	}
+}
+
+// TestConcurrentSpendAndRefundConserveTheBudget pins that the chain's accounting
+// survives concurrent workers, which is what the refund's locking is for.
+//
+// Run under -race, this also covers the lock order: refund takes the chain child
+// to parent exactly as spend does, so the two cannot deadlock against each other.
+func TestConcurrentSpendAndRefundConserveTheBudget(t *testing.T) {
+	t.Parallel()
+
+	parent := &sleepBudget{limit: time.Hour, remaining: time.Hour}
+	budget := &sleepBudget{limit: time.Hour, remaining: time.Hour, parent: parent}
+
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			for range 200 {
+				if budget.spend(time.Millisecond) {
+					budget.refund(time.Millisecond)
+				}
+			}
+		})
+	}
+	wg.Wait()
+
+	if got := budget.remaining; got != time.Hour {
+		t.Fatalf("budget holds %s, want the full hour back: every spend was refunded", got)
+	}
+	if got := parent.remaining; got != time.Hour {
+		t.Fatalf("parent holds %s, want the full hour back", got)
 	}
 }
 
