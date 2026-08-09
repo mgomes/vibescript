@@ -2301,11 +2301,14 @@ type blockBindCharge struct {
 	// already carries, from being counted twice.
 	reservedAtStart int
 	selfReserved    int
-	// retainedAtStart is what the registered output roots held when the charge
-	// was built, which baseline already carries through estimateMemoryUsageBase.
-	// liveBaseline adds only the growth beyond it, the same way it treats the
-	// scratch reservation: a charge built inside an outer driver's callback would
-	// otherwise count that driver's retained results twice.
+	// retainedAtStart is the registered outputs' marginal over the reachable graph
+	// when the charge was built, which baseline already carries. liveBaseline adds
+	// only the growth beyond it, the same way it treats the scratch reservation: a
+	// charge built inside an outer driver's callback would otherwise count that
+	// driver's retained results twice. Both readings are on the marginal basis --
+	// this one from the walk above, the later ones from
+	// retainedOutputMarginalBytes -- because subtracting one basis from the other
+	// silently zeroed the growth (see memory_output.go).
 	retainedAtStart int
 }
 
@@ -2325,7 +2328,7 @@ func (c *blockBindCharge) liveBaseline() int {
 	if growth := c.exec.reservedScratchBytes - c.reservedAtStart - c.selfReserved; growth > 0 {
 		baseline = saturatingAdd(baseline, growth)
 	}
-	if growth := c.exec.retainedOutputBytes() - c.retainedAtStart; growth > 0 {
+	if growth := c.exec.retainedOutputMarginalBytes() - c.retainedAtStart; growth > 0 {
 		baseline = saturatingAdd(baseline, growth)
 	}
 	return baseline
@@ -2361,7 +2364,15 @@ func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []
 		return nil
 	}
 	rootEst := newMemoryEstimator()
-	base := exec.estimateMemoryUsageBase(rootEst)
+	// estimateMemoryUsageBase's parts, inlined so the registered outputs' share of
+	// it can be kept: liveBaseline prices their growth against this start value, and
+	// taking it from this walk puts both on the marginal basis for free. Asking
+	// retainedOutputMarginalBytes instead would fall back to a second graph walk
+	// here, because a nested driver has just invalidated the memo by registering.
+	base := exec.estimateScalarBase()
+	base = saturatingAdd(base, exec.estimateGraphBase(rootEst, taskLazyGlobalsFromContext(exec.Context())))
+	retained := exec.outputWalkBytes(rootEst)
+	base = saturatingAdd(base, retained)
 	baseline := base
 	if receiver.Kind() != KindNil {
 		baseline = saturatingAdd(baseline, rootEst.value(receiver))
@@ -2382,7 +2393,7 @@ func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []
 		baseline:           baseline,
 		ephemeralRootBytes: baseline - base,
 		reservedAtStart:    exec.reservedScratchBytes,
-		retainedAtStart:    exec.retainedOutputBytes(),
+		retainedAtStart:    retained,
 	}
 }
 

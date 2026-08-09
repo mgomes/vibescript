@@ -167,24 +167,27 @@ func (exec *Execution) addRetainedOutput(val Value) {
 	exec.verifyRetainedOutputCommit(c)
 }
 
-// retainedOutputBytes reports what the registered driver outputs currently
-// contribute to the live footprint, for the accounting paths that weigh an
-// allocation against a snapshotted baseline rather than against a walk. The
-// bind charge behind a block's rest-window preflight is the one that needs it:
-// its baseline is taken once, before the driver's first callback, and it used to
-// track the retained output through exec.reservedScratchBytes because the
-// drivers reserved their results there. They register them now instead, so
-// without this a rest window is preflighted against a base that omits every
-// result the loop has kept and the fresh backing is allocated before a later
-// body check observes the excess.
+// retainedOutputMarginalBytes reports what the registered driver outputs add
+// beyond the reachable graph -- their marginal, deduplicated against everything
+// the graph walk already reaches. That basis is the whole contract: it is the
+// basis c.outputBytes is memoized on and the basis estimateMemoryUsageBase folds
+// into a snapshot, so a caller comparing a snapshot with a later reading is
+// comparing like with like.
 //
-// The memoized total is the same number the checks read, so the fast path is
-// exact and O(1). When the memo cannot answer -- something mutated, or the walk
-// shape moved -- the roots are walked against an empty estimator, which counts
-// their whole footprint rather than their marginal over the graph: an
-// over-charge, which is the safe direction for a gate that decides whether to
-// allocate.
-func (exec *Execution) retainedOutputBytes() int {
+// Getting that wrong was subtle and worth recording. The fallback used to return
+// the roots' standalone footprint, which counts payloads the graph also holds. A
+// nested driver reaches it every time, because registering the inner output bumps
+// the topology and invalidates the memo, so a bind charge built there recorded a
+// start value inflated by every outer result that aliases its receiver. Later
+// readings came from the memo on the marginal basis and were smaller, so the
+// growth between them read as zero and the driver's accumulation stopped being
+// charged at all.
+//
+// The fallback therefore walks the graph first and prices the roots against it,
+// which is the same computation the memo holds, just paid for. It is reached only
+// when the memo cannot answer, and the one caller that would hit it on every
+// construction takes its start value from its own base walk instead.
+func (exec *Execution) retainedOutputMarginalBytes() int {
 	if len(exec.outputWalkRoots) == 0 {
 		return 0
 	}
@@ -193,7 +196,9 @@ func (exec *Execution) retainedOutputBytes() int {
 		c.regionBoundary == exec.currentWalkBoundary() {
 		return c.outputBytes
 	}
-	return exec.outputWalkBytes(newMemoryEstimator())
+	est := newMemoryEstimator()
+	exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.Context()))
+	return exec.outputWalkBytes(est)
 }
 
 // currentWalkBoundary reports the walk shape the next memory check would take:
