@@ -185,20 +185,22 @@ func (exec *Execution) holdArrayBacking(val Value) {
 // reads only the live claims stops counting them -- the very shape this file
 // exists to fix. Running one iteration over a 48 MiB array and then dropping it
 // held all of it.
-func (exec *Execution) releaseArrayBackings(mark int) {
+func (exec *Execution) releaseArrayBackings(mark int) error {
 	if mark >= len(exec.heldArrayBackings) {
-		return
+		return nil
 	}
 	released := exec.heldArrayBackings[mark:]
 	bumped := false
+	var reclaimErr error
 	for _, held := range released {
 		exec.releaseLoopScratch(held.overflow)
 		for _, retained := range held.retained {
-			if exec.arrayBackingStillClaimed(retained.full, mark) {
-				exec.carryRetainedBacking(retained, mark)
-				continue
+			// Moving the array off its storage is safe whoever else is still
+			// walking that storage, so a claim below this one needs no say in
+			// it and nothing has to be handed on to one.
+			if err := retained.reclaim(exec); err != nil && reclaimErr == nil {
+				reclaimErr = err
 			}
-			retained.reclaim()
 		}
 		if !bumped && (len(held.detached) > 0 || len(held.retained) > 0 || held.overflow > 0) {
 			bumpMutationEpoch()
@@ -207,6 +209,7 @@ func (exec *Execution) releaseArrayBackings(mark int) {
 	}
 	clear(released)
 	exec.heldArrayBackings = exec.heldArrayBackings[:mark]
+	return reclaimErr
 }
 
 // canRetain reports whether this claim can take on full without exceeding the
@@ -235,27 +238,47 @@ func (held *heldArrayBacking) retain(full []Value, receiver Value) {
 	held.retained = append(held.retained, retainedArrayBacking{full: full, receiver: receiver})
 }
 
-// reclaim clears the slots the array has since vacated, once the frame that may
-// have been walking them is done. It is the deferred half of the shrink: the
-// slots could not be cleared while the claim was live, and clearing them here
-// needs no allocation, so it cannot fail on a path that has nowhere to report an
-// error.
+// reclaim moves the array off the storage it has been narrowing, once the frame
+// that may have been walking that storage is done. It is the deferred half of
+// the shrink: what the array gave up has to stop being reachable through it, and
+// this is the first moment anything can be done about it.
 //
-// The array may have moved on -- grown onto a fresh backing, been replaced
-// wholesale, or grown back into the storage it gave up. Anything but a window
-// still inside the recorded header is left alone; a backing the array no longer
-// points into is unreachable through it anyway.
-func (retained retainedArrayBacking) reclaim() {
-	full, current := retained.full, retained.receiver.Array()
-	head := cap(full) - cap(current)
-	if head < 0 || head > len(full) || len(current) > len(full)-head {
-		return
+// It moves rather than clears. Clearing would compute which slots to blank from
+// this one array's window, and a Go slice can be behind more than one array: a
+// host that builds two values over one slice leaves the second showing elements
+// the first has given up, and blanking them by the first array's window empties
+// the second. Copying the survivors out touches nothing, so whatever else is
+// behind that storage keeps reading exactly what it read before, and the storage
+// itself goes when the last of them does.
+//
+// The array may have moved on already -- onto a backing a copy under the cap
+// gave it, or one a growing push allocated -- in which case there is nothing
+// left to move it off.
+func (retained retainedArrayBacking) reclaim(exec *Execution) error {
+	current := retained.receiver.Array()
+	if sliceBackingIdentity(current) == 0 || !sliceWithin(retained.full, current) {
+		return nil
 	}
-	if sliceBackingIdentity(full[head:]) != sliceBackingIdentity(current) {
-		return
+	if err := exec.chargeScanSteps(len(current)); err != nil {
+		return err
 	}
-	clear(full[:head])
-	clear(full[head+len(current):])
+	acc := newArrayBuildAccumulator(exec, retained.receiver, nil, nil, NewNil())
+	if err := acc.reserveSlotArrays(len(current)); err != nil {
+		return err
+	}
+	moved := make([]Value, len(current))
+	copy(moved, current)
+	setArrayElems(retained.receiver, moved)
+	return nil
+}
+
+// sliceWithin reports whether inner is a window onto outer's storage.
+func sliceWithin(outer, inner []Value) bool {
+	head := cap(outer) - cap(inner)
+	if head < 0 || head > len(outer) || len(inner) > len(outer)-head {
+		return false
+	}
+	return sliceBackingIdentity(outer[head:]) == sliceBackingIdentity(inner)
 }
 
 // retainedArrayBackingBytes is the memory of every header a shrink narrowed in
@@ -278,29 +301,6 @@ func (exec *Execution) retainedArrayBackingBytes(est *memoryEstimator) int {
 		}
 	}
 	return total
-}
-
-// arrayBackingStillClaimed reports whether a claim below mark may also be
-// walking full, in which case the slots it vacated still cannot be cleared.
-func (exec *Execution) arrayBackingStillClaimed(full []Value, mark int) bool {
-	id := sliceBackingIdentity(full)
-	for i := 0; i < mark && i < len(exec.heldArrayBackings); i++ {
-		held := &exec.heldArrayBackings[i]
-		if held.wildcard || held.id == id {
-			return true
-		}
-	}
-	return false
-}
-
-// carryRetainedBacking hands a retained header to the innermost claim below
-// mark, so it stays charged and untouched until that frame is done too.
-func (exec *Execution) carryRetainedBacking(retained retainedArrayBacking, mark int) {
-	if mark <= 0 || mark > len(exec.heldArrayBackings) {
-		return
-	}
-	held := &exec.heldArrayBackings[mark-1]
-	held.retain(retained.full, retained.receiver)
 }
 
 // detachedArrayBackingBytes is the memory of every header a shrink has copied

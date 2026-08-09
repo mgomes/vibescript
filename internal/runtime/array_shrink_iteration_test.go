@@ -363,8 +363,16 @@ func (arrayArgDriver) Bind(CapabilityBinding) (map[string]Value, error) {
 		}
 		return NewNil(), nil
 	}
+	// walkAliased hands the script two array values over one Go slice, which
+	// only host code can build.
+	walkAliased := func(exec *Execution, _ Value, _ []Value, _ map[string]Value, block Value) (Value, error) {
+		elems := []Value{NewInt(1), NewInt(2), NewInt(3)}
+		_, err := exec.CallBlock(block, []Value{NewArray(elems), NewArray(elems)})
+		return NewNil(), err
+	}
 	return map[string]Value{
 		"driver": NewObject(map[string]Value{
+			"walk_aliased":  NewBuiltin("driver.walk_aliased", walkAliased),
 			"walk":          NewBuiltin("driver.walk", walk),
 			"walk_kw":       NewBuiltin("driver.walk_kw", walk),
 			"walk_in":       NewBuiltin("driver.walk_in", walkNested),
@@ -588,5 +596,63 @@ func TestDetachedHeaderRecordIsBounded(t *testing.T) {
 	if exec.reservedScratchBytes != held.overflow {
 		t.Fatalf("reserved %d bytes against a recorded overflow of %d",
 			exec.reservedScratchBytes, held.overflow)
+	}
+}
+
+// TestAliasedReceiversKeepTheirElements pins that releasing a claim does not
+// disturb a second array built over the same storage.
+//
+// A shrink beneath a host-driven frame narrows the array over storage it leaves
+// untouched, and moves it off that storage when the claim drops. It moves rather
+// than clearing for this reason: which slots are dead is a question about every
+// array behind the storage, not just the one that shrank, and a host can build
+// two over one slice. Clearing by the first array's window left the second
+// reading [2, nil] where it should read [2, 3].
+func TestAliasedReceiversKeepTheirElements(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  kept = nil
+  driver.walk_aliased do |a, b|
+    a.pop
+    b.shift
+    kept = b
+  end
+  kept
+end`)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{arrayArgDriver{}},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if want := `[2, 3]`; got.Inspect() != want {
+		t.Fatalf("the second array reads %s, want %s", got.Inspect(), want)
+	}
+}
+
+// TestRetainedHeaderRecordIsBounded pins that one claim holds a bounded number
+// of narrowed arrays, whatever runs beneath it.
+//
+// Every record keeps its array's storage alive and is walked on each memory
+// check, so an unbounded list brings back the quadratic the cap exists to stop.
+// Nothing hands records from a dropped claim to an enclosing one any more --
+// moving an array off its storage is safe whoever else is walking that storage,
+// so a claim below has no say in it -- which leaves this guard as the only way
+// records are added.
+func TestRetainedHeaderRecordIsBounded(t *testing.T) {
+	t.Parallel()
+
+	held := &heldArrayBacking{wildcard: true}
+	for i := range maxHeldArrayHeaders * 3 {
+		full := []Value{NewInt(int64(i))}
+		if !held.canRetain(full) {
+			continue
+		}
+		held.retain(full, NewArray(full))
+	}
+	if len(held.retained) != maxHeldArrayHeaders {
+		t.Fatalf("claim holds %d narrowed arrays, want at most %d",
+			len(held.retained), maxHeldArrayHeaders)
 	}
 }

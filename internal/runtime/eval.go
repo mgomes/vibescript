@@ -3303,7 +3303,9 @@ func (exec *Execution) evalForLoop(stmt *ForStmt, env *Env, mode loopResultMode)
 		// however far the body wanders, since a script function call in
 		// between leaves the builtin depth alone.
 		heldBackings := exec.holdArrayBackings(iterable, nil, nil, false)
-		defer exec.releaseArrayBackings(heldBackings)
+		// A named claim never holds narrowed storage to move off, so dropping
+		// this one cannot fail.
+		defer func() { _ = exec.releaseArrayBackings(heldBackings) }()
 		for _, item := range iterable.Array() {
 			if err := exec.step(); err != nil {
 				return NewNil(), false, exec.wrapError(err, stmt.Pos())
