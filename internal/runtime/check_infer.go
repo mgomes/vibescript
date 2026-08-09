@@ -2404,8 +2404,11 @@ func (c *scriptChecker) collectMutationCandidateRootsFromExpression(expr Express
 }
 
 type regionIvarEffects struct {
-	writes  map[string]struct{}
-	unknown bool
+	writes map[string]struct{}
+	// reentrant records that a lambda body reached itself, so the region can
+	// run again with state the first pass has already changed.
+	reentrant bool
+	unknown   bool
 }
 
 type capturedBlockLiteralValue struct {
@@ -2466,6 +2469,7 @@ func mergeRegionIvarEffects(dst *regionIvarEffects, src regionIvarEffects) {
 		return
 	}
 	dst.unknown = dst.unknown || src.unknown
+	dst.reentrant = dst.reentrant || src.reentrant
 	for name := range src.writes {
 		if dst.writes == nil {
 			dst.writes = make(map[string]struct{})
@@ -5171,6 +5175,19 @@ func collectRegionIvarWriteTargets(target Expression, effects *regionIvarEffects
 	}
 }
 
+// maxRepeatedRegionBlockWalks caps how often one lambda body may be walked for
+// ivar effects while the walk it started is still running, matching the bound
+// the summary walk uses. The first walk uses the caller's facts; the second
+// runs under the state the recursive call left behind and so reaches the writes
+// the recursion enables; a third adds nothing the second did not reach.
+const maxRepeatedRegionBlockWalks = 2
+
+// collectRepeatedRegionIvarEffectsFromBlock unions in the ivar effects a
+// lambda body can produce each time the region repeats. A body reachable from
+// itself (`h = -> { h.call }; h.call`) would otherwise re-enter its own
+// statements once per nested call and never finish. Re-entry collects the
+// writes the recursion can reach rather than declaring every ivar unknown, so
+// recursion that writes no ivar leaves exact facts standing.
 func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromBlock(
 	block *BlockLiteral,
 	effects *regionIvarEffects,
@@ -5178,8 +5195,27 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromBlock(
 	if block == nil {
 		return
 	}
+	walks := c.repeatedRegionBlockWalks[block]
+	if walks >= maxRepeatedRegionBlockWalks {
+		effects.reentrant = true
+		return
+	}
+	if c.repeatedRegionBlockWalks == nil {
+		c.repeatedRegionBlockWalks = make(map[*BlockLiteral]int)
+	}
+	c.repeatedRegionBlockWalks[block] = walks + 1
+	defer func() {
+		if walks == 0 {
+			delete(c.repeatedRegionBlockWalks, block)
+			return
+		}
+		c.repeatedRegionBlockWalks[block] = walks
+	}()
 	popScope := c.pushBlockCheckScope(block)
 	defer popScope()
+	if walks > 0 {
+		effects.reentrant = true
+	}
 	for _, name := range block.ImplicitParams {
 		c.bindLocalTypeInCurrentFrame(name, nil)
 		c.bindLocalClassValue(name, "")
@@ -5241,6 +5277,9 @@ func (c *scriptChecker) widenRepeatedRegionBlockIvarFacts(block *BlockLiteral) {
 	c.collectRepeatedRegionIvarEffectsFromBlock(block, &effects)
 	c.restoreScopeState(scopeState)
 	c.widenRegionIvarFacts(effects)
+	if effects.reentrant {
+		c.applyReentrantLambdaNamespaceMutations(block)
+	}
 }
 
 // refineOneShotBlockIvarFacts restores exact scalar facts only on a normally
