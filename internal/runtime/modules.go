@@ -265,6 +265,11 @@ func moduleContextForEntry(entry moduleEntry) moduleContext {
 func initializeModuleForCall(exec *Execution, entry moduleEntry, moduleEnv *Env, moduleClasses map[string]*ClassDef) error {
 	exec.pushModuleContext(moduleContextForEntry(entry))
 	defer exec.popModuleContext()
+	// The module's classes and constants live only in moduleEnv until require
+	// publishes its exports, so root it for the estimator while they are being
+	// built (#23).
+	exec.pushInitializingModule(moduleEnv)
+	defer exec.popInitializingModule()
 
 	if err := initializeClassBodiesForCall(exec, moduleEnv, moduleClasses, entry.script.classOrder, entry.script.deferredClassBodies); err != nil {
 		return err

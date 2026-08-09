@@ -136,6 +136,50 @@ func TestMixinConstantAdoptionCountsWhatTheCallAlreadyHolds(t *testing.T) {
 	}
 }
 
+// TestRequiredModuleConstantAdoptionIsMetered pins that the adoption is
+// bounded inside a required module too. Until require publishes its exports,
+// the module's environment is only a Go local, so the classes it is building
+// hang off no root the estimator walks: every check inside its initialization
+// measured a graph that did not contain them, and the whole
+// classes-by-constants expansion passed unnoticed however large it grew (#23).
+// It reads process-wide allocation, so like the two measurements above it must
+// not run in parallel with anything else.
+func TestRequiredModuleConstantAdoptionIsMetered(t *testing.T) {
+	dir := tempModuleTree(t, moduleFile{
+		path:    "wide.vibe",
+		content: mixinConstantAdoptionSource(300, 4000),
+	})
+	engine := MustNewEngine(Config{
+		ModulePaths: []string{dir},
+		StepQuota:   Unlimited,
+	})
+	script := compileScriptWithEngine(t, engine, `def run
+  require("wide")
+  1
+end`)
+
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{AllowRequire: true})
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatal("a required module adopted 1.2M class constants within the memory quota")
+	}
+	requireErrorContains(t, err, "memory quota exceeded")
+
+	if estimatorVerify {
+		t.Logf("estimator oracle enabled: skipping the allocation bound (%d bytes)", after.TotalAlloc-before.TotalAlloc)
+		return
+	}
+	// Unrooted, the same module ran the adoption to completion and allocated
+	// the full expansion before anything stopped it.
+	const limit = 128 << 20
+	if got := after.TotalAlloc - before.TotalAlloc; got > limit {
+		t.Fatalf("requiring the module allocated %d bytes, want at most %d", got, limit)
+	}
+}
+
 // TestOrdinaryMixinConstantsStayWithinDefaultQuotas pins that the metering
 // above leaves a normal mixin alone: its constants are adopted, readable both
 // scoped and through an included method, and cost nothing a default-profile

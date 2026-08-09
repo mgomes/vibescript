@@ -2681,6 +2681,14 @@ func (exec *Execution) estimateGraphTail(est *memoryEstimator, globals *taskLazy
 	for _, mod := range exec.modules {
 		total += est.value(mod)
 	}
+	// A module still initializing is not in exec.modules yet, and its env hangs
+	// off no root the walk reaches; without charging it here the checks running
+	// inside its own initialization would measure a graph missing everything it
+	// has built (see pushInitializingModule). Envs deduplicate by pointer, so a
+	// module env that is also on the env stack is charged once.
+	for _, env := range exec.initializingModules {
+		total += est.env(env)
+	}
 	for _, group := range exec.activeTaskGroups {
 		total += group.retainedSnapshotMemory(est)
 		total += group.jobPayloadMemory(est)

@@ -105,14 +105,18 @@ type Execution struct {
 	// the latched exhaustion, deep-copied before any adapter can hold its
 	// pointer; the dispatch rebuild and the task machinery's trusted
 	// channel use only this copy for diagnostics.
-	exhaustedWrapped          *RuntimeError
-	callStack                 []callFrame
-	root                      *Env
-	modules                   map[string]Value
-	moduleSearchPins          map[string]string
-	moduleLoading             map[string]bool
-	moduleLoadStack           []string
-	moduleStack               []moduleContext
+	exhaustedWrapped *RuntimeError
+	callStack        []callFrame
+	root             *Env
+	modules          map[string]Value
+	moduleSearchPins map[string]string
+	moduleLoading    map[string]bool
+	moduleLoadStack  []string
+	moduleStack      []moduleContext
+	// initializingModules holds the environments of modules whose initialization
+	// is in flight, so the estimator can reach what they are building before
+	// require publishes it (see pushInitializingModule).
+	initializingModules       []*Env
 	bindingOwner              *Script
 	capabilityContracts       map[*Builtin]CapabilityMethodContract
 	capabilityContractScopes  map[*Builtin]*capabilityContractScope
@@ -542,6 +546,32 @@ func (exec *Execution) popTaskGroup() {
 	}
 	exec.baseTopoVersion++
 	exec.activeTaskGroups = exec.activeTaskGroups[:len(exec.activeTaskGroups)-1]
+}
+
+// pushInitializingModule roots a module's environment for the estimator while
+// the module initializes. Until require finishes, that environment is only a Go
+// local: its parent is exec.root, but the base walk goes root-outward, and the
+// module's exports are not published to exec.modules until initialization
+// returns. So every class and constant the module builds is invisible to the
+// memory checks running inside it, and a required file could grow its class
+// constants without limit while each check measured a graph that did not
+// contain them (#23).
+func (exec *Execution) pushInitializingModule(env *Env) {
+	exec.baseTopoVersion++
+	exec.initializingModules = append(exec.initializingModules, env)
+}
+
+func (exec *Execution) popInitializingModule() {
+	last := len(exec.initializingModules) - 1
+	if last < 0 {
+		return
+	}
+	exec.baseTopoVersion++
+	// Clear before shortening: a truncated slice keeps the pointer alive in its
+	// backing array, so the env would stay reachable for the collector while the
+	// walk, which reads only the visible length, stopped charging it.
+	exec.initializingModules[last] = nil
+	exec.initializingModules = exec.initializingModules[:last]
 }
 
 func (exec *Execution) pushModuleContext(ctx moduleContext) {
