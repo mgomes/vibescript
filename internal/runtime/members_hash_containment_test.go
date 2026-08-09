@@ -4909,3 +4909,65 @@ func TestHashLookupCallbacksKeepTheBaseWalkMemo(t *testing.T) {
 		})
 	}
 }
+
+// minMemoryQuotaForLookup binary-searches the smallest memory quota at which src
+// completes. It is the observable edge of the estimator's total: the exact quota
+// where one more byte of estimate would have failed the run.
+func minMemoryQuotaForLookup(t *testing.T, src string, arg Value) int {
+	t.Helper()
+
+	lo, hi := 1, 200<<20
+	for lo < hi {
+		mid := (lo + hi) / 2
+		script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: mid}, src)
+		if _, err := script.Call(context.Background(), "run", []Value{arg}, CallOptions{}); err != nil {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
+
+// A lookup key lives only in the builtin's Go argument slice, so nothing the
+// estimator walks can reach it while a callback runs. A callback destructuring
+// that key with a named rest copies a window sized to it, and the bind charge
+// preflights that copy against a baseline the key has to be part of. Driving the
+// callback through a shared runner made the key a per-call value rather than a
+// construction-time call root, and passing nil roots dropped it from the baseline
+// entirely: an ephemeral key became free.
+//
+// Both spellings hold the same memory, so the quota that admits them must agree.
+// The bound spelling is the control -- its key is reachable from the environment,
+// so the walk sees it whatever the charge does -- and the ephemeral one must not
+// come in under it.
+func TestHashLookupsChargeAnEphemeralKeyLikeABoundOne(t *testing.T) {
+	t.Parallel()
+
+	arg := intArray(200_000)
+	pairs := map[string][2]string{
+		"fetch_values": {
+			"def run(b)\n  { }.fetch_values(b.dup) { |(head, *tail)| 1 }\nend",
+			"def run(b)\n  k = b.dup\n  { }.fetch_values(k) { |(head, *tail)| 1 }\nend",
+		},
+		"values_at": {
+			"def run(b)\n  h = Hash.new { |g, (head, *tail)| 1 }\n  h.values_at(b.dup)\nend",
+			"def run(b)\n  h = Hash.new { |g, (head, *tail)| 1 }\n  k = b.dup\n  h.values_at(k)\nend",
+		},
+	}
+
+	for name, spellings := range pairs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ephemeral := minMemoryQuotaForLookup(t, spellings[0], arg)
+			bound := minMemoryQuotaForLookup(t, spellings[1], arg)
+			// The bound spelling pays a little more for the local binding itself,
+			// so allow a slack far below the key's own footprint.
+			if slack := bound - ephemeral; slack > 64*1024 {
+				t.Fatalf("an ephemeral key admits at %d bytes where the same key bound to a local needs "+
+					"%d, a %d-byte discount; the key is missing from the callback's bind baseline",
+					ephemeral, bound, slack)
+			}
+		})
+	}
+}
