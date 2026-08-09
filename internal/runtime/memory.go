@@ -1339,19 +1339,37 @@ func (acc *arrayBuildAccumulator) addToReservedBacking(val Value) error {
 // baseline. Without this, `fetch_values(key) { |k| k }` billed a 400KB key
 // twice and was rejected under a quota its real footprint fits easily.
 //
-// Pass only roots with that property. Hash#fetch_values and Hash#values_at pass
-// their keys, which the hash-key contract restricts to immutable scalars, so no
-// callback can reach inside one and drop part of it while the output still
-// holds that part.
+// Only roots that hold their whole payload themselves qualify, and this filters
+// for that rather than trusting callers: an array is a supported hash key
+// (value.NewHashLookupKey), and seeding one marked its elements as already seen,
+// so a callback could return an element, a later callback could clear the array,
+// and the detached payload was then invisible to both the live-base walk and the
+// reservation while the output still held it.
 func (acc *arrayBuildAccumulator) seedConservativeRoots(roots []Value) {
 	if acc.exec.memoryQuota <= 0 || len(roots) == 0 {
 		return
 	}
-	if acc.result == nil {
-		acc.result = newMemoryEstimator()
-	}
 	for _, root := range roots {
+		if !valueHoldsNoDetachableParts(root) {
+			continue
+		}
+		if acc.result == nil {
+			acc.result = newMemoryEstimator()
+		}
 		acc.result.value(root)
+	}
+}
+
+// valueHoldsNoDetachableParts reports whether a value's payload is entirely its
+// own, with no contained Value that script code could remove from it. Only these
+// are safe to seed as stable roots; every container kind is excluded because a
+// callback can empty it while a retained result still points at what it held.
+func valueHoldsNoDetachableParts(val Value) bool {
+	switch val.Kind() {
+	case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol, KindRange:
+		return true
+	default:
+		return false
 	}
 }
 
