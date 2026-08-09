@@ -371,7 +371,7 @@ func (p *parser) percentArrayLiteralArgumentAt(pos ast.Position) bool {
 	if !ok || !offsetHasLeadingWhitespace(p.l.input, offset) {
 		return false
 	}
-	_, _, _, ok = scanPercentArrayLiteralAt(p.l.input, offset, p.l.percentScan)
+	_, _, _, ok = scanPercentArrayLiteralAt(p.l.input, offset, p.l.percentScan, p.l.interpDepth)
 	return ok
 }
 
@@ -999,8 +999,12 @@ func (p *parser) parseInterpolatedStringParts(raw string, pos ast.Position) ([]a
 				parts = append(parts, ast.StringText{Text: decodeDoubleQuotedText(raw[textStart:i])})
 			}
 			exprStart := i + 2
-			exprEnd, ok := findStringInterpolationEnd(raw, exprStart, p.l.percentScan)
+			exprEnd, ok, tooDeep := findStringInterpolationEnd(raw, exprStart, p.l.percentScan, p.l.interpDepth+1)
 			if !ok {
+				if tooDeep {
+					p.addParseError(pos, interpolationTooDeepMessage)
+					return nil, false
+				}
 				p.addParseError(pos, "unterminated string interpolation")
 				return nil, false
 			}
@@ -1042,16 +1046,24 @@ func interpolationMarkerEscaped(raw string, hash int) bool {
 // a single unit. This means a "}" that appears inside one of those constructs
 // (for example %W[#{%w[}]}]) does not prematurely close the interpolation, and
 // a bare "%" remains the modulo operator wherever the lexer would treat it as
-// one. It returns false when the body is never closed before the end of raw.
+// one.
 //
+// found is false when the body is never closed before the end of raw, and
+// tooDeep says that what stopped it was maxInterpolationDepth rather than the
+// input running out. The two are reported apart so the outermost string, the
+// one the reader wrote, can name the nesting instead of calling itself
+// unterminated.
+//
+// interpDepth is how many interpolations the body itself sits inside, and
 // budget is the enclosing parse's speculative percent-array-literal allowance;
-// the throwaway lexer this drives shares it so scans it starts in turn are
-// metered against the same pool.
-func findStringInterpolationEnd(raw string, start int, budget *percentScanBudget) (int, bool) {
+// the throwaway lexer this drives takes both so scans it starts in turn keep
+// counting from where this one is and are metered against the same pool.
+func findStringInterpolationEnd(raw string, start int, budget *percentScanBudget, interpDepth int) (end int, found, tooDeep bool) {
 	if start < 0 || start > len(raw) {
-		return 0, false
+		return 0, false, false
 	}
 	lex := newLexerWithBudget(raw[start:], budget)
+	lex.interpDepth = interpDepth
 
 	braceDepth := 0
 	bracketDepth := 0
@@ -1060,10 +1072,10 @@ func findStringInterpolationEnd(raw string, start int, budget *percentScanBudget
 		tok := lex.NextToken()
 		switch tok.Type {
 		case ast.TokenEOF, ast.TokenIllegal:
-			return 0, false
+			return 0, false, lex.nestingRefused
 		case ast.TokenPercent:
 			percentOffset := start + lex.currentOffset() - 1
-			kind, _, endOffset, ok := scanPercentArrayLiteralAt(raw, percentOffset, budget)
+			kind, _, endOffset, ok := scanPercentArrayLiteralAt(raw, percentOffset, budget, interpDepth)
 			if ok && interpolationPercentArrayArgumentScanCanAdvance(raw, endOffset) {
 				lex.seek(endOffset-start, ast.Token{Type: percentArrayLiteralTokenType(kind)})
 			}
@@ -1090,7 +1102,7 @@ func findStringInterpolationEnd(raw string, start int, budget *percentScanBudget
 				// The lexer has consumed the closing "}"; currentOffset now
 				// points at the rune after it, so the "}" itself sits one byte
 				// back ("}" is always a single byte).
-				return start + lex.currentOffset() - 1, true
+				return start + lex.currentOffset() - 1, true, false
 			}
 		}
 	}
@@ -1128,8 +1140,11 @@ func (p *parser) parseStringInterpolationExpression(raw string, pos ast.Position
 	exprParser.localScopes = append([]localScope(nil), p.localScopes...)
 	// The interpolation body is part of the enclosing source, so its
 	// speculative scanning draws on the enclosing parse's allowance rather
-	// than being handed a fresh one per interpolation.
+	// than being handed a fresh one per interpolation, and its own
+	// interpolations count from the depth this one sits at rather than
+	// starting over (see maxInterpolationDepth).
 	exprParser.l.percentScan = p.l.percentScan
+	exprParser.l.interpDepth = p.l.interpDepth + 1
 	expr := exprParser.parseLineExpression(lowestPrec)
 	if len(exprParser.errors) > 0 {
 		p.addParseError(pos, fmt.Sprintf("invalid string interpolation: %s", parseErrorMessage(exprParser.errors[0])))
@@ -1294,7 +1309,7 @@ func (p *parser) parsePercentArrayLiteralArgument() ast.Expression {
 	if !ok {
 		return nil
 	}
-	kind, entries, endOffset, ok := scanPercentArrayLiteralAt(p.l.input, offset, p.l.percentScan)
+	kind, entries, endOffset, ok := scanPercentArrayLiteralAt(p.l.input, offset, p.l.percentScan, p.l.interpDepth)
 	if !ok {
 		return nil
 	}
@@ -1514,7 +1529,7 @@ func (b *percentScanBudget) record(walked int, found bool) {
 	b.remaining -= walked
 }
 
-func scanPercentArrayLiteralAt(input string, start int, budget *percentScanBudget) (rune, []string, int, bool) {
+func scanPercentArrayLiteralAt(input string, start int, budget *percentScanBudget, interpDepth int) (rune, []string, int, bool) {
 	if start < 0 || start >= len(input) || input[start] != '%' {
 		return 0, nil, 0, false
 	}
@@ -1566,7 +1581,7 @@ func scanPercentArrayLiteralAt(input string, start int, budget *percentScanBudge
 			raw.WriteRune(r)
 			raw.WriteByte('{')
 			idx++
-			end, ok := findStringInterpolationEnd(input, idx, budget)
+			end, ok, _ := findStringInterpolationEnd(input, idx, budget, interpDepth+1)
 			if !ok {
 				// An unterminated interpolation is only reported once the lexer
 				// driving it has reached the end of the input, so the walk this
@@ -1586,7 +1601,7 @@ func scanPercentArrayLiteralAt(input string, start int, budget *percentScanBudge
 			if depth == 0 {
 				budget.record(idx-start, true)
 				if interpolating {
-					return kind, splitInterpolatedPercentLiteralWords(raw.String(), budget), idx, true
+					return kind, splitInterpolatedPercentLiteralWords(raw.String(), budget, interpDepth), idx, true
 				}
 				return kind, splitPercentLiteralWords(raw.String(), open, close), idx, true
 			}

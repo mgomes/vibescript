@@ -77,6 +77,18 @@ type lexer struct {
 	// precede a ternary separator (see ternaryScanMemo). Every lexer over the
 	// same input shares it, including the throwaway ones the scans create.
 	ternaryScan *ternaryScanMemo
+
+	// interpDepth is how many "#{...}" bodies the source this lexer reads
+	// already sits inside. It is not shared: each throwaway lexer driven over
+	// an interpolation body is one level deeper than the one that started it,
+	// and so is the sub-parser that reparses that body. See
+	// maxInterpolationDepth.
+	interpDepth int
+
+	// nestingRefused records that this lexer turned down an interpolation for
+	// nesting past maxInterpolationDepth, so the caller driving it can say that
+	// rather than reporting the string it was reading as unterminated.
+	nestingRefused bool
 }
 
 type ternaryFrame struct {
@@ -686,7 +698,7 @@ func (l *lexer) seek(offset int, last ast.Token) {
 	if start, ok := l.offsetForPosition(last.Pos); ok && start < offset {
 		structuralOffset = start
 	}
-	bracketDepth, bracketStack, ternaryStack := l.replay.stateBefore(structuralOffset, l.percentScan)
+	bracketDepth, bracketStack, ternaryStack := l.replay.stateBefore(structuralOffset, l.percentScan, l.interpDepth)
 
 	// Landing one rune short of the target and reading it leaves every field
 	// readRune maintains -- including the previous rune's position, which the
@@ -725,6 +737,7 @@ func (l *lexer) scanFrom(offset int) *lexer {
 		percentScan: l.percentScan,
 		replay:      l.replay,
 		ternaryScan: l.ternaryScan,
+		interpDepth: l.interpDepth,
 	}
 	// seek sets every field a rune-by-rune arrival would have left, so the
 	// zero line and column it starts from are never read.
@@ -1164,8 +1177,13 @@ func isBaseDigit(r rune, base int) bool {
 
 func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 	var decoded strings.Builder
-	var raw strings.Builder
 	interpolated := false
+	// An interpolated string's raw text is the source between the quotes
+	// verbatim, so it is taken as a slice of the input at the closing quote
+	// rather than rebuilt rune by rune. Rebuilding it made an interpolation
+	// nested inside another one copy its whole body again at every level that
+	// encloses it (#46).
+	bodyStart := l.offset
 
 	for {
 		l.readRune()
@@ -1173,9 +1191,10 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 		case 0:
 			return "", false, "unterminated string"
 		case '"':
+			body := l.input[bodyStart:l.currentOffset()]
 			l.readRune()
 			if interpolated {
-				return raw.String(), true, ""
+				return body, true, ""
 			}
 			return decoded.String(), false, ""
 		case '\\':
@@ -1186,82 +1205,60 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 			switch next {
 			case '"', '\\':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteRune(next)
 			case 'a':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte('\a')
 			case 'b':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte('\b')
 			case 'e':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte(0x1b)
 			case 'f':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte('\f')
 			case 'n':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte('\n')
 			case 'r':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte('\r')
 			case 't':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte('\t')
 			case 'v':
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteByte('\v')
 			case 'x':
 				escaped, errMsg := l.readVariableHexEscape(1, 2)
 				if errMsg != "" {
 					return "", false, errMsg
 				}
-				raw.WriteString(escaped.raw)
 				decoded.WriteByte(escaped.byte)
 			case 'u':
 				escaped, errMsg := l.readFixedHexEscape(4)
 				if errMsg != "" {
 					return "", false, errMsg
 				}
-				raw.WriteString(escaped.raw)
 				decoded.WriteRune(escaped.rune)
 			default:
 				l.readRune()
-				raw.WriteRune('\\')
-				raw.WriteRune(next)
 				decoded.WriteRune(next)
 			}
 		case '#':
-			raw.WriteRune(l.ch)
 			decoded.WriteRune(l.ch)
 			if l.peekRune() == '{' {
 				l.readRune()
-				raw.WriteRune(l.ch)
 				interpolated = true
-				if errMsg := l.consumeInterpolation(&raw); errMsg != "" {
-					return "", false, errMsg
+				if !l.skipInterpolationBody() {
+					if l.nestingRefused {
+						return "", false, interpolationTooDeepMessage
+					}
+					return "", false, "unterminated string"
 				}
 			}
 		default:
-			raw.WriteRune(l.ch)
 			decoded.WriteRune(l.ch)
 		}
 	}
@@ -1319,7 +1316,7 @@ func (l *lexer) readVariableHexEscape(minDigits, maxDigits int) (decodedEscape, 
 	if value > utf8.MaxRune || (value >= 0xd800 && value <= 0xdfff) {
 		return decodedEscape{}, "invalid Unicode escape in string"
 	}
-	return decodedEscape{raw: raw.String(), rune: value, byte: byte(value)}, ""
+	return decodedEscape{rune: value, byte: byte(value)}, ""
 }
 
 func hexRuneValue(r rune) rune {
@@ -1335,35 +1332,47 @@ func hexRuneValue(r rune) rune {
 	}
 }
 
-// consumeInterpolation reads the body of a "#{...}" interpolation that the
-// caller has just opened (the leading "#{" is already consumed, so l.ch holds
-// the "{") and appends every rune up to and including the matching "}" to raw.
-// The decoded builder is not updated because an interpolated string always
-// returns its raw text; the parser re-scans it with the same rules in
-// findStringInterpolationEnd.
+// maxInterpolationDepth bounds how deeply "#{...}" string interpolations may
+// nest. Every level is read twice over: the lexer drives a throwaway lexer
+// across the whole body to find the "}" that closes it, and the parser then
+// reparses that body from scratch, so the levels inside a given one are walked
+// again for each level outside it. A 1 MB source spent 113ms at one level,
+// 418ms at eight and 10.5s at 64, and 20,000 levels of a 100 KB source took
+// 23s and over a GB of live memory during compile, where no step or memory
+// quota reaches it (#46).
 //
-// It returns an error message when the input ends before the interpolation
-// closes.
-func (l *lexer) consumeInterpolation(raw *strings.Builder) string {
-	if !l.copyInterpolationBody(raw) {
-		return "unterminated string"
-	}
-	return ""
-}
+// Nesting a string inside its own interpolation is already unusual at two
+// levels and unheard of past three, so eight leaves real code untouched while
+// keeping the worst case a small multiple of what the same source costs
+// without the nesting. It is deliberately below maxTypeDepth: those bounds
+// guard recursion that costs a stack frame per level, while this one costs
+// another pass over the source.
+const maxInterpolationDepth = 8
 
-// copyInterpolationBody copies an in-progress "#{...}" interpolation body into
-// raw. It must be called with the opening "{" already consumed and written, so
-// l.ch holds that "{" and l.offset points at the first rune of the body. The
-// matching close brace is located with findStringInterpolationEnd, which drives
-// the lexer over the body so nested double- and single-quoted strings, further
-// interpolations, and percent-array literals (such as %W[#{%w[}]}]) balance
-// correctly instead of guessing where the span ends. The runes are then copied
-// one at a time to keep the lexer's line and column tracking accurate across the
-// (possibly multiline) span. It reports whether the interpolation closed before
-// the end of input.
-func (l *lexer) copyInterpolationBody(raw *strings.Builder) bool {
-	end, ok := findStringInterpolationEnd(l.input, l.offset, l.percentScan)
+const interpolationTooDeepMessage = "string interpolation nesting too deep"
+
+// skipInterpolationBody advances the lexer over an in-progress "#{...}"
+// interpolation body, stopping on the matching "}". It must be called with the
+// opening "{" already consumed, so l.ch holds that "{" and l.offset points at
+// the first rune of the body. The matching close brace is located with
+// findStringInterpolationEnd, which drives the lexer over the body so nested
+// double- and single-quoted strings, further interpolations, and percent-array
+// literals (such as %W[#{%w[}]}]) balance correctly instead of guessing where
+// the span ends. The runes are then stepped over one at a time to keep the
+// lexer's line and column tracking accurate across the (possibly multiline)
+// span.
+//
+// It reports whether the interpolation closed before the end of input, and
+// records on the lexer when what stopped it was maxInterpolationDepth.
+func (l *lexer) skipInterpolationBody() bool {
+	l.nestingRefused = false
+	if l.interpDepth >= maxInterpolationDepth {
+		l.nestingRefused = true
+		return false
+	}
+	end, ok, tooDeep := findStringInterpolationEnd(l.input, l.offset, l.percentScan, l.interpDepth+1)
 	if !ok {
+		l.nestingRefused = tooDeep
 		return false
 	}
 	for l.offset <= end {
@@ -1371,7 +1380,6 @@ func (l *lexer) copyInterpolationBody(raw *strings.Builder) bool {
 		if l.ch == 0 {
 			return false
 		}
-		raw.WriteRune(l.ch)
 	}
 	return true
 }
@@ -1474,7 +1482,7 @@ func (l *lexer) readPercentArrayLiteral(interpolating bool) ([]string, string) {
 		}
 		l.readRune()
 		if interpolating {
-			return splitInterpolatedPercentLiteralWords(raw.String(), l.percentScan), true
+			return splitInterpolatedPercentLiteralWords(raw.String(), l.percentScan, l.interpDepth), true
 		}
 		return splitPercentLiteralWords(raw.String(), open, close), true
 	}
@@ -1524,10 +1532,16 @@ func (l *lexer) readPercentArrayLiteral(interpolating bool) ([]string, string) {
 // error message when the interpolation is unterminated.
 func (l *lexer) consumePercentArrayInterpolation(raw *strings.Builder) string {
 	l.readRune() // consume '{'
-	raw.WriteRune(l.ch)
-	if !l.copyInterpolationBody(raw) {
+	start := l.currentOffset()
+	if !l.skipInterpolationBody() {
+		if l.nestingRefused {
+			return interpolationTooDeepMessage
+		}
 		return "unterminated string interpolation in percent array literal"
 	}
+	// The skip stops on the closing "}", which is one byte wide, so the span
+	// it stepped over ends one byte past where the lexer now sits.
+	raw.WriteString(l.input[start : l.currentOffset()+1])
 	return ""
 }
 
@@ -2061,7 +2075,7 @@ func isPercentWordEscapable(r, open, close rune) bool {
 // Interpolation spans are scanned with the same string-aware logic the parser
 // uses (findStringInterpolationEnd) so quotes and nested braces inside #{...}
 // do not prematurely terminate a word.
-func splitInterpolatedPercentLiteralWords(raw string, budget *percentScanBudget) []string {
+func splitInterpolatedPercentLiteralWords(raw string, budget *percentScanBudget, interpDepth int) []string {
 	var words []string
 	var sb strings.Builder
 	inWord := false
@@ -2087,7 +2101,7 @@ func splitInterpolatedPercentLiteralWords(raw string, budget *percentScanBudget)
 			}
 			inWord = true
 		case raw[i] == '#' && i+1 < len(raw) && raw[i+1] == '{':
-			end, ok := findStringInterpolationEnd(raw, i+2, budget)
+			end, ok, _ := findStringInterpolationEnd(raw, i+2, budget, interpDepth+1)
 			if !ok {
 				// Unterminated interpolation: copy the rest verbatim and let
 				// the parser report the error against the full entry.
