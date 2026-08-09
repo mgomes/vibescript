@@ -2645,7 +2645,7 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 // (the right-hand-side snapshot and any named rest window) against the memory
 // quota before it is allocated.
 func AssignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error) error {
-	return assignDestructure(target, value, assign, destructureCharge{check: noopDestructureCheck, step: noopDestructureStep, readBack: uncachedDestructureReadBack})
+	return assignDestructure(target, value, assign, destructureCharge{check: noopDestructureCheck, step: noopDestructureStep})
 }
 
 // destructureCharge meters the fresh int-value slot arrays a destructuring
@@ -2675,7 +2675,6 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 type destructureCharge struct {
 	check     func(count, liveSlots int, liveRoot Value) error
 	step      func(units int) error
-	readBack  func(target *DestructureTarget) (bool, error)
 	liveRoot  Value
 	liveSlots int
 }
@@ -2687,39 +2686,6 @@ func noopDestructureCheck(int, int, Value) error { return nil }
 // noopDestructureStep bills nothing, for the same host callers: they run outside
 // a step quota too.
 func noopDestructureStep(int) error { return nil }
-
-// uncachedDestructureReadBack answers the snapshot question by scanning, for the
-// host callers that have no execution to memoize it on.
-func uncachedDestructureReadBack(target *DestructureTarget) (bool, error) {
-	readBack, _ := destructureWriteIsReadBack(target)
-	return readBack, nil
-}
-
-// destructureReadBackFact answers whether target needs a defensive snapshot of
-// its right-hand side, memoized per execution.
-//
-// The answer is a property of the target's syntax alone, but it was recomputed
-// at every level of every assignment, and the scan recurses over the whole
-// remaining subtree to find a container write. A target nested d deep therefore
-// did O(d squared) helper visits per assignment while the per-level charge bills
-// O(d), and nesting has no depth cap: a 4000-deep target did 8,018,007 visits
-// for a statement costing tens of steps (#49). Memoizing on the execution makes
-// each distinct target cost its scan once for the whole call rather than once
-// per iteration, and the first scan is charged like any other traversal.
-func (exec *Execution) destructureReadBackFact(target *DestructureTarget) (bool, error) {
-	if fact, ok := exec.destructureReadBack[target]; ok {
-		return fact, nil
-	}
-	fact, visited := destructureWriteIsReadBack(target)
-	if err := exec.chargeDestructureScan(visited); err != nil {
-		return false, err
-	}
-	if exec.destructureReadBack == nil {
-		exec.destructureReadBack = make(map[*DestructureTarget]bool)
-	}
-	exec.destructureReadBack[target] = fact
-	return fact, nil
-}
 
 // destructureUnitsPerStep amortizes a destructuring assignment over the targets
 // it walks and the value slots it copies, at the same rate chargeStringScan and
@@ -2762,7 +2728,6 @@ func (exec *Execution) assignDestructure(target *DestructureTarget, value Value,
 	return assignDestructure(target, value, assign, destructureCharge{
 		check:    exec.checkProjectedIntArrayBytesWithLive,
 		step:     exec.chargeDestructureScan,
-		readBack: exec.destructureReadBackFact,
 		liveRoot: value,
 	})
 }
@@ -2793,24 +2758,18 @@ func assignDestructureWithNormalizer(target *DestructureTarget, value Value, ass
 	// the scalar RHS path, which already returns a fresh slice) keeps the alias,
 	// as does a write whose only followers discard their window (e.g.
 	// "values[0], * = values"), which reads nothing the write could corrupt.
-	if value.Kind() == KindArray {
-		readBack, err := charge.readBack(target)
-		if err != nil {
+	if value.Kind() == KindArray && target.WriteIsReadBack() {
+		if err := charge.check(len(values), charge.liveSlots, charge.liveRoot); err != nil {
 			return err
 		}
-		if readBack {
-			if err := charge.check(len(values), charge.liveSlots, charge.liveRoot); err != nil {
-				return err
-			}
-			if err := charge.step(len(values)); err != nil {
-				return err
-			}
-			values = append([]Value(nil), values...)
-			// The snapshot stays live on this call's stack while every leaf (and
-			// any nested destructure) runs, so fold it into the running baseline
-			// the charge projects for the rest window and for nested snapshots.
-			charge.liveSlots += len(values)
+		if err := charge.step(len(values)); err != nil {
+			return err
 		}
+		values = append([]Value(nil), values...)
+		// The snapshot stays live on this call's stack while every leaf (and any
+		// nested destructure) runs, so fold it into the running baseline the
+		// charge projects for the rest window and for nested snapshots.
+		charge.liveSlots += len(values)
 	}
 	restIndex := -1
 	for i, element := range target.Elements {
@@ -2919,75 +2878,6 @@ func destructureValues(value Value) []Value {
 		return value.Array()
 	}
 	return []Value{value}
-}
-
-// destructureWriteIsReadBack reports whether the target list contains a leaf
-// that assigns into an existing container (an index or member place) followed,
-// in left-to-right execution order, by a leaf that reads a value out of the
-// right-hand side. Only that ordering lets a later read observe an earlier
-// write's mutation of the aliased RHS array, so it is the only case that needs
-// the snapshot AssignDestructure would otherwise take unconditionally.
-//
-// A write whose only successors discard their window (e.g. "values[0], * =
-// values", where the trailing anonymous rest reads nothing, or "values[0], (*)
-// = values", where the nested follower destructures nothing) is safe to alias:
-// no surviving read can observe the mutation, so snapshotting it would copy the
-// whole backing slice for no observable effect. Plain identifiers, ivars, and
-// class vars write to environment or instance slots that never alias the RHS
-// array's backing store, so they count only as reads, never as container
-// writes.
-// destructureWriteIsReadBack also reports the target nodes it visited, so the
-// one scan per target an execution performs is charged like any other traversal.
-func destructureWriteIsReadBack(target *DestructureTarget) (bool, int) {
-	visited := 0
-	sawWrite := false
-	for _, element := range target.Elements {
-		visited++
-		if sawWrite && destructureElementReads(element, &visited) {
-			return true, visited
-		}
-		if destructureElementWrites(element.Target, &visited) {
-			sawWrite = true
-		}
-	}
-	return false, visited
-}
-
-// destructureElementReads reports whether an element binds at least one value
-// out of the right-hand side. The anonymous rest ("*") has a nil target and
-// discards its window without observing any value, so it never reads. A nested
-// destructure target reads only if at least one of its own elements reads:
-// an all-discard pattern such as "(*)" binds nothing, so it must be treated
-// like the anonymous rest and not force a defensive snapshot of the RHS.
-func destructureElementReads(element DestructureElement, visited *int) bool {
-	*visited++
-	if element.Target == nil {
-		return false
-	}
-	if nested, ok := element.Target.(*DestructureTarget); ok {
-		return slices.ContainsFunc(nested.Elements, func(inner DestructureElement) bool {
-			return destructureElementReads(inner, visited)
-		})
-	}
-	return true
-}
-
-// destructureElementWrites reports whether a leaf (or any nested leaf) assigns
-// into an existing container slot, which can mutate an aliased RHS array's
-// backing store.
-func destructureElementWrites(target Expression, visited *int) bool {
-	*visited++
-	switch leaf := target.(type) {
-	case *IndexExpr, *MemberExpr:
-		return true
-	case *DestructureTarget:
-		for _, element := range leaf.Elements {
-			if destructureElementWrites(element.Target, visited) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func valueAt(values []Value, index int) Value {

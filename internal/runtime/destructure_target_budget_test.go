@@ -126,36 +126,40 @@ func nestedValue(depth int) Value {
 }
 
 // Whether a target needs a defensive snapshot of its right-hand side is a
-// property of its syntax, but it was recomputed at every level of every
-// assignment, and the scan recurses over the whole remaining subtree. A target
-// nested d deep therefore did O(d squared) helper visits per assignment while
-// the per-level charge bills O(d), and destructuring nesting has no depth cap.
-// 200 iterations over a 4000-deep target did 1,604,401,800 scan visits for a
-// loop costing tens of thousands of steps; memoizing the fact per execution
-// leaves 8,022,009, the one scan the whole call now pays (#49).
-func TestNestedDestructureScansItsTargetOncePerCall(t *testing.T) {
+// property of its syntax, but it was decided by a scan that recurses over the
+// whole remaining subtree, rerun at every level of every assignment. A target
+// nested d deep cost O(d squared) per assignment, and destructuring nesting has
+// no depth cap: 200 iterations over a 4000-deep target did 1,604,401,800 scan
+// visits (#49).
+//
+// Memoizing it per execution fixed the loop but left the decision call state:
+// every fresh call rescanned the whole target and then held a cache of the
+// answers that no memory check could see. Settling the facts with the program
+// instead means a call pays neither. One assignment over a 1000-deep target
+// must therefore cost far less than that scan would, and the cost must stay
+// linear in the depth rather than quadratic.
+func TestNestedDestructureDecidesItsSnapshotFromSyntax(t *testing.T) {
 	t.Parallel()
 
-	const depth = 1000
+	const shallow, deep = 500, 1000
 	cfg := Config{MemoryQuotaBytes: 64 << 20}
-	src := nestedIndexTargetSource(depth)
 
-	once := minStepQuotaToComplete(t, cfg, src, nestedValue(depth), 1, 1<<26)
-	repeated := minStepQuotaToComplete(t, cfg, src, nestedValue(depth), 200, 1<<26)
+	atShallow := minStepQuotaToComplete(t, cfg, nestedIndexTargetSource(shallow), nestedValue(shallow), 1, 1<<26)
+	atDeep := minStepQuotaToComplete(t, cfg, nestedIndexTargetSource(deep), nestedValue(deep), 1, 1<<26)
 
-	// The scan visits about depth squared over two nodes. Half of the ideal
-	// charge leaves room for the sub-step remainder while staying far above the
-	// couple of hundred steps an uncharged scan leaves.
-	wantScan := depth * depth / 2 / destructureUnitsPerStep / 2
-	if once < wantScan {
-		t.Errorf("one assignment over a %d-deep target cost %d steps; want at least %d, one step per "+
-			"%d nodes the snapshot scan visits", depth, once, wantScan, destructureUnitsPerStep)
+	// A scan visits about depth squared over two nodes. Coming in under a
+	// quarter of what charging one such scan costs is only possible if the call
+	// never performed one.
+	scan := deep * deep / 2 / destructureUnitsPerStep
+	if atDeep > scan/4 {
+		t.Errorf("one assignment over a %d-deep target cost %d steps, which is the order of the %d "+
+			"a single snapshot scan bills; the decision is syntax and must be settled with the "+
+			"program, not rescanned per call", deep, atDeep, scan)
 	}
-	// Repeating the assignment must not repeat the scan. Recomputing it per
-	// iteration would bill 200 scans instead of one.
-	if repeated > once*10 {
-		t.Errorf("1 assignment cost %d steps and 200 cost %d; the snapshot decision is syntax, so "+
-			"it must be scanned once per target rather than once per assignment", once, repeated)
+	// Doubling the depth must roughly double the cost. Quadratic growth is 4x.
+	if atDeep > atShallow*3 {
+		t.Errorf("a %d-deep target cost %d steps and a %d-deep one %d; doubling the depth should "+
+			"roughly double the cost, so a per-level rescan is back", shallow, atShallow, deep, atDeep)
 	}
 }
 

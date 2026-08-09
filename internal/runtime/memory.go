@@ -2426,11 +2426,7 @@ func (c *blockBindCharge) projectRestWindow(count int) error {
 // target walk and window copies free under the memory-unlimited, steps-finite
 // configuration the CLI runs by default (#49).
 func (c *blockBindCharge) destructureCharge(exec *Execution) destructureCharge {
-	charge := destructureCharge{
-		check:    noopDestructureCheck,
-		step:     exec.chargeDestructureScan,
-		readBack: exec.destructureReadBackFact,
-	}
+	charge := destructureCharge{check: noopDestructureCheck, step: exec.chargeDestructureScan}
 	if c != nil {
 		charge.check = func(count, _ int, _ Value) error {
 			return c.projectRestWindow(count)
