@@ -648,6 +648,36 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 	}
 }
 
+// maxSplatTargetLines bounds how far past its own line the lookahead behind a
+// line-leading "*" may read before giving up. A target list continues across a
+// newline whenever it is mid-continuation, and an unclosed bracket group leaves
+// it mid-continuation for the rest of the file, so every "*" under one ran the
+// lookahead to end of input: 4,000 lines of "* (b", 28 KB, walked 56 MB and
+// took over a second, quadrupling per doubling, all of it during compile where
+// no step or memory quota reaches it (#38). Bounding the reach makes the whole
+// file's lookaheads walk each line at most this many times.
+//
+// A real target list is written on one line ("*rest, last = values") or splits
+// across two ("*rest, (a,\n b) = values"), so 64 is far out of reach of
+// anything written on purpose, matching the other parser bounds.
+const maxSplatTargetLines = 64
+
+// splatScanCounting and splatScanBytes let a test count the input bytes the
+// line-leading "*" lookaheads walk, which is the work the complexity claim is
+// about. Wall-clock would fold in scheduling, GC, and the race and coverage
+// instrumentation this repository runs across three operating systems. Never
+// set outside tests; when off this costs one relaxed load per lookahead.
+var (
+	splatScanCounting atomic.Bool
+	splatScanBytes    atomic.Uint64
+)
+
+func noteSplatScan(walked int) {
+	if splatScanCounting.Load() {
+		splatScanBytes.Add(uint64(walked))
+	}
+}
+
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	switch tok.Type {
 	case ast.TokenDot, ast.TokenSafeNav, ast.TokenScope, ast.TokenSlash, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenMatch, ast.TokenNotMatch, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion, ast.TokenShovel, ast.TokenAmpersand:
@@ -697,6 +727,10 @@ func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 // operator, or a token that starts a new line without a continuation point -
 // means the "*" is an ordinary multiplication continuation, so it returns
 // false.
+//
+// The lookahead reads at most maxSplatTargetLines lines past the "*", and
+// reads a target list that runs longer as the multiplication it stops looking
+// for.
 func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 	offset, ok := p.l.offsetForPosition(star.Pos)
 	if !ok {
@@ -704,6 +738,7 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 	}
 
 	scan := p.l.scanFrom(offset)
+	defer func() { noteSplatScan(scan.currentOffset() - offset) }()
 
 	tok := scan.NextToken()
 	if tok.Type != ast.TokenAsterisk {
@@ -720,6 +755,9 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 	for {
 		tok = scan.NextToken()
 		if tok.Type == ast.TokenEOF {
+			return false
+		}
+		if tok.Pos.Line-star.Pos.Line > maxSplatTargetLines {
 			return false
 		}
 		if first {
