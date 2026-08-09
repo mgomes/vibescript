@@ -981,7 +981,6 @@ func hashMemberQuery(property string) (Value, error) {
 							return NewNil(), err
 						}
 					}
-					chargedThrough = i
 					retained.reserve(acc.accumulatedBytes(len(out)))
 				}
 				resolved, err := exec.hashDefaultForKey(receiver, arg)
@@ -1096,7 +1095,6 @@ func hashMemberQuery(property string) (Value, error) {
 						return NewNil(), err
 					}
 				}
-				chargedThrough = i
 				retained.reserve(acc.accumulatedBytes(len(out)))
 				blockArg := [1]Value{arg}
 				blockValue, err := exec.CallBlock(block, blockArg[:])
