@@ -43,7 +43,7 @@ type lexer struct {
 	// `?` opened at the same nesting level, never a label `:` inside a hash,
 	// array, or paren group opened after the `?`.
 	bracketDepth int
-	bracketStack []bracketFrame
+	bracketStack *frameStack[bracketFrame]
 
 	// ternaryStack holds each ternary `?` whose separator `:` has not yet been
 	// scanned. A `:` in expression-end position closes the innermost pending
@@ -54,10 +54,10 @@ type lexer struct {
 	// being mistaken for the separator. The lexer reads ahead of the parser, but
 	// this stack only relates `?` tokens to the colons the lexer itself scans, so
 	// it stays self-consistent. The parser captures and restores it with the
-	// rest of the lexer value during speculative parsing; snapshot and restore
-	// deep-copy the slice so a rolled-back speculation cannot leak pushes or pops
+	// rest of the lexer value during speculative parsing; the stack is immutable
+	// (see frameStack) so a rolled-back speculation cannot leak pushes or pops
 	// into the live lexer.
-	ternaryStack []ternaryFrame
+	ternaryStack *frameStack[ternaryFrame]
 
 	// percentScan is the parse-wide allowance for the speculative
 	// percent-array-literal scans this lexer's interpolation handling starts.
@@ -87,6 +87,67 @@ type ternaryFrame struct {
 type bracketFrame struct {
 	token         ast.TokenType
 	callArguments bool
+}
+
+// frameStack is an immutable stack of lexer frames: pushing returns a new head
+// whose tail is the stack pushed onto, which therefore keeps holding exactly
+// what it held before. Capturing one is copying a pointer, and no copy has to
+// be taken to keep a capture from being written through later.
+//
+// Both lexer stacks grow with the source and neither is emptied at a statement
+// boundary or after a parse error: nothing pops a `?` whose `:` never arrives,
+// or a `(` the source never closes. parser.snapshot captures both for every
+// speculative parse, and while it copied their slices a source of 50,000 stray
+// `?` followed by 10,000 ambiguous braced parameters (`def f(a:{b:c},...)`, one
+// speculation each) spent 3.9s and allocated 15 GB doing nothing but copying
+// frames -- and 40,000 stray `(` cost the same. Both are 25ms now (#34).
+type frameStack[T any] struct {
+	frame  T
+	under  *frameStack[T]
+	height int
+}
+
+// push returns the stack with frame on top. The nil stack is the empty one, so
+// a lexer needs no stack setup.
+func (s *frameStack[T]) push(frame T) *frameStack[T] {
+	return &frameStack[T]{frame: frame, under: s, height: s.len() + 1}
+}
+
+// len reports how many frames the stack holds.
+func (s *frameStack[T]) len() int {
+	if s == nil {
+		return 0
+	}
+	return s.height
+}
+
+// pop returns the stack without its top frame. Popping the empty stack yields
+// the empty stack, so unbalanced input needs no separate guard.
+func (s *frameStack[T]) pop() *frameStack[T] {
+	if s == nil {
+		return nil
+	}
+	return s.under
+}
+
+// top returns the frame on top of the stack and whether there was one.
+func (s *frameStack[T]) top() (T, bool) {
+	if s == nil {
+		var zero T
+		return zero, false
+	}
+	return s.frame, true
+}
+
+// replaceTop returns the stack with its top frame replaced. Amending a frame
+// goes through here because the frame under the old head may be shared with a
+// snapshot or with a scan running over a copy of this lexer, neither of which
+// the amendment belongs to.
+func (s *frameStack[T]) replaceTop(frame T) *frameStack[T] {
+	if s == nil {
+		return nil
+	}
+	return s.under.push(frame)
 }
 
 func newLexer(input string) *lexer {
@@ -348,7 +409,7 @@ func (l *lexer) scanToken() ast.Token {
 		}
 		closesTernary := l.colonClosesTernary()
 		if closesTernary {
-			l.ternaryStack = l.ternaryStack[:len(l.ternaryStack)-1]
+			l.ternaryStack = l.ternaryStack.pop()
 		}
 		if quote := l.peekRune(); (quote == '"' || quote == '\'') && !closesTernary && l.colonStartsSymbolLiteral() {
 			return l.scanQuotedSymbol(tok)
@@ -497,7 +558,7 @@ func (l *lexer) scanToken() ast.Token {
 		}
 	case '?':
 		tok = l.makeToken(ast.TokenQuestion, "?")
-		l.ternaryStack = append(l.ternaryStack, ternaryFrame{bracketDepth: l.bracketDepth})
+		l.ternaryStack = l.ternaryStack.push(ternaryFrame{bracketDepth: l.bracketDepth})
 		l.readRune()
 	case '|':
 		if l.peekRune() == '|' {
@@ -1626,18 +1687,20 @@ func (l *lexer) openBracket(tt ast.TokenType) {
 		frame.callArguments = true
 	}
 	l.bracketDepth++
-	l.bracketStack = append(l.bracketStack, frame)
+	l.bracketStack = l.bracketStack.push(frame)
 }
 
 func (l *lexer) closeBracket() {
 	if l.bracketDepth > 0 {
 		l.bracketDepth--
 	}
-	if len(l.bracketStack) > 0 {
-		l.bracketStack = l.bracketStack[:len(l.bracketStack)-1]
-	}
-	for len(l.ternaryStack) > 0 && l.ternaryStack[len(l.ternaryStack)-1].bracketDepth > l.bracketDepth {
-		l.ternaryStack = l.ternaryStack[:len(l.ternaryStack)-1]
+	l.bracketStack = l.bracketStack.pop()
+	for {
+		top, ok := l.ternaryStack.top()
+		if !ok || top.bracketDepth <= l.bracketDepth {
+			return
+		}
+		l.ternaryStack = l.ternaryStack.pop()
 	}
 }
 
@@ -1650,10 +1713,7 @@ func (l *lexer) currentBracketType() ast.TokenType {
 }
 
 func (l *lexer) currentBracketFrame() (bracketFrame, bool) {
-	if len(l.bracketStack) == 0 {
-		return bracketFrame{}, false
-	}
-	return l.bracketStack[len(l.bracketStack)-1], true
+	return l.bracketStack.top()
 }
 
 // colonClosesTernary reports whether the colon currently under l.ch is the
@@ -1671,15 +1731,16 @@ func (l *lexer) currentBracketFrame() (bracketFrame, bool) {
 // consequent's own leading symbol (flag ? :"a" : :"b") is in expression-start
 // position, so it is not mistaken for the separator.
 func (l *lexer) colonClosesTernary() bool {
-	if len(l.ternaryStack) == 0 {
+	top, ok := l.ternaryStack.top()
+	if !ok {
 		return false
 	}
-	top := &l.ternaryStack[len(l.ternaryStack)-1]
 	if top.bracketDepth != l.bracketDepth {
 		return false
 	}
-	if l.labelColonBelongsToParenlessKeywordCall(*top) && l.labelColonPrecedesTernarySeparator() {
+	if l.labelColonBelongsToParenlessKeywordCall(top) && l.labelColonPrecedesTernarySeparator() {
 		top.parenlessKeywordCall = true
+		l.ternaryStack = l.ternaryStack.replaceTop(top)
 		return false
 	}
 	return canEndExpressionToken(l.lastToken.Type)
@@ -1776,7 +1837,7 @@ func (m *ternaryScanMemo) record(key ternaryScanKey, answer bool) {
 // of 22 spaced labels, 226 bytes in all, took 877ms to lex, and 26 labels took
 // over a minute (#31, #32).
 func (l *lexer) labelColonPrecedesTernarySeparator() bool {
-	key := ternaryScanKey{offset: l.currentOffset(), depth: len(l.ternaryStack)}
+	key := ternaryScanKey{offset: l.currentOffset(), depth: l.ternaryStack.len()}
 	if answer, ok := l.ternaryScan.answers[key]; ok {
 		return answer
 	}
@@ -1797,20 +1858,18 @@ func (l *lexer) labelColonPrecedesTernarySeparator() bool {
 // different question on some inputs.
 func (l *lexer) scanForTernarySeparator(outerDepth int) bool {
 	scan := *l
-	scan.bracketStack = append([]bracketFrame(nil), l.bracketStack...)
-	scan.ternaryStack = append([]ternaryFrame(nil), l.ternaryStack...)
 	start := scan.currentOffset()
 	defer func() { noteTernaryScan(scan.currentOffset() - start) }()
 
 	scan.readRune()
 	for {
-		beforeDepth := len(scan.ternaryStack)
+		beforeDepth := scan.ternaryStack.len()
 		tok := scan.NextToken()
 		switch tok.Type {
 		case ast.TokenEOF, ast.TokenIllegal, ast.TokenSemicolon:
 			return false
 		}
-		if beforeDepth >= outerDepth && len(scan.ternaryStack) < outerDepth {
+		if beforeDepth >= outerDepth && scan.ternaryStack.len() < outerDepth {
 			return true
 		}
 	}
