@@ -135,3 +135,42 @@ end`)
 		t.Fatal("the call is still sleeping, so the budget did not bound it")
 	}
 }
+
+// TestSleepBudgetIsSharedWithTaskWorkers pins that the budget covers the whole
+// call tree rather than each execution in it.
+//
+// A task worker runs on a fresh Execution, so a total kept per execution reset
+// for every queued job: Tasks.map over a hundred items each sleeping the whole
+// budget parked the host for a hundred times the bound while every individual
+// sleep looked permitted (#29).
+func TestSleepBudgetIsSharedWithTaskWorkers(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t,
+		Config{MaxSleepDuration: 30 * time.Millisecond, MaxTaskConcurrency: 2},
+		`def nap(n)
+  sleep(0.01)
+  n
+end
+
+def run()
+  Tasks.map([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], max: 1, with: :nap)
+end`)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("ten workers each sleeping must exhaust the tree's shared budget")
+		}
+		if !strings.Contains(err.Error(), "exceeds the host maximum") {
+			t.Fatalf("rejected for the wrong reason: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the tree is still sleeping, so the budget is not shared")
+	}
+}

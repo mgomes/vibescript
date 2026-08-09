@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -1620,7 +1622,6 @@ func builtinSleep(exec *Execution, receiver Value, args []Value, kwargs map[stri
 	defer timer.Stop()
 	select {
 	case <-timer.C:
-		exec.sleptTotal += duration
 		return NewInt(int64(duration / time.Second)), nil
 	case <-exec.Context().Done():
 		return NewNil(), exec.Context().Err()
@@ -1643,14 +1644,67 @@ func (exec *Execution) checkSleepDuration(duration time.Duration) error {
 	if limit <= 0 {
 		return nil
 	}
-	// Budgeted across the call, not checked per statement. A per-statement
-	// limit bounds one sleep and nothing else: `loop { sleep(60) }` parks a
-	// worker for years, one permitted sleep at a time, and the step quota
-	// advances only between them.
-	if duration > limit-exec.sleptTotal {
+	// Budgeted across the call tree, not checked per statement and not per
+	// execution. A per-statement limit bounds one sleep and nothing else --
+	// `loop { sleep(60) }` parks a worker for years, one permitted sleep at a
+	// time -- and a per-execution total resets for every task worker, since
+	// each job runs on a fresh Execution: Tasks.map over a hundred items slept
+	// a hundred times the bound.
+	if exec.sleepBudget == nil || !exec.sleepBudget.spend(duration) {
 		return guardLimitErrorf("sleep %s exceeds the host maximum of %s per call", duration, limit)
 	}
 	return nil
+}
+
+// sleepBudget is the sleeping time one call tree shares.
+type sleepBudget struct {
+	mu        sync.Mutex
+	remaining time.Duration
+}
+
+// spend takes duration from the budget, reporting false when the tree has
+// spent its allowance. Nothing is deducted on refusal, so a rejected sleep
+// leaves the budget for whatever else the tree still has to do.
+func (b *sleepBudget) spend(duration time.Duration) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if duration > b.remaining {
+		return false
+	}
+	b.remaining -= duration
+	return true
+}
+
+// sleepBudgetForCall returns the budget a call runs under, inheriting the one
+// its caller published or starting a fresh allowance, along with the context
+// that carries it to everything the call drives.
+//
+// A tree shares one allowance: a task worker runs on its own Execution, so a
+// per-execution total resets for every queued job and Tasks.map over a hundred
+// items sleeps a hundred times the bound.
+func sleepBudgetForCall(ctx context.Context, limit time.Duration) (context.Context, *sleepBudget) {
+	if limit <= 0 {
+		return ctx, nil
+	}
+	if shared := sleepBudgetFromContext(ctx); shared != nil {
+		return ctx, shared
+	}
+	budget := &sleepBudget{remaining: limit}
+	return contextWithSleepBudget(ctx, budget), budget
+}
+
+type sleepBudgetKey struct{}
+
+func contextWithSleepBudget(ctx context.Context, budget *sleepBudget) context.Context {
+	return context.WithValue(ctx, sleepBudgetKey{}, budget)
+}
+
+func sleepBudgetFromContext(ctx context.Context) *sleepBudget {
+	if ctx == nil {
+		return nil
+	}
+	budget, _ := ctx.Value(sleepBudgetKey{}).(*sleepBudget)
+	return budget
 }
 
 func valueToSleepDuration(val Value) (time.Duration, error) {

@@ -1432,6 +1432,12 @@ func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctio
 }
 
 func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts CallOptions) *Execution {
+	// The sleeping budget is established here rather than at the first sleep,
+	// so that every task group formed later inherits it through the context it
+	// captures. Created at the first sleep it would arrive too late: a group is
+	// built before its workers run, so each worker would start its own budget
+	// and the bound would reset per job (#29).
+	ctx, sleeping := sleepBudgetForCall(ctx, script.engine.config.MaxSleepDuration)
 	childCallOptions := CallOptions{
 		Globals:      opts.Globals,
 		Capabilities: opts.Capabilities,
@@ -1448,6 +1454,7 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 		strictEffects: script.engine.config.StrictEffects,
 		allowRequire:  opts.AllowRequire,
 		callOptions:   childCallOptions,
+		sleepBudget:   sleeping,
 	}
 	// The module stacks stay nil: most calls never require a module,
 	// and append allocates them on first use.

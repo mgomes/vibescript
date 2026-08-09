@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand"
 	"sync"
-	"time"
 
 	"github.com/mgomes/vibescript/vibes/source"
 )
@@ -93,11 +92,13 @@ type Execution struct {
 	// Truncating per scan lost them: a loop over a hundred empty rescue clauses
 	// is a hundred separate walks that each round down to nothing.
 	predeclareScanDebt int
-	// sleptTotal sums how long this call has spent in sleep. The bound is a
-	// budget for the call rather than a limit per statement, because a limit
-	// per statement bounds nothing: loop { sleep(60) } parks a worker for
-	// years one permitted sleep at a time (#29).
-	sleptTotal time.Duration
+	// sleepBudget is the time this call tree may still spend sleeping. It is
+	// shared rather than per-execution: a task worker runs on a fresh
+	// Execution, so a per-execution total reset for every queued job and
+	// Tasks.map over a hundred items slept a hundred times the bound (#29).
+	// Lazily created by the first sleep and inherited through the call
+	// context, the way the task concurrency pool is.
+	sleepBudget *sleepBudget
 	// exhausted latches the first genuine budget-exhaustion error (step
 	// quota, memory quota, or output limit) raised on this execution. Once
 	// set, step() fails immediately with it and no rescue clause matches any
