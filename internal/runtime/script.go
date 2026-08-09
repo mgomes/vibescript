@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"slices"
+
+	"github.com/mgomes/vibescript/internal/ast"
 )
 
 func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallOptions) (Value, error) {
@@ -251,7 +253,7 @@ func (s *Script) Function(name string) (*ScriptFunction, bool) {
 	if !ok {
 		return nil, false
 	}
-	return cloneFunctionForSnapshot(fn), true
+	return cloneFunctionForSnapshot(fn, nil), true
 }
 
 // Functions returns compiled functions in deterministic name order.
@@ -263,7 +265,7 @@ func (s *Script) Functions() []*ScriptFunction {
 	slices.Sort(names)
 	out := make([]*ScriptFunction, 0, len(names))
 	for _, name := range names {
-		out = append(out, cloneFunctionForSnapshot(s.functions[name]))
+		out = append(out, cloneFunctionForSnapshot(s.functions[name], nil))
 	}
 	return out
 }
@@ -405,12 +407,17 @@ func cloneEnumsForCall(enums map[string]*EnumDef) map[string]*EnumDef {
 	return cloned
 }
 
-func cloneFunctionForSnapshot(fn *ScriptFunction) *ScriptFunction {
+// cloneFunctionForSnapshot detaches a function for a caller that asked the
+// script to describe itself. propertyTypes carries the property contracts the
+// surrounding snapshot has already copied so a class's methods share one copy
+// per property rather than one per parameter; it may be nil for a lone
+// function, which has nothing to share with.
+func cloneFunctionForSnapshot(fn *ScriptFunction, propertyTypes ast.PropertyTypeMemo) *ScriptFunction {
 	if fn == nil {
 		return nil
 	}
 	clone := *fn
-	clone.Params = cloneParams(fn.Params)
+	clone.Params = ast.CloneParamsWithPropertyTypes(fn.Params, propertyTypes)
 	clone.ReturnTy = cloneTypeExpr(fn.ReturnTy)
 	clone.Body = cloneStatements(fn.Body)
 	clone.Env = nil
@@ -431,11 +438,15 @@ func cloneClassForSnapshot(classDef *ClassDef) *ClassDef {
 		IncludedModules: classDef.IncludedModules,
 		Body:            cloneStatements(classDef.Body),
 	}
+	// One memo for the whole class: every unannotated ivar parameter across its
+	// methods points at the same accessor-declared contract, so the snapshot
+	// copies each contract once and hands the same copy to all of them.
+	propertyTypes := ast.NewPropertyTypeMemo()
 	for methodName, method := range classDef.Methods {
-		classClone.Methods[methodName] = cloneFunctionForSnapshot(method)
+		classClone.Methods[methodName] = cloneFunctionForSnapshot(method, propertyTypes)
 	}
 	for methodName, method := range classDef.ClassMethods {
-		classClone.ClassMethods[methodName] = cloneFunctionForSnapshot(method)
+		classClone.ClassMethods[methodName] = cloneFunctionForSnapshot(method, propertyTypes)
 	}
 	return classClone
 }

@@ -29,11 +29,13 @@ func propertyContractCloneSource(fields, methods int) string {
 }
 
 // TestHostClonedIvarParamsShareOnePropertyContract pins that host-cloning a
-// class does not copy the property contract once per parameter that references
-// it. The contract is one node declared by the generated accessor; every
-// unannotated ivar param naming the property points at it, so a per-param copy
-// turned a type the source spells once into method_count copies of it during
-// cloneValueForHost — after execution, where no quota can see it (#16).
+// class copies the property contract once for the whole class instead of once
+// per parameter that names it. The contract is a single node declared by the
+// generated accessor, so a per-param copy turned a type the source spells once
+// into method_count copies of it during cloneValueForHost — after execution,
+// where no quota can see it (#16). The one copy must still be the clone's own:
+// pointing the parameters back at the compiled script would make a caller that
+// edits what it was handed edit the script every later call runs.
 func TestHostClonedIvarParamsShareOnePropertyContract(t *testing.T) {
 	t.Parallel()
 
@@ -44,27 +46,81 @@ func TestHostClonedIvarParamsShareOnePropertyContract(t *testing.T) {
 	if !ok {
 		t.Fatal("class Big is not compiled")
 	}
-	contract := compiled.Methods["m000000"].Params[0].PropertyType
-	if contract == nil {
+	source := compiled.Methods["m000000"].Params[0].PropertyType
+	if source == nil {
 		t.Fatal("m000000's ivar param resolved no property contract; the test cannot observe sharing")
 	}
-	if len(contract.Shape) != 4 {
-		t.Fatalf("property contract shape has %d fields, want 4", len(contract.Shape))
+	if len(source.Shape) != 4 {
+		t.Fatalf("property contract shape has %d fields, want 4", len(source.Shape))
 	}
 
 	cloned := valueClass(callScript(t, context.Background(), script, "build", nil, CallOptions{}))
 	if cloned == nil {
 		t.Fatal("build did not return a class")
 	}
+	var shared *TypeExpr
 	for i := range methods {
 		name := fmt.Sprintf("m%06d", i)
 		method, ok := cloned.Methods[name]
 		if !ok {
 			t.Fatalf("cloned class is missing method %s", name)
 		}
-		if got := method.Params[0].PropertyType; got != contract {
-			t.Fatalf("cloned %s param property contract = %p, want the shared contract %p", name, got, contract)
+		got := method.Params[0].PropertyType
+		switch {
+		case got == nil:
+			t.Fatalf("cloned %s lost its property contract", name)
+		case got == source:
+			t.Fatalf("cloned %s param property contract is the compiled script's own node; the clone is not detached", name)
+		case shared == nil:
+			shared = got
+		case got != shared:
+			t.Fatalf("cloned %s param property contract = %p, want the one copy %p the class already made", name, got, shared)
 		}
+	}
+	if len(shared.Shape) != len(source.Shape) {
+		t.Fatalf("cloned contract shape has %d fields, want %d", len(shared.Shape), len(source.Shape))
+	}
+}
+
+// TestClassSnapshotDetachesPropertyContracts pins the same detachment for the
+// snapshot Classes() hands out. Sharing the compiled node with the snapshot
+// made a caller's edit to a returned contract land on the accessor every later
+// call resolves, and race with calls already running (#16).
+func TestClassSnapshotDetachesPropertyContracts(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, propertyContractCloneSource(4, 2))
+	source := script.classes["Big"].Methods["m000000"].Params[0].PropertyType
+	if source == nil {
+		t.Fatal("m000000's ivar param resolved no property contract")
+	}
+
+	var snapshot *ClassDef
+	for _, classDef := range script.Classes() {
+		if classDef.Name == "Big" {
+			snapshot = classDef
+		}
+	}
+	if snapshot == nil {
+		t.Fatal("Classes() did not return Big")
+	}
+
+	first := snapshot.Methods["m000000"].Params[0].PropertyType
+	second := snapshot.Methods["m000001"].Params[0].PropertyType
+	if first == nil || second == nil {
+		t.Fatal("the snapshot lost its property contracts")
+	}
+	if first != second {
+		t.Fatalf("the snapshot copied the contract per parameter: %p and %p", first, second)
+	}
+	if first == source {
+		t.Fatal("the snapshot handed out the compiled script's own contract node")
+	}
+
+	// Editing what the caller was handed must not reach the script.
+	first.Nullable = !first.Nullable
+	if source.Nullable == first.Nullable {
+		t.Fatal("editing the snapshot's contract changed the compiled script's")
 	}
 }
 
