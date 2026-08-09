@@ -1640,8 +1640,11 @@ func (exec *Execution) checkSleepDuration(duration time.Duration) error {
 	if exec == nil || exec.engine == nil {
 		return nil
 	}
-	limit := exec.engine.config.MaxSleepDuration
-	if limit <= 0 {
+	// Driven by whether a budget reached this call, not by this engine's own
+	// setting. An engine with no bound of its own still spends a budget it
+	// inherited, or re-entering an unbounded engine would be the way out of a
+	// bounded caller's sandbox.
+	if exec.sleepBudget == nil {
 		return nil
 	}
 	// Budgeted across the call tree, not checked per statement and not per
@@ -1650,8 +1653,9 @@ func (exec *Execution) checkSleepDuration(duration time.Duration) error {
 	// time -- and a per-execution total resets for every task worker, since
 	// each job runs on a fresh Execution: Tasks.map over a hundred items slept
 	// a hundred times the bound.
-	if exec.sleepBudget == nil || !exec.sleepBudget.spend(duration) {
-		return guardLimitErrorf("sleep %s exceeds the host maximum of %s per call", duration, limit)
+	if !exec.sleepBudget.spend(duration) {
+		return guardLimitErrorf("sleep %s exceeds the host maximum of %s per call",
+			duration, exec.sleepBudget.limit)
 	}
 	return nil
 }
@@ -1661,7 +1665,10 @@ func (exec *Execution) checkSleepDuration(duration time.Duration) error {
 // inside it spends both: the inner host's limit constrains the inner script,
 // and the outer host's still bounds the call as a whole.
 type sleepBudget struct {
-	mu        sync.Mutex
+	mu sync.Mutex
+	// limit is what the budget started with, kept so a refusal can name the
+	// bound the host configured rather than whatever is left of it.
+	limit     time.Duration
 	remaining time.Duration
 	parent    *sleepBudget
 }
@@ -1670,27 +1677,26 @@ type sleepBudget struct {
 // false when any of them cannot afford it. Nothing is deducted unless all of
 // them can, so a refusal leaves every allowance for whatever else the tree
 // still has to do.
+// The deduction is made under this budget's own lock and only once every
+// budget above has accepted, so concurrent task workers sharing a chain never
+// observe a child that has paid for a sleep its parent refused. Locks are
+// always taken child before parent, a consistent order that cannot deadlock.
 func (b *sleepBudget) spend(duration time.Duration) bool {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	if duration > b.remaining {
-		b.mu.Unlock()
+		return false
+	}
+	if b.parent != nil && !b.parent.spend(duration) {
 		return false
 	}
 	b.remaining -= duration
-	b.mu.Unlock()
-
-	if b.parent != nil && !b.parent.spend(duration) {
-		b.mu.Lock()
-		b.remaining += duration
-		b.mu.Unlock()
-		return false
-	}
 	return true
 }
 
-// cap reports whether this budget is already no looser than limit, in which
+// atMost reports whether this budget is already no looser than limit, in which
 // case a callee with that limit can share it rather than chaining a new one.
-func (b *sleepBudget) cap(limit time.Duration) bool {
+func (b *sleepBudget) atMost(limit time.Duration) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.remaining <= limit
@@ -1704,22 +1710,24 @@ func (b *sleepBudget) cap(limit time.Duration) bool {
 // per-execution total resets for every queued job and Tasks.map over a hundred
 // items sleeps a hundred times the bound.
 func sleepBudgetForCall(ctx context.Context, limit time.Duration) (context.Context, *sleepBudget) {
+	// An inherited budget is kept whatever this engine allows, and capped at
+	// this engine's own limit when that is tighter. A capability adapter can
+	// re-enter a script on a different engine: inheriting a looser allowance
+	// would let an outer engine lend the inner one permission its own
+	// configuration refuses, and dropping the inherited one because the callee
+	// is unlimited would let a bounded caller escape its own bound by
+	// re-entering an unbounded engine.
+	if shared := sleepBudgetFromContext(ctx); shared != nil {
+		if limit <= 0 || shared.atMost(limit) {
+			return ctx, shared
+		}
+		inner := &sleepBudget{limit: limit, remaining: limit, parent: shared}
+		return contextWithSleepBudget(ctx, inner), inner
+	}
 	if limit <= 0 {
 		return ctx, nil
 	}
-	// An inherited budget is capped at this engine's own limit rather than
-	// taken as given. A capability adapter can re-enter a script on a
-	// different engine, and the callee's host set its bound for its own
-	// reasons: inheriting a looser allowance would let an outer engine lend
-	// the inner one permission its configuration refuses.
-	if shared := sleepBudgetFromContext(ctx); shared != nil {
-		if shared.cap(limit) {
-			return ctx, shared
-		}
-		inner := &sleepBudget{remaining: limit, parent: shared}
-		return contextWithSleepBudget(ctx, inner), inner
-	}
-	budget := &sleepBudget{remaining: limit}
+	budget := &sleepBudget{limit: limit, remaining: limit}
 	return contextWithSleepBudget(ctx, budget), budget
 }
 

@@ -191,7 +191,7 @@ end`)
 
 	// The outer budget is generous enough to admit the inner sleep on its own,
 	// so only the inner engine's own limit can reject it.
-	outerBudget := &sleepBudget{remaining: time.Second}
+	outerBudget := &sleepBudget{limit: time.Second, remaining: time.Second}
 	ctx := contextWithSleepBudget(context.Background(), outerBudget)
 
 	done := make(chan error, 1)
@@ -228,7 +228,7 @@ func TestNestedEngineStillSpendsTheOuterBudget(t *testing.T) {
 end`)
 
 	// Room for one nested sleep and not two.
-	outerBudget := &sleepBudget{remaining: 7 * time.Millisecond}
+	outerBudget := &sleepBudget{limit: 7 * time.Millisecond, remaining: 7 * time.Millisecond}
 	ctx := contextWithSleepBudget(context.Background(), outerBudget)
 
 	if _, err := inner.Call(ctx, "run", nil, CallOptions{}); err != nil {
@@ -236,5 +236,60 @@ end`)
 	}
 	if _, err := inner.Call(ctx, "run", nil, CallOptions{}); err == nil {
 		t.Fatal("repeated nested calls must exhaust the outer budget")
+	}
+}
+
+// TestUnlimitedCalleeStillSpendsAnInheritedBudget pins that an engine with no
+// bound of its own does not let a bounded caller escape one.
+//
+// A capability adapter can re-enter an unbounded engine from a bounded one.
+// Dropping the inherited budget because the callee is unlimited would make
+// re-entry the way out of the outer host's sandbox (#29).
+func TestUnlimitedCalleeStillSpendsAnInheritedBudget(t *testing.T) {
+	t.Parallel()
+
+	inner := compileScriptWithConfig(t, Config{MaxSleepDuration: Unlimited}, `def run()
+  sleep(0.005)
+end`)
+
+	// Room for one nested sleep and not two.
+	outerBudget := &sleepBudget{limit: 7 * time.Millisecond, remaining: 7 * time.Millisecond}
+	ctx := contextWithSleepBudget(context.Background(), outerBudget)
+
+	if _, err := inner.Call(ctx, "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("a sleep inside the inherited budget must run: %v", err)
+	}
+	if _, err := inner.Call(ctx, "run", nil, CallOptions{}); err == nil {
+		t.Fatal("an unlimited callee must still spend the budget it inherited")
+	}
+}
+
+// TestChainedBudgetsSpendAtomically pins that a refusal above leaves nothing
+// deducted below.
+//
+// Task workers share a chained budget concurrently, so publishing the child's
+// deduction before the parent accepted it would let one worker see capacity
+// spent on a sleep that never happened.
+func TestChainedBudgetsSpendAtomically(t *testing.T) {
+	t.Parallel()
+
+	parent := &sleepBudget{limit: 5 * time.Millisecond, remaining: 5 * time.Millisecond}
+	child := &sleepBudget{limit: time.Second, remaining: time.Second, parent: parent}
+
+	if child.spend(10 * time.Millisecond) {
+		t.Fatal("a sleep the parent cannot afford must be refused")
+	}
+	if got := child.remaining; got != time.Second {
+		t.Fatalf("the refused sleep spent %s of the child budget", time.Second-got)
+	}
+	if got := parent.remaining; got != 5*time.Millisecond {
+		t.Fatalf("the refused sleep spent %s of the parent budget", 5*time.Millisecond-got)
+	}
+
+	if !child.spend(4 * time.Millisecond) {
+		t.Fatal("a sleep both budgets can afford must be admitted")
+	}
+	if got := parent.remaining; got != time.Millisecond {
+		t.Fatalf("parent has %s left, want 1ms: an admitted sleep must spend every level", got)
 	}
 }
