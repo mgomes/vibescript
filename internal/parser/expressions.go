@@ -1088,7 +1088,7 @@ func findStringInterpolationEnd(raw string, start int, budget *percentScanBudget
 			if tooDeep {
 				// A literal inside this body nests past the bound, so the body
 				// cannot be read whichever way the `%` goes. Reporting that
-				// rather than lexing on keeps the refusal travelling out to
+				// rather than lexing on keeps the refusal traveling out to
 				// whoever asked for the interpolation's end.
 				return 0, false, true
 			}

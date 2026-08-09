@@ -144,7 +144,7 @@ func TestSplatTargetListAtTheBoundStillParses(t *testing.T) {
 }
 
 // One line further the lookahead stops before the "=", so the "*" reads as the
-// multiplication it was ambiguous with. That is the whole behaviour change the
+// multiplication it was ambiguous with. That is the whole behavior change the
 // bound makes, and it is here so it cannot move without being noticed.
 func TestSplatTargetListPastTheBoundReadsAsMultiplication(t *testing.T) {
 	t.Parallel()
