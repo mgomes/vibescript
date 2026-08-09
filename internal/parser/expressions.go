@@ -2485,8 +2485,26 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 	return expr
 }
 
+// maxParenlessCallDepth bounds how deeply parenless calls may nest. A parenless
+// call parses its argument as a full expression, and that argument may be
+// another parenless call, so `a a a a ...` on one line is a(a(a(...))) and
+// drives seven parser frames per identifier. Without a bound, 500,000 of them
+// -- half of the default MaxSourceBytes, so an ordinary upload -- overflowed the
+// 1 GB goroutine stack, an uncatchable fatal that takes the host down rather
+// than the script, and 200,000 already took 10s to parse (#47). Real code stacks
+// two or three deep (`puts format x`), so the cap is far out of reach of
+// anything written on purpose, and it matches maxTypeDepth, the same guard over
+// the other unbounded parser recursion.
+const maxParenlessCallDepth = 64
+
 func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expression {
 	if function == nil {
+		return nil
+	}
+	p.parenlessCallDepth++
+	defer func() { p.parenlessCallDepth-- }()
+	if p.parenlessCallDepth > maxParenlessCallDepth {
+		p.addParseError(p.peekToken.Pos, "parenless call nesting too deep")
 		return nil
 	}
 	expr := &ast.CallExpr{Callee: function, Position: function.Pos(), Safe: isSafeMemberCallee(function)}
