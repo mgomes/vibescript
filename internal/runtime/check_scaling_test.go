@@ -414,16 +414,21 @@ end
 `, literal(written, fields), padding, writes, subject)
 	}
 
-	// Padding drives how much of the budget is gone before the write under
-	// test: distinct new keys spend the first allowance, and contradicting
-	// overwrites of them spend the second.
-	padding := func(newKeys, overwrites int) string {
+	// Padding drives how much of the budget is gone before the write under test.
+	// Distinct new keys spend the first allowance. Spending the second takes
+	// contradicting writes to keys the fact still names, which means the
+	// literal's own fields: a key added after the first allowance is gone was
+	// never named, so writing it again is free and spends nothing. An earlier
+	// version of this walk contradicted the padding's own keys and therefore
+	// never reached the second allowance at all, which is how it kept passing a
+	// shape that crosses both.
+	padding := func(newKeys, claimedOverwrites, fields int) string {
 		var body strings.Builder
 		for i := range newKeys {
 			fmt.Fprintf(&body, "  h[:p%d] = 1\n", i)
 		}
-		for i := range overwrites {
-			fmt.Fprintf(&body, "  h[:p%d] = \"s\"\n", i%max(newKeys, 1))
+		for i := range claimedOverwrites {
+			fmt.Fprintf(&body, "  h[:f%d] = \"s\"\n", i%max(fields, 1))
 		}
 		return body.String()
 	}
@@ -439,10 +444,12 @@ end
 		{"alternating", "1", strings.Repeat("  h[:w] = \"s\"\n  h[:w] = 2\n", 25)},
 		{"narrowing then widening", "flag ? nil : 1", "  h[:w] = 1\n  h[:w] = \"s\"\n  h[:w] = 1\n"},
 	}
-	budgets := []struct{ name, padding string }{
-		{"unspent", ""},
-		{"budget spent", padding(200, 0)},
-		{"both spent", padding(200, 400)},
+	budgets := []struct {
+		name    string
+		padding func(fields int) string
+	}{
+		{"unspent", func(int) string { return "" }},
+		{"budget spent", func(fields int) string { return padding(200, 0, fields) }},
 	}
 	widths := []struct {
 		name   string
@@ -461,7 +468,7 @@ end
 					name := fmt.Sprintf("%s/%s/%s/branch on %s",
 						width.name, budget.name, write.name, subject)
 					t.Run(name, func(t *testing.T) {
-						script := source(write.written, width.fields, budget.padding, write.text, subject)
+						script := source(write.written, width.fields, budget.padding(width.fields), write.text, subject)
 						unbudgeted := checkWarningMessagesWithShapeBudget(t, script, math.MaxInt/4)
 						budgeted := checkWarningMessages(compileScript(t, script).CheckWarnings())
 
@@ -491,6 +498,77 @@ func checkWarningMessagesWithShapeBudget(t *testing.T, source string, budget int
 		maxRefinedShapeNodes, maxWidenedShapeNodes = previousExact, previousWidened
 	}()
 	return checkWarningMessages(compileScript(t, source).CheckWarnings())
+}
+
+// The boundary the walk above stops at, generated the same way it is: a fact
+// that crosses the exact-refinement budget and then takes contradicting writes
+// to enough keys it still names to cross the widening budget too. Every write
+// past that point would have to copy the whole fact to restate one claim, and
+// paying for them is the quadratic this budget exists to refuse -- contradicting
+// every key of a literal allocated 11.6MB, 46.7MB and 184MB at 200, 400 and 800
+// fields with the cap removed, against 5.4MB, 7.1MB and 10.0MB with it.
+//
+// So the fact is given up there, and a branch on a field it had vouched for
+// stops being decided. This pins that, both so the cost of the bound is stated
+// rather than assumed and so that closing it later is a test change rather than
+// a silent one.
+func TestShapeWideningBudgetGivesUpTheFact(t *testing.T) {
+	source := func(fields int) string {
+		pairs := make([]string, 0, fields+1)
+		for i := range fields {
+			pairs = append(pairs, fmt.Sprintf("f%d: %d", i, i))
+		}
+		pairs = append(pairs, "keep: 1")
+		var body strings.Builder
+		body.WriteString("  h[:fresh] = 1\n")
+		for i := range fields {
+			fmt.Fprintf(&body, "  h[:f%d] = \"s\"\n", i)
+		}
+		return fmt.Sprintf(`
+def take(v: int)
+  v
+end
+
+def f()
+  h = { %s }
+%s  if h[:keep]
+    1
+  else
+    take("bad")
+  end
+end
+`, strings.Join(pairs, ", "), body.String())
+	}
+	const dead = "call to take argument v expected int, got string"
+
+	// Short of the widening budget every claim is restated and the branch stays
+	// decided, which is the property the walk above asserts.
+	for _, fields := range []int{50, 100} {
+		if messages := checkWarningMessages(compileScript(t, source(fields)).CheckWarnings()); len(messages) != 0 {
+			t.Fatalf("%d contradicted fields reported %v inside the budget", fields, messages)
+		}
+	}
+
+	// Past it the fact is given up rather than rebuilt smaller, so the branch is
+	// undecided and its dead arm is checked. The unbudgeted checker still
+	// decides it, which is exactly what the bound costs here.
+	for _, fields := range []int{300, 600} {
+		budgeted := checkWarningMessages(compileScript(t, source(fields)).CheckWarnings())
+		requireCheckWarningMessage(t, budgeted, dead)
+
+		unbudgeted := checkWarningMessagesWithShapeBudget(t, source(fields), math.MaxInt/4)
+		if len(unbudgeted) != 0 {
+			t.Fatalf("%d contradicted fields reported %v without a budget", fields, unbudgeted)
+		}
+	}
+}
+
+func requireCheckWarningMessage(t *testing.T, messages []string, want string) {
+	t.Helper()
+
+	if !slices.Contains(messages, want) {
+		t.Fatalf("expected %q, got %v", want, messages)
+	}
 }
 
 // The boundary the walk above stops at. A literal wider than the whole
