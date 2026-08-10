@@ -310,9 +310,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// can be charged for it. The values sit on this frame's Go stack for as
 		// long as the body runs, and nothing the estimator walks reaches them.
 		prevReceiver, prevArgs, prevKwargs := exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs
+		prevReserved := exec.builtinFrameRootsReserved
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = receiver, args, kwargs
+		// A new frame holds new values, so it reserves its own.
+		exec.builtinFrameRootsReserved = false
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = prevReceiver, prevArgs, prevKwargs
+		exec.builtinFrameRootsReserved = prevReserved
 		// Dropping the claims moves any array a shrink narrowed off the storage
 		// it gave up, which is the first point that storage can be released.
 		// That copy is charged, so it can fail; a failure the call itself did

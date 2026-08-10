@@ -3663,9 +3663,25 @@ func (est *memoryEstimator) objectWrapperBytes(val Value) int {
 // and counted by every walk while the body runs, so charging them here as well
 // doubled them. `proc.call`, whose arguments are exactly the block's, went from
 // charging a 2,000,000-byte argument once to charging it twice.
-func (exec *Execution) reserveCallerRetainedRoots(blockArgs []Value) int {
+func (exec *Execution) reserveCallerRetainedRoots(blockArgs []Value) (int, bool) {
 	if exec == nil || exec.memoryQuota <= 0 {
-		return 0
+		return 0, false
+	}
+	// Nothing held means nothing to weigh, and the walk below is not free: it is
+	// a full base walk, and a yield inside a script function reaches here with no
+	// builtin frame in scope at all. Walking anyway made a loop of n yields over
+	// an n-element collection cost 1,957,647 estimator nodes against master's
+	// 1,310,447 -- a 1.49x constant on a path that is already quadratic, bought
+	// for a measurement of nothing.
+	if exec.builtinFrameReceiver.Kind() == KindNil && len(exec.builtinFrameArgs) == 0 &&
+		len(exec.builtinFrameKwargs) == 0 {
+		return 0, false
+	}
+	// Already folded in by an outer CallBlock under this same frame. A block that
+	// enters a script function which yields arrives here again holding exactly
+	// what the outer call reserved, and reserving it twice charges it twice.
+	if exec.builtinFrameRootsReserved {
+		return 0, false
 	}
 	est := newMemoryEstimator()
 	base := exec.estimateMemoryUsageBase(est)
@@ -3682,8 +3698,9 @@ func (exec *Execution) reserveCallerRetainedRoots(blockArgs []Value) int {
 	for _, kwarg := range exec.builtinFrameKwargs {
 		total = saturatingAdd(total, est.value(kwarg))
 	}
+	exec.builtinFrameRootsReserved = true
 	if total <= base {
-		return 0
+		return 0, true
 	}
-	return exec.reserveLoopScratch(total - base)
+	return exec.reserveLoopScratch(total - base), true
 }

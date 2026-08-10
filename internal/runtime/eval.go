@@ -1894,8 +1894,13 @@ func (exec *Execution) callBlockValue(block Value, args []Value, pos Position) (
 	// evaluated it and again after, never at the same time as whatever the body
 	// allocates, so the real peak of the two together escaped: a 2,000,000-byte
 	// ignored default moved the smallest admitting quota by nothing at all.
-	retained := exec.reserveCallerRetainedRoots(args)
-	defer exec.releaseLoopScratch(retained)
+	retained, ownsFrameRoots := exec.reserveCallerRetainedRoots(args)
+	defer func() {
+		exec.releaseLoopScratch(retained)
+		if ownsFrameRoots {
+			exec.builtinFrameRootsReserved = false
+		}
+	}()
 
 	charge := newBlockBindCharge(exec, blk, NewNil(), args, nil, block)
 	val, err := exec.callBlock(blk, args, newBlockAssignmentEnv(blk.Env), charge, pos)

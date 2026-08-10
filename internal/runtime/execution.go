@@ -204,6 +204,14 @@ type Execution struct {
 	builtinFrameReceiver Value
 	builtinFrameArgs     []Value
 	builtinFrameKwargs   map[string]Value
+	// builtinFrameRootsReserved records that a CallBlock under this frame has
+	// already folded those values into the reserved scratch. A block that enters
+	// a script function which yields reaches CallBlock again under the same
+	// frame, and reserving a second time charged the same ephemeral argument
+	// twice: a 2MB ignored default needed 6,005,407 bytes where the real peak is
+	// 4,004,336. It is saved and restored with the frame values, so a nested
+	// builtin frame still reserves its own.
+	builtinFrameRootsReserved bool
 
 	// Dormant-frame accounting (see memory_dormant.go) makes the estimator's
 	// env-stack walk incremental for block-free function recursion. dormant holds

@@ -128,3 +128,72 @@ func TestCallBlockDoesNotChargeWhatTheCallerPassed(t *testing.T) {
 			"block's binding and must not be charged again as a root", grew, payload)
 	}
 }
+
+// TestCallBlockDoesNotWalkWhenTheFrameHoldsNothing pins that the caller-root
+// reservation costs nothing when there is no caller root to measure.
+//
+// The reservation's measurement is a full base walk, and CallBlock is on every
+// yield in the language. A yield inside a script function reaches it with no
+// builtin frame in scope at all, so walking before checking whether the frame
+// holds anything bought a whole-graph walk per yield for a measurement of
+// nothing: a loop of n yields over an n-element collection went from 1,310,447
+// estimator nodes to 1,957,647, a 1.49x constant on a path that is already
+// quadratic without it.
+//
+// Not parallel: the estimator visit counter is process-wide.
+func TestCallBlockDoesNotWalkWhenTheFrameHoldsNothing(t *testing.T) {
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	exec.root = newEnv(nil)
+	// A graph worth walking, so a walk that happens is unmistakable.
+	big := make([]Value, 4000)
+	for i := range big {
+		big[i] = NewInt(int64(i))
+	}
+	exec.root.Define("held", NewArray(big))
+
+	estimatorVisits.Store(0)
+	estimatorVisitCounting.Store(true)
+	delta, owns := exec.reserveCallerRetainedRoots(nil)
+	estimatorVisitCounting.Store(false)
+
+	if visits := estimatorVisits.Load(); visits != 0 {
+		t.Fatalf("reserving caller roots for a frame holding nothing walked %d estimator nodes; "+
+			"the walk measures the frame's values against the live base, so with no frame values "+
+			"there is nothing to measure and nothing to walk", visits)
+	}
+	if delta != 0 || owns {
+		t.Fatalf("reserved %d bytes (owns=%v) for a frame holding nothing", delta, owns)
+	}
+}
+
+// TestCallBlockReservesTheFrameOnceAcrossNestedYields pins that a frame's hold
+// is folded in once however many blocks run under it.
+//
+// A block driven by a builtin can enter a script function that yields, and that
+// nested CallBlock arrives holding exactly what the outer one already reserved.
+// Reserving again charged the same ephemeral argument twice: an array.fetch with
+// a 2MB ignored default whose block relays through a yield needed 6,005,407
+// bytes where the direct spelling needs 4,004,336, and deeper relays multiply it.
+//
+// Both spellings hold the same memory at their peak, so their quotas must agree.
+func TestCallBlockReservesTheFrameOnceAcrossNestedYields(t *testing.T) {
+	t.Parallel()
+
+	seed := NewString(strings.Repeat("abcdefghij", 10))
+	const payload = 2_000_000
+
+	direct := "def run(s)\n  a = [1]\n  a.fetch(9, s * 20_000) { |i| s * 20_000 }\nend"
+	relayed := "def relay()\n  yield 0\nend\n" +
+		"def run(s)\n  a = [1]\n  a.fetch(9, s * 20_000) { |i| relay { |y| s * 20_000 } }\nend"
+
+	atDirect := minAdmittingQuota(t, direct, seed, false)
+	atRelayed := minAdmittingQuota(t, relayed, seed, false)
+
+	// The relay costs a little for its own frame; a second copy of the default is
+	// what this rejects, so the slack is a small fraction of the payload.
+	if extra := atRelayed - atDirect; extra > payload/4 {
+		t.Fatalf("relaying the block through a yield moved the smallest admitting quota from %d to "+
+			"%d, %d more; the frame's ignored default is being reserved once per CallBlock under "+
+			"that frame rather than once for the frame", atDirect, atRelayed, extra)
+	}
+}
