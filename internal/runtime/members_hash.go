@@ -1079,12 +1079,19 @@ func hashMemberQuery(property string) (Value, error) {
 			// The block is driven through a runner inside a block-iteration region
 			// so the base walk stays memoized across misses; see hash.values_at for
 			// the measurement.
+			//
+			// The runner is built on the first miss rather than before the loop,
+			// the way values_at builds its default proc's. Building one constructs
+			// a blockBindCharge, whose baseline walks the whole reachable graph and
+			// every registered output root, and a lookup whose keys are all present
+			// never calls the block at all -- which is the ordinary use of
+			// fetch_values, so the cost landed on the common path. Over a
+			// 20,000-element reachable graph an all-present lookup cost 120,081
+			// estimator visits with a rest-binding block against 100,064 with a
+			// plain one, and an argumentless call cost 100,040 against 80,029; the
+			// two spellings cost the same again now, as they do on master.
+			hasBlock := valueBlock(block) != nil
 			var runner *blockCallRunner
-			if valueBlock(block) != nil {
-				if runner, err = newBlockCallRunner(exec, block, "hash.fetch_values", receiver, nil, kwargs); err != nil {
-					return NewNil(), err
-				}
-			}
 			defer exec.beginBlockIterationRegion().end()
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
@@ -1105,8 +1112,15 @@ func hashMemberQuery(property string) (Value, error) {
 					exec.addRetainedOutput(value)
 					continue
 				}
-				if runner == nil {
+				if !hasBlock {
 					return NewNil(), fmt.Errorf("hash.fetch_values key not found: %s", formatMissingHashKey(arg))
+				}
+				if runner == nil {
+					built, buildErr := newBlockCallRunner(exec, block, "hash.fetch_values", receiver, nil, kwargs)
+					if buildErr != nil {
+						return NewNil(), buildErr
+					}
+					runner = built
 				}
 				blockArg := [1]Value{arg}
 				// The key is charged as a per-call root, not left to the runner's

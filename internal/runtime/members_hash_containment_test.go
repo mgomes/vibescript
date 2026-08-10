@@ -5408,6 +5408,79 @@ func TestNestedHashLookupsReturnTheSameResults(t *testing.T) {
 	}
 }
 
+// allPresentLookupSource builds a lookup over a receiver that holds every key it
+// asks for, so the callback is never invoked. params is the callback's parameter
+// list: only a named rest builds a blockBindCharge, and that charge's baseline is
+// what walks the graph. A count of zero asks for nothing at all, the degenerate
+// version of the same thing.
+//
+// fetch_values takes its callback as the call-site block; values_at takes it as
+// the receiver's default proc, which is why the two spellings differ.
+func allPresentLookupSource(builtin string, count int, params string) string {
+	keys := make([]string, count)
+	for i := range keys {
+		keys[i] = fmt.Sprintf(":k%04d", i)
+	}
+	keyList := strings.Join(keys, ", ")
+	if builtin == "values_at" {
+		stores := make([]string, count)
+		for i := range stores {
+			stores[i] = fmt.Sprintf("  h[:k%04d] = %d\n", i, i)
+		}
+		return fmt.Sprintf("def run(a, n)\n  h = Hash.new { |g, %s| 1 }\n%s  h.values_at(%s).length\nend",
+			params, strings.Join(stores, ""), keyList)
+	}
+	entries := make([]string, count)
+	for i := range entries {
+		entries[i] = fmt.Sprintf("k%04d: %d", i, i)
+	}
+	return fmt.Sprintf("def run(a, n)\n  h = { %s }\n  h.fetch_values(%s) { |%s| 1 }.length\nend",
+		strings.Join(entries, ", "), keyList, params)
+}
+
+// A lookup that never calls its block must not pay for one. The block runs only
+// on a miss, so a receiver holding every requested key -- the ordinary use of
+// fetch_values, and the one this PR's machinery is not about -- should cost what
+// it costs with any block, or with none.
+//
+// Building the callback's runner constructs a blockBindCharge whose baseline
+// walks the whole reachable graph and every registered output root, and in
+// fetch_values that construction sat before the loop. So a rest-binding block
+// bought a graph walk for a callback that never happened, and an argumentless
+// call bought one for a loop that never ran. On master the two spellings cost the
+// same, because master builds no runner at all. values_at already built its
+// default proc's runner on the first miss and is here to keep it that way.
+//
+// The assertion compares the two spellings rather than pinning a count: a named
+// rest changes how a callback BINDS, so when the callback is never invoked it must
+// not change what the lookup costs. Over a 20,000-element reachable graph the
+// defect was worth 20% at one present key and 25% at none, so a 5% bound catches
+// it with room while staying off the exact numbers.
+//
+// Deliberately not parallel: the estimator visit counter is process-wide.
+func TestAllPresentHashLookupDoesNotPayForItsCallback(t *testing.T) {
+	if estimatorVerify {
+		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
+	}
+	graph := loopMemoArray(20000)
+	for _, builtin := range []string{"fetch_values", "values_at"} {
+		for _, present := range []int{0, 1, 4} {
+			t.Run(fmt.Sprintf("%s/%d present keys", builtin, present), func(t *testing.T) {
+				atPlain := estimatorVisitsFor(t, allPresentLookupSource(builtin, present, "k"), graph, 0)
+				atRest := estimatorVisitsFor(t, allPresentLookupSource(builtin, present, "(head, *tail)"), graph, 0)
+
+				if atRest > atPlain+atPlain/20 {
+					t.Fatalf("a %s finding all %d of its keys visited %d estimator nodes with a "+
+						"rest-binding callback and %d with a plain one, %.0f%% more for a callback "+
+						"neither spelling ever calls; the runner is being built before the loop "+
+						"rather than on the first miss", builtin, present, atRest, atPlain,
+						100*float64(atRest-atPlain)/float64(atPlain))
+				}
+			})
+		}
+	}
+}
+
 // intArray builds a receiver of count distinct ints, cheap enough that a test
 // weighing payloads is not measuring the receiver.
 func intArray(count int) Value {
