@@ -534,7 +534,11 @@ const singlePairHashLiteral = 1
 func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, valueTypeForKey func(Value) *TypeExpr) (Value, error) {
 	var acc *hashLiteralBuildAccumulator
 	if exec.memoryQuota > 0 && len(e.Pairs) > singlePairHashLiteral {
-		acc = newHashLiteralBuildAccumulator(exec, len(e.Pairs))
+		var err error
+		acc, err = newHashLiteralBuildAccumulator(exec)
+		if err != nil {
+			return NewNil(), err
+		}
 		if err := acc.reserveBacking(len(e.Pairs)); err != nil {
 			return NewNil(), err
 		}
@@ -581,7 +585,7 @@ func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, v
 			if replacing || acc.replacing {
 				err = acc.replaceEntry(key, lookupKey, keyVal, val, entries)
 			} else {
-				err = acc.addDistinctEntry(lookupKey, keyVal, val)
+				err = acc.addDistinctEntry(entries, lookupKey, keyVal, val)
 			}
 			if err != nil {
 				return NewNil(), err
@@ -2285,7 +2289,7 @@ func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value V
 		// yielded value, not the whole receiver).
 		return assignDestructureWithNormalizer(t, value, func(target Expression, value Value) error {
 			return exec.bindBlockParamTarget(env, target, value, charge, blk)
-		}, charge.destructureCharge(), func(element DestructureElement, value Value) (Value, error) {
+		}, charge.destructureCharge(exec), func(element DestructureElement, value Value) (Value, error) {
 			return exec.normalizeBlockDestructureElement(blk, element, value)
 		})
 	default:
@@ -2641,7 +2645,7 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 // (the right-hand-side snapshot and any named rest window) against the memory
 // quota before it is allocated.
 func AssignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error) error {
-	return assignDestructure(target, value, assign, destructureCharge{check: noopDestructureCheck})
+	return assignDestructure(target, value, assign, destructureCharge{check: noopDestructureCheck, step: noopDestructureStep})
 }
 
 // destructureCharge meters the fresh int-value slot arrays a destructuring
@@ -2662,8 +2666,15 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 // either; the count threads down the recursion so a nested destructure charges
 // its own arrays on top of every enclosing level's still-live snapshot,
 // projecting the true peak rather than a single level's allocation.
+//
+// step bills the step quota for the targets the walk visits and the value slots
+// it copies. The walk is one statement but arbitrarily much work: a target may
+// nest, and every nested rest copies its own window, so a single assignment
+// could copy a large host-supplied array once per nested target for a flat
+// handful of steps and poll the context not at all (#49).
 type destructureCharge struct {
 	check     func(count, liveSlots int, liveRoot Value) error
+	step      func(units int) error
 	liveRoot  Value
 	liveSlots int
 }
@@ -2672,6 +2683,41 @@ type destructureCharge struct {
 // run outside a memory quota, so the arrays they may materialize are not metered.
 func noopDestructureCheck(int, int, Value) error { return nil }
 
+// noopDestructureStep bills nothing, for the same host callers: they run outside
+// a step quota too.
+func noopDestructureStep(int) error { return nil }
+
+// destructureUnitsPerStep amortizes a destructuring assignment over the targets
+// it walks and the value slots it copies, at the same rate chargeStringScan and
+// the predeclaration scan use for their own per-unit work. Copying a slot is a
+// pointer-width move and visiting a target is a type switch, so an ordinary
+// `a, b, *rest = xs` stays free while work that scales with a host-supplied
+// array cannot.
+const destructureUnitsPerStep = 64
+
+// chargeDestructureScan bills n units of destructuring work, carrying the
+// sub-step remainder on the execution. Rounding each call down would leave a
+// target list of many just-under-threshold windows free however many of them
+// there were, which is the shape the charge exists to stop; the residue settles
+// whole steps as those tails accumulate. Charging through stepN also restores
+// the cancellation poll and periodic memory check that a long assignment
+// otherwise ran to completion without.
+func (exec *Execution) chargeDestructureScan(n int) error {
+	// A nil execution has no quota to charge against, matching chargeStringScan:
+	// the walk is reachable from the static checker's speculative binding pass,
+	// and callers should not each have to remember that.
+	if exec == nil || n <= 0 {
+		return nil
+	}
+	exec.destructureScanResidue += n
+	steps := exec.destructureScanResidue / destructureUnitsPerStep
+	if steps <= 0 {
+		return nil
+	}
+	exec.destructureScanResidue -= steps * destructureUnitsPerStep
+	return exec.stepN(steps)
+}
+
 // assignDestructure applies Vibescript's destructuring assignment rules and
 // invokes assign for each concrete leaf target. The returned charge meters every
 // fresh slot array against the caller's memory quota before it is allocated,
@@ -2679,7 +2725,11 @@ func noopDestructureCheck(int, int, Value) error { return nil }
 // is projected even when the right-hand side is not reachable from any
 // environment (a function return or array literal).
 func (exec *Execution) assignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error) error {
-	return assignDestructure(target, value, assign, destructureCharge{check: exec.checkProjectedIntArrayBytesWithLive, liveRoot: value})
+	return assignDestructure(target, value, assign, destructureCharge{
+		check:    exec.checkProjectedIntArrayBytesWithLive,
+		step:     exec.chargeDestructureScan,
+		liveRoot: value,
+	})
 }
 
 func assignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error, charge destructureCharge) error {
@@ -2689,6 +2739,12 @@ func assignDestructure(target *DestructureTarget, value Value, assign func(Expre
 type destructureElementNormalizer func(DestructureElement, Value) (Value, error)
 
 func assignDestructureWithNormalizer(target *DestructureTarget, value Value, assign func(Expression, Value) error, charge destructureCharge, normalize destructureElementNormalizer) error {
+	// Charged per level, so a nested target bills its own elements on top of
+	// every enclosing one: the recursion is what turns one statement into
+	// arbitrarily many target walks.
+	if err := charge.step(len(target.Elements)); err != nil {
+		return err
+	}
 	values := destructureValues(value)
 	// Ruby evaluates the whole right-hand side into an array before performing
 	// any assignment, so every target reads its original value regardless of
@@ -2702,8 +2758,11 @@ func assignDestructureWithNormalizer(target *DestructureTarget, value Value, ass
 	// the scalar RHS path, which already returns a fresh slice) keeps the alias,
 	// as does a write whose only followers discard their window (e.g.
 	// "values[0], * = values"), which reads nothing the write could corrupt.
-	if value.Kind() == KindArray && destructureWriteIsReadBack(target) {
+	if value.Kind() == KindArray && target.WriteIsReadBack() {
 		if err := charge.check(len(values), charge.liveSlots, charge.liveRoot); err != nil {
+			return err
+		}
+		if err := charge.step(len(values)); err != nil {
 			return err
 		}
 		values = append([]Value(nil), values...)
@@ -2768,6 +2827,9 @@ func assignDestructureWithNormalizer(target *DestructureTarget, value Value, ass
 			if err := charge.check(restEnd-restStart, charge.liveSlots, charge.liveRoot); err != nil {
 				return err
 			}
+			if err := charge.step(restEnd - restStart); err != nil {
+				return err
+			}
 			// Allocate the rest backing with capacity exactly equal to the collected
 			// element count. append([]Value(nil), src...) (and slices.Clone, which
 			// wraps it) would let Go's growslice round the capacity up past len, so
@@ -2816,67 +2878,6 @@ func destructureValues(value Value) []Value {
 		return value.Array()
 	}
 	return []Value{value}
-}
-
-// destructureWriteIsReadBack reports whether the target list contains a leaf
-// that assigns into an existing container (an index or member place) followed,
-// in left-to-right execution order, by a leaf that reads a value out of the
-// right-hand side. Only that ordering lets a later read observe an earlier
-// write's mutation of the aliased RHS array, so it is the only case that needs
-// the snapshot AssignDestructure would otherwise take unconditionally.
-//
-// A write whose only successors discard their window (e.g. "values[0], * =
-// values", where the trailing anonymous rest reads nothing, or "values[0], (*)
-// = values", where the nested follower destructures nothing) is safe to alias:
-// no surviving read can observe the mutation, so snapshotting it would copy the
-// whole backing slice for no observable effect. Plain identifiers, ivars, and
-// class vars write to environment or instance slots that never alias the RHS
-// array's backing store, so they count only as reads, never as container
-// writes.
-func destructureWriteIsReadBack(target *DestructureTarget) bool {
-	sawWrite := false
-	for _, element := range target.Elements {
-		if sawWrite && destructureElementReads(element) {
-			return true
-		}
-		if destructureElementWrites(element.Target) {
-			sawWrite = true
-		}
-	}
-	return false
-}
-
-// destructureElementReads reports whether an element binds at least one value
-// out of the right-hand side. The anonymous rest ("*") has a nil target and
-// discards its window without observing any value, so it never reads. A nested
-// destructure target reads only if at least one of its own elements reads:
-// an all-discard pattern such as "(*)" binds nothing, so it must be treated
-// like the anonymous rest and not force a defensive snapshot of the RHS.
-func destructureElementReads(element DestructureElement) bool {
-	if element.Target == nil {
-		return false
-	}
-	if nested, ok := element.Target.(*DestructureTarget); ok {
-		return slices.ContainsFunc(nested.Elements, destructureElementReads)
-	}
-	return true
-}
-
-// destructureElementWrites reports whether a leaf (or any nested leaf) assigns
-// into an existing container slot, which can mutate an aliased RHS array's
-// backing store.
-func destructureElementWrites(target Expression) bool {
-	switch leaf := target.(type) {
-	case *IndexExpr, *MemberExpr:
-		return true
-	case *DestructureTarget:
-		for _, element := range leaf.Elements {
-			if destructureElementWrites(element.Target) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func valueAt(values []Value, index int) Value {

@@ -104,6 +104,9 @@ const (
 	runtimeErrorFrameHead     = 8
 	runtimeErrorFrameTail     = 8
 	stepSlowPathMask          = 15
+	// stepSlowPathPeriod is how many steps separate two slow-path boundaries,
+	// used to tell whether a bulk charge jumped over one.
+	stepSlowPathPeriod = stepSlowPathMask + 1
 )
 
 var (
@@ -294,26 +297,29 @@ func (exec *Execution) step() error {
 	if exec.quota > 0 && exec.steps > exec.quota {
 		return exec.latchExhaustion(fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota))
 	}
-	onSlowPath := (exec.steps & stepSlowPathMask) == 0
-	if onSlowPath {
-		// Inside an accumulator-metered section the periodic reachable-graph
-		// walk is skipped: the section's build loop charges all of its
-		// allocation before performing it and never re-enters script code, so
-		// the walk would re-measure an unchanged graph (see
-		// beginAccumulatorMeteredSection). The step quota above and the
-		// context check below still run every period.
-		if exec.memoryQuota > 0 && exec.accumMeteredSections == 0 {
-			if err := exec.checkMemory(); err != nil {
-				return err
-			}
-		}
+	if (exec.steps & stepSlowPathMask) == 0 {
+		return exec.stepSlowPathChecks()
 	}
-	if exec.ctx != nil && (exec.steps == 1 || onSlowPath) {
-		if err := exec.checkContext(); err != nil {
+	if exec.ctx != nil && exec.steps == 1 {
+		return exec.checkContext()
+	}
+	return nil
+}
+
+// stepSlowPathChecks runs the periodic reachable-graph and cancellation checks
+// that step performs every stepSlowPathPeriod steps.
+//
+// Inside an accumulator-metered section the graph walk is skipped: the section's
+// build loop charges all of its allocation before performing it and never
+// re-enters script code, so the walk would re-measure an unchanged graph (see
+// beginAccumulatorMeteredSection). The cancellation check still runs.
+func (exec *Execution) stepSlowPathChecks() error {
+	if exec.memoryQuota > 0 && exec.accumMeteredSections == 0 {
+		if err := exec.checkMemory(); err != nil {
 			return err
 		}
 	}
-	return nil
+	return exec.checkContext()
 }
 
 func (exec *Execution) checkContext() error {
@@ -333,11 +339,28 @@ func (exec *Execution) checkContext() error {
 // scale their cost with operand size (one step per 8 words by convention)
 // without paying n separate slow-path polls; the quota still trips at exactly
 // the same total step count it would for n individual step calls.
+//
+// "A single time" is the point: step runs those checks only when the counter
+// lands exactly on a boundary, so a bulk charge that jumped over one without
+// landing on it ran them ZERO times. A charge large enough to cover a whole
+// period could then finish without ever observing a canceled context, which the
+// n individual steps it stands in for would have caught. Every amortized charge
+// in the tree is shaped that way (string scans, big-integer words, equality
+// bytes, the predeclaration and estimator walks), so the crossing is detected
+// here rather than at each call site.
 func (exec *Execution) stepN(n int) error {
-	if n > 1 {
-		exec.steps += n - 1
+	if n <= 1 {
+		return exec.step()
 	}
-	return exec.step()
+	before := exec.steps
+	exec.steps += n - 1
+	if err := exec.step(); err != nil {
+		return err
+	}
+	if (exec.steps&stepSlowPathMask) != 0 && before/stepSlowPathPeriod != exec.steps/stepSlowPathPeriod {
+		return exec.stepSlowPathChecks()
+	}
+	return nil
 }
 
 // checkStepBudgetFor reports whether at least n more steps may be charged

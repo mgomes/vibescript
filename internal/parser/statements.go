@@ -2191,7 +2191,7 @@ func (p *parser) parseDestructureTargetList(first ast.Expression, allowElementTy
 		elements = append(elements, element)
 	}
 
-	return &ast.DestructureTarget{Elements: elements, Position: pos}
+	return ast.NewDestructureTarget(elements, pos)
 }
 
 func (p *parser) parseDestructureElement(allowType bool, extraAnonymousRestTerminators ...ast.TokenType) (ast.DestructureElement, bool) {
@@ -2289,7 +2289,7 @@ func (p *parser) parseNestedDestructureTarget(stop ast.TokenType, _ string, allo
 	if !ok {
 		return nil
 	}
-	return &ast.DestructureTarget{Elements: destructure.Elements, Position: pos}
+	return ast.NewDestructureTarget(destructure.Elements, pos)
 }
 
 func (p *parser) parseExpressionWithBlock() ast.Expression {

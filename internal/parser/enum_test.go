@@ -14,9 +14,13 @@ import (
 // on structural shape. CallExpr.Parenthesized is a low-level syntactic detail
 // consulted only by the runtime options-hash policy; tests that exercise that
 // policy assert the field directly.
+// DestructureTarget's unexported facts are derived from the elements beside
+// them, so a target's identity is its element list; comparing them would only
+// restate it, and a hand-written expected node carries none.
 var astCmpOpts = cmp.Options{
 	cmpopts.IgnoreFields(ast.Position{}, "Line", "Column"),
 	cmpopts.IgnoreFields(ast.CallExpr{}, "Parenthesized"),
+	cmpopts.IgnoreUnexported(ast.DestructureTarget{}),
 }
 
 func TestParserEnumSyntax(t *testing.T) {

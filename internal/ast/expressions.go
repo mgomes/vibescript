@@ -264,6 +264,11 @@ type DestructureElement struct {
 type DestructureTarget struct {
 	Elements []DestructureElement
 	Position Position
+	// facts are the target's syntactic properties, settled when the parser
+	// builds the node (see NewDestructureTarget). Elements never changes after
+	// construction, and a clone copies both the facts and an equally shaped
+	// element list, so a copied node's facts stay true of it.
+	facts destructureFacts
 }
 
 func (e *DestructureTarget) exprNode()     {}

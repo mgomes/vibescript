@@ -151,6 +151,10 @@ type Execution struct {
 	// charSetProbeResidue carries the sub-step remainder of character-set
 	// entry comparisons across segments (see chargeStringCharSetProbes).
 	charSetProbeResidue int
+	// destructureScanResidue carries the sub-step remainder of destructuring
+	// work charges across one assignment's targets (see
+	// chargeDestructureScan).
+	destructureScanResidue int
 	// equalityScratchCheck caches the equality scratch validator closure
 	// (see equalityScratchValidatorFunc). Lazily initialized.
 	equalityScratchCheck func(int, Value, Value) error
