@@ -329,7 +329,10 @@ func anyScalarSetKey(values []Value) bool {
 // it fires, by at most the number of distinct composites already held -- one
 // element's worth, which the element before it just paid nearly in full.
 func (exec *Execution) chargeScanSteps(n int) error {
-	if n <= 0 {
+	// The set helpers accept a nil execution -- they are called directly from
+	// tests and from paths with no quota to charge -- and bindEqualityMetering
+	// and newSetOpScratch already tolerate one, so this does too.
+	if exec == nil || n <= 0 {
 		return nil
 	}
 	return exec.stepN(n)
@@ -356,14 +359,25 @@ func (s *valueSet) containsCounted(v Value) (bool, int) {
 
 // membershipSet answers contains queries with value equality but, unlike
 // valueSet, never deduplicates on insertion. Scalars are indexed in a map for
-// O(1) membership. Composites are not copied at all: the set retains references
-// to the caller's own source slices and scans them with Value.Equal only when
-// contains is asked about a composite. difference and subtract use it because
-// they only need to know whether the removal side holds a value, never how many
-// times. Retaining the source slices rather than flattening their composites
-// into a fresh slice keeps the removal side's extra memory proportional to the
-// number of source slices, not to the total number of composite elements, while
-// still avoiding any scan on insertion.
+// O(1) membership; composites are collected and scanned with Value.Equal only
+// when contains is asked about one. difference and subtract use it because they
+// only need to know whether the removal side holds a value, never how many
+// times. Skipping the scan on insertion is what keeps building the removal side
+// linear in the argument length even when the arguments are full of distinct
+// composites.
+//
+// It collects the composites rather than retaining the argument slices they came
+// from. Retaining the slices costs no memory, but it puts every scalar beside
+// them in the path of a composite query: the scan then walks the whole argument
+// to reach the few composites in it, and rejects the rest on a kind mismatch
+// that compares nothing. A difference of 400 composites against 8,000 scalars
+// took 47.3ms that way against 1.8ms for the same work here, and equality
+// metering cannot price it, because charging for bytes compared charges nothing
+// for a comparison that never begins.
+//
+// Collecting them costs one Value per composite, which is memory the scratch
+// reservation now prices -- it did not exist when the slices were first retained
+// to avoid exactly that allocation.
 type membershipSet struct {
 	scalars map[scalarValueSetKey]struct{}
 	// equality carries the optional byte charge for composite probes; see
@@ -373,52 +387,52 @@ type membershipSet struct {
 	// it grows; a reservation failure is sticky in scratchErr.
 	scratch    *setOpScratch
 	scratchErr error
-	// composite holds references to the source slices that contain at least one
-	// composite value. contains scans these directly; scalar elements within
-	// them are skipped cheaply because Value.Equal short-circuits on a kind
-	// mismatch with the composite being looked up.
-	composite [][]Value
+	// composite holds the composite values from every source, in insertion
+	// order and with duplicates kept; contains scans it.
+	composite []Value
 }
 
-// contains reports whether the set holds a value equal to v.
-func (s *membershipSet) contains(v Value) bool {
+// containsCounted reports whether the set holds a value equal to v, along with
+// the equality probes the composite scan performed. The count is measured
+// rather than predicted, and callers charge it: a composite is matched by
+// scanning every composite the removal side holds, so a per-element step alone
+// would let a receiver of c composites cost c*n unmetered comparisons against n
+// of them. uniq already charges its own scan for the same reason.
+func (s *membershipSet) containsCounted(v Value) (bool, int) {
 	if s.scalars == nil {
 		// No scalar was ever added, so a scalar probe cannot match; building
 		// its key anyway would run the big-integer canonicalization for
 		// nothing.
 		if scalarSetEligible(v) {
-			return false
+			return false, 0
 		}
 	} else if key, ok := scalarValueKey(v); ok {
 		_, found := s.scalars[key]
-		return found
+		return found, 0
 	}
-	for _, source := range s.composite {
-		if containsEqualValue(source, v, &s.equality) {
-			return true
-		}
-	}
-	return false
+	probes, found := indexOfEqualValue(s.composite, v, &s.equality)
+	return found, probes
 }
 
 // addSource records every value in values for later membership tests. hint sizes
 // the scalar map on first use, capped by boundedSetCap. Scalars are deduplicated
-// by the map key for free. Composites are not copied: if values holds any
-// composite, the set retains a reference to values itself and scans it in
-// contains. Insertion therefore stays linear in len(values) and allocates no
-// per-composite storage.
+// by the map key for free; composites are appended without being scanned
+// against what is already there, so insertion stays linear in len(values)
+// however many distinct composites it holds.
 func (s *membershipSet) addSource(values []Value, hint int) {
-	retained := false
 	for _, v := range values {
 		if s.scratchErr != nil {
 			return
 		}
 		key, ok := scalarValueKey(v)
 		if !ok {
-			if !retained {
-				s.composite = append(s.composite, values)
-				retained = true
+			if s.scratch != nil {
+				if err := s.scratch.reserveCompositeSlot(len(s.composite)); err != nil {
+					s.scratchErr = err
+					return
+				}
 			}
+			s.composite = append(s.composite, v)
 			continue
 		}
 		if s.scalars == nil {
@@ -594,10 +608,14 @@ func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]V
 	}
 	out := make([]Value, 0, initial)
 	for _, item := range left {
-		keep := !removal.contains(item)
+		hit, probes := removal.containsCounted(item)
 		if err := removal.equality.Err(); err != nil {
 			return nil, err
 		}
+		if err := exec.chargeScanSteps(probes); err != nil {
+			return nil, err
+		}
+		keep := !hit
 		if keep {
 			if err := scratch.reserveResultSlot(len(out)); err != nil {
 				return nil, err
@@ -636,8 +654,11 @@ func intersectArrayValues(exec *Execution, left, right []Value) ([]Value, error)
 	}
 	out := make([]Value, 0, initial)
 	for _, item := range left {
-		hit := inRight.contains(item)
+		hit, probes := inRight.containsCounted(item)
 		if err := inRight.equality.Err(); err != nil {
+			return nil, err
+		}
+		if err := exec.chargeScanSteps(probes); err != nil {
 			return nil, err
 		}
 		if !hit {
@@ -676,8 +697,11 @@ func subtractArrayValues(exec *Execution, left, right []Value) ([]Value, error) 
 	}
 	out := make([]Value, 0, initial)
 	for _, item := range left {
-		hit := removal.contains(item)
+		hit, probes := removal.containsCounted(item)
 		if err := removal.equality.Err(); err != nil {
+			return nil, err
+		}
+		if err := exec.chargeScanSteps(probes); err != nil {
 			return nil, err
 		}
 		if hit {
@@ -689,11 +713,6 @@ func subtractArrayValues(exec *Execution, left, right []Value) ([]Value, error) 
 		out = append(out, item)
 	}
 	return out, nil
-}
-
-func containsEqualValue(values []Value, target Value, equality *EqualityContext) bool {
-	_, found := indexOfEqualValue(values, target, equality)
-	return found
 }
 
 // indexOfEqualValue finds target by value equality, reporting the index it

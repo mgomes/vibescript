@@ -483,60 +483,43 @@ func TestDifferenceArrayValuesAvoidsTransientFlattening(t *testing.T) {
 	}
 }
 
-// compositeRepeatingInput returns a slice of length setOpInputLen filled with a
-// single composite (single-element array) value. Every element is a composite,
-// so the removal side cannot index any of it in the scalar map: the old code
-// copied all of it into a flat membership slice, while the fix retains a
-// reference to this slice. The repetition keeps it cheap to construct.
-func compositeRepeatingInput() []Value {
-	one := NewArray([]Value{NewInt(0)})
-	values := make([]Value, setOpInputLen)
-	for i := range values {
-		values[i] = one
-	}
-	return values
-}
+// TestDifferenceCompositeCollectionIsPriced pins that the composites the
+// removal side collects are reserved against the memory quota before they are
+// allocated.
+//
+// They used to be avoided rather than priced: the arguments' own slices were
+// retained so that no copy existed to charge for. That is what put every scalar
+// beside a composite in the path of a composite lookup. Collecting them is only
+// defensible because the set-op scratch reservation prices the collection --
+// which did not exist when the slices were first retained -- so a difference
+// that cannot afford the copy fails instead of allocating a transient nobody
+// counted.
+func TestDifferenceCompositeCollectionIsPriced(t *testing.T) {
+	t.Parallel()
 
-func TestDifferenceArrayValuesRetainsCompositeSources(t *testing.T) {
-	// Not parallel: this test reads process-wide allocation counters and must
-	// not race other goroutines' allocations.
-
-	// Copying every composite removal value into a fresh flat slice peaks at
-	// sum(others) Values. Retaining a reference to each source slice instead
-	// keeps the removal side's extra memory proportional to the number of
-	// argument slices. The receiver is a single scalar absent from the removal
-	// side, so contains answers from the (empty) scalar map without scanning the
-	// retained composites; that isolates the removal-side construction as the
-	// only allocation that could scale with the composite arguments.
-	arg := compositeRepeatingInput()
-	others := make([][]Value, setOpInputArgs)
-	for i := range others {
-		others[i] = arg
-	}
-	left := []Value{NewInt(1)}
-
-	var before, after goruntime.MemStats
-	goruntime.GC()
-	goruntime.ReadMemStats(&before)
-	got, err := differenceArrayValues(nil, left, others)
-	if err != nil {
-		t.Fatalf("differenceArrayValues: %v", err)
-	}
-	goruntime.ReadMemStats(&after)
-
-	want := NewArray([]Value{NewInt(1)})
-	if diff := valueDiff(want, NewArray(got)); diff != "" {
-		t.Fatalf("difference mismatch (-want +got):\n%s", diff)
+	left, right := differenceOperands(200, 8_000, false)
+	minQuota := func(src string) int {
+		lo, hi := 1<<10, 64<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: 900_000_000, MemoryQuotaBytes: mid}, src)
+			if _, err := script.Call(context.Background(), "run", []Value{left, right}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
 	}
 
-	// Flattening the composite arguments would reserve sum(others) Values. Bound
-	// the allocation well under that so reintroducing the flattening copy fails
-	// loudly while tolerating ordinary allocation noise.
-	flattenedBytes := uint64(setOpInputLen) * uint64(setOpInputArgs) * uint64(estimatedValueBytes)
-	ceiling := flattenedBytes / 4
-	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > ceiling {
-		t.Fatalf("difference allocated %d bytes for composite arguments, want <= %d (flattening transient would be %d)",
-			allocated, ceiling, flattenedBytes)
+	// Holding the operands is the floor; the difference has to cost the
+	// collection on top of it, so the reservation is what the gap measures.
+	operands := minQuota("def run(a, b)\n  a.size + b.size\nend")
+	difference := minQuota("def run(a, b)\n  a.difference(b).size\nend")
+
+	if gap := difference - operands; gap < 128<<10 {
+		t.Fatalf("difference needs %d bytes against %d for the operands alone, a gap of %d; "+
+			"the collected composites must be reserved before they are allocated", difference, operands, gap)
 	}
 }
 
@@ -581,5 +564,92 @@ func TestDifferenceArrayValuesRemovalIsNotQuadratic(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatalf("differenceArrayValues over %d distinct composites did not finish within 30s; "+
 			"removal-set construction is likely quadratic again", n)
+	}
+}
+
+// differenceOperands builds a receiver of composites and a removal array of
+// either scalars or composites, none of which match, so every receiver element
+// costs a full scan of whatever the removal side holds.
+func differenceOperands(composites, removals int, scalarRemovals bool) (Value, Value) {
+	left := make([]Value, composites)
+	for i := range left {
+		left[i] = NewArray([]Value{NewInt(int64(i))})
+	}
+	right := make([]Value, 0, removals+1)
+	for i := range removals {
+		if scalarRemovals {
+			right = append(right, NewInt(int64(i)))
+			continue
+		}
+		right = append(right, NewArray([]Value{NewInt(int64(-i - 1))}))
+	}
+	if scalarRemovals {
+		// One composite, so the removal side has a composite path at all.
+		right = append(right, NewArray([]Value{NewInt(-1)}))
+	}
+	return NewArray(left), NewArray(right)
+}
+
+// minStepsForDifference returns the smallest step quota that completes the
+// difference, which is what the work it does costs.
+func minStepsForDifference(t *testing.T, composites, removals int, scalarRemovals bool) int {
+	t.Helper()
+
+	left, right := differenceOperands(composites, removals, scalarRemovals)
+	lo, hi := 1, 40_000_000
+	for lo < hi {
+		mid := (lo + hi) / 2
+		script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited},
+			"def run(a, b)\n  a.difference(b).size\nend")
+		if _, err := script.Call(context.Background(), "run", []Value{left, right}, CallOptions{}); err != nil {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
+
+// TestDifferenceDoesNotWalkRemovalScalars pins that a composite lookup costs
+// what the removal side holds in composites, not what it holds in total.
+//
+// The removal side used to keep the argument slices themselves and scan one
+// whole for every composite the receiver held, rejecting each scalar in it on a
+// kind mismatch that compares nothing. That made a difference quadratic in an
+// argument's length rather than in its composites -- 400 composites against
+// 8,000 scalars took 47.3ms where the same work takes 1.8ms -- and equality
+// metering could not price it, since a comparison that never begins reads no
+// bytes to charge for.
+func TestDifferenceDoesNotWalkRemovalScalars(t *testing.T) {
+	t.Parallel()
+
+	const composites = 200
+	near := minStepsForDifference(t, composites, 8_000, true)
+	far := minStepsForDifference(t, composites, 32_000, true)
+
+	if near != far {
+		t.Fatalf("a difference against 8,000 scalars cost %d steps and against 32,000 cost %d; "+
+			"the scalars beside a composite are not on its lookup's path", near, far)
+	}
+	if near < composites {
+		t.Fatalf("%d composite lookups cost %d steps; each one scans the removal side's "+
+			"composites and must be charged for it", composites, near)
+	}
+}
+
+// TestDifferenceChargesCompositeProbes pins that the scan a composite lookup
+// does perform is paid for. It is quadratic in the composites on both sides,
+// and charging a step per element instead would leave a receiver of c
+// composites free to make c*n comparisons for c steps. uniq charges its own
+// scan for the same reason.
+func TestDifferenceChargesCompositeProbes(t *testing.T) {
+	t.Parallel()
+
+	const composites = 200
+	const removals = 4_000
+	got := minStepsForDifference(t, composites, removals, false)
+	if want := composites * removals; got < want {
+		t.Fatalf("%d composites against %d cost %d steps, want at least %d, one per comparison",
+			composites, removals, got, want)
 	}
 }
