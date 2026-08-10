@@ -244,6 +244,11 @@ end
 // the field already holds. Counting fields rather than the nodes each copy
 // walks measured neither: the same pair copied 800 and 1,600 fields while
 // allocating 26MB and 97MB, since no write here widens the shape it deep-copies.
+//
+// Zero is also what a workload that stopped reaching the write path would
+// measure, so this test does not stand on its own. The alternating test below
+// drives the same literal and the same key and asserts a nonzero charge, which
+// is what says the path is still reached.
 func TestCheckRepeatedShapeKeyWriteCostsNothing(t *testing.T) {
 	for _, size := range []int{400, 800} {
 		if units := measureCheckWork(t, repeatedKeyShapeWriteSource(size, size)); units != 0 {
@@ -282,6 +287,16 @@ end
 func TestCheckAlternatingShapeKeyWriteComparisonsStayLinear(t *testing.T) {
 	small := measureCheckWork(t, alternatingKeyShapeWriteSource(400, 400))
 	large := measureCheckWork(t, alternatingKeyShapeWriteSource(800, 800))
+
+	// A cell that reaches nothing measures zero and passes every ratio, which is
+	// how two cells of the budget walk came to assert nothing. This one has to
+	// charge to count, and it is what proves the repeated-key zero above is a
+	// path taken for free rather than a path not taken.
+	if small == 0 || large == 0 {
+		t.Fatalf("alternating one key between two types charged %d then %d units of fact"+
+			" comparison -- the write path is not being reached, so neither this test nor"+
+			" the repeated-key one is measuring anything", small, large)
+	}
 
 	// Measured 9,243 then 14,388 key bytes, a 1.56x step for a doubled source.
 	// The assertion allows up to 3x so it states the complexity rather than
