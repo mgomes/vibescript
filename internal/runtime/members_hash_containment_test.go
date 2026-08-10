@@ -5117,3 +5117,89 @@ func intArray(count int) Value {
 	}
 	return NewArray(elems)
 }
+
+// restWindowKeys builds narrow small keys followed by one wide key, so a lookup
+// driven over them retains results for a while before the last key's callback
+// binds a window big enough to matter.
+func restWindowKeys(narrow, wide int) Value {
+	elems := make([]Value, 0, narrow+1)
+	for range narrow {
+		elems = append(elems, NewArray([]Value{NewInt(1), NewInt(2)}))
+	}
+	inner := make([]Value, wide)
+	for i := range inner {
+		inner[i] = NewInt(int64(i))
+	}
+	return NewArray(append(elems, NewArray(inner)))
+}
+
+// allocatedDuringCall reports the bytes src cumulatively allocates for one
+// rejected call, which is how a preflight is observed: a gate that rejects
+// before the allocation and one that rejects after it agree on the error and
+// differ only here.
+func allocatedDuringCall(t *testing.T, src string, quota int, args ...Value) uint64 {
+	t.Helper()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: quota}, src)
+	runtimemetrics.GC()
+	var before, after runtimemetrics.MemStats
+	runtimemetrics.ReadMemStats(&before)
+	if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err == nil {
+		t.Fatalf("a peak above the %d-byte quota was accepted", quota)
+	}
+	runtimemetrics.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// A rest-collecting destructure parameter copies its window into a fresh backing
+// before binding it, and the bind charge preflights that copy so an over-budget
+// window is rejected instead of materialized. The charge's baseline is snapshotted
+// once, before the first callback, and tracked what the loop had accumulated since
+// only through exec.reservedScratchBytes -- which was where the drivers used to put
+// their retained results. Registering those results as walk roots instead leaves the
+// preflight weighing a wide window against a baseline missing every result the
+// lookup has kept, so the copy is allocated and only a later body check notices.
+//
+// The lookups reach this path because their callbacks run through the same region
+// runner the block iterators use, so a block destructuring the key binds a rest
+// window per miss while the output accumulates.
+//
+// Both bounds are measured, not assumed: the floor run rejects on the first block
+// body, before any wide window exists, so the difference between the two runs is
+// what this call allocated for its retained results and, if the gate is blind, one
+// whole window on top.
+func TestLookupRestWindowPreflightSeesRetainedOutput(t *testing.T) {
+	const narrow = 29
+	const wide = 500_000
+	const payload = 200_000
+
+	keys := restWindowKeys(narrow, wide)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 40, memoryQuota: 1 << 40}
+	keyBytes := probe.estimateMemoryUsage(keys)
+	window := estimatedValueBytes + estimatedSliceBaseBytes + (wide-1)*estimatedValueBytes
+	retained := narrow * (payload + estimatedStringHeaderBytes)
+
+	quota := keyBytes + window + retained/2
+	if quota <= keyBytes+window || quota >= keyBytes+window+retained {
+		t.Fatalf("quota %d must fit keys+window %d and reject keys+retained+window %d",
+			quota, keyBytes+window, keyBytes+window+retained)
+	}
+
+	var refs strings.Builder
+	for i := range narrow + 1 {
+		if i > 0 {
+			refs.WriteString(", ")
+		}
+		fmt.Fprintf(&refs, "a[%d]", i)
+	}
+	src := fmt.Sprintf("def run(a)\n  { }.fetch_values(%s) { |(head, *tail)| \"y\" * %d }\nend", refs.String(), payload)
+	floor := allocatedDuringCall(t, src, keyBytes+4096, keys)
+	got := allocatedDuringCall(t, src, quota, keys)
+
+	budget := uint64(retained + window/2)
+	if got-floor > budget {
+		t.Fatalf("fetch_values allocated %d bytes beyond the %d-byte floor; want under %d, so the "+
+			"%d-byte rest window was materialized before the preflight rejected it",
+			got-floor, floor, budget, window)
+	}
+}
