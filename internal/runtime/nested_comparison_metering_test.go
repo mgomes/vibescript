@@ -220,7 +220,7 @@ func TestEqualityScanStopsAfterStickyError(t *testing.T) {
 	var equality EqualityContext
 	boom := errors.New("quota spent")
 	equality.SetCharge(func(int) error { return boom })
-	probes, found := indexOfEqualValue(values, NewArray([]Value{NewString(strings.Repeat("x", 128))}), &equality)
+	probes, found := probeEqualValue(values, NewArray([]Value{NewString(strings.Repeat("x", 128))}), &equality)
 	if found {
 		t.Fatal("a failed charge must not report a match")
 	}

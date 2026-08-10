@@ -653,3 +653,81 @@ func TestDifferenceChargesCompositeProbes(t *testing.T) {
 			composites, removals, got, want)
 	}
 }
+
+// TestDifferenceChargesTheMatchingProbe pins that a lookup which matches pays
+// for the comparison that matched.
+//
+// The scan reported the index it stopped at rather than the number of
+// comparisons it made, so a match cost one less than it performed and a lookup
+// that matched its first candidate charged nothing at all: 2,000 of them cost
+// five steps. Two callers added the one back and this one did not, which is
+// what a helper named and documented for a probe count while returning an index
+// will keep producing.
+func TestDifferenceChargesTheMatchingProbe(t *testing.T) {
+	t.Parallel()
+
+	const composites = 2_000
+	left := make([]Value, composites)
+	for i := range left {
+		left[i] = NewArray([]Value{NewInt(7)})
+	}
+	// The first removal candidate matches every receiver element.
+	right := NewArray([]Value{NewArray([]Value{NewInt(7)}), NewArray([]Value{NewInt(8)})})
+
+	lo, hi := 1, 10_000_000
+	for lo < hi {
+		mid := (lo + hi) / 2
+		script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited},
+			"def run(a, b)\n  a.difference(b).size\nend")
+		if _, err := script.Call(context.Background(), "run", []Value{NewArray(left), right}, CallOptions{}); err != nil {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	if lo < composites {
+		t.Fatalf("%d lookups that each match their first candidate cost %d steps, want at least "+
+			"one per comparison", composites, lo)
+	}
+}
+
+// TestSetOpScratchReservesEachSetSeparately pins that two sets backed by one
+// scratch each reserve their own composite slice.
+//
+// A scratch tracked a single high-water mark for a capacity that describes one
+// allocation. Array#& fills a membership set and an emitted set from the same
+// scratch, so once the first had grown, the second's slice grew inside the
+// first's reservation and was never charged for.
+func TestSetOpScratchReservesEachSetSeparately(t *testing.T) {
+	t.Parallel()
+
+	composites := make([]Value, 64)
+	for i := range composites {
+		composites[i] = NewArray([]Value{NewInt(int64(i))})
+	}
+	exec := &Execution{memoryQuota: 1 << 30}
+	scratch, err := newSetOpScratch(exec, composites)
+	if err != nil {
+		t.Fatalf("newSetOpScratch: %v", err)
+	}
+	defer scratch.release()
+
+	var first, second membershipSet
+	first.scratch, second.scratch = &scratch, &scratch
+
+	first.addSource(composites, len(composites))
+	if first.scratchErr != nil {
+		t.Fatalf("first set: %v", first.scratchErr)
+	}
+	afterFirst := scratch.held
+
+	second.addSource(composites, len(composites))
+	if second.scratchErr != nil {
+		t.Fatalf("second set: %v", second.scratchErr)
+	}
+	if scratch.held <= afterFirst {
+		t.Fatalf("a second set's composites reserved %d bytes on top of the first's %d; "+
+			"each set allocates its own slice and must be charged for it",
+			scratch.held-afterFirst, afterFirst)
+	}
+}

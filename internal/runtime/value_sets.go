@@ -47,13 +47,12 @@ type setOpScratch struct {
 	// roots wrap the operation's input slices: they can be host-returned
 	// values live only as builtin call roots, invisible to the base walk,
 	// yet they coexist with every buffer this scratch reserves.
-	roots        []Value
-	held         int
-	resultCap    int
-	compositeCap int
-	// scalarCap counts the scalar-map entries covered by the up-front
-	// hinted-capacity reservation; entries beyond it reserve individually.
-	scalarCap int
+	roots []Value
+	held  int
+	// resultCap tracks the operation's single output slice. It stays here
+	// because an operation has exactly one; the marks for the buffers a set
+	// owns belong to the set, since an operation can build more than one.
+	resultCap int
 }
 
 // newSetOpScratch builds the reservation tracker for a set operation over
@@ -107,13 +106,21 @@ func (s *setOpScratch) reserveResultSlot(length int) error {
 	return s.reserveResultCap(projectedAppendCap(length, s.resultCap))
 }
 
-func (s *setOpScratch) reserveCompositeSlot(length int) error {
-	nextCap := projectedAppendCap(length, s.compositeCap)
-	if nextCap <= s.compositeCap {
+// reserveCompositeSlot reserves the growth an append at the given length
+// realizes on a set's composite slice, tracking that slice's capacity through
+// capacity.
+//
+// The mark is the caller's rather than the scratch's because one scratch can
+// back more than one set: Array#& fills a membership set and an emitted set
+// from the same one. A single mark describes whichever grew first, and lets the
+// other grow inside its reservation unreserved.
+func (s *setOpScratch) reserveCompositeSlot(capacity *int, length int) error {
+	nextCap := projectedAppendCap(length, *capacity)
+	if nextCap <= *capacity {
 		return nil
 	}
-	extra := valueSliceScratchBytes(nextCap) - valueSliceScratchBytes(s.compositeCap)
-	s.compositeCap = nextCap
+	extra := valueSliceScratchBytes(nextCap) - valueSliceScratchBytes(*capacity)
+	*capacity = nextCap
 	return s.reserve(extra)
 }
 
@@ -121,19 +128,21 @@ func (s *setOpScratch) reserveCompositeSlot(length int) error {
 // it is allocated: make preallocates the whole bucket array for the hinted
 // capacity, so a receiver near the quota must fail this validation instead of
 // allocating the buckets first and being rejected 160 bytes at a time later.
-func (s *setOpScratch) reserveScalarMapCap(capacity int) error {
-	if capacity <= s.scalarCap {
+// hinted is the capacity being asked for; capacity is the caller's own mark,
+// for the same reason reserveCompositeSlot takes one.
+func (s *setOpScratch) reserveScalarMapCap(capacity *int, hinted int) error {
+	if hinted <= *capacity {
 		return nil
 	}
-	extra := (capacity - s.scalarCap) * estimatedScalarSetEntryBytes
-	s.scalarCap = capacity
+	extra := (hinted - *capacity) * estimatedScalarSetEntryBytes
+	*capacity = hinted
 	return s.reserve(extra)
 }
 
 // reserveScalarEntry reserves one scalar-map entry past the hinted-capacity
 // reservation; existing is the map's current entry count.
-func (s *setOpScratch) reserveScalarEntry(existing int) error {
-	if existing < s.scalarCap {
+func (s *setOpScratch) reserveScalarEntry(capacity, existing int) error {
+	if existing < capacity {
 		return nil
 	}
 	return s.reserve(estimatedScalarSetEntryBytes)
@@ -212,6 +221,10 @@ type valueSet struct {
 	// scratchErr and surfaced via chargeErr.
 	scratch    *setOpScratch
 	scratchErr error
+	// compositeCap and scalarCap are this set's own reservation marks; see
+	// reserveCompositeSlot for why they do not live on the shared scratch.
+	compositeCap int
+	scalarCap    int
 }
 
 // bindMetering makes the set's composite equality probes bill the string
@@ -261,7 +274,7 @@ func (s *valueSet) addCounted(v Value, hint int) (bool, int) {
 	if key, ok := scalarValueKey(v); ok {
 		if s.scalars == nil {
 			if s.scratch != nil {
-				if err := s.scratch.reserveScalarMapCap(boundedSetCap(hint)); err != nil {
+				if err := s.scratch.reserveScalarMapCap(&s.scalarCap, boundedSetCap(hint)); err != nil {
 					s.scratchErr = err
 					return false, 0
 				}
@@ -272,7 +285,7 @@ func (s *valueSet) addCounted(v Value, hint int) (bool, int) {
 			return false, 0
 		}
 		if s.scratch != nil {
-			if err := s.scratch.reserveScalarEntry(len(s.scalars)); err != nil {
+			if err := s.scratch.reserveScalarEntry(s.scalarCap, len(s.scalars)); err != nil {
 				s.scratchErr = err
 				return false, 0
 			}
@@ -280,12 +293,12 @@ func (s *valueSet) addCounted(v Value, hint int) (bool, int) {
 		s.scalars[key] = struct{}{}
 		return true, 0
 	}
-	probes, found := indexOfEqualValue(s.composite, v, &s.equality)
+	probes, found := probeEqualValue(s.composite, v, &s.equality)
 	if found {
-		return false, probes + 1
+		return false, probes
 	}
 	if s.scratch != nil {
-		if err := s.scratch.reserveCompositeSlot(len(s.composite)); err != nil {
+		if err := s.scratch.reserveCompositeSlot(&s.compositeCap, len(s.composite)); err != nil {
 			s.scratchErr = err
 			return false, probes
 		}
@@ -350,9 +363,9 @@ func (s *valueSet) containsCounted(v Value) (bool, int) {
 		_, found := s.scalars[key]
 		return found, 0
 	}
-	probes, found := indexOfEqualValue(s.composite, v, &s.equality)
+	probes, found := probeEqualValue(s.composite, v, &s.equality)
 	if found {
-		return true, probes + 1
+		return true, probes
 	}
 	return false, probes
 }
@@ -387,6 +400,10 @@ type membershipSet struct {
 	// it grows; a reservation failure is sticky in scratchErr.
 	scratch    *setOpScratch
 	scratchErr error
+	// compositeCap and scalarCap are this set's own reservation marks; see
+	// reserveCompositeSlot for why they do not live on the shared scratch.
+	compositeCap int
+	scalarCap    int
 	// composite holds the composite values from every source, in insertion
 	// order and with duplicates kept; contains scans it.
 	composite []Value
@@ -410,7 +427,7 @@ func (s *membershipSet) containsCounted(v Value) (bool, int) {
 		_, found := s.scalars[key]
 		return found, 0
 	}
-	probes, found := indexOfEqualValue(s.composite, v, &s.equality)
+	probes, found := probeEqualValue(s.composite, v, &s.equality)
 	return found, probes
 }
 
@@ -427,7 +444,7 @@ func (s *membershipSet) addSource(values []Value, hint int) {
 		key, ok := scalarValueKey(v)
 		if !ok {
 			if s.scratch != nil {
-				if err := s.scratch.reserveCompositeSlot(len(s.composite)); err != nil {
+				if err := s.scratch.reserveCompositeSlot(&s.compositeCap, len(s.composite)); err != nil {
 					s.scratchErr = err
 					return
 				}
@@ -437,7 +454,7 @@ func (s *membershipSet) addSource(values []Value, hint int) {
 		}
 		if s.scalars == nil {
 			if s.scratch != nil {
-				if err := s.scratch.reserveScalarMapCap(boundedSetCap(hint)); err != nil {
+				if err := s.scratch.reserveScalarMapCap(&s.scalarCap, boundedSetCap(hint)); err != nil {
 					s.scratchErr = err
 					return
 				}
@@ -448,7 +465,7 @@ func (s *membershipSet) addSource(values []Value, hint int) {
 			continue
 		}
 		if s.scratch != nil {
-			if err := s.scratch.reserveScalarEntry(len(s.scalars)); err != nil {
+			if err := s.scratch.reserveScalarEntry(s.scalarCap, len(s.scalars)); err != nil {
 				s.scratchErr = err
 				return
 			}
@@ -715,19 +732,26 @@ func subtractArrayValues(exec *Execution, left, right []Value) ([]Value, error) 
 	return out, nil
 }
 
-// indexOfEqualValue finds target by value equality, reporting the index it
-// matched at. On a miss it reports len(values). Either way the result is the
-// number of equality probes performed, which is what the step quota charges:
-// only the scan knows where it stopped, and a match near the front costs far
-// less than the full set.
+// probeEqualValue scans values for target by value equality, reporting how many
+// comparisons it made and whether one of them matched. The count is what the
+// step quota charges: only the scan knows where it stopped, and a match near the
+// front costs far less than the full set.
+//
+// It returns the count rather than the index it stopped at. Every caller wants
+// the count, none wants the position, and returning the index made a match cost
+// one comparison less than it performed -- a lookup that matched its first
+// candidate charged nothing. Two callers added the one back and a third did not,
+// which is what a name and a doc comment promising a probe count while the code
+// returns an index will keep producing.
+//
 // A nil equality context compares unmetered with a local scratch.
-func indexOfEqualValue(values []Value, target Value, equality *EqualityContext) (int, bool) {
+func probeEqualValue(values []Value, target Value, equality *EqualityContext) (int, bool) {
 	if equality == nil {
 		equality = &EqualityContext{}
 	}
 	for i, candidate := range values {
 		if equality.Equal(target, candidate) {
-			return i, true
+			return i + 1, true
 		}
 		if equality.Err() != nil {
 			// A sticky charge failure makes every later probe answer false
