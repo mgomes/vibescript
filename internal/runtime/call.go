@@ -306,7 +306,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// adapter or global builtin is dispatched without one and drives its
 		// block from an argument (see array_shrink.go).
 		heldBackings := exec.holdArrayBackings(receiver, args, kwargs, builtin.hostDriven)
+		// Record what this frame holds, so a block it drives through CallBlock
+		// can be charged for it. The values sit on this frame's Go stack for as
+		// long as the body runs, and nothing the estimator walks reaches them.
+		prevReceiver, prevArgs, prevKwargs := exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs
+		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = receiver, args, kwargs
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
+		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = prevReceiver, prevArgs, prevKwargs
 		// Dropping the claims moves any array a shrink narrowed off the storage
 		// it gave up, which is the first point that storage can be released.
 		// That copy is charged, so it can fail; a failure the call itself did

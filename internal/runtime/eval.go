@@ -1885,6 +1885,18 @@ func (exec *Execution) callBlockValue(block Value, args []Value, pos Position) (
 	// would otherwise be charged that copy against a baseline that omits the
 	// argument it was copied from, letting (args) and (rest) each fit the quota
 	// while the real peak (args + rest) exceeds it.
+	// Fold what the calling frame is still holding into the live baseline for
+	// the body's duration. The bind charge does this for the values it is built
+	// from, but it is built here with no receiver and only the block's own
+	// arguments, so a value the caller retains and does not pass -- a fetch
+	// default the block supersedes, an adapter's argument it walks itself -- was
+	// invisible while the body ran. Its bytes were counted when the caller
+	// evaluated it and again after, never at the same time as whatever the body
+	// allocates, so the real peak of the two together escaped: a 2,000,000-byte
+	// ignored default moved the smallest admitting quota by nothing at all.
+	retained := exec.reserveCallerRetainedRoots(args)
+	defer exec.releaseLoopScratch(retained)
+
 	charge := newBlockBindCharge(exec, blk, NewNil(), args, nil, block)
 	val, err := exec.callBlock(blk, args, newBlockAssignmentEnv(blk.Env), charge, pos)
 	if err != nil && errors.Is(err, errLoopNext) {

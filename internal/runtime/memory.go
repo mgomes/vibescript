@@ -3647,3 +3647,43 @@ func (est *memoryEstimator) objectWrapperBytes(val Value) int {
 	}
 	return estimatedObjectDataBytes
 }
+
+// reserveCallerRetainedRoots folds the innermost builtin frame's receiver and
+// arguments into the reserved scratch, returning the delta to release when the
+// block it drives has finished.
+//
+// Those values live on that frame's Go stack, which no walk reaches, so the
+// body's own checks -- per-statement walks and mutator preflights -- cannot see
+// them. Reserving them makes those checks bound the combined peak of what the
+// caller holds and what the body builds, which is the same job blockBindCharge
+// does for the values it is built from.
+//
+// What the caller passes to the block is excluded, by seeding the estimator
+// with it before measuring: those values are bound into the block's own scope
+// and counted by every walk while the body runs, so charging them here as well
+// doubled them. `proc.call`, whose arguments are exactly the block's, went from
+// charging a 2,000,000-byte argument once to charging it twice.
+func (exec *Execution) reserveCallerRetainedRoots(blockArgs []Value) int {
+	if exec == nil || exec.memoryQuota <= 0 {
+		return 0
+	}
+	est := newMemoryEstimator()
+	base := exec.estimateMemoryUsageBase(est)
+	for _, arg := range blockArgs {
+		base = saturatingAdd(base, est.value(arg))
+	}
+	total := base
+	if exec.builtinFrameReceiver.Kind() != KindNil {
+		total = saturatingAdd(total, est.value(exec.builtinFrameReceiver))
+	}
+	for _, arg := range exec.builtinFrameArgs {
+		total = saturatingAdd(total, est.value(arg))
+	}
+	for _, kwarg := range exec.builtinFrameKwargs {
+		total = saturatingAdd(total, est.value(kwarg))
+	}
+	if total <= base {
+		return 0
+	}
+	return exec.reserveLoopScratch(total - base)
+}

@@ -195,6 +195,16 @@ type Execution struct {
 	baseTopoVersion uint64
 	builtinDepth    int
 
+	// builtinFrameReceiver, builtinFrameArgs and builtinFrameKwargs are the
+	// values the innermost builtin frame was dispatched with. They live on that
+	// frame's Go stack, where no walk reaches them, so a block the frame drives
+	// cannot otherwise see what its caller is still holding. CallBlock folds
+	// them into the live baseline for the block's duration; see
+	// callerRetainedRoots.
+	builtinFrameReceiver Value
+	builtinFrameArgs     []Value
+	builtinFrameKwargs   map[string]Value
+
 	// Dormant-frame accounting (see memory_dormant.go) makes the estimator's
 	// env-stack walk incremental for block-free function recursion. dormant holds
 	// the committed dormant prefix, dormantSet the same frames for O(1) dedup
