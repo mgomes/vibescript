@@ -5357,8 +5357,13 @@ func TestNestedHashLookupDoesNotRechargeTheEnclosingBlocksPayload(t *testing.T) 
 // readings are put on one basis, because at that point this shape joins the ones
 // above and belongs in that test rather than this one.
 func TestNestedRestBindingHashLookupOverchargesForTheEnclosingBlocksPayload(t *testing.T) {
-	t.Parallel()
-
+	// Deliberately not parallel, for the reason recorded on the walk-budget tests:
+	// baseWalkCacheDisabled is process-wide, and this over-charge exists only while
+	// the base-walk memo is serving readings. With memoization off every reading
+	// falls through to the full-graph basis, the two bases agree, and the surcharge
+	// stops tracking the payload -- so a concurrent test that flips that switch
+	// makes this one fail for the very reason it is asserting. It measured 101,054
+	// bytes at a 100,000-byte payload and 3,997 at 200,000 that way.
 	const small, large = 100_000, 200_000
 	const params = "(head, *tail)"
 	atSmall := minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("suffix", params, small)) -
