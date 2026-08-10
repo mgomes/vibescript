@@ -8,9 +8,10 @@
   budget spent by the copies bounds both, and it travels with the fact, so a
   fresh literal elsewhere starts with all of it. The same pairs allocate 11.8MB
   and 5.4MB now. Past the budget the fact gives up claiming to name every key
-  and never a key it already names: a shape is authoritative about the keys it
-  omits, so dropping one would make the checker decide branches it should leave
-  alone.
+  and never a key it already names. The asymmetry is what matters: the checker
+  rules a branch out from the type of a field the fact names, so a fact that
+  stopped naming one would stop ruling that branch out, while the claim to name
+  them all decides nothing by itself and costs nothing to give up.
 - **Changed: a hash built from a very wide literal may now report mistakes in
   branches the checker used to prove unreachable.** The budget above stops
   refining once a script overwrites a few hundred fields of a literal that names

@@ -11328,14 +11328,14 @@ func (c *scriptChecker) applyShapeFieldWriteFacts(function string, stmt *AssignS
 // already states is free, since refining would rebuild the same fact.
 //
 // What running out gives up is the claim that the fact names every key, never a
-// key it already names. A shape is authoritative about the keys it omits, so a
-// fact rebuilt from whichever fields were affordable would claim the rest
-// absent, and a claim about absence decides branches: every value but nil and
-// false is truthy, so a fact naming an int field proves the else arm of a
-// branch on it dead, and one that stops naming it makes that arm live and
-// reports whatever is written there. Five reviews found five ways to lose a
-// field that way, so the rule is now one rule: keep every field, or keep no
-// fact at all.
+// key it already names. The asymmetry is the point. The checker rules a branch
+// out from the type of a field the fact names -- every value but nil and false
+// is truthy, so a fact naming an int field proves the else arm of a branch on it
+// dead -- and a fact that stops naming that field stops ruling the arm out, so
+// the arm is walked and whatever is wrong in it reported. The claim to name
+// every key decides nothing by itself, so giving that up costs no diagnostic.
+// Review after review found another way to lose a field, so the rule is now one
+// rule: keep every field, or keep no fact at all.
 //
 // Past the budget the fact is open and only one case still costs a copy, the
 // claim a write contradicts. Restating it widens it to admit both what the
@@ -11479,11 +11479,12 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 				return true
 			}
 			if state.nodes > maxWidenedShapeNodes {
-				// Nothing true is left to say for the price of no copy. Give the
-				// fact up rather than rebuild a smaller one: a shape is
-				// authoritative about the keys it omits, so a fact assembled
-				// from whichever fields were convenient would claim the rest
-				// absent, and a claim about absence decides branches.
+				// Nothing true is left to say for the price of no copy. Give
+				// the fact up rather than rebuild a smaller one: an open shape
+				// assembled from whichever fields were convenient asserts
+				// nothing false, but it loses the fields it leaves out just as
+				// surely, so it buys no diagnostic back and leaves two shapes of
+				// degradation to keep right instead of one.
 				return false
 			}
 		}
