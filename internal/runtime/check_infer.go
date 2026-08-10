@@ -11407,6 +11407,36 @@ func (c *scriptChecker) noteShapeRefinement(ty *TypeExpr, state shapeRefinementS
 	c.shapeRefinements[ty] = state
 }
 
+// sameTypeFact reports whether a write puts back the fact the field already
+// holds, which is what lets the write keep the receiver's fact rather than copy
+// it.
+//
+// Answering it by serializing both sides walks both facts, and that walk is
+// proportional to the facts rather than to the write that asked for it, so it
+// sits outside the node budget the copy pays. Two things keep it there.
+//
+// The same node is the same fact, for free. That is the whole of a run of
+// writes putting one value back -- the type of an `int` literal, a helper's
+// memoized return, a local's bound fact -- which is exactly the run the no-copy
+// path exists to make free, and it walked both sides of it before.
+//
+// What is left is two distinct nodes, and the source had to spell the written
+// one out to produce one, so the walk is bounded by the write rather than by
+// the fact. Charging it says so: no source found so far makes this grow faster
+// than the source does, and a source that did would show up here rather than
+// nowhere.
+func sameTypeFact(existing, written *TypeExpr) bool {
+	if existing == written {
+		return true
+	}
+	existingKey, writtenKey := typeFactKey(existing), typeFactKey(written)
+	// The unit here is the bytes the two keys materialize rather than the nodes
+	// a copy walks. Both are proportional to the fact, and taking the length of
+	// what was built anyway keeps the charge from costing a second walk.
+	noteCheckWork(len(existingKey) + len(writtenKey))
+	return existingKey == writtenKey
+}
+
 // shapeFieldProvenanceRecorded reports whether anything keyed by this fact's
 // node identity records how the fact was built, rather than what it states,
 // about this field.
@@ -11486,7 +11516,7 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 		// came from -- see shapeFieldProvenanceRecorded.
 		existing, claimed := shape.Shape[key]
 		reusable := claimed && !c.shapeFieldProvenanceRecorded(shape, key)
-		if reusable && typeFactKey(existing) == typeFactKey(written) {
+		if reusable && sameTypeFact(existing, written) {
 			return true
 		}
 		resolve := c.checkNamedTypeResolver()

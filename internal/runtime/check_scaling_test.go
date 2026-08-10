@@ -235,17 +235,61 @@ end
 `, strings.Join(pairs, ", "), body.String())
 }
 
-func TestCheckRepeatedShapeKeyWriteCopiesStayLinear(t *testing.T) {
-	small := measureCheckWork(t, repeatedKeyShapeWriteSource(400, 400))
-	large := measureCheckWork(t, repeatedKeyShapeWriteSource(800, 800))
+// Every write here restates the type the field already holds, so this workload
+// settles at no work at all rather than at a bounded amount of it, and the
+// assertion says so: a ratio between two sizes could not tell zero from zero.
+// Both halves of "no work" are pinned here, because both are ways this run has
+// been paid for. The write keeps the receiver's fact instead of copying it, and
+// deciding that it may is free too, since the write hands back the very node
+// the field already holds. Counting fields rather than the nodes each copy
+// walks measured neither: the same pair copied 800 and 1,600 fields while
+// allocating 26MB and 97MB, since no write here widens the shape it deep-copies.
+func TestCheckRepeatedShapeKeyWriteCostsNothing(t *testing.T) {
+	for _, size := range []int{400, 800} {
+		if units := measureCheckWork(t, repeatedKeyShapeWriteSource(size, size)); units != 0 {
+			t.Fatalf("%d writes of one key against a %d-field nested shape handled %d units,"+
+				" want none: a write restating a field's type copies nothing and, being"+
+				" handed the fact it is compared against, compares nothing either", size, size, units)
+		}
+	}
+}
 
-	// Measured 4,120 then 4,035 copied nodes. Counting fields instead, the same
-	// pair copied 800 and 1,600 while allocating 26MB and 97MB, since neither
-	// write widened the shape it deep-copied. The assertion allows up to 3x so
-	// it states the complexity rather than pinning counts.
+// The comparison the no-copy path makes only serializes when the two sides are
+// distinct nodes, which is what a key alternating between two types produces.
+// Nothing budgets that walk -- the node budget pays for copies -- so what bounds
+// it is that the source has to spell the written value out to produce a node.
+func alternatingKeyShapeWriteSource(nested, writes int) string {
+	pairs := make([]string, 0, nested)
+	for i := range nested {
+		pairs = append(pairs, fmt.Sprintf("k%d: %d", i, i))
+	}
+	var body strings.Builder
+	for i := range writes {
+		if i%2 == 0 {
+			body.WriteString("  h[:b] = 1\n")
+		} else {
+			body.WriteString("  h[:b] = \"s\"\n")
+		}
+	}
+	return fmt.Sprintf(`
+def f()
+  h = { a: { %s }, b: 0 }
+%s  h
+end
+`, strings.Join(pairs, ", "), body.String())
+}
+
+func TestCheckAlternatingShapeKeyWriteComparisonsStayLinear(t *testing.T) {
+	small := measureCheckWork(t, alternatingKeyShapeWriteSource(400, 400))
+	large := measureCheckWork(t, alternatingKeyShapeWriteSource(800, 800))
+
+	// Measured 9,243 then 14,388 key bytes, a 1.56x step for a doubled source.
+	// The assertion allows up to 3x so it states the complexity rather than
+	// pinning counts that ordinary checker changes would shift.
 	if large > small*3 {
-		t.Fatalf("doubling the nested shape and the writes copied %d shape nodes against %d --"+
-			" over 3x, so refining a witnessed shape is superlinear in what it copies again", large, small)
+		t.Fatalf("doubling the nested shape and the writes serialized %d bytes of type fact"+
+			" against %d -- over 3x, so deciding whether a write restates a field is"+
+			" superlinear in the source", large, small)
 	}
 }
 
