@@ -95,34 +95,6 @@ func retainedValuesWithReceiver(receiver Value, out *[]Value) outputWalkRoot {
 	}
 }
 
-// retainedEntryValues walks the transformed values a hash driver stages in an
-// entry buffer before publishing them into its result map. Only the values are
-// charged: the keys are the receiver's own, which the walk reaches through it.
-func retainedEntryValues(out *[]HashEntry) outputWalkRoot {
-	return func(est *memoryEstimator) int {
-		total := 0
-		for _, entry := range *out {
-			total = saturatingAdd(total, est.valuePayload(entry.Value))
-		}
-		return total
-	}
-}
-
-// retainedMapValues walks a result map the driver fills. Like retainedValues it
-// takes a pointer, so a driver can register before it allocates the map and
-// keep the registration ahead of the block-call runner, whose bind baseline is
-// snapshotted once at construction. Only the values are charged: the keys are
-// the receiver's own, which the walk reaches through it.
-func retainedMapValues(out *map[string]Value) outputWalkRoot {
-	return func(est *memoryEstimator) int {
-		total := 0
-		for _, val := range *out {
-			total = saturatingAdd(total, est.valuePayload(val))
-		}
-		return total
-	}
-}
-
 // pushOutputWalkRoot registers a driver's Go-local output for the duration of
 // its loop; the driver pairs it with a deferred popOutputWalkRoot. It is a
 // no-op without an enforced memory quota, where no estimator walk runs at all.

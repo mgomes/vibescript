@@ -4831,16 +4831,6 @@ func TestHashLookupsChargeAResultAliasingAnEphemeralKey(t *testing.T) {
 	}
 }
 
-// hashOfIndexedInts builds a receiver whose sorted key order matches its value
-// order, so a block can key its behavior on which entry it is looking at.
-func hashOfIndexedInts(count int) Value {
-	entries := make(map[string]Value, count)
-	for i := range count {
-		entries[fmt.Sprintf("k%03d", i)] = NewInt(int64(i))
-	}
-	return NewHash(entries)
-}
-
 // missingKeyList renders count missing symbol keys as an argument list wide
 // enough for the memo's cost to show.
 func missingKeyList(count int) string {
@@ -5086,6 +5076,9 @@ func TestHashValuesAtKeepsTheMemoWhileTheProcIsUnchanged(t *testing.T) {
 // this cost is the price of the fix; metering is what keeps a stateful callback
 // from buying an unbounded amount of it.
 func TestHashValuesAtChargesTheWalkAStatefulProcForces(t *testing.T) {
+	if estimatorVerify {
+		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
+	}
 	// Deliberately not parallel: this measures step counts, and
 	// baseWalkCacheDisabled is process-wide, so a concurrent test that turns
 	// memoization off would be measured here as extra charge.
