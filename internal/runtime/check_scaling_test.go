@@ -282,13 +282,43 @@ func TestCheckStoredBlockResultWalksStayLinear(t *testing.T) {
 	small := measureCheckWork(t, storedBlockFillSource(200))
 	large := measureCheckWork(t, storedBlockFillSource(400))
 
-	// Measured 4,020 then 4,010 statements walked, which is the cap plus the
-	// walk that reached it. Before, the same pair walked 40,200 and 160,400, a
-	// 3.99x step. The assertion allows up to 3x so it states the complexity
-	// rather than pinning counts.
+	// Measured 8,030 then 8,015 nodes walked, which is the cap plus the walk
+	// that reached it. Before, the same pair walked 40,200 and 160,400
+	// statements, a 3.99x step. The assertion allows up to 3x so it states the
+	// complexity rather than pinning counts.
 	if large > small*3 {
-		t.Fatalf("doubling the source walked %d stored block statements against %d -- over 3x,"+
+		t.Fatalf("doubling the source walked %d stored block nodes against %d -- over 3x,"+
 			" so resolving a stored block's result is superlinear in the sites passing it again", large, small)
+	}
+}
+
+// A body of one wide expression is one statement, so charging the budget per
+// statement left it able to walk any number of nodes per site: the proc below
+// rechecks every element of its array literal at every site that passes it
+// (#10).
+func wideExpressionStoredBlockSource(n int) string {
+	elements := strings.TrimSuffix(strings.Repeat("1, ", n), ", ")
+	return fmt.Sprintf(`
+def f(items: array<int>)
+  callback = proc do |index|
+    [%s]
+  end
+%send
+`, elements, strings.Repeat("  items.fill(&callback)\n", n))
+}
+
+func TestCheckWideExpressionStoredBlockWalksStayLinear(t *testing.T) {
+	small := measureCheckAllocation(t, wideExpressionStoredBlockSource(400))
+	large := measureCheckAllocation(t, wideExpressionStoredBlockSource(800))
+
+	// Measured 1.4MB then 1.6MB. Charging the budget per statement instead, the
+	// same pair allocated 19MB and 62MB while the budget recorded 400 and 800
+	// units, since one statement is one unit however wide it is. This counts
+	// allocated bytes because the point is what the repeated walks cost, not
+	// what the budget believes they cost.
+	if large > small*3 {
+		t.Fatalf("doubling the source allocated %d bytes against %d -- over 3x, so a wide"+
+			" expression in a stored block escapes the walk budget again", large, small)
 	}
 }
 
