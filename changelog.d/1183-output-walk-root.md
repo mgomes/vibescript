@@ -10,10 +10,10 @@
   slice sized from the argument count, so a wide lookup does not pay for its
   whole output on its first miss. Costs are unchanged while the callback leaves
   the base-walk memo intact; a callback that mutates state discards it, and the
-  re-walks that forces are charged to the step quota rather than taken for free.
-  That charge is settled as the lookup returns, so a callback that mutates state
-  and then raises pays for the walks it forced exactly as one that returns does,
-  and a rescued failure leaves nothing behind for a later lookup to be billed for.
+  re-walks that forces are described below. Whatever a lookup is charged is settled
+  as it returns, so a callback that mutates state and then raises pays what one
+  that returns pays, and a rescued failure leaves nothing behind for a later lookup
+  to be billed for.
   `VIBES_ESTIMATOR_VERIFY` re-derives every commit from scratch.
 - **Changed: a lookup whose callback destructures with a named rest costs more
   steps.** Such a callback is the only one that makes `Hash#fetch_values` or

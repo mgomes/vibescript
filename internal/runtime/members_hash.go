@@ -940,8 +940,9 @@ func hashMemberQuery(property string) (Value, error) {
 			var produced []Value
 			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &produced))
 			// Settled on the way out rather than only after a successful proc, so
-			// a proc that mutates state and then raises bills the re-walks it
-			// forced (see memory_output.go).
+			// a proc that mutates state and then raises pays what one that
+			// returns pays, and leaves nothing for a later lookup to be
+			// billed for (see memory_output.go).
 			defer func() { err = exec.endOutputWalkRoot(err) }()
 			// The proc is driven through a runner inside a block-iteration region
 			// so the base walk stays memoized across misses. CallBlock pushes a
@@ -1077,8 +1078,9 @@ func hashMemberQuery(property string) (Value, error) {
 			var produced []Value
 			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &produced))
 			// Settled on the way out rather than only after a successful block
-			// call, so a block that mutates state and then raises bills the
-			// re-walks it forced (see memory_output.go).
+			// call, so a block that mutates state and then raises pays what one
+			// that returns pays, and leaves nothing for a later lookup to be
+			// billed for (see memory_output.go).
 			defer func() { err = exec.endOutputWalkRoot(err) }()
 			// The block is driven through a runner inside a block-iteration region
 			// so the base walk stays memoized across misses; see hash.values_at for

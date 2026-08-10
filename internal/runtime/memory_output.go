@@ -112,25 +112,21 @@ func (exec *Execution) pushOutputWalkRoot(walk outputWalkRoot) {
 // unregistering and billing are one operation because leaving either half undone
 // is a defect, and there is no other way to unregister.
 //
-// Billing here is what makes the two outcomes cost the same. A callback that
-// mutates state and then raises has performed exactly the estimator work a
-// callback that returns performs -- the mutation discards the memo, and every
-// memory check the callback runs afterwards re-walks the whole retained output --
-// but the driver's error return skipped chargeRetainedOutputWalk, so a script
-// could rescue and repeat the shape for free. Measured on a lookup retaining 800
-// results whose last callback mutates and then loops 6,400 more times, so the
-// periodic checks re-walk that whole prefix again and again, the run cost 387,532
-// steps when the callback returned and 147,455 when it raised.
+// Settling here is what makes the two outcomes cost the same. Whatever the loop
+// recorded for billing, an error return used to skip, so a script could rescue and
+// repeat the shape and pay less than one that completed; and the unsettled count
+// stayed on the execution to be billed to whichever lookup ran next, which is the
+// same defect seen from the other side. Settling on exit fixes both, because the
+// charge zeroes the counter.
 //
-// Not clearing the counter was the same defect seen from the other side rather
-// than a second one: the recorded nodes stayed on the execution and were billed
-// to whichever lookup ran next, so a trivial lookup costing 6 steps on its own
-// cost 25,074 after one rescued failure and 100,281 after four. Settling on exit
-// fixes both, because the charge zeroes the counter.
+// What the counter holds is the bind charge's construction walk, and nothing else.
+// The retained-output walk it once also held is no longer recorded at all: that
+// walk is forced by a memo miss whose cause cannot be attributed to this
+// execution, so charging it billed one script for another's mutations (see
+// outputWalkBytes).
 //
 // The root is unregistered before the charge so the memory check inside the step
-// charge does not re-walk the output this driver is abandoning. An outer driver's
-// roots do accrue there, which is correct: that driver settles its own.
+// charge does not re-walk the output this driver is abandoning.
 //
 // The driver's own error wins when both are present, and nothing is lost by that.
 // Every error the settlement can raise is either latched on the execution -- both
@@ -180,15 +176,17 @@ func (exec *Execution) outputWalkBytes(est *memoryEstimator) int {
 	return total
 }
 
-// chargeRetainedOutputWalk bills the step quota for the output-root traversals
-// performed since it was last called. A driver calls it after each callback, so
-// the quota trips inside the loop rather than after unbounded work, and
-// endOutputWalkRoot calls it once more on the way out, so what the last callback
-// forced is billed whether that callback returned or raised. Walking the output
-// is the price of re-deriving what it holds at every check, which is what makes
-// the accounting correct; metering keeps a callback from buying an unbounded
-// amount of it. A callback that leaves the memo intact walks nothing and pays
-// nothing.
+// chargeRetainedOutputWalk bills the step quota for the estimator work recorded
+// since it was last called. A driver calls it after each callback, so the quota
+// trips inside the loop rather than after unbounded work, and endOutputWalkRoot
+// calls it once more on the way out, so the last callback's share is billed
+// whether that callback returned or raised.
+//
+// Despite the name, what is recorded is NOT the retained-output walk. That walk is
+// unbilled (see outputWalkBytes for why). What reaches this counter is the bind
+// charge's construction walk, which happens because this execution built a charge
+// and is therefore attributable to it. A lookup whose callback binds no named rest
+// builds no charge, records nothing here, and pays nothing.
 func (exec *Execution) chargeRetainedOutputWalk() error {
 	nodes := exec.outputWalkNodes
 	if nodes == 0 {
@@ -249,9 +247,10 @@ func (exec *Execution) addRetainedOutput(val Value) {
 // charged at all.
 //
 // The fallback therefore walks the graph first and prices the roots against it,
-// which is the same computation the memo holds, just paid for. It is reached only
-// when the memo cannot answer, and the one caller that would hit it on every
-// construction takes its start value from its own base walk instead.
+// which is the same computation the memo holds. It is reached only when the memo
+// cannot answer, and the one caller that would hit it on every construction takes
+// its start value from its own base walk instead. The walk is not billed: what
+// forces it is a memo miss this execution cannot be shown to have caused.
 func (exec *Execution) retainedOutputMarginalBytes() int {
 	if len(exec.outputWalkRoots) == 0 {
 		return 0
