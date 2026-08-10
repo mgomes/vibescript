@@ -14,7 +14,18 @@
   That charge is settled as the lookup returns, so a callback that mutates state
   and then raises pays for the walks it forced exactly as one that returns does,
   and a rescued failure leaves nothing behind for a later lookup to be billed for.
-  `VIBES_ESTIMATOR_VERIFY` re-derives every commit from scratch.
+  The graph walks such a callback forces are billed too, so the accounting cannot
+  be bought cheaply by invalidating the memo. `VIBES_ESTIMATOR_VERIFY` re-derives
+  every commit from scratch.
+- **Changed: a lookup whose callback destructures with a named rest costs more
+  steps.** Such a callback is the only one that makes `Hash#fetch_values` or
+  `Hash#values_at` weigh a binding against the reachable graph, and those graph
+  walks previously reached no counter: a loop of ten such lookups over a
+  20,000-element graph cost the same 231 steps as over a 2,000-element one. They
+  are now billed at the same rate as every other estimator walk in the tree, so
+  the cost scales with the graph the callback is weighed against -- that loop now
+  costs about 15,900 steps. A script doing this in bulk under a tight `StepQuota`
+  may need a larger one. Callbacks without a named rest are unaffected.
 - **Known: one nested lookup shape is charged more memory than it uses.** A
   `Hash#fetch_values` or `Hash#values_at` whose callback destructures with a named
   rest (`|(head, *tail)|`), nested inside another iterator's block, and returning a
