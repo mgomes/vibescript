@@ -98,23 +98,6 @@ func (exec *Execution) hashDefaultForKey(receiver, key Value) (Value, error) {
 	return hashDefaultValue(receiver), nil
 }
 
-// hashDefaultProcRunner builds a reusable runner for a hash's default proc, or
-// returns nil when there is no proc to drive. A lookup builtin that resolves
-// many misses uses it instead of hashDefaultForKey's per-call CallBlock: the
-// runner reuses one block scope and marks it region-neutral, so the misses do
-// not invalidate the memoized base walk between them.
-//
-// A nil runner means "take the ordinary path", not "there is no default": a
-// host-built hash can carry a default proc that is not a block, and
-// hashDefaultForKey still owns the error that produces.
-func hashDefaultProcRunner(exec *Execution, name string, receiver Value, kwargs map[string]Value) (*blockCallRunner, error) {
-	proc := hashDefaultProc(receiver)
-	if proc.IsNil() || valueBlock(proc) == nil {
-		return nil, nil
-	}
-	return newBlockCallRunner(exec, proc, name, receiver, nil, kwargs)
-}
-
 // hashMissingKeyDefault resolves a missing-key [] access, wrapping any default
 // proc error with the index expression's position for a precise diagnostic. A
 // non-local return from the proc is not an error: it passes through intact so
@@ -961,10 +944,17 @@ func hashMemberQuery(property string) (Value, error) {
 			// every result retained so far. Measured on 800 misses, that is
 			// 1,379,346 estimator visits against 19,346 before the registration;
 			// with the runner and the region it is 12,451.
-			procRunner, err := hashDefaultProcRunner(exec, "hash.values_at", receiver, kwargs)
-			if err != nil {
-				return NewNil(), err
-			}
+			//
+			// The runner is rebuilt whenever the proc behind it changes, because a
+			// proc can change the hash's default metadata while the lookup is
+			// running: Hash#replace adopts the replacement's default, so a proc
+			// captured before the loop would serve later keys from a proc the hash
+			// no longer has. Rebuilding on the block's identity keeps the reuse for
+			// every run where nothing changes, which is the point of the runner.
+			var (
+				procRunner *blockCallRunner
+				procBlock  *Block
+			)
 			defer exec.beginBlockIterationRegion().end()
 			var procArgs [2]Value
 			for i, arg := range args {
@@ -989,6 +979,20 @@ func hashMemberQuery(property string) (Value, error) {
 				// default (a default value, or a default proc invoked with the
 				// hash and key, which may store) rather than filling nil, matching
 				// MRI's Hash#values_at.
+				// Read the hash's default afresh for this key rather than trusting
+				// what an earlier proc left behind.
+				proc := hashDefaultProc(receiver)
+				if blk := valueBlock(proc); blk != procBlock {
+					procBlock = blk
+					procRunner = nil
+					if blk != nil {
+						runner, buildErr := newBlockCallRunner(exec, proc, "hash.values_at", receiver, nil, kwargs)
+						if buildErr != nil {
+							return NewNil(), buildErr
+						}
+						procRunner = runner
+					}
+				}
 				var resolved Value
 				if procRunner != nil {
 					procArgs[0] = receiver
@@ -997,6 +1001,9 @@ func hashMemberQuery(property string) (Value, error) {
 					// the key is a Go-frame value a named rest can copy from.
 					resolved, err = procRunner.callWithChargedRoots(procArgs[:], arg)
 				} else {
+					// No proc, or a host-supplied default that is not a block;
+					// hashDefaultForKey owns both, including the error the latter
+					// produces.
 					resolved, err = exec.hashDefaultForKey(receiver, arg)
 				}
 				if err != nil {
