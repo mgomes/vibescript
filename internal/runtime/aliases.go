@@ -1224,6 +1224,25 @@ func newCheckedAutoBuiltin(name string, fn BuiltinFunc, spec staticCallSpec) Val
 // NewBuiltin returns a builtin function Value.
 func NewBuiltin(name string, fn BuiltinFunc) Value { return newBuiltin(name, fn, false) }
 
+// MarkHostBuiltin marks a builtin as one whose Go body the runtime did not
+// write, and returns it. The vibes facade applies it to every builtin it hands
+// a host, which is the only way a host can make one: internal/runtime is not
+// importable from outside this module's own packages.
+//
+// Marking at construction rather than where a builtin is published is what
+// makes it complete. Registration and capability binding only see the callables
+// reachable at that moment, so one a host produces later -- a factory'"'"'s result,
+// a capability method returning a callable, a builtin returning a builtin --
+// stayed unmarked, and dispatch gave its frame no claim over the arrays it
+// walks. A block calling pop inside such a frame cleared a slot it had not
+// reached, and walking [1, 2, 3] yielded 1, 2, nil.
+func MarkHostBuiltin(v Value) Value {
+	if b := valueBuiltin(v); b != nil {
+		b.hostDriven = true
+	}
+	return v
+}
+
 // NewCapturingBuiltin returns a builtin function Value whose Fn closes over the
 // given runtime values. The captured values are recorded on the builtin so the
 // memory estimator charges their payloads while the builtin is reachable,
