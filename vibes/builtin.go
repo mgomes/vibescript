@@ -12,10 +12,14 @@ type Builtin = runtime.Builtin
 type BuiltinFunc = runtime.BuiltinFunc
 
 // NewBuiltin returns a builtin function Value.
-func NewBuiltin(name string, fn BuiltinFunc) value.Value { return runtime.NewBuiltin(name, fn) }
+func NewBuiltin(name string, fn BuiltinFunc) value.Value {
+	return runtime.MarkHostBuiltin(runtime.NewBuiltin(name, fn))
+}
 
 // NewAutoBuiltin returns a builtin function Value that auto-invokes without parentheses.
-func NewAutoBuiltin(name string, fn BuiltinFunc) value.Value { return runtime.NewAutoBuiltin(name, fn) }
+func NewAutoBuiltin(name string, fn BuiltinFunc) value.Value {
+	return runtime.MarkHostBuiltin(runtime.NewAutoBuiltin(name, fn))
+}
 
 // Signature is the opt-in static contract a host callable publishes to the
 // checker; the same contract is enforced at runtime. See NewTypedBuiltin and
@@ -31,7 +35,11 @@ type SignatureParam = runtime.SignatureParam
 // registered as an engine builtin, passed as a call-option global, or exposed
 // as a capability method.
 func NewTypedBuiltin(name string, fn BuiltinFunc, sig Signature) (value.Value, error) {
-	return runtime.NewTypedBuiltin(name, fn, sig)
+	built, err := runtime.NewTypedBuiltin(name, fn, sig)
+	if err != nil {
+		return built, err
+	}
+	return runtime.MarkHostBuiltin(built), nil
 }
 
 // Builtins maps builtin function names to their Value implementations.

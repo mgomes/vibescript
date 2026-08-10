@@ -2827,6 +2827,8 @@ func (exec *Execution) estimateGraphTail(est *memoryEstimator, globals *taskLazy
 		total += globals.retainedSourceMemory(est)
 		total += globals.retainedCloneMemory(est)
 	}
+	total += exec.detachedArrayBackingBytes(est)
+	total += exec.retainedArrayBackingBytes(est)
 	return total
 }
 
@@ -2839,6 +2841,7 @@ func (exec *Execution) estimateScalarBase() int {
 
 	total += len(exec.callStack) * estimatedCallFrameBytes
 	total += len(exec.receiverStack) * estimatedValueBytes
+	total += exec.claimStackBytes()
 	total += len(exec.validatedCapabilityArgs) * estimatedStringHeaderBytes
 	for _, method := range exec.validatedCapabilityArgs {
 		total += len(method)

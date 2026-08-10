@@ -3293,6 +3293,31 @@ func (exec *Execution) evalForLoop(stmt *ForStmt, env *Env, mode loopResultMode)
 
 	switch iterable.Kind() {
 	case KindArray:
+		// `for x in a` walks the header captured here while its body runs
+		// arbitrary script, which is what a block-driving builtin does, so it
+		// takes the same claim on the backing (see array_shrink.go). The claim
+		// carries the current builtin depth rather than a depth of its own:
+		// the loop body runs at that depth, and a shrink is always a builtin
+		// dispatched from the body, so it is strictly deeper -- the same
+		// enclosing-frame relation a dispatch claim expresses. That holds
+		// however far the body wanders, since a script function call in
+		// between leaves the builtin depth alone.
+		heldBackings := exec.holdArrayBackings(iterable, nil, nil, false)
+		defer func() {
+			// Dropping this claim moves nothing and so cannot fail: only a
+			// wildcard claim ever holds narrowed storage, only a host-driven
+			// frame takes one, and every such frame drops its own claims on
+			// its way out, before a defer at this mark can run.
+			//
+			// That invariant is real but it is not local to this line, and the
+			// symptom of losing it would be storage the quota has forgotten --
+			// the very retention this mechanism exists to prevent, and the
+			// hardest kind to trace back here. Trip loudly under the oracle
+			// rather than discard the error on the strength of the comment.
+			if err := exec.releaseArrayBackings(heldBackings); estimatorVerify && err != nil {
+				panic(fmt.Sprintf("runtime: for-in claim released narrowed storage: %v", err))
+			}
+		}()
 		for _, item := range iterable.Array() {
 			if err := exec.step(); err != nil {
 				return NewNil(), false, exec.wrapError(err, stmt.Pos())

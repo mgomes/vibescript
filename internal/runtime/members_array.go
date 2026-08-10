@@ -3744,8 +3744,17 @@ func arrayMemberTransforms(property string) (Value, error) {
 					return NewNil(), nil
 				}
 				popped := arr[len(arr)-1]
-				setArrayElems(receiver, arr[:len(arr)-1])
+				if err := shrinkArray(exec, receiver, arr, 0, len(arr)-1, args, kwargs, block, 0); err != nil {
+					return NewNil(), err
+				}
 				return popped, nil
+			}
+			// pop(0), and pop(n) on an empty receiver, remove nothing. Falling
+			// through would still take the shrink path, which inside an
+			// iterator copies the whole receiver and bills its elements for a
+			// call that changes nothing.
+			if count == 0 {
+				return NewArray([]Value{}), nil
 			}
 			// pop(n) copies the removed tail out so the returned array does not
 			// share backing storage with the receiver.
@@ -3754,7 +3763,9 @@ func arrayMemberTransforms(property string) (Value, error) {
 			}
 			removed := make([]Value, count)
 			copy(removed, arr[len(arr)-count:])
-			setArrayElems(receiver, arr[:len(arr)-count])
+			if err := shrinkArray(exec, receiver, arr, 0, len(arr)-count, args, kwargs, block, count); err != nil {
+				return NewNil(), err
+			}
 			return NewArray(removed), nil
 		}), nil
 	case "shift":
@@ -4283,8 +4294,16 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 			return NewNil(), nil
 		}
 		shifted := arr[0]
-		setArrayElems(receiver, arr[1:])
+		if err := shrinkArray(exec, receiver, arr, 1, len(arr), args, kwargs, block, 0); err != nil {
+			return NewNil(), err
+		}
 		return shifted, nil
+	}
+	// shift(0), and shift(n) on an empty receiver, remove nothing. Falling
+	// through would still take the shrink path, which inside an iterator copies
+	// the whole receiver and bills its elements for a call that changes nothing.
+	if count == 0 {
+		return NewArray([]Value{}), nil
 	}
 	// shift(n) copies the removed head out so the returned array does not share
 	// backing storage with the receiver.
@@ -4293,7 +4312,9 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 	}
 	removed := make([]Value, count)
 	copy(removed, arr[:count])
-	setArrayElems(receiver, arr[count:])
+	if err := shrinkArray(exec, receiver, arr, count, len(arr), args, kwargs, block, count); err != nil {
+		return NewNil(), err
+	}
 	return NewArray(removed), nil
 }
 

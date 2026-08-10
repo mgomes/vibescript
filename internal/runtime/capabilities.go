@@ -1261,6 +1261,7 @@ func markCapabilityBuiltins(val Value) {
 	scanner.collectBuiltins(val, builtins)
 	for builtin := range builtins {
 		builtin.Capability = true
+		builtin.hostDriven = true
 	}
 }
 

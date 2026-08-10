@@ -36,7 +36,13 @@ type arrayData struct {
 	elems []Value
 }
 
-// NewArray returns an array Value.
+// NewArray returns an array Value backed by a, which it takes ownership of.
+//
+// The slice must not be one another array Value is already built over. An
+// in-place shrink clears the slots it vacates, so a second array over the same
+// storage would find elements it still shows blanked out, and a growing push
+// through one of them reallocates without the other seeing it. Build a second
+// array over the same contents with a copy of the slice, not the slice.
 func NewArray(a []Value) Value { return Value{kind: KindArray, data: &arrayData{elems: a}} }
 
 // SetArrayElems replaces the element slice of an existing array wrapper in

@@ -232,6 +232,17 @@ type Execution struct {
 	blockRegionBoundary     int
 	blockRegionBuiltinDepth int
 
+	// heldArrayBackings is the stack of array element backings the live
+	// builtin frames are holding across the script code they invoke. See
+	// array_shrink.go: an in-place shrink consults it to decide whether it may
+	// zero the slots it vacates, or must leave them alone instead.
+	//
+	// It has no inline backing, unlike the always-used per-call stacks below.
+	// A claim is only ever pushed for an array receiver or argument, so giving
+	// every execution room for eight of them put 896 bytes on the shortest
+	// possible call whether or not the script ever touched an array.
+	heldArrayBackings []heldArrayBacking
+
 	// Inline backing storage for the always-used per-call stacks, so a
 	// fresh Execution costs one allocation instead of one per stack.
 	// Appends beyond these capacities spill to the heap as usual.
