@@ -2371,6 +2371,16 @@ func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []
 	// here, because a nested driver has just invalidated the memo by registering.
 	base := exec.estimateScalarBase()
 	base = saturatingAdd(base, exec.estimateGraphBase(rootEst, taskLazyGlobalsFromContext(exec.Context())))
+	// Metered for the same reason the retained-output fallback's basis walk is,
+	// and only while a driver output is registered: that is exactly when this
+	// construction is script-repeatable, because a lookup builds its runner inside
+	// its own loop. A driver with no registered output -- every rest-binding block
+	// driver outside the hash lookups -- has nothing that would drain the counter,
+	// so charging it here would leave the nodes to be billed to whichever lookup
+	// ran next (see chargeRetainedOutputWalk).
+	if len(exec.outputWalkRoots) > 0 {
+		exec.outputWalkNodes += rootEst.walked
+	}
 	retained := exec.outputWalkBytes(rootEst)
 	base = saturatingAdd(base, retained)
 	baseline := base

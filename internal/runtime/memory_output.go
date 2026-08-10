@@ -262,6 +262,16 @@ func (exec *Execution) retainedOutputMarginalBytes() int {
 	}
 	est := newMemoryEstimator()
 	exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.Context()))
+	// The basis walk is metered exactly as the roots' walk below is. Without it
+	// only the part of this computation after the graph was billed, and the graph
+	// is the larger part: a loop of twenty rest-binding lookups over a
+	// 20,000-element graph drove 2,001,500 estimator nodes through here and
+	// through the bind charge's own construction for 451 steps, about 4,400 nodes
+	// per step against the 64 this tree charges everywhere else. The memo is what
+	// keeps this rare -- it answers 96 of every 100 readings -- so what is billed
+	// here is the residue the memo cannot serve, which is the residue script code
+	// can make it pay by invalidating.
+	exec.outputWalkNodes += est.walked
 	return exec.outputWalkBytes(est)
 }
 

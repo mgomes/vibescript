@@ -5595,6 +5595,49 @@ func TestHashValuesAtDoesNotDoubleChargeAnEphemeralReceiverWithAProc(t *testing.
 	}
 }
 
+// A rest-binding callback is the only shape that consults liveBaseline, and so
+// the only one that can reach the retained-output fallback or build a bind charge
+// at all. Both walk the whole reachable graph, and neither walk was billed: only
+// the part of each computation after the graph -- the output roots -- reached the
+// step counter.
+//
+// That matters more than its size, because metering is the argument that makes
+// the residual quadratic on this path acceptable. An unmetered walk underneath it
+// is that argument's foundation rather than a detail beside it, the same way the
+// error path was to the per-callback charge.
+//
+// The property asserted is that the cost must depend on the size of the graph
+// being walked. A loop of lookups over a ten-times-larger graph did exactly the
+// same 231 steps before, because the walk was free; it now scales. That keeps the
+// test off any particular step count while pinning the thing that was wrong.
+//
+// Deliberately not parallel: this measures step counts, and baseWalkCacheDisabled
+// is process-wide.
+func TestRestBindingLookupBillsTheGraphItWalks(t *testing.T) {
+	if estimatorVerify {
+		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
+	}
+	const calls, small, large = 10, 2_000, 20_000
+	// Each iteration is a fresh lookup, so each pays its own fallback and bind
+	// charge; the callback binds a named rest, which is what makes either reachable.
+	src := "def run(a, n)\n  t = 0\n  i = 0\n  while i < n\n" +
+		"    h = Hash.new { |g, (head, *tail)| 1 }\n" +
+		"    t = t + h.values_at([1, 2]).length\n    i = i + 1\n  end\n  t\nend"
+	cfg := Config{MemoryQuotaBytes: 256 << 20}
+
+	atSmall := minStepQuotaToComplete(t, cfg, src, loopMemoArray(small), calls, 8_000_000)
+	atLarge := minStepQuotaToComplete(t, cfg, src, loopMemoArray(large), calls, 8_000_000)
+
+	// Ten times the graph, so the walks cost ten times as much. Four times is far
+	// above the flat cost an unbilled walk produces and far below the real ratio.
+	if atLarge < atSmall*4 {
+		t.Fatalf("%d lookups over a %d-element graph needed %d steps and over a %d-element one %d, "+
+			"a %.1fx rise for a tenfold graph; the graph walks these callbacks force are not being "+
+			"billed, so a script can buy them by invalidating the memo",
+			calls, small, atSmall, large, atLarge, float64(atLarge)/float64(atSmall))
+	}
+}
+
 // intArray builds a receiver of count distinct ints, cheap enough that a test
 // weighing payloads is not measuring the receiver.
 func intArray(count int) Value {
