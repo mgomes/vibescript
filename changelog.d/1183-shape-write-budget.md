@@ -7,4 +7,7 @@
   fields rather than the nodes each copy walks missed the second entirely. A
   budget spent by the copies bounds both, and it travels with the fact, so a
   fresh literal elsewhere starts with all of it. The same pairs allocate 11.8MB
-  and 5.4MB now.
+  and 5.4MB now. Past the budget the fact gives up claiming to name every key
+  and never a key it already names: a shape is authoritative about the keys it
+  omits, so dropping one would make the checker decide branches it should leave
+  alone.

@@ -374,25 +374,30 @@ end
 // Every answer the shape write gives when it cannot restate the fact exactly is
 // a place the checker can withdraw something it still knows, and withdrawing a
 // field type is what adds diagnostics: a branch reading that field stops being
-// decided and whatever is written in its dead arm gets checked. Four separate
-// reports found four cells of that table one at a time, so this walks it and
-// compares against the checker with the budget out of the way, which is the
-// only reference that says what the bound cost rather than what it happens to
-// do. Every configuration has to report a subset of what the unbudgeted run
+// decided and whatever is written in its dead arm gets checked. Five separate
+// reports found five such answers one at a time, so this walks them and
+// compares against the checker with the budget raised out of the way, which is
+// the only reference that says what the bound cost rather than what it happens
+// to do. Every configuration has to report a subset of what the unbudgeted run
 // reports (#14).
 //
-// The walk is cheap: each cell checks two short scripts, and the whole table
-// runs in well under a second.
+// The axes have to compose, which is what an earlier version of this walk got
+// wrong: it drew the written field and the branch subject from the same pair of
+// names, so every write that reached the give-up landed on the field the branch
+// read, and the shape that fails -- a write landing on one field while the
+// branch reads another the writes never touch -- had no cell at all. The
+// written field, the branch subject, and whether the branch subject is ever
+// written are separate here, and `keep` is truthy and written by nothing.
 func TestShapeWriteBudgetNeverAddsDiagnostics(t *testing.T) {
-	literal := func(fields int) string {
-		pairs := make([]string, 0, fields+2)
-		pairs = append(pairs, "n: flag ? nil : 1", "other: 1")
+	literal := func(written string, fields int) string {
+		pairs := make([]string, 0, fields+3)
+		pairs = append(pairs, "w: "+written, "keep: 1", "maybe: flag ? nil : 1")
 		for i := range fields {
 			pairs = append(pairs, fmt.Sprintf("f%d: %d", i, i))
 		}
 		return "{ " + strings.Join(pairs, ", ") + " }"
 	}
-	source := func(fields int, padding, writes, subject string) string {
+	source := func(written string, fields int, padding, writes, subject string) string {
 		return fmt.Sprintf(`
 def take(v: int)
   v
@@ -406,7 +411,7 @@ def f(flag)
     take("bad")
   end
 end
-`, literal(fields), padding, writes, subject)
+`, literal(written, fields), padding, writes, subject)
 	}
 
 	// Padding drives how much of the budget is gone before the write under
@@ -423,47 +428,42 @@ end
 		return body.String()
 	}
 
-	writes := []struct{ name, text string }{
-		{"new key", "  h[:fresh] = 1\n"},
-		{"same type", "  h[:other] = 2\n"},
-		{"narrowing", "  h[:n] = 1\n"},
-		{"widening", "  h[:other] = flag ? 2 : \"s\"\n"},
-		{"disjoint", "  h[:other] = \"s\"\n"},
-		{"alternating", strings.Repeat("  h[:other] = \"s\"\n  h[:other] = 2\n", 25)},
+	// Each write kind names the type the written field starts as, so that the
+	// kind is what the write does to it rather than an accident of the literal.
+	writes := []struct{ name, written, text string }{
+		{"new key", "1", "  h[:fresh] = 1\n"},
+		{"same type", "1", "  h[:w] = 2\n"},
+		{"narrowing", "flag ? nil : 1", "  h[:w] = 1\n"},
+		{"widening", "1", "  h[:w] = flag ? 2 : \"s\"\n"},
+		{"disjoint", "1", "  h[:w] = \"s\"\n"},
+		{"alternating", "1", strings.Repeat("  h[:w] = \"s\"\n  h[:w] = 2\n", 25)},
+		{"narrowing then widening", "flag ? nil : 1", "  h[:w] = 1\n  h[:w] = \"s\"\n  h[:w] = 1\n"},
 	}
-	budgets := []struct {
-		name    string
-		padding string
-	}{
+	budgets := []struct{ name, padding string }{
 		{"unspent", ""},
 		{"budget spent", padding(200, 0)},
 		{"both spent", padding(200, 400)},
 	}
-	// Widths the budget can still copy. A literal wider than the whole budget
-	// is the one shape a contradicting write cannot restate -- copying it per
-	// write is the quadratic this budget exists to stop -- so past both
-	// allowances it keeps the field the write lands on and gives up the rest.
-	// TestShapeWiderThanBudgetKeepsWhatItCanCopy pins that boundary.
 	widths := []struct {
 		name   string
 		fields int
 	}{
 		{"narrow", 0},
 		{"wide", 300},
-		{"wider than the restart rate", 600},
-		{"wider than the budget", 6000},
+		{"wider than the budget", 1000},
+		{"far wider than the budget", 6000},
 	}
 
 	for _, width := range widths {
 		for _, budget := range budgets {
 			for _, write := range writes {
-				for _, subject := range []string{"n", "other"} {
+				for _, subject := range []string{"w", "keep"} {
 					name := fmt.Sprintf("%s/%s/%s/branch on %s",
 						width.name, budget.name, write.name, subject)
 					t.Run(name, func(t *testing.T) {
-						script := source(width.fields, budget.padding, write.text, subject)
+						script := source(write.written, width.fields, budget.padding, write.text, subject)
 						unbudgeted := checkWarningMessagesWithShapeBudget(t, script, math.MaxInt/4)
-						budgeted := checkWarningMessagesWithShapeBudget(t, script, maxRefinedShapeNodes)
+						budgeted := checkWarningMessages(compileScript(t, script).CheckWarnings())
 
 						for _, message := range budgeted {
 							if !slices.Contains(unbudgeted, message) {
@@ -485,9 +485,11 @@ end
 func checkWarningMessagesWithShapeBudget(t *testing.T, source string, budget int) []string {
 	t.Helper()
 
-	previous := maxRefinedShapeNodes
-	maxRefinedShapeNodes = budget
-	defer func() { maxRefinedShapeNodes = previous }()
+	previousExact, previousWidened := maxRefinedShapeNodes, maxWidenedShapeNodes
+	maxRefinedShapeNodes, maxWidenedShapeNodes = budget, budget
+	defer func() {
+		maxRefinedShapeNodes, maxWidenedShapeNodes = previousExact, previousWidened
+	}()
 	return checkWarningMessages(compileScript(t, source).CheckWarnings())
 }
 
