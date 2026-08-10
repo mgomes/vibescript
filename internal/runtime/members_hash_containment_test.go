@@ -5108,6 +5108,169 @@ func TestHashValuesAtChargesTheWalkAStatefulProcForces(t *testing.T) {
 	}
 }
 
+// failingCallbackLookups returns the fetch_values and values_at spellings of one
+// shape: a lookup that retains prefix results, whose last callback mutates
+// captured state -- discarding the base-walk memo -- then spins long enough for
+// the periodic memory checks to re-walk the whole retained prefix many times, and
+// finally runs tail. Passing "0" for tail makes that callback return; passing a
+// raise makes it fail after doing exactly the same work, and the enclosing rescue
+// lets the run finish either way, so the two differ only in how the lookup exits.
+func failingCallbackLookups(prefix, spin int, tail string) map[string]string {
+	fetch := "def run(a, n)\n" +
+		"  counter = [0]\n" +
+		"  begin\n" +
+		"    { }.fetch_values(%s) do |k|\n" +
+		"      counter[0] = counter[0] + 1\n" +
+		"      if counter[0] >= %d\n" +
+		"        j = 0\n" +
+		"        while j < %d\n" +
+		"          counter[0] = counter[0] + 1\n" +
+		"          j = j + 1\n" +
+		"        end\n" +
+		"        %s\n" +
+		"      end\n" +
+		"      [k, k]\n" +
+		"    end\n" +
+		"  rescue\n" +
+		"    0\n" +
+		"  end\n" +
+		"  counter[0]\n" +
+		"end"
+	valuesAt := "def run(a, n)\n" +
+		"  counter = [0]\n" +
+		"  h = Hash.new do |g, k|\n" +
+		"    counter[0] = counter[0] + 1\n" +
+		"    if counter[0] >= %d\n" +
+		"      j = 0\n" +
+		"      while j < %d\n" +
+		"        counter[0] = counter[0] + 1\n" +
+		"        j = j + 1\n" +
+		"      end\n" +
+		"      %s\n" +
+		"    end\n" +
+		"    [k, k]\n" +
+		"  end\n" +
+		"  begin\n" +
+		"    h.values_at(%s)\n" +
+		"  rescue\n" +
+		"    0\n" +
+		"  end\n" +
+		"  counter[0]\n" +
+		"end"
+	return map[string]string{
+		"fetch_values": fmt.Sprintf(fetch, missingKeyList(prefix), prefix, spin, tail),
+		"values_at":    fmt.Sprintf(valuesAt, prefix, spin, tail, missingKeyList(prefix)),
+	}
+}
+
+// The re-walks a stateful callback forces are charged to the step quota, which
+// is what makes the residual quadratic in this path affordable rather than free.
+// That argument only holds if the charge is unavoidable, and it was not: the
+// charge sat after the callback returned, so an error return jumped over it. A
+// callback that mutated state, ran a pile of memory checks over a large retained
+// prefix and then raised did all of that work and paid for none of it, and a
+// script can rescue and repeat the shape.
+//
+// Both outcomes must therefore cost the same. Measured at 400 retained results
+// and a final callback spinning for 1,600 more steps, raising cost 40,638 steps
+// against 70,677 for returning -- 42.5% of the work taken for free, growing with
+// the product of the prefix and the checks the callback forces.
+//
+// Deliberately not parallel: this measures step counts, and baseWalkCacheDisabled
+// is process-wide, so a concurrent test that turns memoization off would be
+// measured here as extra charge.
+func TestHashLookupBillsAWalkACallbackForcedBeforeRaising(t *testing.T) {
+	if estimatorVerify {
+		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
+	}
+	const prefix, spin = 400, 1600
+	cfg := Config{MemoryQuotaBytes: 64 << 20}
+	returns := failingCallbackLookups(prefix, spin, "0")
+	raises := failingCallbackLookups(prefix, spin, `raise "boom"`)
+
+	for name, returning := range returns {
+		t.Run(name, func(t *testing.T) {
+			onReturn := minStepQuotaToComplete(t, cfg, returning, NewNil(), 0, 200_000)
+			onRaise := minStepQuotaToComplete(t, cfg, raises[name], NewNil(), 0, 200_000)
+
+			// Returning legitimately costs a little more, since it goes on to
+			// build the result array the raising run never reaches; the margin is
+			// far below the 42.5% the unbilled walk was worth.
+			if onRaise < onReturn*9/10 {
+				t.Fatalf("the same callback work cost %d steps when it returned and %d when it raised, "+
+					"%.1f%% of the price; the walks a failing callback forces are not being billed, so a "+
+					"script can rescue and repeat the shape for free",
+					onReturn, onRaise, 100*float64(onRaise)/float64(onReturn))
+			}
+		})
+	}
+}
+
+// rescuedFailureLoopSource repeats a lookup that raises on its FIRST miss, so the
+// call never reaches the per-callback charge at all and nothing settles the nodes
+// its checks recorded. The receiver is a fresh dup, which no environment holds, so
+// the output root walks the whole receiver on every check the callback forces.
+// trailing is appended after the loop: one lookup whose own work is a handful of
+// steps, which is where the unsettled nodes land.
+func rescuedFailureLoopSource(spin int, trailing string) string {
+	return fmt.Sprintf("def run(a, n)\n"+
+		"  counter = [0]\n"+
+		"  i = 0\n"+
+		"  while i < n\n"+
+		"    begin\n"+
+		"      a.dup.fetch_values(:zz) do |k|\n"+
+		"        j = 0\n"+
+		"        while j < %d\n"+
+		"          counter[0] = counter[0] + 1\n"+
+		"          j = j + 1\n"+
+		"        end\n"+
+		"        raise \"boom\"\n"+
+		"      end\n"+
+		"    rescue\n"+
+		"      0\n"+
+		"    end\n"+
+		"    i = i + 1\n"+
+		"  end\n"+
+		"%s"+
+		"  counter[0]\n"+
+		"end", spin, trailing)
+}
+
+// The other half of the same defect, pointing the other way. Because the error
+// return did not settle the recorded walk, the nodes stayed on the execution and
+// were billed to whichever lookup ran next -- so the free work above was really
+// deferred work, and a later lookup that did nothing paid for every rescued
+// failure that preceded it. A trivial lookup costing 6 steps on its own cost
+// 25,074 after one rescued failure, 50,143 after two and 100,281 after four.
+//
+// Its cost must not depend on how many failures came before it. Measuring it as a
+// difference against the same loop without it keeps the assertion on the trailing
+// lookup rather than on the loop, which legitimately grows with n.
+//
+// Deliberately not parallel, for the reason above.
+func TestHashLookupDoesNotBillALaterLookupForARescuedFailure(t *testing.T) {
+	if estimatorVerify {
+		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
+	}
+	const spin, failures = 800, 2
+	cfg := Config{MemoryQuotaBytes: 256 << 20}
+	receiver := largeHashReceiver(2000)
+	bare := rescuedFailureLoopSource(spin, "")
+	withTrailing := rescuedFailureLoopSource(spin, "  { }.fetch_values(:q) { |k| 1 }\n")
+
+	// The same trailing lookup after no failures at all is what it is worth.
+	alone := minStepQuotaToComplete(t, cfg, withTrailing, receiver, 0, 200_000) -
+		minStepQuotaToComplete(t, cfg, bare, receiver, 0, 200_000)
+	after := minStepQuotaToComplete(t, cfg, withTrailing, receiver, failures, 200_000) -
+		minStepQuotaToComplete(t, cfg, bare, receiver, failures, 200_000)
+
+	if after > alone+64 {
+		t.Fatalf("a trailing lookup cost %d steps on its own and %d after %d rescued failures; the "+
+			"nodes those failures recorded were left on the execution for it to pay",
+			alone, after, failures)
+	}
+}
+
 // intArray builds a receiver of count distinct ints, cheap enough that a test
 // weighing payloads is not measuring the receiver.
 func intArray(count int) Value {

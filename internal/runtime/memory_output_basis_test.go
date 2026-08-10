@@ -32,7 +32,7 @@ func TestRetainedOutputMarginalUsesOneBasis(t *testing.T) {
 
 	out := []Value{shared}
 	exec.pushOutputWalkRoot(retainedValues(&out))
-	defer exec.popOutputWalkRoot()
+	defer func() { _ = exec.endOutputWalkRoot(nil) }()
 
 	// No memo to answer from, which is the state a nested registration leaves
 	// behind: pushing the root above bumped the topology version.
@@ -69,7 +69,7 @@ func TestBlockBindChargeStartsOnTheMarginalBasis(t *testing.T) {
 
 	out := []Value{shared}
 	exec.pushOutputWalkRoot(retainedValues(&out))
-	defer exec.popOutputWalkRoot()
+	defer func() { _ = exec.endOutputWalkRoot(nil) }()
 
 	charge := newBlockBindCharge(exec, restBindingBlock(), NewNil(), nil, nil, NewNil())
 	if charge == nil {

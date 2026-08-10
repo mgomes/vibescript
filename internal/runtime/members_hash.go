@@ -919,7 +919,7 @@ func hashMemberQuery(property string) (Value, error) {
 			return NewArray(values), nil
 		}), nil
 	case "values_at":
-		return NewAutoBuiltin("hash.values_at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("hash.values_at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (result Value, err error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.values_at does not accept keyword arguments")
 			}
@@ -939,7 +939,10 @@ func hashMemberQuery(property string) (Value, error) {
 			out := make([]Value, len(args))
 			var produced []Value
 			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &produced))
-			defer exec.popOutputWalkRoot()
+			// Settled on the way out rather than only after a successful proc, so
+			// a proc that mutates state and then raises bills the re-walks it
+			// forced (see memory_output.go).
+			defer func() { err = exec.endOutputWalkRoot(err) }()
 			// The proc is driven through a runner inside a block-iteration region
 			// so the base walk stays memoized across misses. CallBlock pushes a
 			// fresh scope per call, whose push and parameter binds move the
@@ -1052,7 +1055,7 @@ func hashMemberQuery(property string) (Value, error) {
 			return NewNil(), fmt.Errorf("hash.fetch key not found: %s", formatMissingHashKey(args[0]))
 		}), nil
 	case "fetch_values":
-		return NewAutoBuiltin("hash.fetch_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("hash.fetch_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (result Value, err error) {
 			// The block runs once per missing key and every result stays in a
 			// Go-local slice the checks inside the next block call cannot reach,
 			// so a block returning an individually permitted value passed its own
@@ -1069,13 +1072,15 @@ func hashMemberQuery(property string) (Value, error) {
 			out := make([]Value, len(args))
 			var produced []Value
 			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &produced))
-			defer exec.popOutputWalkRoot()
+			// Settled on the way out rather than only after a successful block
+			// call, so a block that mutates state and then raises bills the
+			// re-walks it forced (see memory_output.go).
+			defer func() { err = exec.endOutputWalkRoot(err) }()
 			// The block is driven through a runner inside a block-iteration region
 			// so the base walk stays memoized across misses; see hash.values_at for
 			// the measurement.
 			var runner *blockCallRunner
 			if valueBlock(block) != nil {
-				var err error
 				if runner, err = newBlockCallRunner(exec, block, "hash.fetch_values", receiver, nil, kwargs); err != nil {
 					return NewNil(), err
 				}
