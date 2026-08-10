@@ -94,3 +94,42 @@ func restBindingBlock() *Block {
 	}
 	return valueBlock(NewBlock([]Param{{Kind: ParamNormal, Target: target}}, nil, newEnv(nil)))
 }
+
+// A base walk that walks the registered outputs reports those visits in
+// nodes(), which the accumulator callers charge to the step quota, and also
+// added them to exec.outputWalkNodes for chargeRetainedOutputWalk to charge
+// again when the callback returned. One traversal, two billers: a lookup
+// callback that mutated and then built a multi-pair hash literal paid for the
+// output-root portion twice.
+//
+// Taking the count is what transfers the billing, so this asserts the counter is
+// empty afterwards rather than asserting a step total: whoever can see the whole
+// traversal bills it, and nothing is left behind for a second biller.
+func TestSessionNodesTakesOverTheOutputWalkBilling(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	exec.root = newEnv(nil)
+
+	// Distinct values the graph does not hold, so the output walk is the bulk of
+	// the session's traversal and the overlap is unmistakable.
+	out := make([]Value, 0, 200)
+	for i := range 200 {
+		out = append(out, NewArray([]Value{NewInt(int64(i)), NewString(strings.Repeat("y", 8))}))
+	}
+	exec.pushOutputWalkRoot(retainedValues(&out))
+	defer func() { _ = exec.endOutputWalkRoot(nil) }()
+
+	exec.outputWalkNodes = 0
+	s := exec.beginBaseWalk()
+	billed := s.nodes()
+	s.close()
+
+	if billed <= 0 {
+		t.Fatalf("session reported %d nodes; the walk this pins is not happening", billed)
+	}
+	if exec.outputWalkNodes != 0 {
+		t.Fatalf("a session billed %d nodes and left %d of them on outputWalkNodes for "+
+			"chargeRetainedOutputWalk to bill a second time", billed, exec.outputWalkNodes)
+	}
+}

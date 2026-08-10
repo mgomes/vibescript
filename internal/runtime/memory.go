@@ -460,13 +460,33 @@ type baseWalkSession struct {
 	// graph nodes this session visited no matter which estimator beginBaseWalk
 	// selected.
 	walked0 int
-	cached  bool
+	// outputNodes is what this session's own base walk added to
+	// exec.outputWalkNodes, so nodes can hand that portion to a caller that bills
+	// the whole traversal instead of leaving it for a second biller (see nodes).
+	outputNodes int
+	cached      bool
 }
 
 // nodes reports how many graph nodes this session has walked so far, base walk
 // included: a memo hit walks almost none, a miss walks the whole graph. Callers
 // that drive sessions from script code charge the step quota for it (#1).
+//
+// Taking the count transfers the billing: whatever this session's base walk
+// contributed to exec.outputWalkNodes is removed from that counter, because the
+// number returned here already contains it and the caller is about to charge for
+// it. Leaving it behind billed the output-root portion of one traversal twice --
+// 600 of 603 visits in the smallest case that shows it -- once through this
+// count and again through chargeRetainedOutputWalk when the callback returned.
+// The rule the two billers share is that a walk is billed once, by whoever can
+// see the whole of it, which is this session (see memory_output.go).
 func (s *baseWalkSession) nodes() int {
+	if s.outputNodes > 0 {
+		s.exec.outputWalkNodes -= s.outputNodes
+		if s.exec.outputWalkNodes < 0 {
+			s.exec.outputWalkNodes = 0
+		}
+		s.outputNodes = 0
+	}
 	return s.est.walked - s.walked0
 }
 
@@ -532,6 +552,7 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 	scalars := exec.estimateScalarBase()
 	est := &exec.memoryEst
 	walked0 := est.walked
+	outputNodes0 := exec.outputWalkNodes
 	if exec.blockRegionBaseWalkEngaged(globals) {
 		return exec.beginRegionBaseWalk(est, scalars)
 	}
@@ -558,7 +579,10 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		// matters most.
 		base := scalars + exec.estimateGraphBase(est, globals)
 		base = saturatingAdd(base, exec.outputWalkBytes(est))
-		return baseWalkSession{exec: exec, est: est, base: base, walked0: walked0}
+		return baseWalkSession{
+			exec: exec, est: est, base: base, walked0: walked0,
+			outputNodes: exec.outputWalkNodes - outputNodes0,
+		}
 	}
 	c := exec.baseWalkCache
 	if c == nil {
@@ -600,7 +624,10 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 	// this check, but the memo is valid only while the topology is unchanged, so
 	// the set still matches the stack. See memory_dormant.go.
 	est.dormant = exec.currentDormantSet()
-	return baseWalkSession{exec: exec, est: est, base: scalars + c.graphBytes + c.outputBytes, walked0: walked0, cached: true}
+	return baseWalkSession{
+		exec: exec, est: est, base: scalars + c.graphBytes + c.outputBytes,
+		walked0: walked0, outputNodes: exec.outputWalkNodes - outputNodes0, cached: true,
+	}
 }
 
 // close ends a base-walk session. A memoized session rolls back every
