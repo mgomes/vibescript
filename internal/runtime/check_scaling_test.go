@@ -298,11 +298,11 @@ func TestCheckAlternatingShapeKeyWriteComparisonsStayLinear(t *testing.T) {
 			" the repeated-key one is measuring anything", small, large)
 	}
 
-	// Measured 9,243 then 14,388 key bytes, a 1.56x step for a doubled source.
-	// The assertion allows up to 3x so it states the complexity rather than
-	// pinning counts that ordinary checker changes would shift.
+	// Measured 4,942 then 5,647 compared nodes, a 1.14x step for a doubled
+	// source. The assertion allows up to 3x so it states the complexity rather
+	// than pinning counts that ordinary checker changes would shift.
 	if large > small*3 {
-		t.Fatalf("doubling the nested shape and the writes serialized %d bytes of type fact"+
+		t.Fatalf("doubling the nested shape and the writes compared %d type fact nodes"+
 			" against %d -- over 3x, so deciding whether a write restates a field is"+
 			" superlinear in the source", large, small)
 	}
@@ -373,6 +373,43 @@ func distinctShapeKeyWrites(writes int) string {
 // nothing, `int` proves the else arm dead, since nil and false are the only
 // falsey values. Skipping the copy whenever the old type merely admitted the
 // written value kept the broader claim and reported the call in that arm (#14).
+// A write is treated as a restatement only when the two facts really are the
+// same fact. Deciding that from `typeFactKey` could not tell: the key stops at
+// maxTypeArmDepth and renders everything below it as `?`, so two shapes alike
+// down to that depth and different underneath produced one key, the write was
+// taken for a restatement, and the receiver kept a fact naming the type it held
+// before. A read of the replaced field then answered from a value the script
+// had overwritten.
+//
+// The depths bracket the cutoff on both sides so the test states where the
+// boundary is rather than that one exists, and so a cutoff that moves does not
+// quietly leave this asserting nothing: the shallow cases have to keep passing
+// for the deep ones to mean anything.
+func TestShapeFieldWriteTracksFactsBelowTheKeyDepth(t *testing.T) {
+	nest := func(depth int, leaf string) string {
+		return strings.Repeat("{ a: ", depth) + leaf + strings.Repeat(" }", depth)
+	}
+	for _, depth := range []int{2, 8, 9, 12, 20} {
+		t.Run(fmt.Sprintf("depth %d", depth), func(t *testing.T) {
+			source := fmt.Sprintf(`
+def take(v: string)
+  v
+end
+
+def f()
+  h = { w: %s }
+  h[:w] = %s
+  take(h[:w]%s)
+end
+`, nest(depth, "1"), nest(depth, `"s"`), strings.Repeat("[:a]", depth))
+			if warnings := compileScript(t, source).CheckWarnings(); len(warnings) != 0 {
+				t.Fatalf("a %d-level write was taken for a restatement, so the field still"+
+					" reads as what it held before the write: %v", depth, warnings)
+			}
+		})
+	}
+}
+
 func TestShapeFieldWriteNarrowsCompatibleField(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

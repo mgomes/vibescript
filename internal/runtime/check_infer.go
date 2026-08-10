@@ -11411,30 +11411,78 @@ func (c *scriptChecker) noteShapeRefinement(ty *TypeExpr, state shapeRefinementS
 // holds, which is what lets the write keep the receiver's fact rather than copy
 // it.
 //
-// Answering it by serializing both sides walks both facts, and that walk is
-// proportional to the facts rather than to the write that asked for it, so it
-// sits outside the node budget the copy pays. Two things keep it there.
+// This one has to be exact in both directions, which is what separates it from
+// the questions typeFactKey answers. Saying two facts differ costs a copy the
+// budget pays for. Saying they are the same leaves the receiver bound to the
+// fact it had, so getting that wrong means every later read of the field is
+// answered from a value the script stopped holding.
 //
-// The same node is the same fact, for free. That is the whole of a run of
-// writes putting one value back -- the type of an `int` literal, a helper's
-// memoized return, a local's bound fact -- which is exactly the run the no-copy
-// path exists to make free, and it walked both sides of it before.
+// typeFactKey cannot carry that weight. It stops at maxTypeArmDepth and writes
+// `?` for everything below, which is what makes it cheap to build and what
+// makes it an approximation: two shapes alike for eight levels and different
+// underneath produce one key. It groups facts correctly and it proves nothing
+// about a pair, so a match is a hint here rather than an answer.
 //
-// What is left is two distinct nodes, and the source had to spell the written
-// one out to produce one, so the walk is bounded by the write rather than by
-// the fact. Charging it says so: no source found so far makes this grow faster
-// than the source does, and a source that did would show up here rather than
-// nowhere.
+// Walking is the cheaper answer anyway. Nothing is allocated, the first
+// difference ends it rather than both sides being rendered in full first, and
+// the same node is the same fact at every level rather than only at the root --
+// a write putting back a wide fact the field already holds settles without
+// descending into it. What exactness adds is the part below maxTypeArmDepth
+// that the truncation was skipping, which is reached only by a fact nested
+// deeper than that.
+//
+// The walk is charged rather than bounded. It is proportional to the written
+// fact, which the source had to spell out to produce, and no source found makes
+// it grow faster than the source does -- but a source that did would show up in
+// this counter rather than nowhere.
 func sameTypeFact(existing, written *TypeExpr) bool {
-	if existing == written {
+	visited := 0
+	same := typeFactsIdentical(existing, written, &visited)
+	noteCheckWork(visited)
+	return same
+}
+
+// typeFactsIdentical reports whether two facts are the same fact, node for
+// node, counting the nodes it had to compare to decide.
+//
+// The fields it compares are the ones typeFactKey renders, so it answers the
+// same question the key was standing in for, minus the truncation. Shape is
+// compared by lookup rather than by rendering sorted names, which also drops
+// the key's ambiguity: a field name holding the key's own delimiters cannot
+// make two different shapes agree here.
+func typeFactsIdentical(left, right *TypeExpr, visited *int) bool {
+	if left == right {
 		return true
 	}
-	existingKey, writtenKey := typeFactKey(existing), typeFactKey(written)
-	// The unit here is the bytes the two keys materialize rather than the nodes
-	// a copy walks. Both are proportional to the fact, and taking the length of
-	// what was built anyway keeps the charge from costing a second walk.
-	noteCheckWork(len(existingKey) + len(writtenKey))
-	return existingKey == writtenKey
+	if left == nil || right == nil {
+		return false
+	}
+	*visited++
+	if left.Kind != right.Kind || left.Name != right.Name ||
+		left.Nullable != right.Nullable || left.Optional != right.Optional ||
+		left.Open != right.Open ||
+		len(left.TypeArgs) != len(right.TypeArgs) ||
+		len(left.Shape) != len(right.Shape) ||
+		len(left.Union) != len(right.Union) {
+		return false
+	}
+	for i, arg := range left.TypeArgs {
+		if !typeFactsIdentical(arg, right.TypeArgs[i], visited) {
+			return false
+		}
+	}
+	for name, field := range left.Shape {
+		other, named := right.Shape[name]
+		if !named || !typeFactsIdentical(field, other, visited) {
+			return false
+		}
+	}
+	for i, option := range left.Union {
+		if !typeFactsIdentical(option, right.Union[i], visited) {
+			return false
+		}
+	}
+	return true
 }
 
 // shapeFieldProvenanceRecorded reports whether anything keyed by this fact's
