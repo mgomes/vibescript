@@ -63,6 +63,16 @@ import "unsafe"
 // That is the cheapest of the three as well as the safest, since a drain
 // narrows the same storage over and over and never copies.
 
+// A note for whoever changes this accounting next. The tests around it bracket
+// its arithmetic -- charging too little, too much, twice, or negatively -- while
+// holding fixed what else is charging. Every defect found here since has been
+// one of those held-fixed premises coming untrue instead, and a false premise
+// does not move the number in a shape where the premise still holds, so it
+// cannot surface in a test already written. Six in a row have needed a new shape
+// rather than a wider assertion. The bracket is worth keeping, since it is what
+// has stopped each fix breaking the ones before it; it is not worth trusting to
+// find the next premise.
+
 // arrayStorageIdentity identifies the allocation behind an array's elements,
 // not the window the array currently shows of it.
 //
