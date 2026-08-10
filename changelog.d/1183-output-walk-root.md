@@ -14,18 +14,28 @@
   That charge is settled as the lookup returns, so a callback that mutates state
   and then raises pays for the walks it forced exactly as one that returns does,
   and a rescued failure leaves nothing behind for a later lookup to be billed for.
-  The graph walks such a callback forces are billed too, so the accounting cannot
-  be bought cheaply by invalidating the memo. `VIBES_ESTIMATOR_VERIFY` re-derives
-  every commit from scratch.
+  `VIBES_ESTIMATOR_VERIFY` re-derives every commit from scratch.
 - **Changed: a lookup whose callback destructures with a named rest costs more
   steps.** Such a callback is the only one that makes `Hash#fetch_values` or
-  `Hash#values_at` weigh a binding against the reachable graph, and those graph
-  walks previously reached no counter: a loop of ten such lookups over a
-  20,000-element graph cost the same 231 steps as over a 2,000-element one. They
-  are now billed at the same rate as every other estimator walk in the tree, so
-  the cost scales with the graph the callback is weighed against -- that loop now
-  costs about 15,900 steps. A script doing this in bulk under a tight `StepQuota`
-  may need a larger one. Callbacks without a named rest are unaffected.
+  `Hash#values_at` weigh a binding against the reachable graph, and that weighing
+  builds a charge whose construction walk previously reached no counter. It is now
+  billed, so the cost scales with the graph the callback is weighed against: four
+  such lookups over a tenfold graph cost about 2.8 times the steps. A script doing
+  this in bulk under a tight `StepQuota` may need a larger one. Callbacks without
+  a named rest are unaffected.
+- **Known: re-walking a lookup's retained results is not charged to the step
+  quota.** When a callback mutates anything, the estimator's memo is discarded and
+  the lookup's retained results are walked again on the next memory check. That
+  walk is deliberately not billed. It is triggered by a memo whose key is
+  process-wide, so an unrelated script running at the same time invalidates it
+  just as a script's own mutation does, and billing the walk let one script's
+  mutations push an unrelated script over its `StepQuota` -- a worse failure than
+  leaving the walk uncharged. The work is bounded rather than free: a script
+  cannot cause these walks without paying steps for them, at a measured ceiling of
+  roughly 0.15 walks per step, each over a graph `MemoryQuotaBytes` already
+  bounds. So the cost is a multiplier on two limits you already set, not unbounded
+  work. Charging it accurately needs per-execution mutation tracking, which is
+  left to its own change.
 - **Known: one nested lookup shape is charged more memory than it uses.** A
   `Hash#fetch_values` or `Hash#values_at` whose callback destructures with a named
   rest (`|(head, *tail)|`), nested inside another iterator's block, and returning a
