@@ -1997,6 +1997,15 @@ func (acc *hashLiteralBuildAccumulator) liveBase() (int, int) {
 	return saturatingAdd(s.base, acc.base), s.nodes()
 }
 
+// hashLiteralKeyPayload prices one literal key. hashDisplayKey returns a string
+// or symbol key's own string, so the sessions replay re-prices earlier keys
+// without rendering anything and the estimator's identity dedup collapses the
+// repeats to nothing. That holds only while every literal key is a label or a
+// quoted label, which the grammar enforces and
+// TestHashLiteralKeysAreAlwaysLabels pins: a computed-key form would make
+// hashDisplayKey call Inspect, and the replay would render it once per earlier
+// pair per pair, allocating a fresh string each time that no dedup can catch
+// and no estimator node count can see (#1).
 func hashLiteralKeyPayload(est *memoryEstimator, lookupKey HashLookupKey, key Value) int {
 	keyPayload := est.stringPayloadSize(hashDisplayKey(key))
 	keyPayload = saturatingAdd(keyPayload, lookupKey.ExtraPayloadBytes())
