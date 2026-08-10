@@ -846,7 +846,7 @@ end`)
 // it worked out by netting the array's own capacity off the allocation's. Once
 // a push moves the array onto storage of its own that capacity is no measure of
 // this allocation, and netting it off subtracts the new storage's slots --
-// cancelling a charge the graph walk had correctly made. The same growth was
+// canceling a charge the graph walk had correctly made. The same growth was
 // admitted at 349,841 bytes with a record over the old storage and 398,737
 // without, so a shrink was buying quota rather than costing it.
 func TestRetainedRecordNeverLowersTheQuota(t *testing.T) {
@@ -879,5 +879,43 @@ func TestRetainedRecordNeverLowersTheQuota(t *testing.T) {
 				t.Fatalf("%s was admitted under a quota it does not fit in", tc.name)
 			}
 		})
+	}
+}
+
+// TestNestedClaimsChargeOneAllocationOnce pins that a narrowed allocation and a
+// copied-away header describing that same storage are not both charged.
+//
+// A callback that narrows an array leaves a record over its storage. If it then
+// enters a first-party iterator that shrinks the array again, that shrink copies
+// rather than narrows, and the header it copies away from is a window onto the
+// storage the first record already covers. Charging both bills one allocation
+// twice: the pair needed 773,625 bytes where the second shrink alone needs
+// 517,729, so a shrink that removes one element cost a quarter of a megabyte.
+func TestNestedClaimsChargeOneAllocationOnce(t *testing.T) {
+	t.Parallel()
+
+	const n = 4000
+	elems := make([]Value, n)
+	for i := range n {
+		elems[i] = NewInt(int64(i))
+	}
+
+	// Above what the inner shrink needs on its own, below twice it.
+	const quota = 600 << 10
+	script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: quota},
+		`def run(a)
+  driver.walk(a) do |x|
+    a.pop
+    a.each do |y|
+      a.pop
+    end
+    return a.size
+  end
+  0
+end`)
+	if _, err := script.Call(context.Background(), "run", []Value{NewArray(elems)}, CallOptions{
+		Capabilities: []CapabilityAdapter{arrayArgDriver{}},
+	}); err != nil {
+		t.Fatalf("one allocation described by two records must be charged once: %v", err)
 	}
 }

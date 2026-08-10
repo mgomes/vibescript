@@ -280,6 +280,23 @@ func (held *heldArrayBacking) holds(full []Value, receiver Value) bool {
 	return false
 }
 
+// retainsAllocation reports whether any live claim already holds a record over
+// the storage behind values.
+//
+// It asks across every claim, not just the one about to record: the claim that
+// narrowed an array and the claim that later copied it are different frames, so
+// a check confined to one of them sees nothing to deduplicate against.
+func (exec *Execution) retainsAllocation(values []Value) bool {
+	for i := range exec.heldArrayBackings {
+		for _, already := range exec.heldArrayBackings[i].retained {
+			if sliceWithinAllocation(already.full, values) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // retain records an array a shrink narrowed without touching its storage, so
 // the whole header keeps costing while this claim is live.
 func (held *heldArrayBacking) retain(full []Value, receiver Value) {
@@ -375,7 +392,7 @@ func (exec *Execution) retainedArrayBackingBytes(est *memoryEstimator) int {
 				// accounts for any of it, base included. Its capacity is no
 				// measure of this one and must not be netted off: a push that
 				// grew the array onto larger storage would otherwise subtract
-				// that storage's slots, cancelling a charge the graph walk had
+				// that storage's slots, canceling a charge the graph walk had
 				// correctly made. The same script was admitted at 349,841 bytes
 				// with a record over the old storage and 398,737 without.
 				total += valueSliceBackingBytes(len(whole))
@@ -477,8 +494,19 @@ func (exec *Execution) detachArrayBackingClaims(values []Value) bool {
 		if held.depth >= exec.builtinDepth || !held.claims(id) {
 			continue
 		}
-		held.recordDetached(exec, values)
 		found = true
+		if exec.retainsAllocation(values) {
+			// This claim already holds a record over this storage from an
+			// earlier shrink that narrowed rather than copied. Once the array
+			// moves onto the copy, that record charges the storage whole, which
+			// covers the header being detached here; recording it again would
+			// bill one allocation through both. A callback that narrowed an
+			// array and then entered a first-party iterator that shrank it
+			// again needed 773,625 bytes against the 517,729 the second shrink
+			// needs on its own.
+			continue
+		}
+		held.recordDetached(exec, values)
 	}
 	return found
 }
