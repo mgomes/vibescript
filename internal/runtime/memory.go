@@ -3647,3 +3647,60 @@ func (est *memoryEstimator) objectWrapperBytes(val Value) int {
 	}
 	return estimatedObjectDataBytes
 }
+
+// reserveCallerRetainedRoots folds the innermost builtin frame's receiver and
+// arguments into the reserved scratch, returning the delta to release when the
+// block it drives has finished.
+//
+// Those values live on that frame's Go stack, which no walk reaches, so the
+// body's own checks -- per-statement walks and mutator preflights -- cannot see
+// them. Reserving them makes those checks bound the combined peak of what the
+// caller holds and what the body builds, which is the same job blockBindCharge
+// does for the values it is built from.
+//
+// What the caller passes to the block is excluded, by seeding the estimator
+// with it before measuring: those values are bound into the block's own scope
+// and counted by every walk while the body runs, so charging them here as well
+// doubled them. `proc.call`, whose arguments are exactly the block's, went from
+// charging a 2,000,000-byte argument once to charging it twice.
+func (exec *Execution) reserveCallerRetainedRoots(blockArgs []Value) (int, bool) {
+	if exec == nil || exec.memoryQuota <= 0 {
+		return 0, false
+	}
+	// Nothing held means nothing to weigh, and the walk below is not free: it is
+	// a full base walk, and a yield inside a script function reaches here with no
+	// builtin frame in scope at all. Walking anyway made a loop of n yields over
+	// an n-element collection cost 1,957,647 estimator nodes against master's
+	// 1,310,447 -- a 1.49x constant on a path that is already quadratic, bought
+	// for a measurement of nothing.
+	if exec.builtinFrameReceiver.Kind() == KindNil && len(exec.builtinFrameArgs) == 0 &&
+		len(exec.builtinFrameKwargs) == 0 {
+		return 0, false
+	}
+	// Already folded in by an outer CallBlock under this same frame. A block that
+	// enters a script function which yields arrives here again holding exactly
+	// what the outer call reserved, and reserving it twice charges it twice.
+	if exec.builtinFrameRootsReserved {
+		return 0, false
+	}
+	est := newMemoryEstimator()
+	base := exec.estimateMemoryUsageBase(est)
+	for _, arg := range blockArgs {
+		base = saturatingAdd(base, est.value(arg))
+	}
+	total := base
+	if exec.builtinFrameReceiver.Kind() != KindNil {
+		total = saturatingAdd(total, est.value(exec.builtinFrameReceiver))
+	}
+	for _, arg := range exec.builtinFrameArgs {
+		total = saturatingAdd(total, est.value(arg))
+	}
+	for _, kwarg := range exec.builtinFrameKwargs {
+		total = saturatingAdd(total, est.value(kwarg))
+	}
+	exec.builtinFrameRootsReserved = true
+	if total <= base {
+		return 0, true
+	}
+	return exec.reserveLoopScratch(total - base), true
+}
