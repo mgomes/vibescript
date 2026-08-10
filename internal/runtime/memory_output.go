@@ -155,11 +155,36 @@ func (exec *Execution) popOutputWalkRoot() {
 // drivers (a map inside a map's block) each register their own, and they
 // deduplicate against one another the way any two roots do.
 func (exec *Execution) outputWalkBytes(est *memoryEstimator) int {
+	if len(exec.outputWalkRoots) == 0 {
+		return 0
+	}
+	before := est.walked
 	total := 0
 	for _, walk := range exec.outputWalkRoots {
 		total = saturatingAdd(total, walk(est))
 	}
+	// Record the traversal so the driver can charge the step quota for it (see
+	// chargeRetainedOutputWalk). A callback that mutates anything moves the
+	// mutation epoch, which discards the memo, so a driver whose callback is
+	// stateful re-walks its output on every check; that work is real and has to
+	// be paid for rather than being free.
+	exec.outputWalkNodes += est.walked - before
 	return total
+}
+
+// chargeRetainedOutputWalk bills the step quota for the output-root traversals
+// performed since it was last called, and is called by a driver after each
+// callback. Walking the output is the price of re-deriving what it holds at
+// every check, which is what makes the accounting correct; metering keeps a
+// callback from buying an unbounded amount of it. A callback that leaves the
+// memo intact walks nothing and pays nothing.
+func (exec *Execution) chargeRetainedOutputWalk() error {
+	nodes := exec.outputWalkNodes
+	if nodes == 0 {
+		return nil
+	}
+	exec.outputWalkNodes = 0
+	return exec.chargeEstimatorWalk(nodes)
 }
 
 // addRetainedOutput records that val has just joined a registered output, and
