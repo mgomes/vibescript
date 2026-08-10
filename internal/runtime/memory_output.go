@@ -96,7 +96,7 @@ func retainedValuesWithReceiver(receiver Value, out *[]Value) outputWalkRoot {
 }
 
 // pushOutputWalkRoot registers a driver's Go-local output for the duration of
-// its loop; the driver pairs it with a deferred popOutputWalkRoot. It is a
+// its loop; the driver pairs it with a deferred endOutputWalkRoot. It is a
 // no-op without an enforced memory quota, where no estimator walk runs at all.
 func (exec *Execution) pushOutputWalkRoot(walk outputWalkRoot) {
 	if exec.memoryQuota <= 0 {
@@ -106,21 +106,56 @@ func (exec *Execution) pushOutputWalkRoot(walk outputWalkRoot) {
 	exec.outputWalkRoots = append(exec.outputWalkRoots, walk)
 }
 
-func (exec *Execution) popOutputWalkRoot() {
+// endOutputWalkRoot unregisters the driver's output and settles the walk its
+// callbacks forced, returning the error the driver is leaving with. A driver
+// defers it, so the settlement happens on the way out whatever the outcome:
+// unregistering and billing are one operation because leaving either half undone
+// is a defect, and there is no other way to unregister.
+//
+// Billing here is what makes the two outcomes cost the same. A callback that
+// mutates state and then raises has performed exactly the estimator work a
+// callback that returns performs -- the mutation discards the memo, and every
+// memory check the callback runs afterwards re-walks the whole retained output --
+// but the driver's error return skipped chargeRetainedOutputWalk, so a script
+// could rescue and repeat the shape for free. Measured on a lookup retaining 800
+// results whose last callback mutates and then loops 6,400 more times, so the
+// periodic checks re-walk that whole prefix again and again, the run cost 387,532
+// steps when the callback returned and 147,455 when it raised.
+//
+// Not clearing the counter was the same defect seen from the other side rather
+// than a second one: the recorded nodes stayed on the execution and were billed
+// to whichever lookup ran next, so a trivial lookup costing 6 steps on its own
+// cost 25,074 after one rescued failure and 100,281 after four. Settling on exit
+// fixes both, because the charge zeroes the counter.
+//
+// The root is unregistered before the charge so the memory check inside the step
+// charge does not re-walk the output this driver is abandoning. An outer driver's
+// roots do accrue there, which is correct: that driver settles its own.
+//
+// The driver's own error wins when both are present, and nothing is lost by that.
+// Every error the settlement can raise is either latched on the execution -- both
+// quota errors go through latchExhaustion, which step re-raises on the next charge
+// and which makes rescue match nothing -- or sticky, as a canceled context is. So
+// the settlement's verdict is delivered by the next check rather than discarded,
+// while overriding would rewrite a script-visible failure into an infrastructure
+// one.
+func (exec *Execution) endOutputWalkRoot(err error) error {
 	if exec.memoryQuota <= 0 {
-		return
+		return err
 	}
-	last := len(exec.outputWalkRoots) - 1
-	if last < 0 {
-		return
+	if last := len(exec.outputWalkRoots) - 1; last >= 0 {
+		exec.baseTopoVersion++
+		// Clear before shortening: a truncated slice keeps the closure -- and
+		// through it the whole output -- alive in its backing array, so the
+		// values would stay reachable for the collector while the walk, which
+		// reads only the visible length, stopped charging them.
+		exec.outputWalkRoots[last] = nil
+		exec.outputWalkRoots = exec.outputWalkRoots[:last]
 	}
-	exec.baseTopoVersion++
-	// Clear before shortening: a truncated slice keeps the closure -- and
-	// through it the whole output -- alive in its backing array, so the values
-	// would stay reachable for the collector while the walk, which reads only
-	// the visible length, stopped charging them.
-	exec.outputWalkRoots[last] = nil
-	exec.outputWalkRoots = exec.outputWalkRoots[:last]
+	if chargeErr := exec.chargeRetainedOutputWalk(); chargeErr != nil && err == nil {
+		return chargeErr
+	}
+	return err
 }
 
 // outputWalkBytes charges every registered output root through est. Nested
@@ -145,11 +180,14 @@ func (exec *Execution) outputWalkBytes(est *memoryEstimator) int {
 }
 
 // chargeRetainedOutputWalk bills the step quota for the output-root traversals
-// performed since it was last called, and is called by a driver after each
-// callback. Walking the output is the price of re-deriving what it holds at
-// every check, which is what makes the accounting correct; metering keeps a
-// callback from buying an unbounded amount of it. A callback that leaves the
-// memo intact walks nothing and pays nothing.
+// performed since it was last called. A driver calls it after each callback, so
+// the quota trips inside the loop rather than after unbounded work, and
+// endOutputWalkRoot calls it once more on the way out, so what the last callback
+// forced is billed whether that callback returned or raised. Walking the output
+// is the price of re-deriving what it holds at every check, which is what makes
+// the accounting correct; metering keeps a callback from buying an unbounded
+// amount of it. A callback that leaves the memo intact walks nothing and pays
+// nothing.
 func (exec *Execution) chargeRetainedOutputWalk() error {
 	nodes := exec.outputWalkNodes
 	if nodes == 0 {
