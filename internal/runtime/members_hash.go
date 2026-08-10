@@ -998,6 +998,10 @@ func hashMemberQuery(property string) (Value, error) {
 						if buildErr != nil {
 							return NewNil(), buildErr
 						}
+						// See hash.fetch_values: a default proc that grows a
+						// reachable container leaves this baseline measuring a
+						// graph that no longer exists, in just the same way.
+						runner.refreshChargeOnMutation()
 						procRunner = runner
 					}
 				}
@@ -1120,6 +1124,11 @@ func hashMemberQuery(property string) (Value, error) {
 					if buildErr != nil {
 						return NewNil(), buildErr
 					}
+					// A block that grows a reachable container leaves this
+					// charge's baseline measuring a graph that no longer exists,
+					// and a later key destructured with a named rest is weighed
+					// against it (see refreshChargeOnMutation).
+					built.refreshChargeOnMutation()
 					runner = built
 				}
 				blockArg := [1]Value{arg}

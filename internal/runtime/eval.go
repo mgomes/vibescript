@@ -1647,6 +1647,60 @@ type blockCallRunner struct {
 	env           *Env
 	charge        *blockBindCharge
 	nextContinues bool
+
+	// The bind charge's baseline is a snapshot of the reachable graph taken when
+	// the charge was built, and a reused runner keeps it for the whole loop. That
+	// is sound only while the graph it measured has not moved: liveBaseline tracks
+	// the driver's own scratch and retained output, but nothing tracks a container
+	// an earlier callback grew. A driver whose callbacks can mutate opts in with
+	// refreshChargeOnMutation and these carry what a rebuild needs.
+	refreshCharge  bool
+	chargeEpoch    uint64
+	chargeReceiver Value
+	chargeArgs     []Value
+	chargeKwargs   map[string]Value
+	chargeBlock    Value
+}
+
+// refreshChargeOnMutation makes the runner rebuild its bind charge whenever
+// script code has mutated the reachable graph since the charge was built, so a
+// rest-window preflight is never weighed against a baseline that predates a
+// callback's growth. Without it, a callback that grew a reachable container and a
+// later key destructured with a named rest let a 16,000,024-byte window
+// materialize under a quota that could not hold it, and only the block body's own
+// check caught it afterwards.
+//
+// It is opt-in rather than the default because the rebuild costs a graph walk and
+// only a driver that both reuses one runner across callbacks and registers its
+// output as a walk root pays for that walk (see newBlockBindCharge). The
+// mutation epoch is the key: a callback that mutates nothing rebuilds nothing, so
+// the reuse this exists to protect is untouched for every loop that does not need
+// it.
+func (runner *blockCallRunner) refreshChargeOnMutation() {
+	if runner == nil || runner.charge == nil {
+		return
+	}
+	runner.refreshCharge = true
+	runner.chargeEpoch = value.MutationEpoch()
+}
+
+// refreshChargeIfGraphMoved rebuilds the bind charge when the mutation epoch has
+// moved since it was built. The epoch is exactly the signal wanted here: every
+// script-visible write to a reachable container bumps it, and a raw builtin write
+// that does not is not script code growing the graph between two callbacks.
+func (runner *blockCallRunner) refreshChargeIfGraphMoved() {
+	if !runner.refreshCharge {
+		return
+	}
+	epoch := value.MutationEpoch()
+	if epoch == runner.chargeEpoch {
+		return
+	}
+	runner.chargeEpoch = epoch
+	if rebuilt := newBlockBindCharge(runner.exec, runner.blk, runner.chargeReceiver,
+		runner.chargeArgs, runner.chargeKwargs, runner.chargeBlock); rebuilt != nil {
+		runner.charge = rebuilt
+	}
 }
 
 // newBlockCallRunner builds a runner for repeatedly invoking a block from an
@@ -1664,9 +1718,13 @@ func newBlockCallRunner(exec *Execution, block Value, name string, receiver Valu
 	}
 	blk := valueBlock(block)
 	runner := &blockCallRunner{
-		exec:   exec,
-		blk:    blk,
-		charge: newBlockBindCharge(exec, blk, receiver, callArgs, kwargs, block),
+		exec:           exec,
+		blk:            blk,
+		charge:         newBlockBindCharge(exec, blk, receiver, callArgs, kwargs, block),
+		chargeReceiver: receiver,
+		chargeArgs:     callArgs,
+		chargeKwargs:   kwargs,
+		chargeBlock:    block,
 	}
 	if blockCanReuseEnv(blk) {
 		runner.env = newBlockAssignmentEnv(blk.Env)
@@ -1707,6 +1765,9 @@ func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots .
 		env.assignBoundary = true
 		env.rebindOuter = true
 	}
+	// Rebuilt here rather than at construction time when an earlier callback has
+	// moved the graph the charge measured (see refreshChargeOnMutation).
+	runner.refreshChargeIfGraphMoved()
 	val, err := runner.exec.callBlock(runner.blk, args, env, runner.charge, Position{}, chargedRoots...)
 	if err != nil {
 		if errors.Is(err, errLoopNext) && !runner.nextContinues {

@@ -5654,6 +5654,60 @@ func TestRestBindingLookupBillsTheGraphItWalks(t *testing.T) {
 	}
 }
 
+// A reused runner holds one bind charge, and that charge's baseline is a
+// snapshot of the reachable graph taken when it was built. liveBaseline tracks
+// what the driver itself accumulates -- its scratch, its retained output -- but
+// nothing tracks a container an earlier callback grew. So a callback that grows
+// the graph and a later key destructured with a named rest let projectRestWindow
+// approve a window against a graph that no longer existed, and only the block
+// body's own check caught it, after the window had been allocated.
+//
+// The first key is narrow and its callback grows a reachable local; the second is
+// wide, so its rest backing is the thing the stale baseline waves through. The
+// quota fits the window against the pre-growth graph and not against the real one,
+// so a correct preflight rejects before allocating and a stale one does not.
+//
+// Not parallel: allocatedDuringCall reads process-wide allocation counters.
+func TestReusedLookupRunnerRefreshesItsBaselineAfterCallbackGrowth(t *testing.T) {
+	const wide = 500_000
+	const payload = 2_000_000
+
+	keys := restWindowKeys(1, wide)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 40, memoryQuota: 1 << 40}
+	keyBytes := probe.estimateMemoryUsage(keys)
+	window := estimatedValueBytes + estimatedSliceBaseBytes + (wide-1)*estimatedValueBytes
+	quota := keyBytes + window + payload/2
+	if quota <= keyBytes+window || quota >= keyBytes+window+payload {
+		t.Fatalf("quota %d must fit keys+window %d and reject keys+window+growth %d",
+			quota, keyBytes+window, keyBytes+window+payload)
+	}
+
+	sources := map[string]string{
+		"fetch_values": fmt.Sprintf("def run(a)\n  g = [0]\n"+
+			"  { }.fetch_values(a[0], a[1]) do |(head, *tail)|\n"+
+			"    g[0] = \"x\" * %d\n    1\n  end\nend", payload),
+		"values_at": fmt.Sprintf("def run(a)\n  g = [0]\n"+
+			"  h = Hash.new do |q, (head, *tail)|\n"+
+			"    g[0] = \"x\" * %d\n    1\n  end\n"+
+			"  h.values_at(a[0], a[1])\nend", payload),
+	}
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			floor := allocatedDuringCall(t, src, keyBytes+4096, keys)
+			got := allocatedDuringCall(t, src, quota, keys)
+
+			// The growth itself is legitimate; a whole rest window on top of it is
+			// not, so the budget admits the former and rejects the latter.
+			budget := uint64(payload + window/2)
+			if got-floor > budget {
+				t.Fatalf("%s allocated %d bytes beyond the %d-byte floor, over the %d-byte budget; the "+
+					"%d-byte rest window was materialized against a baseline taken before the callback "+
+					"grew the graph", name, got-floor, floor, budget, window)
+			}
+		})
+	}
+}
+
 // intArray builds a receiver of count distinct ints, cheap enough that a test
 // weighing payloads is not measuring the receiver.
 func intArray(count int) Value {
