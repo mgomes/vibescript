@@ -5074,6 +5074,47 @@ func TestHashValuesAtKeepsTheMemoWhileTheProcIsUnchanged(t *testing.T) {
 	}
 }
 
+// The registered output is re-derived at every check, which is what makes the
+// accounting correct, and a callback that mutates anything moves the mutation
+// epoch and so discards the memo the re-derivation would otherwise be free
+// against. That work is real, and it grows with the results retained so far, so
+// it is charged to the step quota rather than taken for free: quadrupling the
+// misses more than quadruples the step cost, where an uncharged walk would leave
+// it exactly linear.
+//
+// Master is linear on this shape because it has no output accounting at all, so
+// this cost is the price of the fix; metering is what keeps a stateful callback
+// from buying an unbounded amount of it.
+func TestHashValuesAtChargesTheWalkAStatefulProcForces(t *testing.T) {
+	// Deliberately not parallel: this measures step counts, and
+	// baseWalkCacheDisabled is process-wide, so a concurrent test that turns
+	// memoization off would be measured here as extra charge.
+	const small, large = 400, 1600
+	tmpl := "def run(a, n)\n  counter = [0]\n" +
+		"  h = Hash.new { |g, k| counter[0] = counter[0] + 1; 1 }\n" +
+		"  h.values_at(%s).length\nend"
+	cfg := Config{MemoryQuotaBytes: 64 << 20}
+	atSmall := minStepQuotaToComplete(t, cfg, fmt.Sprintf(tmpl, missingKeyList(small)), NewNil(), 0, 4_000_000)
+	atLarge := minStepQuotaToComplete(t, cfg, fmt.Sprintf(tmpl, missingKeyList(large)), NewNil(), 0, 4_000_000)
+
+	// Four times the misses walk sixteen times the output in total, so the step
+	// cost has to outrun the fourfold growth of the loop itself.
+	if atLarge < atSmall*5 {
+		t.Fatalf("%d misses needed %d steps and %d needed %d, a %.1fx rise for a fourfold increase; "+
+			"the re-walks a stateful proc forces are not being charged",
+			small, atSmall, large, atLarge, float64(atLarge)/float64(atSmall))
+	}
+	// It must not outrun it by more than the results actually produced, either:
+	// walking the whole preallocated slice instead of the filled prefix bills a
+	// thousand-key lookup for its entire output on its first miss, which shows
+	// up here as a steeper rise still.
+	if atLarge > atSmall*15/2 {
+		t.Fatalf("%d misses needed %d steps and %d needed %d, a %.1fx rise; the walk is priced by the "+
+			"slice the lookup preallocated rather than by the results it has produced",
+			small, atSmall, large, atLarge, float64(atLarge)/float64(atSmall))
+	}
+}
+
 // intArray builds a receiver of count distinct ints, cheap enough that a test
 // weighing payloads is not measuring the receiver.
 func intArray(count int) Value {

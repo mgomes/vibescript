@@ -1017,6 +1017,9 @@ func hashMemberQuery(property string) (Value, error) {
 				out[i] = resolved
 				produced = out[:i+1]
 				exec.addRetainedOutput(resolved)
+				if err := exec.chargeRetainedOutputWalk(); err != nil {
+					return NewNil(), err
+				}
 			}
 			return NewArray(out), nil
 		}), nil
@@ -1114,6 +1117,9 @@ func hashMemberQuery(property string) (Value, error) {
 				out[i] = blockValue
 				produced = out[:i+1]
 				exec.addRetainedOutput(blockValue)
+				if err := exec.chargeRetainedOutputWalk(); err != nil {
+					return NewNil(), err
+				}
 			}
 			return NewArray(out), nil
 		}), nil

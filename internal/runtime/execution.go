@@ -127,7 +127,10 @@ type Execution struct {
 	// outputWalkRoots holds the Go-local outputs of the builtins currently
 	// accumulating results while calling back into script code, so every base
 	// walk reaches what they have retained (see memory_output.go).
-	outputWalkRoots           []outputWalkRoot
+	outputWalkRoots []outputWalkRoot
+	// outputWalkNodes counts the graph nodes the output roots have been walked
+	// over since a driver last billed them (see chargeRetainedOutputWalk).
+	outputWalkNodes           int
 	bindingOwner              *Script
 	capabilityContracts       map[*Builtin]CapabilityMethodContract
 	capabilityContractScopes  map[*Builtin]*capabilityContractScope
