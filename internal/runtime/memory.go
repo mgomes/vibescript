@@ -2841,6 +2841,7 @@ func (exec *Execution) estimateScalarBase() int {
 
 	total += len(exec.callStack) * estimatedCallFrameBytes
 	total += len(exec.receiverStack) * estimatedValueBytes
+	total += exec.claimStackBytes()
 	total += len(exec.validatedCapabilityArgs) * estimatedStringHeaderBytes
 	for _, method := range exec.validatedCapabilityArgs {
 		total += len(method)

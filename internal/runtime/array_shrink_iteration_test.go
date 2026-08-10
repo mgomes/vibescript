@@ -961,3 +961,40 @@ func TestOrphanedRetainedReceiverIsCharged(t *testing.T) {
 		})
 	}
 }
+
+// TestClaimStackIsChargedForItself pins that the claim stack's own memory is
+// counted, and that the count is wired into the base every check computes.
+//
+// A claim is pushed per array a frame is dispatched with, so a variadic call
+// over many arrays builds many of them, and the records are the runtime's own
+// allocation rather than the script's. Nothing counted them, which is this
+// file's subject turned on its own machinery: live bytes the quota cannot see.
+// Charging a hundred arrays' worth moved a splat call's requirement from
+// 411,979 bytes to 493,923.
+//
+// It asserts the charge exists and grows with the stack rather than that some
+// total came out right, so it fails both if the accounting goes and if it stops
+// being reached.
+func TestClaimStackIsChargedForItself(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{}
+	empty := exec.estimateScalarBase()
+	if got := exec.claimStackBytes(); got != 0 {
+		t.Fatalf("an execution holding no claims charges %d bytes for the stack, want 0", got)
+	}
+
+	const claims = 64
+	for range claims {
+		exec.holdArrayBacking(NewArray([]Value{NewInt(1)}))
+	}
+	if len(exec.heldArrayBackings) != claims {
+		t.Fatalf("held %d claims, want %d", len(exec.heldArrayBackings), claims)
+	}
+
+	grew := exec.estimateScalarBase() - empty
+	if want := claims * heldArrayBackingBytes; grew < want {
+		t.Fatalf("holding %d claims added %d bytes to the base, want at least %d",
+			claims, grew, want)
+	}
+}

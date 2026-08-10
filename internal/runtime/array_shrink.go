@@ -142,6 +142,28 @@ type retainedArrayBacking struct {
 	owner    uintptr
 }
 
+// The claim stack and the records on it are memory a script'"'"'s own shape grows:
+// one claim per array a frame is dispatched with, so a variadic call over a
+// hundred arrays builds a hundred of them. Nothing reserved or counted that,
+// which is this PR'"'"'s subject turned on its own machinery -- live bytes the quota
+// cannot see. The sizes come from the types rather than an estimate because
+// these are the runtime'"'"'s own structs and would otherwise drift silently.
+const (
+	heldArrayBackingBytes     = int(unsafe.Sizeof(heldArrayBacking{}))
+	retainedArrayBackingBytes = int(unsafe.Sizeof(retainedArrayBacking{}))
+	valueSliceHeaderBytes     = int(unsafe.Sizeof([]Value{}))
+)
+
+// claimStackBytes is the memory the claim stack itself occupies. It is O(1) so
+// that a check does not walk a stack a call can make long; the records'"'"' own
+// slices are charged where they are already being walked.
+func (exec *Execution) claimStackBytes() int {
+	if cap(exec.heldArrayBackings) == 0 {
+		return 0
+	}
+	return estimatedSliceBaseBytes + cap(exec.heldArrayBackings)*heldArrayBackingBytes
+}
+
 // maxHeldArrayHeaders caps the headers one claim accounts for by walking them.
 //
 // A named claim orphans at most one, since the receiver moves off the backing
@@ -377,6 +399,9 @@ func (retained retainedArrayBacking) reclaim(exec *Execution) error {
 func (exec *Execution) retainedArrayBackingBytes(est *memoryEstimator) int {
 	total := 0
 	for _, held := range exec.heldArrayBackings {
+		if cap(held.retained) > 0 {
+			total += estimatedSliceBaseBytes + cap(held.retained)*retainedArrayBackingBytes
+		}
 		for _, retained := range held.retained {
 			// Charge the array itself, through the same estimator that walks
 			// the graph. It deduplicates on the storage behind a value, so
@@ -447,6 +472,9 @@ func sliceOffsetWithin(outer, inner []Value) (offset, shown int, within bool) {
 func (exec *Execution) detachedArrayBackingBytes(est *memoryEstimator) int {
 	total := 0
 	for _, held := range exec.heldArrayBackings {
+		if cap(held.detached) > 0 {
+			total += estimatedSliceBaseBytes + cap(held.detached)*valueSliceHeaderBytes
+		}
 		for _, elems := range held.detached {
 			total += est.slice(elems)
 		}
