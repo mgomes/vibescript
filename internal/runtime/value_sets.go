@@ -404,6 +404,9 @@ type membershipSet struct {
 	// reserveCompositeSlot for why they do not live on the shared scratch.
 	compositeCap int
 	scalarCap    int
+	// collectComposites records whether anything will ever be looked up
+	// through the composite scan; see expectProbesFrom.
+	collectComposites bool
 	// composite holds the composite values from every source, in insertion
 	// order and with duplicates kept; contains scans it.
 	composite []Value
@@ -427,6 +430,13 @@ func (s *membershipSet) containsCounted(v Value) (bool, int) {
 		_, found := s.scalars[key]
 		return found, 0
 	}
+	if !s.collectComposites && estimatorVerify {
+		// The set was told no lookup could reach this scan, so it kept no
+		// composites and this probe would answer false against an empty slice
+		// -- a wrong answer rather than a slow one. Trip loudly under the
+		// oracle rather than let expectProbesFrom and the caller drift apart.
+		panic("runtime: composite membership probe on a set built without composites")
+	}
 	probes, found := probeEqualValue(s.composite, v, &s.equality)
 	return found, probes
 }
@@ -436,6 +446,30 @@ func (s *membershipSet) containsCounted(v Value) (bool, int) {
 // by the map key for free; composites are appended without being scanned
 // against what is already there, so insertion stays linear in len(values)
 // however many distinct composites it holds.
+// expectProbesFrom tells the set which values will be looked up in it, so that
+// it collects composites only when one of them could reach the composite scan.
+//
+// Every operation that fills this set probes it with exactly one slice, and has
+// that slice in hand before it fills anything: difference, intersect and
+// subtract all build the set from their arguments and then walk the receiver
+// against it. So the answer is always available up front, and the collection
+// was unconditional for no reason the shape of the code required.
+//
+// A value reaches the composite scan exactly when the scalar map cannot key it,
+// which scalarSetEligible answers by kind without building the key. So a
+// receiver of scalars, or no receiver at all, means every composite on the
+// removal side is collected and reserved for a scan nothing will run:
+// `[].difference(b)` needed 1,482,051 bytes of quota to return an empty array
+// against 8,000 composites.
+func (s *membershipSet) expectProbesFrom(values []Value) {
+	for _, v := range values {
+		if !scalarSetEligible(v) {
+			s.collectComposites = true
+			return
+		}
+	}
+}
+
 func (s *membershipSet) addSource(values []Value, hint int) {
 	for _, v := range values {
 		if s.scratchErr != nil {
@@ -443,6 +477,12 @@ func (s *membershipSet) addSource(values []Value, hint int) {
 		}
 		key, ok := scalarValueKey(v)
 		if !ok {
+			if !s.collectComposites {
+				// Nothing that will be looked up here can reach the composite
+				// scan, so this value would be collected, reserved and never
+				// compared against.
+				continue
+			}
 			if s.scratch != nil {
 				if err := s.scratch.reserveCompositeSlot(&s.compositeCap, len(s.composite)); err != nil {
 					s.scratchErr = err
@@ -613,6 +653,7 @@ func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]V
 		return nil, err
 	}
 	removal.scratch = &scratch
+	removal.expectProbesFrom(left)
 	for _, other := range others {
 		removal.addSource(other, removalTotal)
 		if removal.scratchErr != nil {
@@ -658,6 +699,7 @@ func intersectArrayValues(exec *Execution, left, right []Value) ([]Value, error)
 		return nil, err
 	}
 	inRight.scratch = &scratch
+	inRight.expectProbesFrom(left)
 	inRight.addSource(right, len(right))
 	if inRight.scratchErr != nil {
 		return nil, inRight.scratchErr
@@ -704,6 +746,7 @@ func subtractArrayValues(exec *Execution, left, right []Value) ([]Value, error) 
 		return nil, err
 	}
 	removal.scratch = &scratch
+	removal.expectProbesFrom(left)
 	removal.addSource(right, len(right))
 	if removal.scratchErr != nil {
 		return nil, removal.scratchErr

@@ -731,3 +731,68 @@ func TestSetOpScratchReservesEachSetSeparately(t *testing.T) {
 			scratch.held-afterFirst, afterFirst)
 	}
 }
+
+// TestDifferenceSkipsCompositesNothingCanProbe pins that the removal side
+// collects composites only when something will be looked up against them.
+//
+// A value reaches the composite scan exactly when the scalar map cannot key it,
+// so a receiver of scalars — or no receiver at all — means every composite on
+// the removal side is collected and reserved for a scan nothing will run.
+// `[].difference(b)` needed 1,482,051 bytes of quota to return an empty array
+// against 8,000 composites, and paid for the collection in reserved memory it
+// never read.
+//
+// Every operation filling this set probes it with one slice it already holds,
+// so the answer is available before the collection starts in all of them.
+func TestDifferenceSkipsCompositesNothingCanProbe(t *testing.T) {
+	t.Parallel()
+
+	const removals = 8_000
+	right := make([]Value, removals)
+	for i := range right {
+		right[i] = NewArray([]Value{NewInt(int64(i))})
+	}
+	scalars := make([]Value, 200)
+	for i := range scalars {
+		scalars[i] = NewInt(int64(i))
+	}
+
+	minQuota := func(left []Value, src string) int {
+		lo, hi := 1<<10, 64<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: 900_000_000, MemoryQuotaBytes: mid}, src)
+			if _, err := script.Call(context.Background(), "run",
+				[]Value{NewArray(left), NewArray(right)}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	for _, tc := range []struct {
+		name string
+		left []Value
+	}{
+		{"empty receiver", []Value{}},
+		{"scalar receiver", scalars},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Holding the operands is the floor. A difference that cannot probe
+			// a composite must stay near it rather than reserving the removal
+			// side's composites on top.
+			held := minQuota(tc.left, "def run(a, b)\n  a.size + b.size\nend")
+			difference := minQuota(tc.left, "def run(a, b)\n  a.difference(b).size\nend")
+
+			if gap := difference - held; gap > 64<<10 {
+				t.Fatalf("difference needs %d bytes against %d to hold the operands, a gap of %d; "+
+					"nothing here can reach the composite scan, so nothing should be collected for it",
+					difference, held, gap)
+			}
+		})
+	}
+}
