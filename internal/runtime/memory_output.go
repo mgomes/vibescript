@@ -257,7 +257,7 @@ func (exec *Execution) retainedOutputMarginalBytes() int {
 	}
 	if c := exec.baseWalkCache; c != nil && c.valid && !exec.baseWalkOpen &&
 		c.epoch == value.MutationEpoch() && c.topo == exec.baseTopoVersion &&
-		c.regionBoundary == exec.currentWalkBoundary() {
+		c.regionBoundary == noBlockRegion && exec.currentWalkBoundary() == noBlockRegion {
 		return c.outputBytes
 	}
 	est := newMemoryEstimator()
