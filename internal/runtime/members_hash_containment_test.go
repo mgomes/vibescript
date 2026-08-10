@@ -4841,9 +4841,6 @@ func hashOfIndexedInts(count int) Value {
 	return NewHash(entries)
 }
 
-
-
-
 // missingKeyList renders count missing symbol keys as an argument list wide
 // enough for the memo's cost to show.
 func missingKeyList(count int) string {
@@ -5075,4 +5072,14 @@ func TestHashValuesAtKeepsTheMemoWhileTheProcIsUnchanged(t *testing.T) {
 			"roughly double the walk, so re-reading the default is rebuilding the runner every key",
 			atSmall, small, atLarge, large)
 	}
+}
+
+// intArray builds a receiver of count distinct ints, cheap enough that a test
+// weighing payloads is not measuring the receiver.
+func intArray(count int) Value {
+	elems := make([]Value, count)
+	for i := range elems {
+		elems[i] = NewInt(int64(i))
+	}
+	return NewArray(elems)
 }
