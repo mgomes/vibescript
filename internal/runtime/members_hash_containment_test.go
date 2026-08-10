@@ -5617,19 +5617,22 @@ func TestRestBindingLookupBillsTheGraphItWalks(t *testing.T) {
 	if estimatorVerify {
 		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
 	}
-	const calls, small, large = 10, 2_000, 20_000
+	const calls, small, large = 4, 400, 4_000
 	// Each iteration is a fresh lookup, so each pays its own fallback and bind
 	// charge; the callback binds a named rest, which is what makes either reachable.
 	src := "def run(a, n)\n  t = 0\n  i = 0\n  while i < n\n" +
 		"    h = Hash.new { |g, (head, *tail)| 1 }\n" +
 		"    t = t + h.values_at([1, 2]).length\n    i = i + 1\n  end\n  t\nend"
-	cfg := Config{MemoryQuotaBytes: 256 << 20}
+	// Small enough to stay cheap under -race, where every estimator visit is
+	// instrumented: the property is a ratio, so it does not need a large graph.
+	cfg := Config{MemoryQuotaBytes: 64 << 20}
 
-	atSmall := minStepQuotaToComplete(t, cfg, src, loopMemoArray(small), calls, 8_000_000)
-	atLarge := minStepQuotaToComplete(t, cfg, src, loopMemoArray(large), calls, 8_000_000)
+	atSmall := minStepQuotaToComplete(t, cfg, src, loopMemoArray(small), calls, 200_000)
+	atLarge := minStepQuotaToComplete(t, cfg, src, loopMemoArray(large), calls, 200_000)
 
-	// Ten times the graph, so the walks cost ten times as much. Four times is far
-	// above the flat cost an unbilled walk produces and far below the real ratio.
+	// Ten times the graph, so the walks cost about six times as much once they
+	// are billed. Four times is far above the 1.0x an unbilled walk produces and
+	// comfortably below the real ratio.
 	if atLarge < atSmall*4 {
 		t.Fatalf("%d lookups over a %d-element graph needed %d steps and over a %d-element one %d, "+
 			"a %.1fx rise for a tenfold graph; the graph walks these callbacks force are not being "+
