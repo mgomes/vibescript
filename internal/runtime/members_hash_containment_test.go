@@ -5481,6 +5481,120 @@ func TestAllPresentHashLookupDoesNotPayForItsCallback(t *testing.T) {
 	}
 }
 
+// restCallbackSource composes a lookup whose callback binds a named rest and is
+// also stateful: it mutates a captured counter on every call, and in the raising
+// spelling fails on the second key after mutating. Both keys miss, so the
+// callback runs twice (or once and then raises).
+//
+// A named rest is what builds a blockBindCharge, and mutation is what discards
+// the base-walk memo, so this is the corner where the charge and the re-derived
+// walk meet. Every other test in this file that binds a rest has a pure callback,
+// and every stateful one binds plainly.
+func restCallbackSource(builtin, behavior string, nested bool) string {
+	body := "      n[0] = n[0] + head\n      head\n"
+	if behavior == "raising" {
+		body = "      n[0] = n[0] + 1\n      if head == 3\n        raise \"boom\"\n      end\n      head\n"
+	}
+	var call string
+	if builtin == "fetch_values" {
+		call = "    { }.fetch_values([1, 2], [3, 4]) do |(head, *tail)|\n" + body + "    end\n"
+	} else {
+		call = "    h = Hash.new do |g, (head, *tail)|\n" + body + "    end\n" +
+			"    h.values_at([1, 2], [3, 4])\n"
+	}
+	if behavior == "raising" {
+		call = "    begin\n" + call + "    rescue\n      0\n    end\n"
+	}
+	if nested {
+		call = "  [1].each do |x|\n" + call + "  end\n"
+	} else {
+		call = strings.ReplaceAll(call, "\n    ", "\n  ")
+		call = strings.TrimPrefix(call, "  ")
+	}
+	return "def run()\n  n = [0]\n" + call + "  n[0]\nend"
+}
+
+// A stateful callback that also binds a named rest, which no other test in this
+// file combines. The two features interact: the rest binding is the only thing
+// that builds a blockBindCharge, and the mutation is the only thing that discards
+// the base-walk memo the charge's later readings come from, so this is where the
+// charge and the re-derived output walk meet.
+//
+// The assertions are on results rather than on cost, deliberately. What a nested
+// rest-binding lookup COSTS when its callback touches the enclosing block's scope
+// is the known over-charge pinned separately; what it RETURNS must be right
+// regardless, and that had no coverage at all in either spelling.
+func TestRestBindingHashLookupCallbacksThatMutateAndRaise(t *testing.T) {
+	t.Parallel()
+
+	for _, builtin := range []string{"fetch_values", "values_at"} {
+		for _, nested := range []bool{false, true} {
+			for _, behavior := range []string{"mutating", "raising"} {
+				// Mutating: both keys miss, so the callback adds 1 and 3.
+				// Raising: it counts both calls and fails on the second.
+				want := int64(4)
+				if behavior == "raising" {
+					want = 2
+				}
+				name := fmt.Sprintf("%s/%s", builtin, behavior)
+				if nested {
+					name += "/nested"
+				}
+				t.Run(name, func(t *testing.T) {
+					t.Parallel()
+					src := restCallbackSource(builtin, behavior, nested)
+					script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 16 << 20}, src)
+					got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+					if err != nil {
+						t.Fatalf("run: %v\n%s", err, src)
+					}
+					if got.Kind() != KindInt || got.Int() != want {
+						t.Fatalf("a %s callback binding a named rest produced %v, want %d\n%s",
+							behavior, got, want, src)
+					}
+				})
+			}
+		}
+	}
+}
+
+// The ephemeral-receiver deduplication, for a receiver carrying a default proc
+// that binds a named rest. The existing pair covers an ephemeral receiver whose
+// misses fall through to nil, and one whose call-site block binds a rest; neither
+// covers the receiver-side callback, which is the only spelling where the proc
+// and the receiver arrive through the same value.
+//
+// dup carries the proc, so both spellings resolve their misses identically and
+// hold the same memory: the quota admitting them must agree. The receiver is wide
+// rather than deep because what a second walk of it would cost is its structure,
+// which scales with entry count -- dropping the receiver from the output root
+// costs 587 bytes at one entry, 19,631 at fifty and 79,047 at two hundred, against
+// a one-byte difference when it is walked once.
+func TestHashValuesAtDoesNotDoubleChargeAnEphemeralReceiverWithAProc(t *testing.T) {
+	t.Parallel()
+
+	const entries = 200
+	stores := make([]string, entries)
+	for i := range stores {
+		stores[i] = fmt.Sprintf("  h[:k%03d] = \"x\" * 200\n", i)
+	}
+	build := "  h = Hash.new { |g, (head, *tail)| 7 }\n" + strings.Join(stores, "")
+	ephemeral := "def run()\n" + build + "  h.dup.values_at(:k000, :m)\nend"
+	bound := "def run()\n" + build + "  d = h.dup\n  d.values_at(:k000, :m)\nend"
+
+	atEphemeral := minMemoryQuotaForLookupNoArgs(t, ephemeral)
+	atBound := minMemoryQuotaForLookupNoArgs(t, bound)
+
+	// Far below what a second walk of a 200-entry receiver is worth, and far above
+	// the one byte the two spellings actually differ by.
+	const slack = 4096
+	if diff := atEphemeral - atBound; diff > slack || diff < -slack {
+		t.Fatalf("an ephemeral receiver with a rest-binding default proc admits at %d bytes where the "+
+			"same receiver bound to a local admits at %d, a %d-byte difference; the receiver is being "+
+			"walked a different number of times in the two spellings", atEphemeral, atBound, diff)
+	}
+}
+
 // intArray builds a receiver of count distinct ints, cheap enough that a test
 // weighing payloads is not measuring the receiver.
 func intArray(count int) Value {
