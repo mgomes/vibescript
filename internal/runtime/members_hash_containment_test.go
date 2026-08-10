@@ -4916,7 +4916,7 @@ func TestHashLookupCallbacksKeepTheBaseWalkMemo(t *testing.T) {
 func minMemoryQuotaForLookup(t *testing.T, src string, arg Value) int {
 	t.Helper()
 
-	lo, hi := 1, 200<<20
+	lo, hi := 1, 16<<20
 	for lo < hi {
 		mid := (lo + hi) / 2
 		script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: mid}, src)
@@ -4944,7 +4944,7 @@ func minMemoryQuotaForLookup(t *testing.T, src string, arg Value) int {
 func TestHashLookupsChargeAnEphemeralKeyLikeABoundOne(t *testing.T) {
 	t.Parallel()
 
-	arg := intArray(200_000)
+	arg := intArray(20_000)
 	pairs := map[string][2]string{
 		"fetch_values": {
 			"def run(b)\n  { }.fetch_values(b.dup) { |(head, *tail)| 1 }\nend",
@@ -4963,11 +4963,70 @@ func TestHashLookupsChargeAnEphemeralKeyLikeABoundOne(t *testing.T) {
 			bound := minMemoryQuotaForLookup(t, spellings[1], arg)
 			// The bound spelling pays a little more for the local binding itself,
 			// so allow a slack far below the key's own footprint.
-			if slack := bound - ephemeral; slack > 64*1024 {
+			if slack := bound - ephemeral; slack > 32*1024 {
 				t.Fatalf("an ephemeral key admits at %d bytes where the same key bound to a local needs "+
 					"%d, a %d-byte discount; the key is missing from the callback's bind baseline",
 					ephemeral, bound, slack)
 			}
 		})
 	}
+}
+
+// A temporary receiver is priced by the bind charge, which reserves its marginal
+// as scratch so the block body's own checks can see it, and a result aliasing
+// that receiver is priced again by the output walk, which runs against a graph
+// the temporary is absent from. Nothing told the two they were pricing the same
+// bytes, so a lookup on an inline receiver was refused at roughly twice its real
+// peak. The receiver is walked as part of the output root now, which dissolves
+// the overlap rather than subtracting it.
+//
+// Both spellings hold the same memory, so the quota that admits them must agree;
+// the bound one is the control, since its receiver is in the graph either way.
+func TestHashLookupsDoNotDoubleChargeAnEphemeralReceiver(t *testing.T) {
+	t.Parallel()
+
+	const payloadBytes = 150_000
+	payload := `"x" * ` + strconv.Itoa(payloadBytes)
+	pairs := map[string][2]string{
+		"fetch_values": {
+			"def run()\n  { a: " + payload + " }.fetch_values(:a, :m) { |(head, *tail)| 1 }\nend",
+			"def run()\n  h = { a: " + payload + " }\n  h.fetch_values(:a, :m) { |(head, *tail)| 1 }\nend",
+		},
+		"values_at": {
+			"def run()\n  { a: " + payload + " }.values_at(:a, :m)\nend",
+			"def run()\n  h = { a: " + payload + " }\n  h.values_at(:a, :m)\nend",
+		},
+	}
+
+	for name, spellings := range pairs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			inline := minMemoryQuotaForLookupNoArgs(t, spellings[0])
+			bound := minMemoryQuotaForLookupNoArgs(t, spellings[1])
+			if diff := inline - bound; diff > payloadBytes/4 {
+				t.Fatalf("an inline receiver needs %d bytes where the same receiver bound to a local needs "+
+					"%d, a %d-byte surcharge on a %d-byte value; the receiver's scratch reservation and the "+
+					"output walk are both pricing it", inline, bound, diff, payloadBytes)
+			}
+		})
+	}
+}
+
+// minMemoryQuotaForLookupNoArgs is minMemoryQuotaForLookup for a script whose
+// receiver is built inside it rather than passed in, which is what makes the
+// receiver a temporary.
+func minMemoryQuotaForLookupNoArgs(t *testing.T, src string) int {
+	t.Helper()
+
+	lo, hi := 1, 4<<20
+	for lo < hi {
+		mid := (lo + hi) / 2
+		script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: mid}, src)
+		if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
 }

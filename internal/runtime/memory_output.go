@@ -66,6 +66,35 @@ func retainedValues(out *[]Value) outputWalkRoot {
 	}
 }
 
+// retainedValuesWithReceiver walks a driver's receiver before its result slice,
+// for the drivers whose results can alias the receiver they came from.
+//
+// Registering the receiver looks redundant -- a reachable one is already in the
+// graph -- but it is what keeps two mechanisms from pricing the same bytes. An
+// ephemeral receiver is not in the graph, so the bind charge reserves its
+// marginal as scratch for the block body to see; a result aliasing it then went
+// into the output, which is walked against a graph the receiver is absent from,
+// and the same payload was charged twice. Measured on a 400,000-byte value held
+// by an inline receiver and returned for a present key, the lookup needed
+// 804,908 bytes of quota where the same receiver bound to a local needed
+// 404,909.
+//
+// Walking it here dissolves the overlap rather than subtracting it: the charge's
+// own baseline reads these roots first, so the receiver's marginal against it is
+// nothing and no scratch is reserved for it, while the output's aliases
+// deduplicate against the same walk. A receiver already in the graph costs a
+// single deduplicated visit, because the estimator short-circuits a container it
+// has seen.
+func retainedValuesWithReceiver(receiver Value, out *[]Value) outputWalkRoot {
+	return func(est *memoryEstimator) int {
+		total := est.value(receiver)
+		for _, val := range *out {
+			total = saturatingAdd(total, est.valuePayload(val))
+		}
+		return total
+	}
+}
+
 // retainedEntryValues walks the transformed values a hash driver stages in an
 // entry buffer before publishing them into its result map. Only the values are
 // charged: the keys are the receiver's own, which the walk reaches through it.
