@@ -4291,3 +4291,1444 @@ func TestHashFlattenRejectsHugeExpansionEarly(t *testing.T) {
 		t.Fatalf("hash.flatten allocated %d cumulative bytes before rejecting; want it bounded by the quota, not the full result", allocated)
 	}
 }
+
+// lookupKeyList renders count missing symbol keys as a fetch_values or
+// values_at argument list, so the callback runs once per key in the order
+// given.
+func lookupKeyList(count int) string {
+	keys := make([]string, count)
+	for i := range keys {
+		keys[i] = fmt.Sprintf(":m%03d", i)
+	}
+	return strings.Join(keys, ", ")
+}
+
+// A block result stays in the Go-local out slice, which no memory check inside
+// a later block call could reach before the slice became a walk root: the
+// earlier results and an in-block temporary passed their checks separately
+// though they coexist. Here the 29 retained 20KB results and the final 600KB
+// temporary each fit the 1MB quota alone, and the returned array is small
+// enough for the post-call check, so only walking the retained output rejects
+// the combined peak.
+func TestHashFetchValuesWalksRetainedOutputDuringBlockCalls(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run(h)
+      h.fetch_values(`+lookupKeyList(30)+`) { |k|
+        if k == :m029
+          ("y" * 600000).length
+        else
+          "x" * 20000
+        end
+      }
+    end
+    `)
+	if _, err := script.Call(context.Background(), "run", []Value{NewHash(map[string]Value{})}, CallOptions{}); err == nil {
+		t.Fatalf("retained fetch_values output plus an in-block temporary exceeded the quota but was accepted")
+	}
+}
+
+// The root is unregistered when the builtin returns, so a fetch_values that
+// fits is still answered with the values Ruby's Hash#fetch_values returns.
+func TestHashFetchValuesDoesNotOverCharge(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run(h)
+      h.fetch_values(:a, :b, `+lookupKeyList(30)+`) { |k| "x" * 20000 }
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", []Value{NewHash(map[string]Value{
+		"a": NewInt(1),
+		"b": NewInt(2),
+	})}, CallOptions{})
+	if err != nil {
+		t.Fatalf("a fetch_values that fits the quota was rejected: %v", err)
+	}
+	want := make([]Value, 0, 32)
+	want = append(want, NewInt(1), NewInt(2))
+	for range 30 {
+		want = append(want, NewString(strings.Repeat("x", 20000)))
+	}
+	compareArrays(t, got, want)
+}
+
+// A default proc is script code, so values_at has the same shape as
+// fetch_values: each miss can resolve to a fresh near-quota value that lives
+// only in the Go-local out slice. The 29 retained 20KB defaults and the final
+// 600KB temporary each fit the 1MB quota alone, and the returned array is small
+// enough for the post-call check.
+func TestHashValuesAtWalksRetainedOutputDuringDefaultProcs(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run()
+      h = Hash.new { |hash, k|
+        if k == :m029
+          ("y" * 600000).length
+        else
+          "x" * 20000
+        end
+      }
+      h.values_at(`+lookupKeyList(30)+`)
+    end
+    `)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("retained values_at output plus an in-proc temporary exceeded the quota but was accepted")
+	}
+}
+
+// The root is unregistered when the builtin returns, so a values_at that fits
+// still resolves present keys and default-proc misses alike.
+func TestHashValuesAtDoesNotOverCharge(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
+    def run()
+      h = Hash.new { |hash, k| "x" * 20000 }
+      h[:a] = 1
+      h[:b] = 2
+      h.values_at(:a, :b, `+lookupKeyList(30)+`)
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("a values_at that fits the quota was rejected: %v", err)
+	}
+	want := make([]Value, 0, 32)
+	want = append(want, NewInt(1), NewInt(2))
+	for range 30 {
+		want = append(want, NewString(strings.Repeat("x", 20000)))
+	}
+	compareArrays(t, got, want)
+}
+
+// Every miss resolving to one static default retains the same payload thirty
+// times over, and the receiver holds it too. A charge computed for the output
+// on its own bills that payload again on top of the receiver; walking the
+// output through the estimator that already saw the receiver counts it once.
+// The quota here sits far above the call's real footprint and far below the
+// doubled estimate, so only the deduplicating walk admits it.
+func TestHashValuesAtDoesNotDoubleChargeAStaticDefault(t *testing.T) {
+	t.Parallel()
+
+	const defaultBytes = 400 * 1024
+	const missing = 30
+
+	defaultValue := NewString(strings.Repeat("d", defaultBytes))
+	receiver := NewHashWithDefault(map[string]Value{"a": NewInt(1)}, defaultValue, NewNil())
+
+	args := make([]Value, 0, missing+1)
+	args = append(args, NewSymbol("a"))
+	for i := range missing {
+		args = append(args, NewSymbol(fmt.Sprintf("m%03d", i)))
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
+	footprint := base + arraySlotBackingBytes(len(args))
+
+	// Half a default's worth of headroom: ample for the real build, nowhere
+	// near enough to absorb a second copy of the default's payload.
+	quota := footprint + defaultBytes/2
+	if quota <= footprint || quota >= footprint+defaultBytes {
+		t.Fatalf("quota %d must fit the real footprint %d and reject the doubled charge %d", quota, footprint, footprint+defaultBytes)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "values_at", args, NewNil())
+	if err != nil {
+		t.Fatalf("a values_at that fits its real footprint under quota %d was rejected: %v", quota, err)
+	}
+	want := make([]Value, 0, missing+1)
+	want = append(want, NewInt(1))
+	for range missing {
+		want = append(want, defaultValue)
+	}
+	compareArrays(t, got, want)
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("values_at leaked %d scratch bytes after success", exec.reservedScratchBytes)
+	}
+	if len(exec.outputWalkRoots) != 0 {
+		t.Fatalf("values_at left %d output walk roots registered after success", len(exec.outputWalkRoots))
+	}
+}
+
+// A callback can detach a result it previously stored: here the first callback
+// memoizes a 400KB value into the hash, and the second clears the hash -- so
+// the payload is live only in the Go-local output -- before allocating a 700KB
+// temporary. The true peak is about 1.1MB against a 1MB quota, and nothing
+// reachable from the interpreter holds the detached 400KB, so only a root that
+// keeps walking the output rejects the pair.
+func TestHashRetainedOutputIsWalkedWhenACallbackDetachesIt(t *testing.T) {
+	t.Parallel()
+
+	sources := map[string]string{
+		"values_at default proc": `
+    def run()
+      h = Hash.new { |hash, k|
+        if k == :b
+          hash.clear
+          ("t" * 700000).length
+        else
+          hash[k] = "x" * 400000
+        end
+      }
+      h.values_at(:a, :b)
+    end
+    `,
+		"fetch_values block": `
+    def run()
+      h = { }
+      h.fetch_values(:a, :b) { |k|
+        if k == :b
+          h.clear
+          ("t" * 700000).length
+        else
+          h[k] = "x" * 400000
+        end
+      }
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a detached retained result coexisting with an in-callback temporary exceeded the quota but was accepted")
+			}
+		})
+	}
+}
+
+// The same detach hazard reaches values the receiver already held. A present
+// key is answered by aliasing the receiver, and a callback can then clear the
+// hash, leaving the alias live solely in the Go-local output. Here :a
+// contributes 400KB, the :b callback clears the hash and allocates 700KB, and
+// the 1MB quota must reject the pair even though no other walk can still reach
+// the detached value.
+func TestHashPresentResultIsWalkedWhenACallbackDetachesIt(t *testing.T) {
+	t.Parallel()
+
+	sources := map[string]string{
+		"values_at default proc": `
+    def run()
+      h = Hash.new { |hash, k|
+        hash.clear
+        ("t" * 700000).length
+      }
+      h[:a] = "x" * 400000
+      h.values_at(:a, :b)
+    end
+    `,
+		"fetch_values block": `
+    def run()
+      h = { }
+      h[:a] = "x" * 400000
+      h.fetch_values(:a, :b) { |k|
+        h.clear
+        ("t" * 700000).length
+      }
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a detached present result coexisting with an in-callback temporary exceeded the quota but was accepted")
+			}
+		})
+	}
+}
+
+// An alias no callback can break must not be billed twice. A lookup whose keys
+// are all present runs no script code at all, and a callback returning its own
+// key retains a payload the argument slice pins for the whole call: both add
+// only an array slot on top of memory the walk already reaches, so a quota with
+// room for one copy has to accept them.
+func TestHashLookupsDoNotDoubleChargeAliasesNoCallbackCanDetach(t *testing.T) {
+	t.Parallel()
+
+	const quota = 650 * 1024
+
+	sources := map[string]string{
+		"values_at with every key present": `
+    def run()
+      h = Hash.new { |hash, k| hash[k] = "z" * 10 }
+      h[:a] = "x" * 400000
+      h.values_at(:a)
+    end
+    `,
+		"fetch_values with every key present": `
+    def run()
+      h = { }
+      h[:a] = "x" * 400000
+      h.fetch_values(:a) { |k| "z" * 10 }
+    end
+    `,
+		"fetch_values block returning its key": `
+    def run()
+      k = "y" * 400000
+      { }.fetch_values(k) { |x| x }
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: quota}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+				t.Fatalf("a lookup whose real footprint fits the quota was rejected: %v", err)
+			}
+		})
+	}
+}
+
+// An array is a supported hash key, so a key argument is not automatically a
+// stable root. The first callback returns a large element of the array key; a
+// later callback clears that array, detaching the element while the output
+// still holds it, then allocates a temporary. Deducting the key from the
+// output's charge hid the detached payload from the walk entirely.
+func TestHashLookupsRejectDetachedElementsOfAnArrayKey(t *testing.T) {
+	t.Parallel()
+
+	sources := map[string]string{
+		"fetch_values block": `
+    def run()
+      k = ["x" * 400000]
+      h = { }
+      h.fetch_values(k, :b) { |x|
+        if x == :b
+          k.clear
+          ("t" * 700000).length
+        else
+          x[0]
+        end
+      }
+    end
+    `,
+		"values_at default proc": `
+    def run()
+      k = ["x" * 400000]
+      h = Hash.new { |hash, x|
+        if x == :b
+          k.clear
+          ("t" * 700000).length
+        else
+          x[0]
+        end
+      }
+      h.values_at(k, :b)
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a detached array-key element coexisting with an in-callback temporary exceeded the quota but was accepted")
+			}
+		})
+	}
+}
+
+// A retained result does not stay the size it was when it was produced. The
+// first callback returns an empty array, so it costs almost nothing; the second
+// pushes 400KB into that array and then clears the box holding it, so the
+// payload is both larger than it was and reachable only through the output; the
+// third allocates 700KB. A total captured when the result was produced misses
+// the growth, so only re-deriving the output at each check rejects this.
+func TestHashLookupsRechargeResultsThatGrowAfterBeingProduced(t *testing.T) {
+	t.Parallel()
+
+	body := `
+        if k == :a
+          box[0]
+        elsif k == :b
+          box[0].push("x" * 400000)
+          box.clear
+          1
+        else
+          ("t" * 700000).length
+        end`
+
+	sources := map[string]string{
+		"fetch_values block": `
+    def run()
+      box = [[]]
+      h = { }
+      h.fetch_values(:a, :b, :c) { |k|` + body + `
+      }
+    end
+    `,
+		"values_at default proc": `
+    def run()
+      box = [[]]
+      h = Hash.new { |hash, k|` + body + `
+      }
+      h.values_at(:a, :b, :c)
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a result that grew after being produced exceeded the quota but was accepted")
+			}
+		})
+	}
+}
+
+// The growth, the detachment, and the allocation can all happen inside one
+// callback, leaving no moment between callbacks at which a measurement could be
+// refreshed. The second callback grows the array the first returned, clears the
+// box that held it, and then allocates 700KB: any scheme that prices the output
+// before entering a callback is already stale by the time this allocates, so
+// only a root the estimator walks at the allocation's own check rejects it.
+func TestHashLookupsRejectGrowthAndDetachWithinOneCallback(t *testing.T) {
+	t.Parallel()
+
+	body := `
+        if k == :a
+          box[0]
+        else
+          box[0].push("x" * 400000)
+          box.clear
+          ("t" * 700000).length
+        end`
+
+	sources := map[string]string{
+		"fetch_values block": `
+    def run()
+      box = [[]]
+      h = { }
+      h.fetch_values(:a, :b) { |k|` + body + `
+      }
+    end
+    `,
+		"values_at default proc": `
+    def run()
+      box = [[]]
+      h = Hash.new { |hash, k|` + body + `
+      }
+      h.values_at(:a, :b)
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a result grown and detached inside the callback that allocates against it was accepted")
+			}
+		})
+	}
+}
+
+// The output has to be followed down as well as up. The first callback returns
+// a 400KB array, the second empties it, and the third allocates 700KB: by then
+// the retained result holds almost nothing, so a charge still pinned at the
+// original size would wrongly reject the call.
+func TestHashLookupsDoNotChargeAResultThatShrank(t *testing.T) {
+	t.Parallel()
+
+	body := `
+        if k == :a
+          a
+        elsif k == :b
+          a.clear
+          1
+        else
+          ("t" * 700000).length
+        end`
+
+	sources := map[string]string{
+		"fetch_values block": `
+    def run()
+      a = ["x" * 400000]
+      h = { }
+      h.fetch_values(:a, :b, :c) { |k|` + body + `
+      }
+    end
+    `,
+		"values_at default proc": `
+    def run()
+      a = ["x" * 400000]
+      h = Hash.new { |hash, k|` + body + `
+      }
+      h.values_at(:a, :b, :c)
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+				t.Fatalf("a lookup whose retained result had shrunk was rejected: %v", err)
+			}
+		})
+	}
+}
+
+// A key argument lives only in the builtin's Go-local slice, which the walk
+// inside a callback cannot reach either. A result that aliases one is therefore
+// held by nothing the estimator sees except the output itself: the first
+// callback returns its own 400KB key, and the second allocates 700KB against a
+// 1MB quota with the two coexisting.
+func TestHashLookupsChargeAResultAliasingAnEphemeralKey(t *testing.T) {
+	t.Parallel()
+
+	sources := map[string]string{
+		"fetch_values block": `
+    def run()
+      { }.fetch_values("x" * 400000, :b) { |k|
+        if k == :b
+          ("t" * 700000).length
+        else
+          k
+        end
+      }
+    end
+    `,
+		"values_at default proc": `
+    def run()
+      h = Hash.new { |hash, k|
+        if k == :b
+          ("t" * 700000).length
+        else
+          k
+        end
+      }
+      h.values_at("x" * 400000, :b)
+    end
+    `,
+	}
+
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("a retained result aliasing an ephemeral key exceeded the quota but was accepted")
+			}
+		})
+	}
+}
+
+// missingKeyList renders count missing symbol keys as an argument list wide
+// enough for the memo's cost to show.
+func missingKeyList(count int) string {
+	keys := make([]string, count)
+	for i := range keys {
+		keys[i] = fmt.Sprintf(":m%04d", i)
+	}
+	return strings.Join(keys, ", ")
+}
+
+// lookupEstimatorVisits counts the graph nodes the estimator visits while src
+// runs under an enforced memory quota. Node counts are exact and machine
+// independent, unlike the wall clock this regression would otherwise be pinned
+// with.
+func lookupEstimatorVisits(t *testing.T, src string) uint64 {
+	t.Helper()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 64 << 20, StepQuota: Unlimited}, src)
+	estimatorVisits.Store(0)
+	estimatorVisitCounting.Store(true)
+	defer estimatorVisitCounting.Store(false)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	return estimatorVisits.Load()
+}
+
+// Registering the retained output makes every base walk that misses the memo
+// re-walk every result the lookup has kept, so the lookup is only affordable
+// while the memo survives its callbacks. It does not survive a raw CallBlock:
+// that pushes a fresh scope per call, and the push and its parameter binds move
+// the topology and the mutation epoch, discarding the memo on every miss. Both
+// lookups therefore drive their callback through a block-call runner inside a
+// block-iteration region, the way the map drivers do, so doubling the misses
+// roughly doubles the walk instead of quadrupling it.
+//
+// Not parallel: the estimator visit counter is process-wide.
+func TestHashLookupCallbacksKeepTheBaseWalkMemo(t *testing.T) {
+	if estimatorVerify {
+		t.Skip("the estimator oracle re-derives a reference walk per retained result, which is deliberately quadratic")
+	}
+
+	const small, large = 400, 800
+	sources := map[string]string{
+		"fetch_values block": "def run()\n  h = { }\n  h.fetch_values(%s) { |k| \"xxxxxxxxxxxxxxxx\" }.length\nend",
+		"values_at default proc": "def run()\n  h = Hash.new { |g, k| \"xxxxxxxxxxxxxxxx\" }\n" +
+			"  h.values_at(%s).length\nend",
+	}
+
+	for name, tmpl := range sources {
+		t.Run(name, func(t *testing.T) {
+			atSmall := lookupEstimatorVisits(t, fmt.Sprintf(tmpl, missingKeyList(small)))
+			atLarge := lookupEstimatorVisits(t, fmt.Sprintf(tmpl, missingKeyList(large)))
+			// Linear growth is 2x for a doubling. The headroom keeps the bound on
+			// the complexity class rather than the exact node count, while staying
+			// far below the 4x a per-miss re-walk of the retained output produces.
+			if atLarge > atSmall*3 {
+				t.Errorf("estimator visited %d nodes for %d misses and %d for %d; doubling the "+
+					"misses should roughly double the walk, so the callback is still "+
+					"discarding the base-walk memo and re-walking the retained output",
+					atSmall, small, atLarge, large)
+			}
+		})
+	}
+}
+
+// minMemoryQuotaForLookup binary-searches the smallest memory quota at which src
+// completes. It is the observable edge of the estimator's total: the exact quota
+// where one more byte of estimate would have failed the run.
+func minMemoryQuotaForLookup(t *testing.T, src string, arg Value) int {
+	t.Helper()
+
+	lo, hi := 1, 16<<20
+	for lo < hi {
+		mid := (lo + hi) / 2
+		script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: mid}, src)
+		if _, err := script.Call(context.Background(), "run", []Value{arg}, CallOptions{}); err != nil {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
+
+// A lookup key lives only in the builtin's Go argument slice, so nothing the
+// estimator walks can reach it while a callback runs. A callback destructuring
+// that key with a named rest copies a window sized to it, and the bind charge
+// preflights that copy against a baseline the key has to be part of. Driving the
+// callback through a shared runner made the key a per-call value rather than a
+// construction-time call root, and passing nil roots dropped it from the baseline
+// entirely: an ephemeral key became free.
+//
+// Both spellings hold the same memory, so the quota that admits them must agree.
+// The bound spelling is the control -- its key is reachable from the environment,
+// so the walk sees it whatever the charge does -- and the ephemeral one must not
+// come in under it.
+func TestHashLookupsChargeAnEphemeralKeyLikeABoundOne(t *testing.T) {
+	t.Parallel()
+
+	arg := intArray(20_000)
+	pairs := map[string][2]string{
+		"fetch_values": {
+			"def run(b)\n  { }.fetch_values(b.dup) { |(head, *tail)| 1 }\nend",
+			"def run(b)\n  k = b.dup\n  { }.fetch_values(k) { |(head, *tail)| 1 }\nend",
+		},
+		"values_at": {
+			"def run(b)\n  h = Hash.new { |g, (head, *tail)| 1 }\n  h.values_at(b.dup)\nend",
+			"def run(b)\n  h = Hash.new { |g, (head, *tail)| 1 }\n  k = b.dup\n  h.values_at(k)\nend",
+		},
+	}
+
+	for name, spellings := range pairs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ephemeral := minMemoryQuotaForLookup(t, spellings[0], arg)
+			bound := minMemoryQuotaForLookup(t, spellings[1], arg)
+			// The bound spelling pays a little more for the local binding itself,
+			// so allow a slack far below the key's own footprint.
+			if slack := bound - ephemeral; slack > 32*1024 {
+				t.Fatalf("an ephemeral key admits at %d bytes where the same key bound to a local needs "+
+					"%d, a %d-byte discount; the key is missing from the callback's bind baseline",
+					ephemeral, bound, slack)
+			}
+		})
+	}
+}
+
+// A temporary receiver is priced by the bind charge, which reserves its marginal
+// as scratch so the block body's own checks can see it, and a result aliasing
+// that receiver is priced again by the output walk, which runs against a graph
+// the temporary is absent from. Nothing told the two they were pricing the same
+// bytes, so a lookup on an inline receiver was refused at roughly twice its real
+// peak. The receiver is walked as part of the output root now, which dissolves
+// the overlap rather than subtracting it.
+//
+// Both spellings hold the same memory, so the quota that admits them must agree;
+// the bound one is the control, since its receiver is in the graph either way.
+func TestHashLookupsDoNotDoubleChargeAnEphemeralReceiver(t *testing.T) {
+	t.Parallel()
+
+	const payloadBytes = 150_000
+	payload := `"x" * ` + strconv.Itoa(payloadBytes)
+	pairs := map[string][2]string{
+		"fetch_values": {
+			"def run()\n  { a: " + payload + " }.fetch_values(:a, :m) { |(head, *tail)| 1 }\nend",
+			"def run()\n  h = { a: " + payload + " }\n  h.fetch_values(:a, :m) { |(head, *tail)| 1 }\nend",
+		},
+		"values_at": {
+			"def run()\n  { a: " + payload + " }.values_at(:a, :m)\nend",
+			"def run()\n  h = { a: " + payload + " }\n  h.values_at(:a, :m)\nend",
+		},
+	}
+
+	for name, spellings := range pairs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			inline := minMemoryQuotaForLookupNoArgs(t, spellings[0])
+			bound := minMemoryQuotaForLookupNoArgs(t, spellings[1])
+			if diff := inline - bound; diff > payloadBytes/4 {
+				t.Fatalf("an inline receiver needs %d bytes where the same receiver bound to a local needs "+
+					"%d, a %d-byte surcharge on a %d-byte value; the receiver's scratch reservation and the "+
+					"output walk are both pricing it", inline, bound, diff, payloadBytes)
+			}
+		})
+	}
+}
+
+// minMemoryQuotaForLookupNoArgs is minMemoryQuotaForLookup for a script whose
+// receiver is built inside it rather than passed in, which is what makes the
+// receiver a temporary.
+func minMemoryQuotaForLookupNoArgs(t *testing.T, src string) int {
+	t.Helper()
+
+	lo, hi := 1, 4<<20
+	for lo < hi {
+		mid := (lo + hi) / 2
+		script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: mid}, src)
+		if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
+
+// A default proc is script code, and script code can change the hash's default:
+// Hash#replace adopts the replacement's, so the proc that serves the first
+// missing key can be gone by the second. Reading the proc once before the loop
+// and driving every miss through it therefore answered the second key from a
+// proc the hash no longer had. This is what the callback runner has to re-read
+// per key; it may reuse its scope, but only while the proc behind it is the same
+// one.
+func TestHashValuesAtRereadsTheDefaultAfterEachProc(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def run()
+      h = Hash.new { |g, k| g.replace(Hash.new(7)); 1 }
+      h.values_at(:a, :b)
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("values_at over a proc that replaces the hash: %v", err)
+	}
+	// The proc runs for :a and swaps the hash's default proc for a static 7, so
+	// :b is served by that static default rather than by the proc again.
+	compareArrays(t, got, []Value{NewInt(1), NewInt(7)})
+}
+
+// The reuse the runner exists for has to survive the per-key re-read: a proc
+// that never changes must still be driven through one scope, or the base walk
+// is discarded on every miss and the lookup goes quadratic again.
+//
+// Not parallel: the estimator visit counter is process-wide.
+func TestHashValuesAtKeepsTheMemoWhileTheProcIsUnchanged(t *testing.T) {
+	if estimatorVerify {
+		t.Skip("the estimator oracle re-derives a reference walk per retained result, which is deliberately quadratic")
+	}
+
+	const small, large = 400, 800
+	tmpl := "def run()\n  h = Hash.new { |g, k| \"xxxxxxxxxxxxxxxx\" }\n  h.values_at(%s).length\nend"
+	atSmall := lookupEstimatorVisits(t, fmt.Sprintf(tmpl, missingKeyList(small)))
+	atLarge := lookupEstimatorVisits(t, fmt.Sprintf(tmpl, missingKeyList(large)))
+	if atLarge > atSmall*3 {
+		t.Errorf("estimator visited %d nodes for %d misses and %d for %d; doubling the misses should "+
+			"roughly double the walk, so re-reading the default is rebuilding the runner every key",
+			atSmall, small, atLarge, large)
+	}
+}
+
+// The root walks the results produced so far, not the slice preallocated from the
+// argument count, so a wide lookup does not pay for its whole output on its first
+// miss. A stateful callback discards the memo every iteration, which is what makes
+// the difference observable: capacity pricing walks n results per check where
+// prefix pricing walks i.
+//
+// Two departures from this file's usual style, both forced and worth stating.
+//
+// It measures estimator visits rather than steps. This property used to be pinned
+// by a step count, because the walk was billed to the step quota; that charge has
+// been removed, since the walk is forced by a memo miss and the memo is keyed on a
+// process-wide epoch any execution can advance, so billing it charged this script
+// for other scripts' mutations (see memory_output.go). With the charge gone the
+// step quota no longer observes this walk, and a step count passes either way.
+//
+// And it asserts an absolute ceiling rather than a growth ratio. Both pricings are
+// quadratic under a stateful callback -- they differ by a constant, not by a
+// growth rate -- so no ratio across sizes can separate them. At 400 misses the
+// produced prefix visits 112,475 nodes and the preallocated slice 192,275; the
+// bound sits between them with a quarter's headroom on each side.
+//
+// Not parallel: the estimator visit counter is process-wide.
+func TestHashValuesAtWalksTheProducedPrefixNotThePreallocatedSlice(t *testing.T) {
+	if estimatorVerify {
+		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
+	}
+	const misses, ceiling = 400, 150_000
+	src := fmt.Sprintf("def run()\n  counter = [0]\n"+
+		"  h = Hash.new { |g, k| counter[0] = counter[0] + 1; 1 }\n"+
+		"  h.values_at(%s).length\nend", missingKeyList(misses))
+
+	if visits := lookupEstimatorVisits(t, src); visits > ceiling {
+		t.Fatalf("%d misses visited %d estimator nodes, over the %d bound; the root is priced by the "+
+			"slice the lookup preallocated rather than by the results it has produced",
+			misses, visits, ceiling)
+	}
+}
+
+// failingCallbackLookups returns the fetch_values and values_at spellings of one
+// shape: a lookup that retains prefix results, whose last callback mutates
+// captured state -- discarding the base-walk memo -- then spins long enough for
+// the periodic memory checks to re-walk the whole retained prefix many times, and
+// finally runs tail. Passing "0" for tail makes that callback return; passing a
+// raise makes it fail after doing exactly the same work, and the enclosing rescue
+// lets the run finish either way, so the two differ only in how the lookup exits.
+func failingCallbackLookups(prefix, spin int, tail string) map[string]string {
+	fetch := "def run(a, n)\n" +
+		"  counter = [0]\n" +
+		"  begin\n" +
+		"    { }.fetch_values(%s) do |k|\n" +
+		"      counter[0] = counter[0] + 1\n" +
+		"      if counter[0] >= %d\n" +
+		"        j = 0\n" +
+		"        while j < %d\n" +
+		"          counter[0] = counter[0] + 1\n" +
+		"          j = j + 1\n" +
+		"        end\n" +
+		"        %s\n" +
+		"      end\n" +
+		"      [k, k]\n" +
+		"    end\n" +
+		"  rescue\n" +
+		"    0\n" +
+		"  end\n" +
+		"  counter[0]\n" +
+		"end"
+	valuesAt := "def run(a, n)\n" +
+		"  counter = [0]\n" +
+		"  h = Hash.new do |g, k|\n" +
+		"    counter[0] = counter[0] + 1\n" +
+		"    if counter[0] >= %d\n" +
+		"      j = 0\n" +
+		"      while j < %d\n" +
+		"        counter[0] = counter[0] + 1\n" +
+		"        j = j + 1\n" +
+		"      end\n" +
+		"      %s\n" +
+		"    end\n" +
+		"    [k, k]\n" +
+		"  end\n" +
+		"  begin\n" +
+		"    h.values_at(%s)\n" +
+		"  rescue\n" +
+		"    0\n" +
+		"  end\n" +
+		"  counter[0]\n" +
+		"end"
+	return map[string]string{
+		"fetch_values": fmt.Sprintf(fetch, missingKeyList(prefix), prefix, spin, tail),
+		"values_at":    fmt.Sprintf(valuesAt, prefix, spin, tail, missingKeyList(prefix)),
+	}
+}
+
+// The re-walks a stateful callback forces are charged to the step quota, which
+// is what makes the residual quadratic in this path affordable rather than free.
+// That argument only holds if the charge is unavoidable, and it was not: the
+// charge sat after the callback returned, so an error return jumped over it. A
+// callback that mutated state, ran a pile of memory checks over a large retained
+// prefix and then raised did all of that work and paid for none of it, and a
+// script can rescue and repeat the shape.
+//
+// Both outcomes must therefore cost the same. Measured at 400 retained results
+// and a final callback spinning for 1,600 more steps, raising cost 40,638 steps
+// against 70,677 for returning -- 42.5% of the work taken for free, growing with
+// the product of the prefix and the checks the callback forces.
+//
+// Deliberately not parallel: this measures step counts, and baseWalkCacheDisabled
+// is process-wide, so a concurrent test that turns memoization off would be
+// measured here as extra charge.
+func TestHashLookupBillsAWalkACallbackForcedBeforeRaising(t *testing.T) {
+	if estimatorVerify {
+		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
+	}
+	const prefix, spin = 400, 1600
+	cfg := Config{MemoryQuotaBytes: 64 << 20}
+	returns := failingCallbackLookups(prefix, spin, "0")
+	raises := failingCallbackLookups(prefix, spin, `raise "boom"`)
+
+	for name, returning := range returns {
+		t.Run(name, func(t *testing.T) {
+			onReturn := minStepQuotaToComplete(t, cfg, returning, NewNil(), 0, 200_000)
+			onRaise := minStepQuotaToComplete(t, cfg, raises[name], NewNil(), 0, 200_000)
+
+			// Returning legitimately costs a little more, since it goes on to
+			// build the result array the raising run never reaches; the margin is
+			// far below the 42.5% the unbilled walk was worth.
+			if onRaise < onReturn*9/10 {
+				t.Fatalf("the same callback work cost %d steps when it returned and %d when it raised, "+
+					"%.1f%% of the price; the walks a failing callback forces are not being billed, so a "+
+					"script can rescue and repeat the shape for free",
+					onReturn, onRaise, 100*float64(onRaise)/float64(onReturn))
+			}
+		})
+	}
+}
+
+// rescuedFailureLoopSource repeats a lookup that raises on its FIRST miss, so the
+// call never reaches the per-callback charge at all and nothing settles the nodes
+// its checks recorded. The receiver is a fresh dup, which no environment holds, so
+// the output root walks the whole receiver on every check the callback forces.
+// trailing is appended after the loop: one lookup whose own work is a handful of
+// steps, which is where the unsettled nodes land.
+func rescuedFailureLoopSource(spin int, trailing string) string {
+	return fmt.Sprintf("def run(a, n)\n"+
+		"  counter = [0]\n"+
+		"  i = 0\n"+
+		"  while i < n\n"+
+		"    begin\n"+
+		"      a.dup.fetch_values(:zz) do |k|\n"+
+		"        j = 0\n"+
+		"        while j < %d\n"+
+		"          counter[0] = counter[0] + 1\n"+
+		"          j = j + 1\n"+
+		"        end\n"+
+		"        raise \"boom\"\n"+
+		"      end\n"+
+		"    rescue\n"+
+		"      0\n"+
+		"    end\n"+
+		"    i = i + 1\n"+
+		"  end\n"+
+		"%s"+
+		"  counter[0]\n"+
+		"end", spin, trailing)
+}
+
+// The other half of the same defect, pointing the other way. Because the error
+// return did not settle the recorded walk, the nodes stayed on the execution and
+// were billed to whichever lookup ran next -- so the free work above was really
+// deferred work, and a later lookup that did nothing paid for every rescued
+// failure that preceded it. A trivial lookup costing 6 steps on its own cost
+// 25,074 after one rescued failure, 50,143 after two and 100,281 after four.
+//
+// Its cost must not depend on how many failures came before it. Measuring it as a
+// difference against the same loop without it keeps the assertion on the trailing
+// lookup rather than on the loop, which legitimately grows with n.
+//
+// Deliberately not parallel, for the reason above.
+func TestHashLookupDoesNotBillALaterLookupForARescuedFailure(t *testing.T) {
+	if estimatorVerify {
+		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
+	}
+	const spin, failures = 800, 2
+	cfg := Config{MemoryQuotaBytes: 256 << 20}
+	receiver := largeHashReceiver(2000)
+	bare := rescuedFailureLoopSource(spin, "")
+	withTrailing := rescuedFailureLoopSource(spin, "  { }.fetch_values(:q) { |k| 1 }\n")
+
+	// The same trailing lookup after no failures at all is what it is worth.
+	alone := minStepQuotaToComplete(t, cfg, withTrailing, receiver, 0, 200_000) -
+		minStepQuotaToComplete(t, cfg, bare, receiver, 0, 200_000)
+	after := minStepQuotaToComplete(t, cfg, withTrailing, receiver, failures, 200_000) -
+		minStepQuotaToComplete(t, cfg, bare, receiver, failures, 200_000)
+
+	if after > alone+64 {
+		t.Fatalf("a trailing lookup cost %d steps on its own and %d after %d rescued failures; the "+
+			"nodes those failures recorded were left on the execution for it to pay",
+			alone, after, failures)
+	}
+}
+
+// nestedLookupSource places a lookup inside another iterator's block, which is
+// the shape none of this file's other lookup tests reach: an enclosing driver
+// opens the block-iteration region, so the lookup's own checks run against a
+// memoized PREFIX (the frames below that region's boundary) with the enclosing
+// block's scopes re-walked as the active suffix.
+//
+// where says which frame holds the payload the callback returns, and it is the
+// whole point of the shape. "suffix" puts it in the enclosing block's own scope,
+// at or above the boundary; "prefix" puts it in the function frame below it;
+// "flat" drops the enclosing driver entirely. params is the callback's parameter
+// list, since only a named rest builds the blockBindCharge that reads liveBaseline.
+func nestedLookupSource(where, params string, payload int) string {
+	body := "    h = Hash.new { |g, %s| big }\n" +
+		"    h.values_at([1, 2], [3, 4]).length\n"
+	switch where {
+	case "flat":
+		return fmt.Sprintf("def run()\n  big = \"x\" * %d\n"+
+			strings.ReplaceAll(body, "    ", "  ")+"end", payload, params)
+	case "prefix":
+		return fmt.Sprintf("def run()\n  big = \"x\" * %d\n  [1].map do |x|\n"+
+			body+"  end.length\nend", payload, params)
+	default:
+		return fmt.Sprintf("def run()\n  [1].map do |x|\n    big = \"x\" * %d\n"+
+			body+"  end.length\nend", payload, params)
+	}
+}
+
+// A lookup nested inside another iterator's block must cost what the same lookup
+// costs on its own. Nesting changes which frames are memoized as the region's
+// stable prefix and which are re-walked as its active suffix, and the lookup's
+// output roots are priced against the prefix; where that pricing is right, the
+// nested spelling must not charge for the payload a second time.
+//
+// The assertion is that the surcharge for nesting does not depend on the payload:
+// a structural cost for the enclosing block's own frames is expected, a cost that
+// tracks the string is the double count. That keeps the test off any particular
+// byte total while still failing loudly if a payload ever leaks into it.
+//
+// Two shapes are covered here because both are correct today. A callback with no
+// named rest never builds a blockBindCharge, so nothing consults liveBaseline. A
+// rest-binding callback does, but with the payload in the function frame it sits
+// below the region boundary, in the memoized prefix, where the prefix basis and
+// the full-graph basis agree. The third shape -- a rest-binding callback over a
+// payload in the enclosing block's scope -- is the one that is wrong today and is
+// pinned separately below.
+func TestNestedHashLookupDoesNotRechargeTheEnclosingBlocksPayload(t *testing.T) {
+	t.Parallel()
+
+	const small, large = 100_000, 200_000
+	shapes := map[string][2]string{
+		"no rest, payload in the enclosing block": {"suffix", "k"},
+		"no rest, payload below the boundary":     {"prefix", "k"},
+		"named rest, payload below the boundary":  {"prefix", "(head, *tail)"},
+	}
+	for name, shape := range shapes {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			where, params := shape[0], shape[1]
+			atSmall := minMemoryQuotaForLookupNoArgs(t, nestedLookupSource(where, params, small)) -
+				minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("flat", params, small))
+			atLarge := minMemoryQuotaForLookupNoArgs(t, nestedLookupSource(where, params, large)) -
+				minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("flat", params, large))
+
+			if drift := atLarge - atSmall; drift < -1024 || drift > 1024 {
+				t.Fatalf("nesting cost %d bytes over the flat spelling at a %d-byte payload and %d at %d, "+
+					"a %d-byte drift; the surcharge tracks the payload, so the nested spelling is being "+
+					"charged for it twice", atSmall, small, atLarge, large, drift)
+			}
+		})
+	}
+}
+
+// The known over-charge, pinned by its shape rather than by its value.
+//
+// A rest-binding callback returning a value held by the ENCLOSING block's scope is
+// charged for that value twice. liveBaseline subtracts a start value taken over the
+// full graph from a later reading the region memo serves over the prefix alone, and
+// the enclosing block's scope is in neither the prefix nor the start value, so the
+// payload it holds reads as fresh growth on top of a baseline that already carries
+// it. The lookup is charged more than it uses; nothing is let through unchecked.
+//
+// This asserts that the surcharge tracks the payload, which is exactly what the
+// correct shapes above assert it must NOT do. It is written to fail once the two
+// readings are put on one basis, because at that point this shape joins the ones
+// above and belongs in that test rather than this one.
+func TestNestedRestBindingHashLookupOverchargesForTheEnclosingBlocksPayload(t *testing.T) {
+	// Deliberately not parallel, for the reason recorded on the walk-budget tests:
+	// baseWalkCacheDisabled is process-wide, and this over-charge exists only while
+	// the base-walk memo is serving readings. With memoization off every reading
+	// falls through to the full-graph basis, the two bases agree, and the surcharge
+	// stops tracking the payload -- so a concurrent test that flips that switch
+	// makes this one fail for the very reason it is asserting. It measured 101,054
+	// bytes at a 100,000-byte payload and 3,997 at 200,000 that way.
+	const small, large = 100_000, 200_000
+	const params = "(head, *tail)"
+	atSmall := minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("suffix", params, small)) -
+		minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("flat", params, small))
+	atLarge := minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("suffix", params, large)) -
+		minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("flat", params, large))
+
+	// The surcharge is one whole payload, so doubling the payload doubles it.
+	if growth := atLarge - atSmall; growth < (large-small)/2 {
+		t.Fatalf("the nested rest-binding spelling cost %d bytes over the flat one at a %d-byte payload "+
+			"and %d at %d: the surcharge no longer tracks the payload, so the retained-output readings "+
+			"have been put on one basis. Move this shape into "+
+			"TestNestedHashLookupDoesNotRechargeTheEnclosingBlocksPayload and delete this test",
+			atSmall, small, atLarge, large)
+	}
+}
+
+// Nesting must not change what a lookup returns, whatever it costs.
+func TestNestedHashLookupsReturnTheSameResults(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		src  string
+		want int64
+	}{
+		"values_at, no rest": {"def run()\n  t = 0\n  [1, 2].each do |x|\n" +
+			"    h = Hash.new { |g, k| x * 10 }\n" +
+			"    h.values_at(:a, :b).each { |v| t = t + v }\n  end\n  t\nend", 60},
+		"values_at, named rest": {"def run()\n  t = 0\n  [1, 2].each do |x|\n" +
+			"    h = Hash.new { |g, (head, *tail)| head + x }\n" +
+			"    h.values_at([5, 6], [7, 8]).each { |v| t = t + v }\n  end\n  t\nend", 30},
+		"fetch_values": {"def run()\n  t = 0\n  [1, 2].each do |x|\n" +
+			"    { }.fetch_values(:a, :b) { |k| x }.each { |v| t = t + v }\n  end\n  t\nend", 6},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 16 << 20}, tc.src)
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if got.Kind() != KindInt || got.Int() != tc.want {
+				t.Fatalf("nested lookup produced %v, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// allPresentLookupSource builds a lookup over a receiver that holds every key it
+// asks for, so the callback is never invoked. params is the callback's parameter
+// list: only a named rest builds a blockBindCharge, and that charge's baseline is
+// what walks the graph. A count of zero asks for nothing at all, the degenerate
+// version of the same thing.
+//
+// fetch_values takes its callback as the call-site block; values_at takes it as
+// the receiver's default proc, which is why the two spellings differ.
+func allPresentLookupSource(builtin string, count int, params string) string {
+	keys := make([]string, count)
+	for i := range keys {
+		keys[i] = fmt.Sprintf(":k%04d", i)
+	}
+	keyList := strings.Join(keys, ", ")
+	if builtin == "values_at" {
+		stores := make([]string, count)
+		for i := range stores {
+			stores[i] = fmt.Sprintf("  h[:k%04d] = %d\n", i, i)
+		}
+		return fmt.Sprintf("def run(a, n)\n  h = Hash.new { |g, %s| 1 }\n%s  h.values_at(%s).length\nend",
+			params, strings.Join(stores, ""), keyList)
+	}
+	entries := make([]string, count)
+	for i := range entries {
+		entries[i] = fmt.Sprintf("k%04d: %d", i, i)
+	}
+	return fmt.Sprintf("def run(a, n)\n  h = { %s }\n  h.fetch_values(%s) { |%s| 1 }.length\nend",
+		strings.Join(entries, ", "), keyList, params)
+}
+
+// A lookup that never calls its block must not pay for one. The block runs only
+// on a miss, so a receiver holding every requested key -- the ordinary use of
+// fetch_values, and the one this PR's machinery is not about -- should cost what
+// it costs with any block, or with none.
+//
+// Building the callback's runner constructs a blockBindCharge whose baseline
+// walks the whole reachable graph and every registered output root, and in
+// fetch_values that construction sat before the loop. So a rest-binding block
+// bought a graph walk for a callback that never happened, and an argumentless
+// call bought one for a loop that never ran. On master the two spellings cost the
+// same, because master builds no runner at all. values_at already built its
+// default proc's runner on the first miss and is here to keep it that way.
+//
+// The assertion compares the two spellings rather than pinning a count: a named
+// rest changes how a callback BINDS, so when the callback is never invoked it must
+// not change what the lookup costs. Over a 20,000-element reachable graph the
+// defect was worth 20% at one present key and 25% at none, so a 5% bound catches
+// it with room while staying off the exact numbers.
+//
+// Deliberately not parallel: the estimator visit counter is process-wide.
+func TestAllPresentHashLookupDoesNotPayForItsCallback(t *testing.T) {
+	if estimatorVerify {
+		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
+	}
+	graph := loopMemoArray(20000)
+	for _, builtin := range []string{"fetch_values", "values_at"} {
+		for _, present := range []int{0, 1, 4} {
+			t.Run(fmt.Sprintf("%s/%d present keys", builtin, present), func(t *testing.T) {
+				atPlain := estimatorVisitsFor(t, allPresentLookupSource(builtin, present, "k"), graph, 0)
+				atRest := estimatorVisitsFor(t, allPresentLookupSource(builtin, present, "(head, *tail)"), graph, 0)
+
+				if atRest > atPlain+atPlain/20 {
+					t.Fatalf("a %s finding all %d of its keys visited %d estimator nodes with a "+
+						"rest-binding callback and %d with a plain one, %.0f%% more for a callback "+
+						"neither spelling ever calls; the runner is being built before the loop "+
+						"rather than on the first miss", builtin, present, atRest, atPlain,
+						100*float64(atRest-atPlain)/float64(atPlain))
+				}
+			})
+		}
+	}
+}
+
+// restCallbackSource composes a lookup whose callback binds a named rest and is
+// also stateful: it mutates a captured counter on every call, and in the raising
+// spelling fails on the second key after mutating. Both keys miss, so the
+// callback runs twice (or once and then raises).
+//
+// A named rest is what builds a blockBindCharge, and mutation is what discards
+// the base-walk memo, so this is the corner where the charge and the re-derived
+// walk meet. Every other test in this file that binds a rest has a pure callback,
+// and every stateful one binds plainly.
+func restCallbackSource(builtin, behavior string, nested bool) string {
+	body := "      n[0] = n[0] + head\n      head\n"
+	if behavior == "raising" {
+		body = "      n[0] = n[0] + 1\n      if head == 3\n        raise \"boom\"\n      end\n      head\n"
+	}
+	var call string
+	if builtin == "fetch_values" {
+		call = "    { }.fetch_values([1, 2], [3, 4]) do |(head, *tail)|\n" + body + "    end\n"
+	} else {
+		call = "    h = Hash.new do |g, (head, *tail)|\n" + body + "    end\n" +
+			"    h.values_at([1, 2], [3, 4])\n"
+	}
+	if behavior == "raising" {
+		call = "    begin\n" + call + "    rescue\n      0\n    end\n"
+	}
+	if nested {
+		call = "  [1].each do |x|\n" + call + "  end\n"
+	} else {
+		call = strings.ReplaceAll(call, "\n    ", "\n  ")
+		call = strings.TrimPrefix(call, "  ")
+	}
+	return "def run()\n  n = [0]\n" + call + "  n[0]\nend"
+}
+
+// A stateful callback that also binds a named rest, which no other test in this
+// file combines. The two features interact: the rest binding is the only thing
+// that builds a blockBindCharge, and the mutation is the only thing that discards
+// the base-walk memo the charge's later readings come from, so this is where the
+// charge and the re-derived output walk meet.
+//
+// The assertions are on results rather than on cost, deliberately. What a nested
+// rest-binding lookup COSTS when its callback touches the enclosing block's scope
+// is the known over-charge pinned separately; what it RETURNS must be right
+// regardless, and that had no coverage at all in either spelling.
+func TestRestBindingHashLookupCallbacksThatMutateAndRaise(t *testing.T) {
+	t.Parallel()
+
+	for _, builtin := range []string{"fetch_values", "values_at"} {
+		for _, nested := range []bool{false, true} {
+			for _, behavior := range []string{"mutating", "raising"} {
+				// Mutating: both keys miss, so the callback adds 1 and 3.
+				// Raising: it counts both calls and fails on the second.
+				want := int64(4)
+				if behavior == "raising" {
+					want = 2
+				}
+				name := fmt.Sprintf("%s/%s", builtin, behavior)
+				if nested {
+					name += "/nested"
+				}
+				t.Run(name, func(t *testing.T) {
+					t.Parallel()
+					src := restCallbackSource(builtin, behavior, nested)
+					script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 16 << 20}, src)
+					got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+					if err != nil {
+						t.Fatalf("run: %v\n%s", err, src)
+					}
+					if got.Kind() != KindInt || got.Int() != want {
+						t.Fatalf("a %s callback binding a named rest produced %v, want %d\n%s",
+							behavior, got, want, src)
+					}
+				})
+			}
+		}
+	}
+}
+
+// The ephemeral-receiver deduplication, for a receiver carrying a default proc
+// that binds a named rest. The existing pair covers an ephemeral receiver whose
+// misses fall through to nil, and one whose call-site block binds a rest; neither
+// covers the receiver-side callback, which is the only spelling where the proc
+// and the receiver arrive through the same value.
+//
+// dup carries the proc, so both spellings resolve their misses identically and
+// hold the same memory: the quota admitting them must agree. The receiver is wide
+// rather than deep because what a second walk of it would cost is its structure,
+// which scales with entry count -- dropping the receiver from the output root
+// costs 587 bytes at one entry, 19,631 at fifty and 79,047 at two hundred, against
+// a one-byte difference when it is walked once.
+func TestHashValuesAtDoesNotDoubleChargeAnEphemeralReceiverWithAProc(t *testing.T) {
+	t.Parallel()
+
+	const entries = 200
+	stores := make([]string, entries)
+	for i := range stores {
+		stores[i] = fmt.Sprintf("  h[:k%03d] = \"x\" * 200\n", i)
+	}
+	build := "  h = Hash.new { |g, (head, *tail)| 7 }\n" + strings.Join(stores, "")
+	ephemeral := "def run()\n" + build + "  h.dup.values_at(:k000, :m)\nend"
+	bound := "def run()\n" + build + "  d = h.dup\n  d.values_at(:k000, :m)\nend"
+
+	atEphemeral := minMemoryQuotaForLookupNoArgs(t, ephemeral)
+	atBound := minMemoryQuotaForLookupNoArgs(t, bound)
+
+	// Far below what a second walk of a 200-entry receiver is worth, and far above
+	// the one byte the two spellings actually differ by.
+	const slack = 4096
+	if diff := atEphemeral - atBound; diff > slack || diff < -slack {
+		t.Fatalf("an ephemeral receiver with a rest-binding default proc admits at %d bytes where the "+
+			"same receiver bound to a local admits at %d, a %d-byte difference; the receiver is being "+
+			"walked a different number of times in the two spellings", atEphemeral, atBound, diff)
+	}
+}
+
+// A rest-binding callback is the only shape that consults liveBaseline, and so
+// the only one that can build a bind charge or reach the retained-output
+// fallback. Both walk the reachable graph. Building the charge is this
+// execution's own doing and is billed; the fallback's walk is not, and that is a
+// decision rather than an oversight.
+//
+// The fallback runs whenever the base-walk memo cannot answer, and the memo is
+// keyed on a process-wide mutation epoch that any execution in the process
+// advances. Billing it therefore charged this script for other scripts'
+// mutations: a concurrent mutator drove an innocent lookup from 10,053 billed
+// nodes to 166,753. Attributing the walk would need per-execution mutation
+// tracking across 36 bump sites in two packages, which is its own change, so the
+// walk is left unbilled and its residue is bounded instead -- measured at about
+// 0.15 walks per step, against a graph the memory quota already bounds.
+//
+// What this pins is the half that remains: the construction walk still scales
+// with the graph it measures, so the charge has not quietly become free. A
+// tenfold graph raised it 2.8x when this was written; two is far above the 1.0x
+// an entirely unbilled path produces.
+//
+// Deliberately not parallel: this measures step counts, and baseWalkCacheDisabled
+// is process-wide.
+func TestRestBindingLookupBillsTheGraphItWalks(t *testing.T) {
+	if estimatorVerify {
+		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
+	}
+	const calls, small, large = 4, 400, 4_000
+	src := "def run(a, n)\n  t = 0\n  i = 0\n  while i < n\n" +
+		"    h = Hash.new { |g, (head, *tail)| 1 }\n" +
+		"    t = t + h.values_at([1, 2]).length\n    i = i + 1\n  end\n  t\nend"
+	cfg := Config{MemoryQuotaBytes: 64 << 20}
+
+	atSmall := minStepQuotaToComplete(t, cfg, src, loopMemoArray(small), calls, 200_000)
+	atLarge := minStepQuotaToComplete(t, cfg, src, loopMemoArray(large), calls, 200_000)
+
+	if atLarge < atSmall*2 {
+		t.Fatalf("%d lookups over a %d-element graph needed %d steps and over a %d-element one %d, "+
+			"a %.1fx rise for a tenfold graph; the bind charge's construction walk is no longer "+
+			"billed, so nothing on this path scales with the graph it measures",
+			calls, small, atSmall, large, atLarge, float64(atLarge)/float64(atSmall))
+	}
+}
+
+// intArray builds a receiver of count distinct ints, cheap enough that a test
+// weighing payloads is not measuring the receiver.
+func intArray(count int) Value {
+	elems := make([]Value, count)
+	for i := range elems {
+		elems[i] = NewInt(int64(i))
+	}
+	return NewArray(elems)
+}
+
+// restWindowKeys builds narrow small keys followed by one wide key, so a lookup
+// driven over them retains results for a while before the last key's callback
+// binds a window big enough to matter.
+func restWindowKeys(narrow, wide int) Value {
+	elems := make([]Value, 0, narrow+1)
+	for range narrow {
+		elems = append(elems, NewArray([]Value{NewInt(1), NewInt(2)}))
+	}
+	inner := make([]Value, wide)
+	for i := range inner {
+		inner[i] = NewInt(int64(i))
+	}
+	return NewArray(append(elems, NewArray(inner)))
+}
+
+// allocatedDuringCall reports the bytes src cumulatively allocates for one
+// rejected call, which is how a preflight is observed: a gate that rejects
+// before the allocation and one that rejects after it agree on the error and
+// differ only here.
+func allocatedDuringCall(t *testing.T, src string, quota int, args ...Value) uint64 {
+	t.Helper()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: quota}, src)
+	runtimemetrics.GC()
+	var before, after runtimemetrics.MemStats
+	runtimemetrics.ReadMemStats(&before)
+	if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err == nil {
+		t.Fatalf("a peak above the %d-byte quota was accepted", quota)
+	}
+	runtimemetrics.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// A rest-collecting destructure parameter copies its window into a fresh backing
+// before binding it, and the bind charge preflights that copy so an over-budget
+// window is rejected instead of materialized. The charge's baseline is snapshotted
+// once, before the first callback, and tracked what the loop had accumulated since
+// only through exec.reservedScratchBytes -- which was where the drivers used to put
+// their retained results. Registering those results as walk roots instead leaves the
+// preflight weighing a wide window against a baseline missing every result the
+// lookup has kept, so the copy is allocated and only a later body check notices.
+//
+// The lookups reach this path because their callbacks run through the same region
+// runner the block iterators use, so a block destructuring the key binds a rest
+// window per miss while the output accumulates.
+//
+// Both bounds are measured, not assumed: the floor run rejects on the first block
+// body, before any wide window exists, so the difference between the two runs is
+// what this call allocated for its retained results and, if the gate is blind, one
+// whole window on top.
+func TestLookupRestWindowPreflightSeesRetainedOutput(t *testing.T) {
+	const narrow = 29
+	const wide = 500_000
+	const payload = 200_000
+
+	keys := restWindowKeys(narrow, wide)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 40, memoryQuota: 1 << 40}
+	keyBytes := probe.estimateMemoryUsage(keys)
+	window := estimatedValueBytes + estimatedSliceBaseBytes + (wide-1)*estimatedValueBytes
+	retained := narrow * (payload + estimatedStringHeaderBytes)
+
+	quota := keyBytes + window + retained/2
+	if quota <= keyBytes+window || quota >= keyBytes+window+retained {
+		t.Fatalf("quota %d must fit keys+window %d and reject keys+retained+window %d",
+			quota, keyBytes+window, keyBytes+window+retained)
+	}
+
+	var refs strings.Builder
+	for i := range narrow + 1 {
+		if i > 0 {
+			refs.WriteString(", ")
+		}
+		fmt.Fprintf(&refs, "a[%d]", i)
+	}
+	src := fmt.Sprintf("def run(a)\n  { }.fetch_values(%s) { |(head, *tail)| \"y\" * %d }\nend", refs.String(), payload)
+	floor := allocatedDuringCall(t, src, keyBytes+4096, keys)
+	got := allocatedDuringCall(t, src, quota, keys)
+
+	budget := uint64(retained + window/2)
+	if got-floor > budget {
+		t.Fatalf("fetch_values allocated %d bytes beyond the %d-byte floor; want under %d, so the "+
+			"%d-byte rest window was materialized before the preflight rejected it",
+			got-floor, floor, budget, window)
+	}
+}

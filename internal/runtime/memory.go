@@ -379,6 +379,17 @@ type baseWalkCache struct {
 	journal    estimatorJournal
 	prevFrozen *Env
 	graphBytes int
+	// outputBytes is what the registered driver outputs contribute on top of
+	// graphBytes, deduplicated against it and committed into the same
+	// seen-state (see memory_output.go). It is memoized rather than re-walked
+	// per check because a driver performs many checks between changes to its
+	// output: re-walking an n-element output at every one of them made
+	// array.map quadratic (4000 elements went from 3.4ms to 216ms). A driver
+	// commits each retained result's marginal through addRetainedOutput, and
+	// any mutation a callback performs bumps the mutation epoch, which discards
+	// the whole memo -- so a result a callback grew or detached is re-derived
+	// before the next check reads it.
+	outputBytes int
 	// journalBudget is the per-session journal limit derived from the
 	// committed walk's identity count (see sessionJournalBudget), refreshed
 	// whenever the graph walk is re-memoized.
@@ -455,6 +466,11 @@ type baseWalkSession struct {
 // nodes reports how many graph nodes this session has walked so far, base walk
 // included: a memo hit walks almost none, a miss walks the whole graph. Callers
 // that drive sessions from script code charge the step quota for it (#1).
+//
+// A session's walk is billed here and nowhere else. The output roots it walks are
+// deliberately not recorded for a second billing, because that walk cannot be
+// attributed to this execution (see memory_output.go), so there is nothing to
+// hand over and no overlap to settle.
 func (s *baseWalkSession) nodes() int {
 	return s.est.walked - s.walked0
 }
@@ -540,7 +556,16 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		// is reserved for the memoized path below, where the graph is stable and
 		// single-goroutine. popEnv still keeps the committed prefix consistent here
 		// (it retracts on every pop), so the next memoized check resumes correctly.
-		return baseWalkSession{exec: exec, est: est, base: scalars + exec.estimateGraphBase(est, globals), walked0: walked0}
+		//
+		// Registered driver outputs are walked last, so they deduplicate against
+		// everything the graph walk committed (see memory_output.go). This is the
+		// branch a builtin's own callbacks run on, so it is where the accounting
+		// matters most.
+		base := scalars + exec.estimateGraphBase(est, globals)
+		base = saturatingAdd(base, exec.outputWalkBytes(est))
+		return baseWalkSession{
+			exec: exec, est: est, base: base, walked0: walked0,
+		}
 	}
 	c := exec.baseWalkCache
 	if c == nil {
@@ -565,6 +590,10 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		c.topo = exec.baseTopoVersion
 		c.regionBoundary = noBlockRegion
 		c.graphBytes = exec.estimateGraphBaseFast(est, nil)
+		// Walked after the graph and committed alongside it, so a driver's later
+		// results deduplicate against everything already counted and a check
+		// between two of them pays nothing (see memory_output.go).
+		c.outputBytes = exec.outputWalkBytes(est)
 		c.journalBudget = sessionJournalBudget(est.identityCount())
 		c.valid = true
 	}
@@ -578,7 +607,10 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 	// this check, but the memo is valid only while the topology is unchanged, so
 	// the set still matches the stack. See memory_dormant.go.
 	est.dormant = exec.currentDormantSet()
-	return baseWalkSession{exec: exec, est: est, base: scalars + c.graphBytes, walked0: walked0, cached: true}
+	return baseWalkSession{
+		exec: exec, est: est, base: scalars + c.graphBytes + c.outputBytes,
+		walked0: walked0, cached: true,
+	}
 }
 
 // close ends a base-walk session. A memoized session rolls back every
@@ -2279,16 +2311,37 @@ type blockBindCharge struct {
 	// already carries, from being counted twice.
 	reservedAtStart int
 	selfReserved    int
+	// retainedAtStart is the registered outputs' marginal over the reachable graph
+	// when the charge was built, which baseline already carries. liveBaseline adds
+	// only the growth beyond it, the same way it treats the scratch reservation: a
+	// charge built inside an outer driver's callback would otherwise count that
+	// driver's retained results twice. Both readings are on the marginal basis --
+	// this one from the walk above, the later ones from
+	// retainedOutputMarginalBytes -- because subtracting one basis from the other
+	// silently zeroed the growth (see memory_output.go).
+	retainedAtStart int
 }
 
-// liveBaseline is the construction-time baseline plus any scratch reserved
-// since, which is what the call is really being weighed against.
+// liveBaseline is the construction-time baseline plus everything the driver has
+// accumulated since, which is what the call is really being weighed against:
+// scratch it has reserved, and results it has retained into a registered output
+// root (see memory_output.go). Both were the same quantity while the drivers
+// reserved their results as scratch; a registered output does not move the
+// reservation counter, so a charge reading only that counter weighed a rest
+// window against a baseline missing every result the loop had kept.
+//
+// Both are counted as growth beyond what the snapshot already carried, because
+// this charge can be built inside another driver's callback, where the baseline
+// already includes that driver's retained results.
 func (c *blockBindCharge) liveBaseline() int {
-	growth := c.exec.reservedScratchBytes - c.reservedAtStart - c.selfReserved
-	if growth <= 0 {
-		return c.baseline
+	baseline := c.baseline
+	if growth := c.exec.reservedScratchBytes - c.reservedAtStart - c.selfReserved; growth > 0 {
+		baseline = saturatingAdd(baseline, growth)
 	}
-	return saturatingAdd(c.baseline, growth)
+	if growth := c.exec.retainedOutputMarginalBytes() - c.retainedAtStart; growth > 0 {
+		baseline = saturatingAdd(baseline, growth)
+	}
+	return baseline
 }
 
 // noteSelfReservation records the scratch callBlock reserved for this call's
@@ -2321,7 +2374,25 @@ func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []
 		return nil
 	}
 	rootEst := newMemoryEstimator()
-	base := exec.estimateMemoryUsageBase(rootEst)
+	// estimateMemoryUsageBase's parts, inlined so the registered outputs' share of
+	// it can be kept: liveBaseline prices their growth against this start value, and
+	// taking it from this walk puts both on the marginal basis for free. Asking
+	// retainedOutputMarginalBytes instead would fall back to a second graph walk
+	// here, because a nested driver has just invalidated the memo by registering.
+	base := exec.estimateScalarBase()
+	base = saturatingAdd(base, exec.estimateGraphBase(rootEst, taskLazyGlobalsFromContext(exec.Context())))
+	// Metered for the same reason the retained-output fallback's basis walk is,
+	// and only while a driver output is registered: that is exactly when this
+	// construction is script-repeatable, because a lookup builds its runner inside
+	// its own loop. A driver with no registered output -- every rest-binding block
+	// driver outside the hash lookups -- has nothing that would drain the counter,
+	// so charging it here would leave the nodes to be billed to whichever lookup
+	// ran next (see chargeRetainedOutputWalk).
+	if len(exec.outputWalkRoots) > 0 {
+		exec.outputWalkNodes += rootEst.walked
+	}
+	retained := exec.outputWalkBytes(rootEst)
+	base = saturatingAdd(base, retained)
 	baseline := base
 	if receiver.Kind() != KindNil {
 		baseline = saturatingAdd(baseline, rootEst.value(receiver))
@@ -2342,6 +2413,7 @@ func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []
 		baseline:           baseline,
 		ephemeralRootBytes: baseline - base,
 		reservedAtStart:    exec.reservedScratchBytes,
+		retainedAtStart:    retained,
 	}
 }
 
@@ -2750,8 +2822,30 @@ func (r *loopScratchReservation) release() {
 	r.delta = 0
 }
 
+// estimateMemoryUsageBase is the live base a snapshot is taken against: the
+// scalar state, the reachable graph, and the Go-local outputs registered as walk
+// roots (see memory_output.go). The roots belong here for the same reason the
+// reserved scratch does -- they are live bytes a builtin is holding -- and
+// putting them here rather than at each snapshot site means an accumulator built
+// inside a driver's callback sees what that driver has already retained, which
+// is what the drivers used to get for free while they reserved their results as
+// scratch.
+//
+// The one rule a caller must respect: this is a SNAPSHOT, so a builder that also
+// tracks its own retained output incrementally must take it before registering
+// that output, or price only the growth since. Otherwise its own results are
+// counted twice, once in the snapshot and once in its running total. Every
+// driver takes its snapshot while its output is still empty; blockBindCharge,
+// which re-reads the roots as its loop proceeds, subtracts what the snapshot
+// already carried (see liveBaseline).
+//
+// The per-check walks do not come through here: they compose the same parts
+// themselves in beginBaseWalk, where the roots are memoized rather than
+// re-walked.
 func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
-	return exec.estimateScalarBase() + exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.Context()))
+	total := exec.estimateScalarBase()
+	total += exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.Context()))
+	return saturatingAdd(total, exec.outputWalkBytes(est))
 }
 
 // estimateGraphBase is the reference walk: the root, every env-stack frame, and
@@ -3494,7 +3588,10 @@ func (acc *arrayBuildAccumulator) accumulatedBytes(backingCap int) int {
 
 // retainedOutputScratch keeps a loop's accumulated output reserved as scratch,
 // raising the reservation as the output grows and releasing all of it when the
-// loop ends.
+// loop ends. A driver whose output is a base-walk root (see memory_output.go)
+// needs neither, since the estimator reaches its results directly; this remains
+// for the builders that cannot afford the walk a root costs them, which
+// format's per-operand to_s conversions measured as quadratic.
 type retainedOutputScratch struct {
 	exec     *Execution
 	reserved int

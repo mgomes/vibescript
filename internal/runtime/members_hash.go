@@ -919,11 +919,52 @@ func hashMemberQuery(property string) (Value, error) {
 			return NewArray(values), nil
 		}), nil
 	case "values_at":
-		return NewAutoBuiltin("hash.values_at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("hash.values_at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (result Value, err error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.values_at does not accept keyword arguments")
 			}
+			// A default proc is script code, and everything the lookup has
+			// resolved so far lives in a Go-local slice its memory checks cannot
+			// reach: each proc was measured against a graph missing every earlier
+			// result, so a run of individually permitted defaults could pile up
+			// past the quota. Reserving the slots and registering the slice as a
+			// walk root puts the whole retained output in every check the proc
+			// performs, re-derived as the proc leaves it (see memory_output.go).
+			backing := exec.reserveLoopScratch(arraySlotBackingBytes(len(args)))
+			defer exec.releaseLoopScratch(backing)
+			// The root walks the slots filled so far, not the whole preallocated
+			// slice: a lookup with many keys would otherwise pay for its entire
+			// output on the very first miss, before it has produced anything. The
+			// backing itself is reserved above, where its size is known.
 			out := make([]Value, len(args))
+			var produced []Value
+			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &produced))
+			// Settled on the way out rather than only after a successful proc, so
+			// a proc that mutates state and then raises pays what one that
+			// returns pays, and leaves nothing for a later lookup to be
+			// billed for (see memory_output.go).
+			defer func() { err = exec.endOutputWalkRoot(err) }()
+			// The proc is driven through a runner inside a block-iteration region
+			// so the base walk stays memoized across misses. CallBlock pushes a
+			// fresh scope per call, whose push and parameter binds move the
+			// topology and the mutation epoch, and each of those discards the
+			// memo -- which with the output registered above costs a re-walk of
+			// every result retained so far. Measured on 800 misses, that is
+			// 1,379,346 estimator visits against 19,346 before the registration;
+			// with the runner and the region it is 12,451.
+			//
+			// The runner is rebuilt whenever the proc behind it changes, because a
+			// proc can change the hash's default metadata while the lookup is
+			// running: Hash#replace adopts the replacement's default, so a proc
+			// captured before the loop would serve later keys from a proc the hash
+			// no longer has. Rebuilding on the block's identity keeps the reuse for
+			// every run where nothing changes, which is the point of the runner.
+			var (
+				procRunner *blockCallRunner
+				procBlock  *Block
+			)
+			defer exec.beginBlockIterationRegion().end()
+			var procArgs [2]Value
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -933,18 +974,60 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.values_at key is unsupported hash key: %w", err)
 				}
 				if ok {
+					// Charged as retained output even though it aliases the
+					// receiver: a later proc can delete the entry or clear the
+					// hash, and then nothing reachable holds the payload while
+					// this slot still does. The estimator deduplicates it against
+					// the receiver for as long as the alias lasts.
 					out[i] = value
+					produced = out[:i+1]
+					exec.addRetainedOutput(value)
 					continue
 				}
 				// A missing key is a [] access: consult the hash's Ruby-style
 				// default (a default value, or a default proc invoked with the
 				// hash and key, which may store) rather than filling nil, matching
 				// MRI's Hash#values_at.
-				resolved, err := exec.hashDefaultForKey(receiver, arg)
+				// Read the hash's default afresh for this key rather than trusting
+				// what an earlier proc left behind.
+				proc := hashDefaultProc(receiver)
+				if blk := valueBlock(proc); blk != procBlock {
+					procBlock = blk
+					procRunner = nil
+					if blk != nil {
+						runner, buildErr := newBlockCallRunner(exec, proc, "hash.values_at", receiver, nil, kwargs)
+						if buildErr != nil {
+							return NewNil(), buildErr
+						}
+						// See hash.fetch_values: a default proc that grows a
+						// reachable container leaves this baseline measuring a
+						// graph that no longer exists, in just the same way.
+						runner.refreshChargeOnMutation()
+						procRunner = runner
+					}
+				}
+				var resolved Value
+				if procRunner != nil {
+					procArgs[0] = receiver
+					procArgs[1] = arg
+					// Charged per call for the reason fetch_values documents below:
+					// the key is a Go-frame value a named rest can copy from.
+					resolved, err = procRunner.callWithChargedRoots(procArgs[:], arg)
+				} else {
+					// No proc, or a host-supplied default that is not a block;
+					// hashDefaultForKey owns both, including the error the latter
+					// produces.
+					resolved, err = exec.hashDefaultForKey(receiver, arg)
+				}
 				if err != nil {
 					return NewNil(), err
 				}
 				out[i] = resolved
+				produced = out[:i+1]
+				exec.addRetainedOutput(resolved)
+				if err := exec.chargeRetainedOutputWalk(); err != nil {
+					return NewNil(), err
+				}
 			}
 			return NewArray(out), nil
 		}), nil
@@ -977,8 +1060,45 @@ func hashMemberQuery(property string) (Value, error) {
 			return NewNil(), fmt.Errorf("hash.fetch key not found: %s", formatMissingHashKey(args[0]))
 		}), nil
 	case "fetch_values":
-		return NewAutoBuiltin("hash.fetch_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("hash.fetch_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (result Value, err error) {
+			// The block runs once per missing key and every result stays in a
+			// Go-local slice the checks inside the next block call cannot reach,
+			// so a block returning an individually permitted value passed its own
+			// check each time while the slice still held all the earlier ones.
+			// Reserving the slots and registering the slice as a walk root puts
+			// the whole retained output in every one of those checks, re-derived
+			// as the block leaves it (see memory_output.go).
+			backing := exec.reserveLoopScratch(arraySlotBackingBytes(len(args)))
+			defer exec.releaseLoopScratch(backing)
+			// The root walks the slots filled so far, not the whole preallocated
+			// slice: a lookup with many keys would otherwise pay for its entire
+			// output on the very first miss, before it has produced anything. The
+			// backing itself is reserved above, where its size is known.
 			out := make([]Value, len(args))
+			var produced []Value
+			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &produced))
+			// Settled on the way out rather than only after a successful block
+			// call, so a block that mutates state and then raises pays what one
+			// that returns pays, and leaves nothing for a later lookup to be
+			// billed for (see memory_output.go).
+			defer func() { err = exec.endOutputWalkRoot(err) }()
+			// The block is driven through a runner inside a block-iteration region
+			// so the base walk stays memoized across misses; see hash.values_at for
+			// the measurement.
+			//
+			// The runner is built on the first miss rather than before the loop,
+			// the way values_at builds its default proc's. Building one constructs
+			// a blockBindCharge, whose baseline walks the whole reachable graph and
+			// every registered output root, and a lookup whose keys are all present
+			// never calls the block at all -- which is the ordinary use of
+			// fetch_values, so the cost landed on the common path. Over a
+			// 20,000-element reachable graph an all-present lookup cost 120,081
+			// estimator visits with a rest-binding block against 100,064 with a
+			// plain one, and an argumentless call cost 100,040 against 80,029; the
+			// two spellings cost the same again now, as they do on master.
+			hasBlock := valueBlock(block) != nil
+			var runner *blockCallRunner
+			defer exec.beginBlockIterationRegion().end()
 			for i, arg := range args {
 				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
@@ -988,18 +1108,48 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.fetch_values key is unsupported hash key: %w", err)
 				}
 				if ok {
+					// Charged as retained output even though it aliases the
+					// receiver: a later block call can delete the entry or clear
+					// the hash, and then nothing reachable holds the payload while
+					// this slot still does. The estimator deduplicates it against
+					// the receiver for as long as the alias lasts.
 					out[i] = value
+					produced = out[:i+1]
+					exec.addRetainedOutput(value)
 					continue
 				}
-				if valueBlock(block) == nil {
+				if !hasBlock {
 					return NewNil(), fmt.Errorf("hash.fetch_values key not found: %s", formatMissingHashKey(arg))
 				}
+				if runner == nil {
+					built, buildErr := newBlockCallRunner(exec, block, "hash.fetch_values", receiver, nil, kwargs)
+					if buildErr != nil {
+						return NewNil(), buildErr
+					}
+					// A block that grows a reachable container leaves this
+					// charge's baseline measuring a graph that no longer exists,
+					// and a later key destructured with a named rest is weighed
+					// against it (see refreshChargeOnMutation).
+					built.refreshChargeOnMutation()
+					runner = built
+				}
 				blockArg := [1]Value{arg}
-				blockValue, err := exec.CallBlock(block, blockArg[:])
+				// The key is charged as a per-call root, not left to the runner's
+				// one-time baseline: it lives only in the builtin's Go argument
+				// slice, and a block destructuring it with a named rest copies a
+				// window sized to it. Weighing that window against a baseline the
+				// key is missing from let an ephemeral array key's copy be
+				// allocated before anything accounted for the key itself.
+				blockValue, err := runner.callWithChargedRoots(blockArg[:], arg)
 				if err != nil {
 					return NewNil(), err
 				}
 				out[i] = blockValue
+				produced = out[:i+1]
+				exec.addRetainedOutput(blockValue)
+				if err := exec.chargeRetainedOutputWalk(); err != nil {
+					return NewNil(), err
+				}
 			}
 			return NewArray(out), nil
 		}), nil
