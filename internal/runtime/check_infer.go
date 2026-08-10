@@ -11306,6 +11306,117 @@ func (c *scriptChecker) applyShapeFieldWriteFacts(function string, stmt *AssignS
 	return c.applyShapeFieldWrite(function, name, shape, index, stmt.Value, stmt.Pos(), intact)
 }
 
+// maxRefinedShapeNodes caps the type nodes one chain of field writes may copy
+// while it keeps refining a witnessed literal shape. Refining copies the whole
+// fact so the one every other holder observed stays intact, and the copy is
+// deep, so both the number of writes and the size of what each copies count:
+// 2,000 `h[:kN] = 1` writes against a growing literal allocated 520MB, and 800
+// writes of one key already in a literal whose other field is an 800-field
+// shape allocated 97MB, both quadrupling per doubling inside CheckWarnings
+// where no script step or memory quota applies. Counting fields instead of
+// nodes only caught the first: the second never widens the shape it copies.
+//
+// A budget spent by the copies rather than a cap on the shape's width bounds
+// the product of the two, and it travels with the fact, so a fresh literal in
+// another function starts with the whole budget. The first write to a fact
+// always refines, however wide, since the source spells that shape once.
+//
+// While the budget pays, every write refines the field to exactly what it
+// wrote, narrowing a claim wide enough to admit it rather than leaving the
+// wider one standing: `nil | int` proves nothing about a branch reading the
+// field, `int` proves its else arm dead. Only a write of the type the fact
+// already states is free, since refining would rebuild the same fact.
+//
+// What running out gives up is the claim that the fact names every key, never a
+// key it already names. The checker stops learning about the receiver and never
+// unlearns: a write of an unnamed key changes nothing an open shape says and
+// costs nothing, and a claim wide enough to admit the written value survives
+// the write untouched. Only a claim the write contradicts must be restated, and
+// an allowance of one more budget past the first buys those, because letting
+// them through unpaid put the quadratic straight back -- 20MB, 70MB and 262MB
+// over a literal of 200, 400 and 800 fields each overwritten once, quadrupling
+// per doubling. A chain that spends the allowance too keeps only the field the
+// write lands on, which costs one entry rather than a copy, and starts its
+// budget over so what follows can rebuild precision cheaply. Withdrawing a named field would be
+// the one degradation that adds diagnostics rather than losing them: every
+// value but nil and false is truthy, so a fact naming an int field proves the
+// else arm of a branch on it dead, and a fact that stops naming it makes that
+// arm live and reports whatever is written there. Marking the fact open instead
+// keeps every field it vouched for and costs one last copy, after which a write
+// of a key it does not name changes nothing it says and needs no copy at all
+// (#14).
+// It is a var only so that a test can raise it to compare what the checker
+// reports under the budget against what it reports with the budget out of the
+// way; nothing outside a test changes it.
+var maxRefinedShapeNodes = 4000
+
+// restartWriteShare is how small a copy has to be, against the budget, for a
+// chain that has spent its allowance to buy one more and start over as often as
+// the writes ask. A chain only restarts after spending the whole allowance, so
+// a copy worth this fraction of the budget means the writes before each restart
+// paid several times what the restart costs, which is what keeps restarting
+// linear in the writes. Letting any copy restart at that rate made every write
+// to a wide shape restart, which is the quadratic itself: 800 alternating
+// writes to one key of an 800-field literal allocated 97MB against 7MB now.
+const restartWriteShare = 8
+
+// maxShapeRestarts is how many times a fact too wide for that rate may still
+// restart. A wider shape spends the allowance in fewer writes, so a fixed
+// number of restarts costs a fixed multiple of one copy and stays linear in the
+// source, while covering the runs of writes a wide literal actually sees: a
+// 600-field literal restarts about every dozen writes, so this carries it well
+// past the point where it would otherwise have to give up fields.
+const maxShapeRestarts = 4
+
+// typeExprNodes reports how many type nodes a fact holds, memoized by node
+// identity. A fact is immutable once built, so a count taken once stays true,
+// and a refinement records its own count rather than walking the copy it just
+// made.
+func (c *scriptChecker) typeExprNodes(ty *TypeExpr) int {
+	if ty == nil {
+		return 0
+	}
+	if nodes, counted := c.typeExprNodeCounts[ty]; counted {
+		return nodes
+	}
+	nodes := 1
+	for _, arg := range ty.TypeArgs {
+		nodes += c.typeExprNodes(arg)
+	}
+	for _, field := range ty.Shape {
+		nodes += c.typeExprNodes(field)
+	}
+	for _, option := range ty.Union {
+		nodes += c.typeExprNodes(option)
+	}
+	c.noteTypeExprNodes(ty, nodes)
+	return nodes
+}
+
+func (c *scriptChecker) noteTypeExprNodes(ty *TypeExpr, nodes int) {
+	if c.typeExprNodeCounts == nil {
+		c.typeExprNodeCounts = make(map[*TypeExpr]int)
+	}
+	c.typeExprNodeCounts[ty] = nodes
+}
+
+func (c *scriptChecker) noteShapeRefinementNodes(ty *TypeExpr, nodes int) {
+	if c.shapeRefinementNodes == nil {
+		c.shapeRefinementNodes = make(map[*TypeExpr]int)
+	}
+	c.shapeRefinementNodes[ty] = nodes
+}
+
+func (c *scriptChecker) noteShapeRestarts(ty *TypeExpr, restarts int) {
+	if restarts == 0 {
+		return
+	}
+	if c.shapeRestarts == nil {
+		c.shapeRestarts = make(map[*TypeExpr]int)
+	}
+	c.shapeRestarts[ty] = restarts
+}
+
 // applyShapeFieldWrite is the shared core for shape field writes: index
 // assignment and the store mutator write one field the same way.
 func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeExpr, index, value Expression, pos Position, intact bool) bool {
@@ -11342,12 +11453,96 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 		if written == nil {
 			return false
 		}
+		// Writing exactly what the fact already says changes nothing it claims,
+		// so it needs no copy. A claim merely broad enough to admit the value is
+		// not the same thing: refining narrows it, and the narrowed field is
+		// what decides a branch reading it, so that case still pays.
+		existing, claimed := shape.Shape[key]
+		if claimed && typeFactKey(existing) == typeFactKey(written) {
+			return true
+		}
+		resolve := c.checkNamedTypeResolver()
+		spent := c.shapeRefinementNodes[shape]
+		exact := spent <= maxRefinedShapeNodes
+		// An open shape already admits a key it does not name, so while the
+		// allowance lasts a write of one restates nothing and is worth no copy.
+		// Past the allowance the chain has usually just been rebuilt from one
+		// entry, where naming the key again is cheap and worth buying.
+		if !exact && !claimed && shape.Open && spent <= maxRefinedShapeNodes*2 {
+			return true
+		}
+		copied := c.typeExprNodes(shape)
+		restart := false
+		restartsSoFar := 0
+		if !exact && spent+copied > maxRefinedShapeNodes*2 {
+			// The allowance for restating a fact past the budget is gone too.
+			// Keep the fact wherever it is still true rather than withdraw what
+			// it vouched for: an open shape admits an unnamed key, and a claim
+			// wide enough to admit the written value survives the write.
+			if !claimed {
+				return shape.Open
+			}
+			// Anything else changes what the fact says -- a claim the write
+			// contradicts has nothing true left to keep, and one it merely
+			// admits would keep a field wider than the write proved it -- so the
+			// write buys one more copy and the chain starts over. Reaching here
+			// costs the whole allowance first, and the copy is no larger than
+			// the budget, so the restarts cost at most what the writes before
+			// them already did. A fact wider than the whole budget cannot be
+			// restated that way, and only there does the write fall back to
+			// naming the field it lands on and giving up the rest.
+			restarts := c.shapeRestarts[shape]
+			if copied*restartWriteShare > maxRefinedShapeNodes && restarts >= maxShapeRestarts {
+				terminal := &TypeExpr{
+					Kind:  TypeShape,
+					Name:  marker,
+					Open:  true,
+					Shape: map[string]*TypeExpr{key: written},
+				}
+				c.noteTypeExprNodes(terminal, c.typeExprNodes(written)+1)
+				c.noteShapeRefinementNodes(terminal, 0)
+				c.bindLocalType(name, terminal)
+				return true
+			}
+			restart = true
+			restartsSoFar = restarts + 1
+		}
+		noteCheckWork(copied)
 		refined := cloneTypeExpr(shape)
 		refined.Name = marker
 		if refined.Shape == nil {
 			refined.Shape = make(map[string]*TypeExpr, 1)
 		}
 		refined.Shape[key] = written
+		if !exact || spent+copied > maxRefinedShapeNodes {
+			// Either the last copy the budget can afford or one of the few past
+			// it the allowance buys. Both leave a fact that absorbs the writes
+			// after them without another copy: giving up the claim that these
+			// are all the keys lets a later write of an unnamed key change
+			// nothing the fact says, and a claim the write contradicts widens to
+			// admit what the field held and what it now holds, so a later write
+			// of either is free. A write the claim already admits narrows it
+			// instead, since widening there would undo the one thing the copy
+			// was bought for. Giving up a key the fact names would be the one
+			// degradation that adds diagnostics rather than losing them, since a
+			// field the checker stops vouching for stops proving the branches it
+			// decided (#14).
+			refined.Open = true
+			if claimed && !typeExprSatisfies(written, existing, resolve) {
+				refined.Shape[key] = unionTypeExprs(existing, written)
+			}
+		}
+		// The copy's own size is what the next write would pay, and adding a
+		// field can only grow it, so charging the field without crediting the
+		// one it replaced keeps the estimate on the safe side of the budget.
+		c.noteTypeExprNodes(refined, copied+c.typeExprNodes(written)+1)
+		if restart {
+			c.noteShapeRefinementNodes(refined, 0)
+			c.noteShapeRestarts(refined, restartsSoFar)
+		} else {
+			c.noteShapeRestarts(refined, c.shapeRestarts[shape])
+			c.noteShapeRefinementNodes(refined, spent+copied)
+		}
 		c.bindLocalType(name, refined)
 		return true
 	case "":
@@ -14564,7 +14759,15 @@ func (c *scriptChecker) applyHashMutatorCallFacts(
 // mutatorReceiverFactIntact reports whether a mutator receiver's local fact
 // survived a later operand or argument walk unchanged, so preserving it is
 // still about the same fact the writes were checked against.
+//
+// A walk that left the fact alone leaves the same node in place, so identity
+// settles the case that matters without serializing a wide fact twice to
+// discover it: doing that on every field write of a growing shape allocated
+// 185MB across 2,000 writes (#14).
 func mutatorReceiverFactIntact(current, captured *TypeExpr) bool {
+	if current == captured {
+		return current != nil
+	}
 	return current != nil && typeFactKey(current) == typeFactKey(captured)
 }
 

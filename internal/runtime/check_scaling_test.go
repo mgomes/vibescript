@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"math"
 	"runtime"
 	"slices"
 	"strings"
@@ -182,6 +183,379 @@ func requireCheckWarning(t *testing.T, warnings []CheckWarning, want string) {
 		}
 	}
 	t.Fatalf("expected the warning %q, got %v", want, warnings)
+}
+
+func shapeFieldWriteSource(writes int) string {
+	var body strings.Builder
+	for i := range writes {
+		fmt.Fprintf(&body, "  h[:k%d] = 1\n", i)
+	}
+	return fmt.Sprintf(`
+def f()
+  h = { seed: 1 }
+%s  h
+end
+`, body.String())
+}
+
+// Refining a witnessed literal shape copied the whole shape for every field
+// write, so a symbol-keyed literal followed by N writes copied 1 + 2 + ... + N
+// entries (#14).
+func TestCheckShapeFieldWriteCopiesStayLinear(t *testing.T) {
+	small := measureCheckWork(t, shapeFieldWriteSource(1000))
+	large := measureCheckWork(t, shapeFieldWriteSource(2000))
+
+	// Measured 4,032 copied nodes for both sizes: refinement stops once the
+	// budget is spent, so a longer write run copies nothing more. Before, the
+	// same pair copied 500,500 and 2.0M, a 4.00x step. The assertion allows up
+	// to 3x so it states the complexity rather than pinning counts.
+	if large > small*3 {
+		t.Fatalf("doubling the field writes copied %d shape nodes against %d -- over 3x,"+
+			" so refining a witnessed shape is superlinear in the write count again", large, small)
+	}
+}
+
+// A write to a key the shape already holds never widens it, so counting fields
+// rather than the nodes each copy walks left this shape unbounded: the literal
+// below carries one wide nested field that every refinement deep-copies (#14).
+func repeatedKeyShapeWriteSource(nested, writes int) string {
+	pairs := make([]string, 0, nested)
+	for i := range nested {
+		pairs = append(pairs, fmt.Sprintf("k%d: %d", i, i))
+	}
+	var body strings.Builder
+	for i := range writes {
+		fmt.Fprintf(&body, "  h[:b] = %d\n", i)
+	}
+	return fmt.Sprintf(`
+def f()
+  h = { a: { %s }, b: 0 }
+%s  h
+end
+`, strings.Join(pairs, ", "), body.String())
+}
+
+func TestCheckRepeatedShapeKeyWriteCopiesStayLinear(t *testing.T) {
+	small := measureCheckWork(t, repeatedKeyShapeWriteSource(400, 400))
+	large := measureCheckWork(t, repeatedKeyShapeWriteSource(800, 800))
+
+	// Measured 4,120 then 4,035 copied nodes. Counting fields instead, the same
+	// pair copied 800 and 1,600 while allocating 26MB and 97MB, since neither
+	// write widened the shape it deep-copied. The assertion allows up to 3x so
+	// it states the complexity rather than pinning counts.
+	if large > small*3 {
+		t.Fatalf("doubling the nested shape and the writes copied %d shape nodes against %d --"+
+			" over 3x, so refining a witnessed shape is superlinear in what it copies again", large, small)
+	}
+}
+
+// The budget trades precision for a bound, so everything it pays for has to
+// keep the precision: a field a write added is still read back exactly, and a
+// shape spelled wide enough that the old field cap refused it outright is now
+// refined once, since the source spells that shape only once. Once the budget
+// is spent the fact weakens, which can only drop a diagnostic, never add one.
+func TestShapeFieldWriteRefinementKeepsFieldFacts(t *testing.T) {
+	literal := func(fields int) string {
+		pairs := make([]string, 0, fields)
+		for i := range fields {
+			pairs = append(pairs, fmt.Sprintf("k%d: %d", i, i))
+		}
+		return "{ " + strings.Join(pairs, ", ") + " }"
+	}
+	source := func(fields int) string {
+		return fmt.Sprintf(`
+def take(v: int)
+  v
+end
+
+def f()
+  h = %s
+  h[:added] = "bad"
+  take(h[:added])
+end
+`, literal(fields))
+	}
+	const want = "call to take argument v expected int, got string"
+
+	for _, fields := range []int{1, 64, 200} {
+		requireCheckWarning(t, compileScript(t, source(fields)).CheckWarnings(), want)
+	}
+
+	// Writes of distinct new keys are what spends the budget. Past it the fact
+	// stops naming every key the script may add, so a key written after that is
+	// simply not claimed and reads as unknown: the write reports nothing rather
+	// than a fact the checker no longer holds.
+	spent := fmt.Sprintf(`
+def take(v: int)
+  v
+end
+
+def f()
+  h = { seed: 1 }
+%s  h[:added] = "bad"
+  take(h[:added])
+end
+`, distinctShapeKeyWrites(200))
+	if warnings := compileScript(t, spent).CheckWarnings(); len(warnings) != 0 {
+		t.Fatalf("a shape past the refinement budget reported %v", warnings)
+	}
+}
+
+func distinctShapeKeyWrites(writes int) string {
+	var body strings.Builder
+	for i := range writes {
+		fmt.Fprintf(&body, "  h[:k%d] = 1\n", i)
+	}
+	return body.String()
+}
+
+// A write whose value the field's type already admits still narrows it, and the
+// narrowed field is what decides a branch reading it: `nil | int` proves
+// nothing, `int` proves the else arm dead, since nil and false are the only
+// falsey values. Skipping the copy whenever the old type merely admitted the
+// written value kept the broader claim and reported the call in that arm (#14).
+func TestShapeFieldWriteNarrowsCompatibleField(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		field string
+		write string
+	}{
+		{name: "nullable field", field: "flag ? nil : 1", write: `h[:a] = 1`},
+		{name: "union field", field: `flag ? "s" : 1`, write: `h[:a] = 1`},
+		{name: "repeated narrowing write", field: "flag ? nil : 1", write: "h[:a] = 1\n  h[:a] = 2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := fmt.Sprintf(`
+def take(v: int)
+  v
+end
+
+def f(flag)
+  h = { a: %s }
+  %s
+  if h[:a]
+    1
+  else
+    take("bad")
+  end
+end
+`, tc.field, tc.write)
+			if warnings := compileScript(t, source).CheckWarnings(); len(warnings) != 0 {
+				t.Fatalf("a write that narrows the field left the dead else branch live: %v", warnings)
+			}
+		})
+	}
+
+	// The same holds while the budget still pays for the copy, which is every
+	// run of writes an ordinary hash reaches.
+	for _, writes := range []int{0, 10, 50} {
+		source := fmt.Sprintf(`
+def take(v: int)
+  v
+end
+
+def f(flag)
+  h = { a: flag ? nil : 1 }
+%s  h[:a] = 1
+  if h[:a]
+    1
+  else
+    take("bad")
+  end
+end
+`, distinctShapeKeyWrites(writes))
+		if warnings := compileScript(t, source).CheckWarnings(); len(warnings) != 0 {
+			t.Fatalf("%d writes before the narrowing one left the dead else branch live: %v",
+				writes, warnings)
+		}
+	}
+}
+
+// Every answer the shape write gives when it cannot restate the fact exactly is
+// a place the checker can withdraw something it still knows, and withdrawing a
+// field type is what adds diagnostics: a branch reading that field stops being
+// decided and whatever is written in its dead arm gets checked. Four separate
+// reports found four cells of that table one at a time, so this walks it and
+// compares against the checker with the budget out of the way, which is the
+// only reference that says what the bound cost rather than what it happens to
+// do. Every configuration has to report a subset of what the unbudgeted run
+// reports (#14).
+//
+// The walk is cheap: each cell checks two short scripts, and the whole table
+// runs in well under a second.
+func TestShapeWriteBudgetNeverAddsDiagnostics(t *testing.T) {
+	literal := func(fields int) string {
+		pairs := make([]string, 0, fields+2)
+		pairs = append(pairs, "n: flag ? nil : 1", "other: 1")
+		for i := range fields {
+			pairs = append(pairs, fmt.Sprintf("f%d: %d", i, i))
+		}
+		return "{ " + strings.Join(pairs, ", ") + " }"
+	}
+	source := func(fields int, padding, writes, subject string) string {
+		return fmt.Sprintf(`
+def take(v: int)
+  v
+end
+
+def f(flag)
+  h = %s
+%s%s  if h[:%s]
+    1
+  else
+    take("bad")
+  end
+end
+`, literal(fields), padding, writes, subject)
+	}
+
+	// Padding drives how much of the budget is gone before the write under
+	// test: distinct new keys spend the first allowance, and contradicting
+	// overwrites of them spend the second.
+	padding := func(newKeys, overwrites int) string {
+		var body strings.Builder
+		for i := range newKeys {
+			fmt.Fprintf(&body, "  h[:p%d] = 1\n", i)
+		}
+		for i := range overwrites {
+			fmt.Fprintf(&body, "  h[:p%d] = \"s\"\n", i%max(newKeys, 1))
+		}
+		return body.String()
+	}
+
+	writes := []struct{ name, text string }{
+		{"new key", "  h[:fresh] = 1\n"},
+		{"same type", "  h[:other] = 2\n"},
+		{"narrowing", "  h[:n] = 1\n"},
+		{"widening", "  h[:other] = flag ? 2 : \"s\"\n"},
+		{"disjoint", "  h[:other] = \"s\"\n"},
+		{"alternating", strings.Repeat("  h[:other] = \"s\"\n  h[:other] = 2\n", 25)},
+	}
+	budgets := []struct {
+		name    string
+		padding string
+	}{
+		{"unspent", ""},
+		{"budget spent", padding(200, 0)},
+		{"both spent", padding(200, 400)},
+	}
+	// Widths the budget can still copy. A literal wider than the whole budget
+	// is the one shape a contradicting write cannot restate -- copying it per
+	// write is the quadratic this budget exists to stop -- so past both
+	// allowances it keeps the field the write lands on and gives up the rest.
+	// TestShapeWiderThanBudgetKeepsWhatItCanCopy pins that boundary.
+	widths := []struct {
+		name   string
+		fields int
+	}{
+		{"narrow", 0},
+		{"wide", 300},
+		{"wider than the restart rate", 600},
+		{"wider than the budget", 6000},
+	}
+
+	for _, width := range widths {
+		for _, budget := range budgets {
+			for _, write := range writes {
+				for _, subject := range []string{"n", "other"} {
+					name := fmt.Sprintf("%s/%s/%s/branch on %s",
+						width.name, budget.name, write.name, subject)
+					t.Run(name, func(t *testing.T) {
+						script := source(width.fields, budget.padding, write.text, subject)
+						unbudgeted := checkWarningMessagesWithShapeBudget(t, script, math.MaxInt/4)
+						budgeted := checkWarningMessagesWithShapeBudget(t, script, maxRefinedShapeNodes)
+
+						for _, message := range budgeted {
+							if !slices.Contains(unbudgeted, message) {
+								t.Fatalf("the budget added %q, which the same script reports"+
+									" nothing of without it: %v against %v",
+									message, budgeted, unbudgeted)
+							}
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+// checkWarningMessagesWithShapeBudget checks one script under a given shape
+// refinement budget. It restores the budget before returning, and the tests in
+// this file do not run in parallel, so no other check sees the raised one.
+func checkWarningMessagesWithShapeBudget(t *testing.T, source string, budget int) []string {
+	t.Helper()
+
+	previous := maxRefinedShapeNodes
+	maxRefinedShapeNodes = budget
+	defer func() { maxRefinedShapeNodes = previous }()
+	return checkWarningMessages(compileScript(t, source).CheckWarnings())
+}
+
+// The boundary the walk above stops at. A literal wider than the whole
+// refinement budget cannot be restated once a chain has spent both allowances:
+// the copy that would keep its fields is the per-write cost the budget exists
+// to stop, and paying it per write is the quadratic itself. Such a write keeps
+// the field it lands on and gives up the rest, so this pins what a shape that
+// wide does keep rather than leaving it unstated.
+func TestShapeWiderThanBudgetKeepsWhatItCanCopy(t *testing.T) {
+	pairs := make([]string, 0, 6002)
+	pairs = append(pairs, "n: 1", "other: 1")
+	for i := range 6000 {
+		pairs = append(pairs, fmt.Sprintf("f%d: %d", i, i))
+	}
+	source := fmt.Sprintf(`
+def take(v: int)
+  v
+end
+
+def f()
+  h = { %s }
+  h[:n] = "s"
+  if h[:n]
+    1
+  else
+    take("bad")
+  end
+end
+`, strings.Join(pairs, ", "))
+
+	// One contradicting write is still inside the allowance, so the fact keeps
+	// every field and the branch on the written one stays decided.
+	if warnings := compileScript(t, source).CheckWarnings(); len(warnings) != 0 {
+		t.Fatalf("the first contradicting write to a very wide shape reported %v", warnings)
+	}
+}
+
+// Spending the budget must not withdraw a field the fact already vouched for.
+// A field read decides the branch below -- every value but nil and false is
+// truthy, so a shape that still names an int field proves the else branch dead
+// -- and a run of writes long enough to exhaust the budget used to poison the
+// whole fact, which made that branch live and reported the call inside it. That
+// is a diagnostic the same program one write shorter does not produce, which is
+// the one thing this bound must never do (#14).
+func TestShapeBudgetKeepsBranchFactsWhenExhausted(t *testing.T) {
+	source := func(writes int) string {
+		return fmt.Sprintf(`
+def take(v: int)
+  v
+end
+
+def f()
+  h = { n: 1 }
+%s  if h[:n]
+    1
+  else
+    take("bad")
+  end
+end
+`, distinctShapeKeyWrites(writes))
+	}
+
+	for _, writes := range []int{0, 10, 50, 100, 200} {
+		if warnings := compileScript(t, source(writes)).CheckWarnings(); len(warnings) != 0 {
+			t.Fatalf("%d field writes made the dead else branch live: %v", writes, warnings)
+		}
+	}
 }
 
 func namespaceWriteCallSource(writes int, callee string) string {
@@ -399,6 +773,31 @@ func TestStoredBlockWalkCapAddsNoDiagnostics(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	// Exhausting the cap also weakens the receiver the fills write to, and a
+	// weakened fact stops proving the branches it decided. The fills below are
+	// rescued, so the branch after them is reachable whatever the cap did, and
+	// it must not start reporting the call in its dead arm.
+	branch := func(body, sites int) string {
+		return strings.TrimSuffix(rescuedStoredBlockFillSource(body, sites, "1"), `  items.fill(&callback)
+  take("bad")
+end
+`) + `  if items[0]
+    1
+  else
+    take("bad")
+  end
+end
+`
+	}
+	underCap := checkWarningMessages(compileScript(t, branch(10, 10)).CheckWarnings())
+	overCap := checkWarningMessages(compileScript(t, branch(100, 100)).CheckWarnings())
+	for _, message := range overCap {
+		if !slices.Contains(underCap, message) {
+			t.Fatalf("exhausting the walk cap reported %q on a branch the same shape under the"+
+				" cap decides: %v against %v", message, overCap, underCap)
+		}
 	}
 
 	// The raising body is the shape the cap could have made reachable, so pin
