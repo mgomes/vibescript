@@ -800,6 +800,86 @@ end
 	requireCheckWarningContains(t, optionalMismatch, "call to accept argument value expected { other?: bool } | { label: string }, got { label?: int }")
 }
 
+// TestCheckKnownUnionShapeCorrelationDropsAfterSameTypeFieldWrite pins that a
+// field write drops the written field's correlation even when it restates the
+// receiver's fact exactly and so keeps the fact's node. Correlation is keyed by
+// node identity, and the value a write puts in a field is the value of some
+// other local, so a write that changes nothing about the type still breaks the
+// claim that two fields hold the same value.
+func TestCheckKnownUnionShapeCorrelationDropsAfterSameTypeFieldWrite(t *testing.T) {
+	t.Parallel()
+
+	// No write: left and right do hold the same value, and both variants of the
+	// annotation stay reachable together. Pinning silence here fails any fix
+	// that drops correlation the receiver still has.
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+def accept(value: { left: int, right: int } | { left: string, right: string })
+  value
+end
+
+def run(flag: bool)
+  value = flag ? 1 : "left"
+  pair = { left: value, right: value }
+  accept(pair)
+end
+`))
+
+	// The write puts another local's value in left. Its type is the type left
+	// already held, so the fact is unchanged and the write costs no copy, but
+	// left and right can now differ and neither variant covers that.
+	independentWrite := compileScriptDefault(t, `
+def accept(value: { left: int, right: int } | { left: string, right: string })
+  value
+end
+
+def run(flag: bool, other: bool)
+  value = flag ? 1 : "left"
+  replacement = other ? 2 : "other"
+  pair = { left: value, right: value }
+  pair[:left] = replacement
+  accept(pair)
+end
+`)
+	requireCheckWarningContains(t, independentWrite, "call to accept argument value expected { left: int, right: int } | { left: string, right: string }, got { left: int | string, right: int | string }")
+
+	// Rewriting left with the very local it already holds is the same write as
+	// far as the checker can tell, and it drops the correlation too. This is
+	// what the copying path did before it had a shortcut to skip.
+	sameSourceWrite := compileScriptDefault(t, `
+def accept(value: { left: int, right: int } | { left: string, right: string })
+  value
+end
+
+def run(flag: bool)
+  value = flag ? 1 : "left"
+  pair = { left: value, right: value }
+  pair[:left] = value
+  accept(pair)
+end
+`)
+	requireCheckWarningContains(t, sameSourceWrite, "call to accept argument value expected { left: int, right: int } | { left: string, right: string }, got { left: int | string, right: int | string }")
+
+	// A write to a field no other field is correlated with leaves the
+	// correlation between left and right standing, so the shortcut it takes is
+	// still available. Dropping correlation per fact rather than per field
+	// would warn here.
+	untouchedCorrelation := compileScriptDefault(t, `
+def accept(value: { left: int, right: int, tag: int } | { left: string, right: string, tag: int })
+  value
+end
+
+def run(flag: bool)
+  value = flag ? 1 : "left"
+  pair = { left: value, right: value, tag: 1 }
+  pair[:tag] = 2
+  accept(pair)
+end
+`)
+	if warnings := untouchedCorrelation.CheckWarningsForFunction("run"); len(warnings) > 0 {
+		t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+	}
+}
+
 func TestCheckKnownUnionSpecialBoundaries(t *testing.T) {
 	t.Parallel()
 

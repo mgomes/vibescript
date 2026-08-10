@@ -11407,6 +11407,33 @@ func (c *scriptChecker) noteShapeRefinement(ty *TypeExpr, state shapeRefinementS
 	c.shapeRefinements[ty] = state
 }
 
+// shapeFieldProvenanceRecorded reports whether anything keyed by this fact's
+// node identity records how the fact was built, rather than what it states,
+// about this field.
+//
+// A write of the type a fact already states rebuilds that fact exactly, so it
+// can keep the node instead of copying it. Keeping the node keeps every map
+// keyed by it, and those maps do not all survive a write. Three are keyed this
+// way. `typeExprNodeCounts` holds the node's own size and `shapeRefinements`
+// holds what the chain of writes has spent: the first is a property of the
+// type, which the write did not change, and the second is a property of the
+// budget, which the write did spend, so keeping both is right.
+// `shapeFieldSources` is provenance -- it records that two fields hold the
+// value of the same local, so a union boundary may pick one variant for both --
+// and a write from a different local breaks that while nothing about the type
+// changes. Copying is what used to drop it, since correlation is keyed by node
+// identity and a copy is a new node.
+//
+// The rule for anything keyed by a fact node later: an association derived from
+// the type may be carried across a write that restates the fact, and an
+// association derived from how the fact was built may not. Whatever is added of
+// the second kind belongs here, so the no-copy path falls through to the copy
+// that drops it.
+func (c *scriptChecker) shapeFieldProvenanceRecorded(shape *TypeExpr, field string) bool {
+	_, recorded := c.shapeFieldSources[shape][field]
+	return recorded
+}
+
 func widenedShapeFieldsWith(widened map[string]struct{}, key string) map[string]struct{} {
 	next := make(map[string]struct{}, len(widened)+1)
 	for field := range widened {
@@ -11454,9 +11481,12 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 		}
 		// A write of the type the fact already states rebuilds the same fact, so
 		// it needs no copy at all. This is what a run of writes repeating one
-		// key costs.
+		// key costs. Keeping the fact keeps everything keyed by its node, which
+		// is only sound while none of that describes where the field's value
+		// came from -- see shapeFieldProvenanceRecorded.
 		existing, claimed := shape.Shape[key]
-		if claimed && typeFactKey(existing) == typeFactKey(written) {
+		reusable := claimed && !c.shapeFieldProvenanceRecorded(shape, key)
+		if reusable && typeFactKey(existing) == typeFactKey(written) {
 			return true
 		}
 		resolve := c.checkNamedTypeResolver()
@@ -11469,13 +11499,17 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 			if !claimed {
 				return shape.Open
 			}
-			if _, wide := state.widened[key]; wide &&
+			if _, wide := state.widened[key]; wide && reusable &&
 				typeExprSatisfies(written, existing, resolve) {
 				// This claim was already widened to admit both what the field
 				// held and what a write put there, so writes of either are free
 				// from here on. Narrowing it again would undo exactly that and
 				// let a key alternating between two types pay a copy per write,
-				// which is the quadratic the budget exists to refuse.
+				// which is the quadratic the budget exists to refuse. This keeps
+				// the fact, so it carries the same condition as the shortcut
+				// above; only a fact a copy produced can be widened, and a copy
+				// leaves its provenance behind, so today nothing reaches here
+				// with any.
 				return true
 			}
 			if state.nodes > maxWidenedShapeNodes {
