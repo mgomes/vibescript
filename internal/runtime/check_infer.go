@@ -11437,20 +11437,36 @@ func (c *scriptChecker) noteShapeRefinement(ty *TypeExpr, state shapeRefinementS
 // this counter rather than nowhere.
 func sameTypeFact(existing, written *TypeExpr) bool {
 	visited := 0
-	same := typeFactsIdentical(existing, written, &visited)
+	same := typeFactsIdenticalCounted(existing, written, &visited)
 	noteCheckWork(visited)
 	return same
 }
 
 // typeFactsIdentical reports whether two facts are the same fact, node for
-// node, counting the nodes it had to compare to decide.
+// node. It is the definitive answer typeFactKey only approximates, and the one
+// predicate both places that need that answer go through: a truncated key
+// cannot settle whether two facts are the same, and two places deciding it by
+// different means is how that keeps being rediscovered.
+//
+// The two reach it differently, and the arity is the reason. A field write
+// compares one pair, so it walks and skips the key entirely. Union arm dedup
+// compares each new arm against every arm kept so far, so it keeps the key as a
+// bucket -- cheap, and wrong only by grouping facts that are not the same --
+// and calls this to confirm before dropping one.
+func typeFactsIdentical(left, right *TypeExpr) bool {
+	visited := 0
+	return typeFactsIdenticalCounted(left, right, &visited)
+}
+
+// typeFactsIdenticalCounted is typeFactsIdentical, counting the nodes it had to
+// compare to decide, for the caller that charges the walk.
 //
 // The fields it compares are the ones typeFactKey renders, so it answers the
 // same question the key was standing in for, minus the truncation. Shape is
 // compared by lookup rather than by rendering sorted names, which also drops
 // the key's ambiguity: a field name holding the key's own delimiters cannot
 // make two different shapes agree here.
-func typeFactsIdentical(left, right *TypeExpr, visited *int) bool {
+func typeFactsIdenticalCounted(left, right *TypeExpr, visited *int) bool {
 	if left == right {
 		return true
 	}
@@ -11467,18 +11483,18 @@ func typeFactsIdentical(left, right *TypeExpr, visited *int) bool {
 		return false
 	}
 	for i, arg := range left.TypeArgs {
-		if !typeFactsIdentical(arg, right.TypeArgs[i], visited) {
+		if !typeFactsIdenticalCounted(arg, right.TypeArgs[i], visited) {
 			return false
 		}
 	}
 	for name, field := range left.Shape {
 		other, named := right.Shape[name]
-		if !named || !typeFactsIdentical(field, other, visited) {
+		if !named || !typeFactsIdenticalCounted(field, other, visited) {
 			return false
 		}
 	}
 	for i, option := range left.Union {
-		if !typeFactsIdentical(option, right.Union[i], visited) {
+		if !typeFactsIdenticalCounted(option, right.Union[i], visited) {
 			return false
 		}
 	}
@@ -17058,18 +17074,29 @@ const maxInferredUnionArms = 6
 // an oversized result collapses to unknown.
 func unionTypeExprs(types ...*TypeExpr) *TypeExpr {
 	arms := make([]*TypeExpr, 0, len(types))
-	seen := make(map[string]struct{}, len(types))
+	seen := make(map[string][]*TypeExpr, len(types))
 	appendArm := func(arm *TypeExpr) {
 		// The dedup key canonicalizes the whole fact, including the internal
 		// Name markers at every nesting level (shape key kinds, witnessed
 		// array elements), so arms that render identically but carry
 		// different markers stay distinct instead of collapsing to whichever
 		// branch was joined first.
+		//
+		// It groups arms rather than deciding them. The key stops at
+		// maxTypeArmDepth and renders everything below as `?`, so two arms
+		// alike that far down and different underneath share a key while being
+		// different types. Dropping one on the key alone lost the difference:
+		// widening a field past the exact-refinement budget joins what the
+		// field held to what a write put there, and a write differing from the
+		// field only below the cutoff was joined away, leaving the field
+		// claiming the shape it held before the write.
 		key := typeFactKey(arm)
-		if _, duplicate := seen[key]; duplicate {
-			return
+		for _, kept := range seen[key] {
+			if typeFactsIdentical(kept, arm) {
+				return
+			}
 		}
-		seen[key] = struct{}{}
+		seen[key] = append(seen[key], arm)
 		arms = append(arms, arm)
 	}
 	for _, ty := range types {

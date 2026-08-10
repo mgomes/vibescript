@@ -585,6 +585,68 @@ end
 // checkWarningMessagesWithShapeBudget checks one script under a given shape
 // refinement budget. It restores the budget before returning, and the tests in
 // this file do not run in parallel, so no other check sees the raised one.
+// Widening a field's claim joins what the field held to what a write put there,
+// and the join deduplicates its arms. Deduplicating them on typeFactKey dropped
+// an arm differing from one already kept only below maxTypeArmDepth, so a write
+// that differed from the field that deep was joined away and the field went on
+// claiming the shape it had before the write. A call annotated with that stale
+// shape was then accepted.
+//
+// Reaching the join needs the two budgets apart, which is how production sets
+// them and is not what checkWarningMessagesWithShapeBudget does: with both the
+// same, crossing the exact budget crosses the widening budget in the same
+// breath, so the fact is given up before anything can widen and this route is
+// unreachable under it. That is why the configuration walk never covered this.
+//
+// The depths bracket the cutoff, and the shallow ones are the control: they
+// have to keep reporting the joined union for the deep ones to mean anything.
+func TestShapeFieldWideningKeepsDeepArms(t *testing.T) {
+	nest := func(depth int, leaf string) string {
+		return strings.Repeat("{ a: ", depth) + leaf + strings.Repeat(" }", depth)
+	}
+	for _, depth := range []int{2, 8, 9, 12, 20} {
+		t.Run(fmt.Sprintf("depth %d", depth), func(t *testing.T) {
+			// take is annotated with the shape the field held before the write,
+			// so the call is only reported if the written arm survived the join.
+			source := fmt.Sprintf(`
+def take(v: %s)
+  v
+end
+
+def f()
+  h = { w: %s, pad: 1 }
+  h[:pad] = 2
+  h[:pad] = "x"
+  h[:w] = %s
+  take(h[:w])
+end
+`, nest(depth, "int"), nest(depth, "1"), nest(depth, `"s"`))
+
+			warnings := checkWarningMessagesWithSplitShapeBudget(t, source, 4, 1<<30)
+			if len(warnings) != 1 || !strings.Contains(warnings[0], "string") {
+				t.Fatalf("widening a %d-level field joined the written shape away, so the field"+
+					" still claims what it held before the write: %v", depth, warnings)
+			}
+		})
+	}
+}
+
+// checkWarningMessagesWithSplitShapeBudget checks one script with the exact and
+// widening budgets set independently, so a fact can cross the first without
+// crossing the second and take the widening route rather than being given up.
+// It restores both before returning, and the tests in this file do not run in
+// parallel, so no other check sees the changed ones.
+func checkWarningMessagesWithSplitShapeBudget(t *testing.T, source string, exact, widened int) []string {
+	t.Helper()
+
+	previousExact, previousWidened := maxRefinedShapeNodes, maxWidenedShapeNodes
+	maxRefinedShapeNodes, maxWidenedShapeNodes = exact, widened
+	defer func() {
+		maxRefinedShapeNodes, maxWidenedShapeNodes = previousExact, previousWidened
+	}()
+	return checkWarningMessages(compileScript(t, source).CheckWarnings())
+}
+
 func checkWarningMessagesWithShapeBudget(t *testing.T, source string, budget int) []string {
 	t.Helper()
 
