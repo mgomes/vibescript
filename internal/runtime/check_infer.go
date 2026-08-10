@@ -17200,6 +17200,28 @@ func typeExprFactSizeRemaining(ty *TypeExpr, depth int, remaining *int) bool {
 // typeFactKey canonicalizes a type fact for deduplication. Unlike
 // formatTypeExpr it includes the Name field (which carries the internal
 // key-kind and witnessed-element markers) at every nesting level.
+//
+// It groups facts. It does not decide them. The walk stops at maxTypeArmDepth
+// and renders everything below as `?`, so two facts alike that far down and
+// different underneath produce one key. A match means "these belong in the same
+// bucket", never "these are the same fact". Use typeFactsIdentical for the
+// second question.
+//
+// The trap is not that it approximates, it is that it approximates silently.
+// Three walkers here stop at maxTypeArmDepth and the other two say so:
+// typeExprArms returns ok=false when it hits the limit and every caller refuses
+// to conclude, and typeExprFactSizeRemaining answers with a bool the same way.
+// This one hands back a string that looks like a complete answer and carries no
+// sign it stopped early, so a caller has to already know. Two defects came from
+// callers that did not: a field write took a matching key for proof that the
+// write restated the field and left the receiver bound to the fact it had, and
+// the union join took one for proof that an arm was a duplicate and dropped the
+// written shape. Both are in the shape-write path and both now walk.
+//
+// The rule that generalizes: an approximate answer has to carry its own
+// exactness. If a third caller needs proof from this, the fix is to make it
+// report whether it truncated rather than to keep auditing callers -- the
+// remaining ones want the grouping and are correct with it.
 func typeFactKey(ty *TypeExpr) string {
 	var b strings.Builder
 	appendTypeFactKey(&b, ty, 0)
