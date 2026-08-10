@@ -508,12 +508,16 @@ func checkWarningMessagesWithShapeBudget(t *testing.T, source string, budget int
 // every key of a literal allocated 11.6MB, 46.7MB and 184MB at 200, 400 and 800
 // fields with the cap removed, against 5.4MB, 7.1MB and 10.0MB with it.
 //
-// So the fact is given up there, and a branch on a field it had vouched for
-// stops being decided. This pins that, both so the cost of the bound is stated
-// rather than assumed and so that closing it later is a test change rather than
-// a silent one.
+// What that costs is not precision alone, which is why it is pinned in this
+// detail. Giving the fact up leaves a branch on a field it had vouched for
+// undecided, and the checker then walks the arm it can no longer prove dead and
+// reports what it finds there. The reports are real errors in code that cannot
+// run rather than invented ones -- a well-typed arm stays silent, and reading
+// the same field in reachable code stays silent too, so the loss travels only
+// through reachability -- but they are still diagnostics the unbudgeted checker
+// does not produce.
 func TestShapeWideningBudgetGivesUpTheFact(t *testing.T) {
-	source := func(fields int) string {
+	source := func(fields int, arm string) string {
 		pairs := make([]string, 0, fields+1)
 		for i := range fields {
 			pairs = append(pairs, fmt.Sprintf("f%d: %d", i, i))
@@ -534,32 +538,73 @@ def f()
 %s  if h[:keep]
     1
   else
-    take("bad")
+%s
   end
 end
-`, strings.Join(pairs, ", "), body.String())
+`, strings.Join(pairs, ", "), body.String(), arm)
 	}
-	const dead = "call to take argument v expected int, got string"
+	const illTyped = `    take("bad")`
 
 	// Short of the widening budget every claim is restated and the branch stays
 	// decided, which is the property the walk above asserts.
 	for _, fields := range []int{50, 100} {
-		if messages := checkWarningMessages(compileScript(t, source(fields)).CheckWarnings()); len(messages) != 0 {
+		if messages := checkWarningMessages(compileScript(t, source(fields, illTyped)).CheckWarnings()); len(messages) != 0 {
 			t.Fatalf("%d contradicted fields reported %v inside the budget", fields, messages)
 		}
 	}
 
-	// Past it the fact is given up rather than rebuilt smaller, so the branch is
-	// undecided and its dead arm is checked. The unbudgeted checker still
-	// decides it, which is exactly what the bound costs here.
-	for _, fields := range []int{300, 600} {
-		budgeted := checkWarningMessages(compileScript(t, source(fields)).CheckWarnings())
-		requireCheckWarningMessage(t, budgeted, dead)
+	// Past it the fact is given up, the branch is undecided, and the arm is
+	// walked. Each of these is a diagnostic the unbudgeted checker does not
+	// produce, about code it proves cannot run.
+	for _, arm := range []struct{ name, body, want string }{
+		{"typed argument", illTyped, "call to take argument v expected int, got string"},
+		{"undefined name", "    missing", "undefined variable missing"},
+		{"unsupported operator", `    y = -"s"`, "unsupported unary - operand string"},
+		{"arity", "    take(1, 2)", "call to take has unexpected positional arguments"},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			script := source(300, arm.body)
+			requireCheckWarningMessage(t,
+				checkWarningMessages(compileScript(t, script).CheckWarnings()), arm.want)
 
-		unbudgeted := checkWarningMessagesWithShapeBudget(t, source(fields), math.MaxInt/4)
-		if len(unbudgeted) != 0 {
-			t.Fatalf("%d contradicted fields reported %v without a budget", fields, unbudgeted)
+			unbudgeted := checkWarningMessagesWithShapeBudget(t, script, math.MaxInt/4)
+			if len(unbudgeted) != 0 {
+				t.Fatalf("the unbudgeted checker reported %v on an arm it proves dead", unbudgeted)
+			}
+		})
+	}
+
+	// The loss travels through reachability and nothing else: an arm with
+	// nothing wrong in it stays silent, and so does a read of the same field in
+	// code that runs either way.
+	if messages := checkWarningMessages(compileScript(t, source(300, "    take(1)")).CheckWarnings()); len(messages) != 0 {
+		t.Fatalf("a well-typed dead arm reported %v", messages)
+	}
+	reachable := fmt.Sprintf(`
+def take(v: int)
+  v
+end
+
+def f()
+  h = { %s, keep: 1 }
+%s  take(h[:keep])
+end
+`, strings.Join(func() []string {
+		pairs := make([]string, 0, 300)
+		for i := range 300 {
+			pairs = append(pairs, fmt.Sprintf("f%d: %d", i, i))
 		}
+		return pairs
+	}(), ", "), func() string {
+		var body strings.Builder
+		body.WriteString("  h[:fresh] = 1\n")
+		for i := range 300 {
+			fmt.Fprintf(&body, "  h[:f%d] = \"s\"\n", i)
+		}
+		return body.String()
+	}())
+	if messages := checkWarningMessages(compileScript(t, reachable).CheckWarnings()); len(messages) != 0 {
+		t.Fatalf("reading the untouched field in reachable code reported %v", messages)
 	}
 }
 
