@@ -419,6 +419,43 @@ func deepTransformKeys(exec *Execution, receiver Value, args []Value, kwargs map
 	})
 }
 
+// reserveDeepTransformRetainedPayload reserves payloadBytes of loop scratch for
+// what deep_transform_keys has retained so far, and checks that reservation
+// against the call roots before the next block call runs.
+//
+// This figure must not be read as the bound on what this path retains. It comes
+// from the build accumulator's running total, which sums each result's payload as
+// that result is produced and is never re-derived, so it cannot see a retained
+// value that grows afterwards -- and the block is arbitrary script code that can
+// grow one. Measured: a block appending to a key it produced on an earlier call
+// left this figure reading 931 bytes while the result hash held 7,000,000. That
+// is four orders of magnitude, not a rounding error.
+//
+// The reservation is left in place because no bypass follows from the wrong
+// figure today, not because the figure is right. Three shapes were built to turn
+// the under-pricing into a quota escape, and each was caught by a charge that has
+// nothing to do with this function:
+//
+//   - Grow a retained key, then drop the script's reference to it. The append is
+//     charged while the array is still reachable from the block's scope, so the
+//     peak is caught there. The admitting quota tracked the accumulation exactly,
+//     7,010,520 bytes against 7,000,000 retained.
+//   - Hand the result pre-built arrays and clear the pool afterwards. The pool
+//     stays reachable for the whole loop, so every walk already sees the payload.
+//   - Allocate the probe INSIDE a later block call, so that no charged allocation
+//     observes the accumulation at full size. The result hash turns out to be
+//     visible to the block's own checks regardless: dropping the pool reference
+//     moved the admitting quota by -135,954 bytes, the wrong sign for a result
+//     the checks cannot see.
+//
+// Every one of those covers is incidental to this code. A change to when an
+// append is charged, or to how long a block scope keeps a value reachable, removes
+// one of them without touching this function, and the under-pricing becomes a live
+// bypass at that moment. Anyone changing either should treat this path as
+// unprotected and derive the bound afresh rather than trusting this number.
+//
+// No behavioral test depends on this reservation: neutering it leaves the whole
+// runtime suite green apart from the unit test of this helper's own mechanics.
 func reserveDeepTransformRetainedPayload(exec *Execution, payloadBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, error) {
 	if payloadBytes <= 0 {
 		return 0, nil
