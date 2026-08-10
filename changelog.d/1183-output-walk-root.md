@@ -11,4 +11,7 @@
   whole output on its first miss. Costs are unchanged while the callback leaves
   the base-walk memo intact; a callback that mutates state discards it, and the
   re-walks that forces are charged to the step quota rather than taken for free.
+  That charge is settled as the lookup returns, so a callback that mutates state
+  and then raises pays for the walks it forced exactly as one that returns does,
+  and a rescued failure leaves nothing behind for a later lookup to be billed for.
   `VIBES_ESTIMATOR_VERIFY` re-derives every commit from scratch.
