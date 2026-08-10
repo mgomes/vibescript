@@ -932,10 +932,14 @@ func hashMemberQuery(property string) (Value, error) {
 			// performs, re-derived as the proc leaves it (see memory_output.go).
 			backing := exec.reserveLoopScratch(arraySlotBackingBytes(len(args)))
 			defer exec.releaseLoopScratch(backing)
-			var out []Value
-			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &out))
+			// The root walks the slots filled so far, not the whole preallocated
+			// slice: a lookup with many keys would otherwise pay for its entire
+			// output on the very first miss, before it has produced anything. The
+			// backing itself is reserved above, where its size is known.
+			out := make([]Value, len(args))
+			var produced []Value
+			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &produced))
 			defer exec.popOutputWalkRoot()
-			out = make([]Value, len(args))
 			// The proc is driven through a runner inside a block-iteration region
 			// so the base walk stays memoized across misses. CallBlock pushes a
 			// fresh scope per call, whose push and parameter binds move the
@@ -972,6 +976,7 @@ func hashMemberQuery(property string) (Value, error) {
 					// this slot still does. The estimator deduplicates it against
 					// the receiver for as long as the alias lasts.
 					out[i] = value
+					produced = out[:i+1]
 					exec.addRetainedOutput(value)
 					continue
 				}
@@ -1010,6 +1015,7 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out[i] = resolved
+				produced = out[:i+1]
 				exec.addRetainedOutput(resolved)
 			}
 			return NewArray(out), nil
@@ -1053,10 +1059,14 @@ func hashMemberQuery(property string) (Value, error) {
 			// as the block leaves it (see memory_output.go).
 			backing := exec.reserveLoopScratch(arraySlotBackingBytes(len(args)))
 			defer exec.releaseLoopScratch(backing)
-			var out []Value
-			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &out))
+			// The root walks the slots filled so far, not the whole preallocated
+			// slice: a lookup with many keys would otherwise pay for its entire
+			// output on the very first miss, before it has produced anything. The
+			// backing itself is reserved above, where its size is known.
+			out := make([]Value, len(args))
+			var produced []Value
+			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &produced))
 			defer exec.popOutputWalkRoot()
-			out = make([]Value, len(args))
 			// The block is driven through a runner inside a block-iteration region
 			// so the base walk stays memoized across misses; see hash.values_at for
 			// the measurement.
@@ -1083,6 +1093,7 @@ func hashMemberQuery(property string) (Value, error) {
 					// this slot still does. The estimator deduplicates it against
 					// the receiver for as long as the alias lasts.
 					out[i] = value
+					produced = out[:i+1]
 					exec.addRetainedOutput(value)
 					continue
 				}
@@ -1101,6 +1112,7 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out[i] = blockValue
+				produced = out[:i+1]
 				exec.addRetainedOutput(blockValue)
 			}
 			return NewArray(out), nil
