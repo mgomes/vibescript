@@ -24,17 +24,29 @@
   this in bulk under a tight `StepQuota` may need a larger one. Callbacks without
   a named rest are unaffected.
 - **Known: re-walking a lookup's retained results is not charged to the step
-  quota.** When a callback mutates anything, the estimator's memo is discarded and
-  the lookup's retained results are walked again on the next memory check. That
-  walk is deliberately not billed. It is triggered by a memo whose key is
-  process-wide, so an unrelated script running at the same time invalidates it
-  just as a script's own mutation does, and billing the walk let one script's
-  mutations push an unrelated script over its `StepQuota` -- a worse failure than
-  leaving the walk uncharged. The work is bounded rather than free: a script
-  cannot cause these walks without paying steps for them, at a measured ceiling of
-  roughly 0.15 walks per step, each over a graph `MemoryQuotaBytes` already
-  bounds. So the cost is a multiplier on two limits you already set, not unbounded
-  work. Charging it accurately needs per-execution mutation tracking, which is
+  quota, and a callback that mutates makes those re-walks quadratic.** When a
+  callback mutates anything, the estimator's memo is discarded and the lookup's
+  retained results are walked again on the next memory check, so the walking grows
+  with the square of the number of results. Registering the output is what
+  introduces that shape: the same script is linear without it. Over 200, 400 and
+  800 missing keys with a counter-incrementing default proc, estimator work goes
+  from 31,840 / 63,615 / 127,165 nodes to 36,275 / 112,475 / 384,875.
+
+  That walking is deliberately not charged to the step quota. It is triggered by a
+  memo whose key is process-wide, so an unrelated script running at the same time
+  invalidates it just as a script's own mutation does, and billing the walk let one
+  script's mutations push an unrelated script over its `StepQuota` -- a worse
+  failure than leaving the walk uncharged.
+
+  It is bounded, but by the quotas rather than by a small constant: the results
+  walked are bounded by `MemoryQuotaBytes` and the number of walks by `StepQuota`,
+  so the work cannot exceed their product. What that costs in practice depends on
+  the shape. A callback that destructures with a named rest stays near 0.15 walks
+  per step. A mutating callback over a wide lookup does not: estimator work per
+  step rose from 16 to 44 across the three sizes above and keeps rising with the
+  number of results retained, against a flat 14 without the output registered. A
+  script doing this in bulk is doing more estimator work than its step count
+  suggests. Charging it accurately needs per-execution mutation tracking, which is
   left to its own change.
 - **Known: one nested lookup shape is charged more memory than it uses.** A
   `Hash#fetch_values` or `Hash#values_at` whose callback destructures with a named
