@@ -95,24 +95,24 @@ func restBindingBlock() *Block {
 	return valueBlock(NewBlock([]Param{{Kind: ParamNormal, Target: target}}, nil, newEnv(nil)))
 }
 
-// A base walk that walks the registered outputs reports those visits in
-// nodes(), which the accumulator callers charge to the step quota, and also
-// added them to exec.outputWalkNodes for chargeRetainedOutputWalk to charge
-// again when the callback returned. One traversal, two billers: a lookup
-// callback that mutated and then built a multi-pair hash literal paid for the
-// output-root portion twice.
+// The retained-output walk is not billed, and this pins that it stays that way.
 //
-// Taking the count is what transfers the billing, so this asserts the counter is
-// empty afterwards rather than asserting a step total: whoever can see the whole
-// traversal bills it, and nothing is left behind for a second biller.
-func TestSessionNodesTakesOverTheOutputWalkBilling(t *testing.T) {
+// It happens whenever the base-walk memo cannot answer, and the memo is keyed on
+// a process-wide mutation epoch that any execution in the process advances. So an
+// unrelated script's mutation forces this walk exactly as this script's own does,
+// and nothing on the Execution tells the two apart. Billing it let a concurrent
+// mutator drive an innocent lookup from 10,053 billed nodes to 166,753; with the
+// walk unbilled the same lookup bills 2,007 either way.
+//
+// The residue that IS billed is the bind charge's construction walk, which
+// happens because this execution built a charge. See
+// TestRestBindingLookupBillsTheGraphItWalks for the half that survives.
+func TestRetainedOutputWalkIsNotBilled(t *testing.T) {
 	t.Parallel()
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	exec.root = newEnv(nil)
 
-	// Distinct values the graph does not hold, so the output walk is the bulk of
-	// the session's traversal and the overlap is unmistakable.
 	out := make([]Value, 0, 200)
 	for i := range 200 {
 		out = append(out, NewArray([]Value{NewInt(int64(i)), NewString(strings.Repeat("y", 8))}))
@@ -120,16 +120,16 @@ func TestSessionNodesTakesOverTheOutputWalkBilling(t *testing.T) {
 	exec.pushOutputWalkRoot(retainedValues(&out))
 	defer func() { _ = exec.endOutputWalkRoot(nil) }()
 
+	est := newMemoryEstimator()
 	exec.outputWalkNodes = 0
-	s := exec.beginBaseWalk()
-	billed := s.nodes()
-	s.close()
-
-	if billed <= 0 {
-		t.Fatalf("session reported %d nodes; the walk this pins is not happening", billed)
+	before := est.walked
+	exec.outputWalkBytes(est)
+	if walked := est.walked - before; walked <= 0 {
+		t.Fatalf("the output walk visited %d nodes; the walk this pins is not happening", walked)
 	}
 	if exec.outputWalkNodes != 0 {
-		t.Fatalf("a session billed %d nodes and left %d of them on outputWalkNodes for "+
-			"chargeRetainedOutputWalk to bill a second time", billed, exec.outputWalkNodes)
+		t.Fatalf("walking the registered outputs recorded %d nodes for billing; that walk is forced by "+
+			"a process-wide epoch any execution can advance, so charging it bills this script for "+
+			"another one's mutations", exec.outputWalkNodes)
 	}
 }

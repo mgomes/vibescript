@@ -131,7 +131,6 @@ func (exec *Execution) blockRegionBaseWalkEngaged(globals *taskLazyGlobals) bool
 // prefix-only total to a whole-stack check.
 func (exec *Execution) beginRegionBaseWalk(est *memoryEstimator, scalars int) baseWalkSession {
 	walked0 := est.walked
-	outputNodes0 := exec.outputWalkNodes
 	c := exec.baseWalkCache
 	if c == nil {
 		if exec.engine != nil {
@@ -215,8 +214,7 @@ func (exec *Execution) beginRegionBaseWalk(est *memoryEstimator, scalars int) ba
 	}
 
 	return baseWalkSession{
-		exec: exec, est: est, base: base, walked0: walked0,
-		outputNodes: exec.outputWalkNodes - outputNodes0, cached: true,
+		exec: exec, est: est, base: base, walked0: walked0, cached: true,
 	}
 }
 

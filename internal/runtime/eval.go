@@ -1697,6 +1697,13 @@ func (runner *blockCallRunner) refreshChargeIfGraphMoved() {
 		return
 	}
 	runner.chargeEpoch = epoch
+	// The rebuild's own construction walk is not billed. Building the FIRST
+	// charge is this execution's own doing and is charged where it happens, but a
+	// rebuild is triggered by the epoch having moved, and the epoch is
+	// process-wide: an unrelated execution's mutation forces this rebuild exactly
+	// as this script's own does (see memory_output.go).
+	billed := runner.exec.outputWalkNodes
+	defer func() { runner.exec.outputWalkNodes = billed }()
 	if rebuilt := newBlockBindCharge(runner.exec, runner.blk, runner.chargeReceiver,
 		runner.chargeArgs, runner.chargeKwargs, runner.chargeBlock); rebuilt != nil {
 		runner.charge = rebuilt

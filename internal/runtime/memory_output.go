@@ -165,17 +165,18 @@ func (exec *Execution) outputWalkBytes(est *memoryEstimator) int {
 	if len(exec.outputWalkRoots) == 0 {
 		return 0
 	}
-	before := est.walked
 	total := 0
 	for _, walk := range exec.outputWalkRoots {
 		total = saturatingAdd(total, walk(est))
 	}
-	// Record the traversal so the driver can charge the step quota for it (see
-	// chargeRetainedOutputWalk). A callback that mutates anything moves the
-	// mutation epoch, which discards the memo, so a driver whose callback is
-	// stateful re-walks its output on every check; that work is real and has to
-	// be paid for rather than being free.
-	exec.outputWalkNodes += est.walked - before
+	// This traversal is deliberately NOT recorded for billing. It happens whenever
+	// the base-walk memo cannot answer, and the memo is keyed on a process-wide
+	// mutation epoch that any execution in the process advances -- so an unrelated
+	// script's mutation forces this walk exactly as this script's own does, and
+	// there is no state on the Execution that tells the two apart. Billing it let
+	// a concurrent mutator drive an innocent lookup's step usage from 10,053 nodes
+	// to 166,753. What is still billed is the bind charge's construction walk,
+	// which happens because this execution built a charge (see newBlockBindCharge).
 	return total
 }
 
@@ -262,16 +263,6 @@ func (exec *Execution) retainedOutputMarginalBytes() int {
 	}
 	est := newMemoryEstimator()
 	exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.Context()))
-	// The basis walk is metered exactly as the roots' walk below is. Without it
-	// only the part of this computation after the graph was billed, and the graph
-	// is the larger part: a loop of twenty rest-binding lookups over a
-	// 20,000-element graph drove 2,001,500 estimator nodes through here and
-	// through the bind charge's own construction for 451 steps, about 4,400 nodes
-	// per step against the 64 this tree charges everywhere else. The memo is what
-	// keeps this rare -- it answers 96 of every 100 readings -- so what is billed
-	// here is the residue the memo cannot serve, which is the residue script code
-	// can make it pay by invalidating.
-	exec.outputWalkNodes += est.walked
 	return exec.outputWalkBytes(est)
 }
 

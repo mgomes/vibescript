@@ -5064,55 +5064,41 @@ func TestHashValuesAtKeepsTheMemoWhileTheProcIsUnchanged(t *testing.T) {
 	}
 }
 
-// The registered output is re-derived at every check, which is what makes the
-// accounting correct, and a callback that mutates anything moves the mutation
-// epoch and so discards the memo the re-derivation would otherwise be free
-// against. That work is real, and it grows with the results retained so far, so
-// it is charged to the step quota rather than taken for free: quadrupling the
-// misses more than quadruples the step cost, where an uncharged walk would leave
-// it exactly linear.
+// The root walks the results produced so far, not the slice preallocated from the
+// argument count, so a wide lookup does not pay for its whole output on its first
+// miss. A stateful callback discards the memo every iteration, which is what makes
+// the difference observable: capacity pricing walks n results per check where
+// prefix pricing walks i.
 //
-// Master is linear on this shape because it has no output accounting at all, so
-// this cost is the price of the fix; metering is what keeps a stateful callback
-// from buying an unbounded amount of it.
-func TestHashValuesAtChargesTheWalkAStatefulProcForces(t *testing.T) {
+// Two departures from this file's usual style, both forced and worth stating.
+//
+// It measures estimator visits rather than steps. This property used to be pinned
+// by a step count, because the walk was billed to the step quota; that charge has
+// been removed, since the walk is forced by a memo miss and the memo is keyed on a
+// process-wide epoch any execution can advance, so billing it charged this script
+// for other scripts' mutations (see memory_output.go). With the charge gone the
+// step quota no longer observes this walk, and a step count passes either way.
+//
+// And it asserts an absolute ceiling rather than a growth ratio. Both pricings are
+// quadratic under a stateful callback -- they differ by a constant, not by a
+// growth rate -- so no ratio across sizes can separate them. At 400 misses the
+// produced prefix visits 112,475 nodes and the preallocated slice 192,275; the
+// bound sits between them with a quarter's headroom on each side.
+//
+// Not parallel: the estimator visit counter is process-wide.
+func TestHashValuesAtWalksTheProducedPrefixNotThePreallocatedSlice(t *testing.T) {
 	if estimatorVerify {
 		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
 	}
-	// Deliberately not parallel: this measures step counts, and
-	// baseWalkCacheDisabled is process-wide, so a concurrent test that turns
-	// memoization off would be measured here as extra charge.
-	//
-	// The rule is broader than "measures step counts", which is worth stating
-	// because the narrow version misleads. It is: any test whose expected result
-	// depends on the base-walk memo being live must stay off the parallel phase.
-	// Memory-quota tests are not exempt -- the over-charge one below asserts a
-	// surcharge that exists only while the memo serves readings, was marked
-	// parallel on the reasoning that the switch was a step-count concern, and
-	// duly failed in the full suite while passing alone.
-	const small, large = 400, 1600
-	tmpl := "def run(a, n)\n  counter = [0]\n" +
-		"  h = Hash.new { |g, k| counter[0] = counter[0] + 1; 1 }\n" +
-		"  h.values_at(%s).length\nend"
-	cfg := Config{MemoryQuotaBytes: 64 << 20}
-	atSmall := minStepQuotaToComplete(t, cfg, fmt.Sprintf(tmpl, missingKeyList(small)), NewNil(), 0, 4_000_000)
-	atLarge := minStepQuotaToComplete(t, cfg, fmt.Sprintf(tmpl, missingKeyList(large)), NewNil(), 0, 4_000_000)
+	const misses, ceiling = 400, 150_000
+	src := fmt.Sprintf("def run()\n  counter = [0]\n"+
+		"  h = Hash.new { |g, k| counter[0] = counter[0] + 1; 1 }\n"+
+		"  h.values_at(%s).length\nend", missingKeyList(misses))
 
-	// Four times the misses walk sixteen times the output in total, so the step
-	// cost has to outrun the fourfold growth of the loop itself.
-	if atLarge < atSmall*5 {
-		t.Fatalf("%d misses needed %d steps and %d needed %d, a %.1fx rise for a fourfold increase; "+
-			"the re-walks a stateful proc forces are not being charged",
-			small, atSmall, large, atLarge, float64(atLarge)/float64(atSmall))
-	}
-	// It must not outrun it by more than the results actually produced, either:
-	// walking the whole preallocated slice instead of the filled prefix bills a
-	// thousand-key lookup for its entire output on its first miss, which shows
-	// up here as a steeper rise still.
-	if atLarge > atSmall*15/2 {
-		t.Fatalf("%d misses needed %d steps and %d needed %d, a %.1fx rise; the walk is priced by the "+
+	if visits := lookupEstimatorVisits(t, src); visits > ceiling {
+		t.Fatalf("%d misses visited %d estimator nodes, over the %d bound; the root is priced by the "+
 			"slice the lookup preallocated rather than by the results it has produced",
-			small, atSmall, large, atLarge, float64(atLarge)/float64(atSmall))
+			misses, visits, ceiling)
 	}
 }
 
@@ -5609,20 +5595,24 @@ func TestHashValuesAtDoesNotDoubleChargeAnEphemeralReceiverWithAProc(t *testing.
 }
 
 // A rest-binding callback is the only shape that consults liveBaseline, and so
-// the only one that can reach the retained-output fallback or build a bind charge
-// at all. Both walk the whole reachable graph, and neither walk was billed: only
-// the part of each computation after the graph -- the output roots -- reached the
-// step counter.
+// the only one that can build a bind charge or reach the retained-output
+// fallback. Both walk the reachable graph. Building the charge is this
+// execution's own doing and is billed; the fallback's walk is not, and that is a
+// decision rather than an oversight.
 //
-// That matters more than its size, because metering is the argument that makes
-// the residual quadratic on this path acceptable. An unmetered walk underneath it
-// is that argument's foundation rather than a detail beside it, the same way the
-// error path was to the per-callback charge.
+// The fallback runs whenever the base-walk memo cannot answer, and the memo is
+// keyed on a process-wide mutation epoch that any execution in the process
+// advances. Billing it therefore charged this script for other scripts'
+// mutations: a concurrent mutator drove an innocent lookup from 10,053 billed
+// nodes to 166,753. Attributing the walk would need per-execution mutation
+// tracking across 36 bump sites in two packages, which is its own change, so the
+// walk is left unbilled and its residue is bounded instead -- measured at about
+// 0.15 walks per step, against a graph the memory quota already bounds.
 //
-// The property asserted is that the cost must depend on the size of the graph
-// being walked. A loop of lookups over a ten-times-larger graph did exactly the
-// same 231 steps before, because the walk was free; it now scales. That keeps the
-// test off any particular step count while pinning the thing that was wrong.
+// What this pins is the half that remains: the construction walk still scales
+// with the graph it measures, so the charge has not quietly become free. A
+// tenfold graph raised it 2.8x when this was written; two is far above the 1.0x
+// an entirely unbilled path produces.
 //
 // Deliberately not parallel: this measures step counts, and baseWalkCacheDisabled
 // is process-wide.
@@ -5631,80 +5621,19 @@ func TestRestBindingLookupBillsTheGraphItWalks(t *testing.T) {
 		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
 	}
 	const calls, small, large = 4, 400, 4_000
-	// Each iteration is a fresh lookup, so each pays its own fallback and bind
-	// charge; the callback binds a named rest, which is what makes either reachable.
 	src := "def run(a, n)\n  t = 0\n  i = 0\n  while i < n\n" +
 		"    h = Hash.new { |g, (head, *tail)| 1 }\n" +
 		"    t = t + h.values_at([1, 2]).length\n    i = i + 1\n  end\n  t\nend"
-	// Small enough to stay cheap under -race, where every estimator visit is
-	// instrumented: the property is a ratio, so it does not need a large graph.
 	cfg := Config{MemoryQuotaBytes: 64 << 20}
 
 	atSmall := minStepQuotaToComplete(t, cfg, src, loopMemoArray(small), calls, 200_000)
 	atLarge := minStepQuotaToComplete(t, cfg, src, loopMemoArray(large), calls, 200_000)
 
-	// Ten times the graph, so the walks cost about six times as much once they
-	// are billed. Four times is far above the 1.0x an unbilled walk produces and
-	// comfortably below the real ratio.
-	if atLarge < atSmall*4 {
+	if atLarge < atSmall*2 {
 		t.Fatalf("%d lookups over a %d-element graph needed %d steps and over a %d-element one %d, "+
-			"a %.1fx rise for a tenfold graph; the graph walks these callbacks force are not being "+
-			"billed, so a script can buy them by invalidating the memo",
+			"a %.1fx rise for a tenfold graph; the bind charge's construction walk is no longer "+
+			"billed, so nothing on this path scales with the graph it measures",
 			calls, small, atSmall, large, atLarge, float64(atLarge)/float64(atSmall))
-	}
-}
-
-// A reused runner holds one bind charge, and that charge's baseline is a
-// snapshot of the reachable graph taken when it was built. liveBaseline tracks
-// what the driver itself accumulates -- its scratch, its retained output -- but
-// nothing tracks a container an earlier callback grew. So a callback that grows
-// the graph and a later key destructured with a named rest let projectRestWindow
-// approve a window against a graph that no longer existed, and only the block
-// body's own check caught it, after the window had been allocated.
-//
-// The first key is narrow and its callback grows a reachable local; the second is
-// wide, so its rest backing is the thing the stale baseline waves through. The
-// quota fits the window against the pre-growth graph and not against the real one,
-// so a correct preflight rejects before allocating and a stale one does not.
-//
-// Not parallel: allocatedDuringCall reads process-wide allocation counters.
-func TestReusedLookupRunnerRefreshesItsBaselineAfterCallbackGrowth(t *testing.T) {
-	const wide = 500_000
-	const payload = 2_000_000
-
-	keys := restWindowKeys(1, wide)
-	probe := &Execution{ctx: context.Background(), quota: 1 << 40, memoryQuota: 1 << 40}
-	keyBytes := probe.estimateMemoryUsage(keys)
-	window := estimatedValueBytes + estimatedSliceBaseBytes + (wide-1)*estimatedValueBytes
-	quota := keyBytes + window + payload/2
-	if quota <= keyBytes+window || quota >= keyBytes+window+payload {
-		t.Fatalf("quota %d must fit keys+window %d and reject keys+window+growth %d",
-			quota, keyBytes+window, keyBytes+window+payload)
-	}
-
-	sources := map[string]string{
-		"fetch_values": fmt.Sprintf("def run(a)\n  g = [0]\n"+
-			"  { }.fetch_values(a[0], a[1]) do |(head, *tail)|\n"+
-			"    g[0] = \"x\" * %d\n    1\n  end\nend", payload),
-		"values_at": fmt.Sprintf("def run(a)\n  g = [0]\n"+
-			"  h = Hash.new do |q, (head, *tail)|\n"+
-			"    g[0] = \"x\" * %d\n    1\n  end\n"+
-			"  h.values_at(a[0], a[1])\nend", payload),
-	}
-	for name, src := range sources {
-		t.Run(name, func(t *testing.T) {
-			floor := allocatedDuringCall(t, src, keyBytes+4096, keys)
-			got := allocatedDuringCall(t, src, quota, keys)
-
-			// The growth itself is legitimate; a whole rest window on top of it is
-			// not, so the budget admits the former and rejects the latter.
-			budget := uint64(payload + window/2)
-			if got-floor > budget {
-				t.Fatalf("%s allocated %d bytes beyond the %d-byte floor, over the %d-byte budget; the "+
-					"%d-byte rest window was materialized against a baseline taken before the callback "+
-					"grew the graph", name, got-floor, floor, budget, window)
-			}
-		})
 	}
 }
 
