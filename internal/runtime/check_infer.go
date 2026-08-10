@@ -11306,6 +11306,237 @@ func (c *scriptChecker) applyShapeFieldWriteFacts(function string, stmt *AssignS
 	return c.applyShapeFieldWrite(function, name, shape, index, stmt.Value, stmt.Pos(), intact)
 }
 
+// maxRefinedShapeNodes caps the type nodes one chain of field writes may copy
+// while it keeps refining a witnessed literal shape. Refining copies the whole
+// fact so the one every other holder observed stays intact, and the copy is
+// deep, so both the number of writes and the size of what each copies count:
+// 2,000 `h[:kN] = 1` writes against a growing literal allocated 520MB, and 800
+// writes of one key already in a literal whose other field is an 800-field
+// shape allocated 97MB, both quadrupling per doubling inside CheckWarnings
+// where no script step or memory quota applies. Counting fields instead of
+// nodes only caught the first: the second never widens the shape it copies.
+//
+// A budget spent by the copies rather than a cap on the shape's width bounds
+// the product of the two, and it travels with the fact, so a fresh literal in
+// another function starts with the whole budget. The first write to a fact
+// always refines, however wide, since the source spells that shape once.
+//
+// While the budget pays, every write refines the field to exactly what it
+// wrote, narrowing a claim wide enough to admit it rather than leaving the
+// wider one standing: `nil | int` proves nothing about a branch reading the
+// field, `int` proves its else arm dead. Only a write of the type the fact
+// already states is free, since refining would rebuild the same fact.
+//
+// What running out gives up is the claim that the fact names every key, never a
+// key it already names. The asymmetry is the point. The checker rules a branch
+// out from the type of a field the fact names -- every value but nil and false
+// is truthy, so a fact naming an int field proves the else arm of a branch on it
+// dead -- and a fact that stops naming that field stops ruling the arm out, so
+// the arm is walked and whatever is wrong in it reported. The claim to name
+// every key decides nothing by itself, so giving that up costs no diagnostic.
+// Review after review found another way to lose a field, so the rule is now one
+// rule: keep every field, or keep no fact at all.
+//
+// Past the budget the fact is open and only one case still costs a copy, the
+// claim a write contradicts. Restating it widens it to admit both what the
+// field held and what it holds now, which is what makes the writes after it
+// free: a key alternating between two types is restated once and admitted from
+// then on, and never narrowed again, since narrowing it would let the pair
+// alternate forever at one copy per write. That convergence is the whole
+// mechanism -- an earlier version restarted the budget instead, which put the
+// chain back to refining exactly, re-narrowed the field, and never converged at
+// all.
+var maxRefinedShapeNodes = 4000
+
+// maxWidenedShapeNodes caps the copies a chain spends widening claims once the
+// exact budget is gone. Widening converges -- a claim that admits both types a
+// key alternates between never pays again -- so what spends this is a source
+// contradicting key after key, one copy each. It is the whole cost a chain can
+// reach, so it bounds the work per fact rather than per write.
+var maxWidenedShapeNodes = maxRefinedShapeNodes * 8
+
+// typeExprNodes reports how many type nodes a fact holds, memoized by node
+// identity. A fact is immutable once built, so a count taken once stays true,
+// and a refinement records its own count rather than walking the copy it just
+// made.
+func (c *scriptChecker) typeExprNodes(ty *TypeExpr) int {
+	if ty == nil {
+		return 0
+	}
+	if nodes, counted := c.typeExprNodeCounts[ty]; counted {
+		return nodes
+	}
+	nodes := 1
+	for _, arg := range ty.TypeArgs {
+		nodes += c.typeExprNodes(arg)
+	}
+	for _, field := range ty.Shape {
+		nodes += c.typeExprNodes(field)
+	}
+	for _, option := range ty.Union {
+		nodes += c.typeExprNodes(option)
+	}
+	c.noteTypeExprNodes(ty, nodes)
+	return nodes
+}
+
+func (c *scriptChecker) noteTypeExprNodes(ty *TypeExpr, nodes int) {
+	if c.typeExprNodeCounts == nil {
+		c.typeExprNodeCounts = make(map[*TypeExpr]int)
+	}
+	c.typeExprNodeCounts[ty] = nodes
+}
+
+// shapeRefinementState is what one chain of field writes has spent and what it
+// has already given up, carried on the fact rather than the name so a fresh
+// literal elsewhere starts with the whole budget.
+type shapeRefinementState struct {
+	// nodes is the type nodes this chain's copies have walked.
+	nodes int
+
+	// widened names the fields the budget has widened to admit more than one
+	// write put there. Those claims never narrow again, which is what makes the
+	// writes after them free.
+	widened map[string]struct{}
+}
+
+func (c *scriptChecker) noteShapeRefinement(ty *TypeExpr, state shapeRefinementState) {
+	if c.shapeRefinements == nil {
+		c.shapeRefinements = make(map[*TypeExpr]shapeRefinementState)
+	}
+	c.shapeRefinements[ty] = state
+}
+
+// sameTypeFact reports whether a write puts back the fact the field already
+// holds, which is what lets the write keep the receiver's fact rather than copy
+// it.
+//
+// This one has to be exact in both directions, which is what separates it from
+// the questions typeFactKey answers. Saying two facts differ costs a copy the
+// budget pays for. Saying they are the same leaves the receiver bound to the
+// fact it had, so getting that wrong means every later read of the field is
+// answered from a value the script stopped holding.
+//
+// typeFactKey cannot carry that weight. It stops at maxTypeArmDepth and writes
+// `?` for everything below, which is what makes it cheap to build and what
+// makes it an approximation: two shapes alike for eight levels and different
+// underneath produce one key. It groups facts correctly and it proves nothing
+// about a pair, so a match is a hint here rather than an answer.
+//
+// Walking is the cheaper answer anyway. Nothing is allocated, the first
+// difference ends it rather than both sides being rendered in full first, and
+// the same node is the same fact at every level rather than only at the root --
+// a write putting back a wide fact the field already holds settles without
+// descending into it. What exactness adds is the part below maxTypeArmDepth
+// that the truncation was skipping, which is reached only by a fact nested
+// deeper than that.
+//
+// The walk is charged rather than bounded. It is proportional to the written
+// fact, which the source had to spell out to produce, and no source found makes
+// it grow faster than the source does -- but a source that did would show up in
+// this counter rather than nowhere.
+func sameTypeFact(existing, written *TypeExpr) bool {
+	visited := 0
+	same := typeFactsIdenticalCounted(existing, written, &visited)
+	noteCheckWork(visited)
+	return same
+}
+
+// typeFactsIdentical reports whether two facts are the same fact, node for
+// node. It is the definitive answer typeFactKey only approximates, and the one
+// predicate both places that need that answer go through: a truncated key
+// cannot settle whether two facts are the same, and two places deciding it by
+// different means is how that keeps being rediscovered.
+//
+// The two reach it differently, and the arity is the reason. A field write
+// compares one pair, so it walks and skips the key entirely. Union arm dedup
+// compares each new arm against every arm kept so far, so it keeps the key as a
+// bucket -- cheap, and wrong only by grouping facts that are not the same --
+// and calls this to confirm before dropping one.
+func typeFactsIdentical(left, right *TypeExpr) bool {
+	visited := 0
+	return typeFactsIdenticalCounted(left, right, &visited)
+}
+
+// typeFactsIdenticalCounted is typeFactsIdentical, counting the nodes it had to
+// compare to decide, for the caller that charges the walk.
+//
+// The fields it compares are the ones typeFactKey renders, so it answers the
+// same question the key was standing in for, minus the truncation. Shape is
+// compared by lookup rather than by rendering sorted names, which also drops
+// the key's ambiguity: a field name holding the key's own delimiters cannot
+// make two different shapes agree here.
+func typeFactsIdenticalCounted(left, right *TypeExpr, visited *int) bool {
+	if left == right {
+		return true
+	}
+	if left == nil || right == nil {
+		return false
+	}
+	*visited++
+	if left.Kind != right.Kind || left.Name != right.Name ||
+		left.Nullable != right.Nullable || left.Optional != right.Optional ||
+		left.Open != right.Open ||
+		len(left.TypeArgs) != len(right.TypeArgs) ||
+		len(left.Shape) != len(right.Shape) ||
+		len(left.Union) != len(right.Union) {
+		return false
+	}
+	for i, arg := range left.TypeArgs {
+		if !typeFactsIdenticalCounted(arg, right.TypeArgs[i], visited) {
+			return false
+		}
+	}
+	for name, field := range left.Shape {
+		other, named := right.Shape[name]
+		if !named || !typeFactsIdenticalCounted(field, other, visited) {
+			return false
+		}
+	}
+	for i, option := range left.Union {
+		if !typeFactsIdenticalCounted(option, right.Union[i], visited) {
+			return false
+		}
+	}
+	return true
+}
+
+// shapeFieldProvenanceRecorded reports whether anything keyed by this fact's
+// node identity records how the fact was built, rather than what it states,
+// about this field.
+//
+// A write of the type a fact already states rebuilds that fact exactly, so it
+// can keep the node instead of copying it. Keeping the node keeps every map
+// keyed by it, and those maps do not all survive a write. Three are keyed this
+// way. `typeExprNodeCounts` holds the node's own size and `shapeRefinements`
+// holds what the chain of writes has spent: the first is a property of the
+// type, which the write did not change, and the second is a property of the
+// budget, which the write did spend, so keeping both is right.
+// `shapeFieldSources` is provenance -- it records that two fields hold the
+// value of the same local, so a union boundary may pick one variant for both --
+// and a write from a different local breaks that while nothing about the type
+// changes. Copying is what used to drop it, since correlation is keyed by node
+// identity and a copy is a new node.
+//
+// The rule for anything keyed by a fact node later: an association derived from
+// the type may be carried across a write that restates the fact, and an
+// association derived from how the fact was built may not. Whatever is added of
+// the second kind belongs here, so the no-copy path falls through to the copy
+// that drops it.
+func (c *scriptChecker) shapeFieldProvenanceRecorded(shape *TypeExpr, field string) bool {
+	_, recorded := c.shapeFieldSources[shape][field]
+	return recorded
+}
+
+func widenedShapeFieldsWith(widened map[string]struct{}, key string) map[string]struct{} {
+	next := make(map[string]struct{}, len(widened)+1)
+	for field := range widened {
+		next[field] = struct{}{}
+	}
+	next[key] = struct{}{}
+	return next
+}
+
 // applyShapeFieldWrite is the shared core for shape field writes: index
 // assignment and the store mutator write one field the same way.
 func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeExpr, index, value Expression, pos Position, intact bool) bool {
@@ -11342,12 +11573,74 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 		if written == nil {
 			return false
 		}
+		// A write of the type the fact already states rebuilds the same fact, so
+		// it needs no copy at all. This is what a run of writes repeating one
+		// key costs. Keeping the fact keeps everything keyed by its node, which
+		// is only sound while none of that describes where the field's value
+		// came from -- see shapeFieldProvenanceRecorded.
+		existing, claimed := shape.Shape[key]
+		reusable := claimed && !c.shapeFieldProvenanceRecorded(shape, key)
+		if reusable && sameTypeFact(existing, written) {
+			return true
+		}
+		resolve := c.checkNamedTypeResolver()
+		state := c.shapeRefinements[shape]
+		widening := state.nodes > maxRefinedShapeNodes
+		if widening {
+			// The budget for restating this fact exactly is gone, so the fact
+			// has given up claiming to name every key. A write of a key it does
+			// not name changes nothing it says.
+			if !claimed {
+				return shape.Open
+			}
+			if _, wide := state.widened[key]; wide && reusable &&
+				typeExprSatisfies(written, existing, resolve) {
+				// This claim was already widened to admit both what the field
+				// held and what a write put there, so writes of either are free
+				// from here on. Narrowing it again would undo exactly that and
+				// let a key alternating between two types pay a copy per write,
+				// which is the quadratic the budget exists to refuse. This keeps
+				// the fact, so it carries the same condition as the shortcut
+				// above; only a fact a copy produced can be widened, and a copy
+				// leaves its provenance behind, so today nothing reaches here
+				// with any.
+				return true
+			}
+			if state.nodes > maxWidenedShapeNodes {
+				// Nothing true is left to say for the price of no copy. Give
+				// the fact up rather than rebuild a smaller one: an open shape
+				// assembled from whichever fields were convenient asserts
+				// nothing false, but it loses the fields it leaves out just as
+				// surely, so it buys no diagnostic back and leaves two shapes of
+				// degradation to keep right instead of one.
+				return false
+			}
+		}
+		copied := c.typeExprNodes(shape)
+		noteCheckWork(copied)
 		refined := cloneTypeExpr(shape)
 		refined.Name = marker
 		if refined.Shape == nil {
 			refined.Shape = make(map[string]*TypeExpr, 1)
 		}
-		refined.Shape[key] = written
+		next := shapeRefinementState{nodes: state.nodes + copied, widened: state.widened}
+		if next.nodes > maxRefinedShapeNodes {
+			// From the copy that spends the budget onwards the fact stops
+			// claiming to name every key, which is what makes the writes after
+			// it free. It keeps every field it named.
+			refined.Open = true
+		}
+		if widening && !typeExprSatisfies(written, existing, resolve) {
+			refined.Shape[key] = unionTypeExprs(existing, written)
+			next.widened = widenedShapeFieldsWith(state.widened, key)
+		} else {
+			refined.Shape[key] = written
+		}
+		// The copy's own size is what the next write would pay, and adding a
+		// field can only grow it, so charging the field without crediting the
+		// one it replaced keeps the estimate on the safe side of the budget.
+		c.noteTypeExprNodes(refined, copied+c.typeExprNodes(written)+1)
+		c.noteShapeRefinement(refined, next)
 		c.bindLocalType(name, refined)
 		return true
 	case "":
@@ -14564,7 +14857,15 @@ func (c *scriptChecker) applyHashMutatorCallFacts(
 // mutatorReceiverFactIntact reports whether a mutator receiver's local fact
 // survived a later operand or argument walk unchanged, so preserving it is
 // still about the same fact the writes were checked against.
+//
+// A walk that left the fact alone leaves the same node in place, so identity
+// settles the case that matters without serializing a wide fact twice to
+// discover it: doing that on every field write of a growing shape allocated
+// 185MB across 2,000 writes (#14).
 func mutatorReceiverFactIntact(current, captured *TypeExpr) bool {
+	if current == captured {
+		return current != nil
+	}
 	return current != nil && typeFactKey(current) == typeFactKey(captured)
 }
 
@@ -16773,18 +17074,29 @@ const maxInferredUnionArms = 6
 // an oversized result collapses to unknown.
 func unionTypeExprs(types ...*TypeExpr) *TypeExpr {
 	arms := make([]*TypeExpr, 0, len(types))
-	seen := make(map[string]struct{}, len(types))
+	seen := make(map[string][]*TypeExpr, len(types))
 	appendArm := func(arm *TypeExpr) {
 		// The dedup key canonicalizes the whole fact, including the internal
 		// Name markers at every nesting level (shape key kinds, witnessed
 		// array elements), so arms that render identically but carry
 		// different markers stay distinct instead of collapsing to whichever
 		// branch was joined first.
+		//
+		// It groups arms rather than deciding them. The key stops at
+		// maxTypeArmDepth and renders everything below as `?`, so two arms
+		// alike that far down and different underneath share a key while being
+		// different types. Dropping one on the key alone lost the difference:
+		// widening a field past the exact-refinement budget joins what the
+		// field held to what a write put there, and a write differing from the
+		// field only below the cutoff was joined away, leaving the field
+		// claiming the shape it held before the write.
 		key := typeFactKey(arm)
-		if _, duplicate := seen[key]; duplicate {
-			return
+		for _, kept := range seen[key] {
+			if typeFactsIdentical(kept, arm) {
+				return
+			}
 		}
-		seen[key] = struct{}{}
+		seen[key] = append(seen[key], arm)
 		arms = append(arms, arm)
 	}
 	for _, ty := range types {
@@ -16888,6 +17200,28 @@ func typeExprFactSizeRemaining(ty *TypeExpr, depth int, remaining *int) bool {
 // typeFactKey canonicalizes a type fact for deduplication. Unlike
 // formatTypeExpr it includes the Name field (which carries the internal
 // key-kind and witnessed-element markers) at every nesting level.
+//
+// It groups facts. It does not decide them. The walk stops at maxTypeArmDepth
+// and renders everything below as `?`, so two facts alike that far down and
+// different underneath produce one key. A match means "these belong in the same
+// bucket", never "these are the same fact". Use typeFactsIdentical for the
+// second question.
+//
+// The trap is not that it approximates, it is that it approximates silently.
+// Three walkers here stop at maxTypeArmDepth and the other two say so:
+// typeExprArms returns ok=false when it hits the limit and every caller refuses
+// to conclude, and typeExprFactSizeRemaining answers with a bool the same way.
+// This one hands back a string that looks like a complete answer and carries no
+// sign it stopped early, so a caller has to already know. Two defects came from
+// callers that did not: a field write took a matching key for proof that the
+// write restated the field and left the receiver bound to the fact it had, and
+// the union join took one for proof that an arm was a duplicate and dropped the
+// written shape. Both are in the shape-write path and both now walk.
+//
+// The rule that generalizes: an approximate answer has to carry its own
+// exactness. If a third caller needs proof from this, the fix is to make it
+// report whether it truncated rather than to keep auditing callers -- the
+// remaining ones want the grouping and are correct with it.
 func typeFactKey(ty *TypeExpr) string {
 	var b strings.Builder
 	appendTypeFactKey(&b, ty, 0)

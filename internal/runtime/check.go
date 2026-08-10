@@ -181,6 +181,8 @@ type scriptChecker struct {
 	summaryYieldBlockWalks     map[*BlockLiteral]int
 	storedBlockWalkNodes       map[*BlockLiteral]uint64
 	walkedNodes                uint64
+	typeExprNodeCounts         map[*TypeExpr]int
+	shapeRefinements           map[*TypeExpr]shapeRefinementState
 	summaryYieldsActive        bool
 	summaryBlockAvailable      bool
 	pinnedExpressionFacts      map[Expression]*TypeExpr
