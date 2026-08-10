@@ -378,6 +378,24 @@ func (exec *Execution) retainedArrayBackingBytes(est *memoryEstimator) int {
 	total := 0
 	for _, held := range exec.heldArrayBackings {
 		for _, retained := range held.retained {
+			// Charge the array itself, through the same estimator that walks
+			// the graph. It deduplicates on the storage behind a value, so
+			// where the graph walk has already reached this array this adds
+			// only its wrapper, and where nothing else reaches it this is what
+			// charges it.
+			//
+			// The skip below reads "something else is charging the window it
+			// shows", and that was assumed rather than established: a frame
+			// can walk on after the script drops its last binding to the
+			// array, leaving it reachable only from this record and a Go
+			// stack, neither of which the graph walk traverses. Dropping the
+			// binding then made the program cheaper -- 205,569 bytes against
+			// 240,697 with the binding kept -- which is this file's own defect
+			// reached through its accounting. Establishing the premise costs
+			// one deduplicated walk and removes the assumption rather than
+			// guarding the way it failed.
+			total += est.value(retained.receiver)
+
 			whole := retained.full[:cap(retained.full)]
 			current := retained.receiver.Array()
 			head, shown, within := sliceOffsetWithin(whole, current)

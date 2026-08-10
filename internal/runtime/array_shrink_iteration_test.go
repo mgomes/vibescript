@@ -919,3 +919,45 @@ end`)
 		t.Fatalf("one allocation described by two records must be charged once: %v", err)
 	}
 }
+
+// TestOrphanedRetainedReceiverIsCharged pins that an array a record holds costs
+// the same whether or not the script still names it.
+//
+// The record discounts the window the array shows, on the grounds that the graph
+// walk charges it. That holds only while something the walk traverses reaches
+// the array. A frame can walk on after the script drops its last binding,
+// leaving the array reachable from this record and a Go stack and nothing else,
+// at which point the discount comes off a charge nobody made: dropping the
+// binding made the program cheaper, at 205,569 bytes against 240,697 with it
+// kept. Live storage costing less the fewer names point at it is the defect this
+// file is about, reached through its own accounting.
+func TestOrphanedRetainedReceiverIsCharged(t *testing.T) {
+	t.Parallel()
+
+	elems := make([]Value, 400)
+	for i := range elems {
+		elems[i] = NewString(string(rune('a'+i%26)) + "payload")
+	}
+
+	// Between the two figures above: the shrink that keeps its binding does not
+	// fit here, so neither may the one that drops it.
+	const quota = 220 << 10
+	for _, tc := range []struct{ name, body string }{
+		{"binding_kept", "    a.pop\n    big = seed * 20000"},
+		{"binding_dropped", "    a.pop\n    a = nil\n    big = seed * 20000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: quota},
+				"def run(a, seed)\n  driver.walk(a) do |x|\n"+tc.body+"\n    return 1\n  end\n  0\nend")
+			_, err := script.Call(context.Background(), "run",
+				[]Value{NewArray(elems), NewString("abcdefghij")}, CallOptions{
+					Capabilities: []CapabilityAdapter{arrayArgDriver{}},
+				})
+			if err == nil {
+				t.Fatalf("%s was admitted under a quota it does not fit in", tc.name)
+			}
+		})
+	}
+}
