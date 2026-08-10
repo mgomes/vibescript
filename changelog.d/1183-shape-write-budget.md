@@ -11,3 +11,17 @@
   and never a key it already names: a shape is authoritative about the keys it
   omits, so dropping one would make the checker decide branches it should leave
   alone.
+- **Changed: a hash built from a very wide literal may now report mistakes in
+  branches the checker used to prove unreachable.** The budget above stops
+  refining once a script overwrites a few hundred fields of a literal that names
+  a few hundred, with values of a type the literal did not give them; a hundred
+  such overwrites is still well inside it, and smaller scripts never reach it at
+  all. Past that point the checker gives the hash's shape up rather than keep a
+  partial one, so a condition reading one of its fields stops being decided and
+  the arm that condition used to rule out is checked like any other. What turns
+  up there is real: a mistyped call or an undefined name that would have failed
+  had the arm ever run. It is never a complaint about correct code, since an arm
+  with nothing wrong in it stays silent, and code that runs either way is
+  unaffected, because a field the checker has stopped tracking reads as unknown
+  rather than as something else. Keeping the shape instead would have meant
+  copying it once per overwrite, which is the cost this fix exists to remove.
