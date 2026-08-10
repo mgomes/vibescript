@@ -5098,3 +5098,49 @@ func minMemoryQuotaForLookupNoArgs(t *testing.T, src string) int {
 	}
 	return lo
 }
+
+// A default proc is script code, and script code can change the hash's default:
+// Hash#replace adopts the replacement's, so the proc that serves the first
+// missing key can be gone by the second. Reading the proc once before the loop
+// and driving every miss through it therefore answered the second key from a
+// proc the hash no longer had. This is what the callback runner has to re-read
+// per key; it may reuse its scope, but only while the proc behind it is the same
+// one.
+func TestHashValuesAtRereadsTheDefaultAfterEachProc(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def run()
+      h = Hash.new { |g, k| g.replace(Hash.new(7)); 1 }
+      h.values_at(:a, :b)
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("values_at over a proc that replaces the hash: %v", err)
+	}
+	// The proc runs for :a and swaps the hash's default proc for a static 7, so
+	// :b is served by that static default rather than by the proc again.
+	compareArrays(t, got, []Value{NewInt(1), NewInt(7)})
+}
+
+// The reuse the runner exists for has to survive the per-key re-read: a proc
+// that never changes must still be driven through one scope, or the base walk
+// is discarded on every miss and the lookup goes quadratic again.
+//
+// Not parallel: the estimator visit counter is process-wide.
+func TestHashValuesAtKeepsTheMemoWhileTheProcIsUnchanged(t *testing.T) {
+	if estimatorVerify {
+		t.Skip("the estimator oracle re-derives a reference walk per retained result, which is deliberately quadratic")
+	}
+
+	const small, large = 400, 800
+	tmpl := "def run()\n  h = Hash.new { |g, k| \"xxxxxxxxxxxxxxxx\" }\n  h.values_at(%s).length\nend"
+	atSmall := lookupEstimatorVisits(t, fmt.Sprintf(tmpl, missingKeyList(small)))
+	atLarge := lookupEstimatorVisits(t, fmt.Sprintf(tmpl, missingKeyList(large)))
+	if atLarge > atSmall*3 {
+		t.Errorf("estimator visited %d nodes for %d misses and %d for %d; doubling the misses should "+
+			"roughly double the walk, so re-reading the default is rebuilding the runner every key",
+			atSmall, small, atLarge, large)
+	}
+}
