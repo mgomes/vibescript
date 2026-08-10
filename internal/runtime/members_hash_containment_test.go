@@ -5271,6 +5271,143 @@ func TestHashLookupDoesNotBillALaterLookupForARescuedFailure(t *testing.T) {
 	}
 }
 
+// nestedLookupSource places a lookup inside another iterator's block, which is
+// the shape none of this file's other lookup tests reach: an enclosing driver
+// opens the block-iteration region, so the lookup's own checks run against a
+// memoized PREFIX (the frames below that region's boundary) with the enclosing
+// block's scopes re-walked as the active suffix.
+//
+// where says which frame holds the payload the callback returns, and it is the
+// whole point of the shape. "suffix" puts it in the enclosing block's own scope,
+// at or above the boundary; "prefix" puts it in the function frame below it;
+// "flat" drops the enclosing driver entirely. params is the callback's parameter
+// list, since only a named rest builds the blockBindCharge that reads liveBaseline.
+func nestedLookupSource(where, params string, payload int) string {
+	body := "    h = Hash.new { |g, %s| big }\n" +
+		"    h.values_at([1, 2], [3, 4]).length\n"
+	switch where {
+	case "flat":
+		return fmt.Sprintf("def run()\n  big = \"x\" * %d\n"+
+			strings.ReplaceAll(body, "    ", "  ")+"end", payload, params)
+	case "prefix":
+		return fmt.Sprintf("def run()\n  big = \"x\" * %d\n  [1].map do |x|\n"+
+			body+"  end.length\nend", payload, params)
+	default:
+		return fmt.Sprintf("def run()\n  [1].map do |x|\n    big = \"x\" * %d\n"+
+			body+"  end.length\nend", payload, params)
+	}
+}
+
+// A lookup nested inside another iterator's block must cost what the same lookup
+// costs on its own. Nesting changes which frames are memoized as the region's
+// stable prefix and which are re-walked as its active suffix, and the lookup's
+// output roots are priced against the prefix; where that pricing is right, the
+// nested spelling must not charge for the payload a second time.
+//
+// The assertion is that the surcharge for nesting does not depend on the payload:
+// a structural cost for the enclosing block's own frames is expected, a cost that
+// tracks the string is the double count. That keeps the test off any particular
+// byte total while still failing loudly if a payload ever leaks into it.
+//
+// Two shapes are covered here because both are correct today. A callback with no
+// named rest never builds a blockBindCharge, so nothing consults liveBaseline. A
+// rest-binding callback does, but with the payload in the function frame it sits
+// below the region boundary, in the memoized prefix, where the prefix basis and
+// the full-graph basis agree. The third shape -- a rest-binding callback over a
+// payload in the enclosing block's scope -- is the one that is wrong today and is
+// pinned separately below.
+func TestNestedHashLookupDoesNotRechargeTheEnclosingBlocksPayload(t *testing.T) {
+	t.Parallel()
+
+	const small, large = 100_000, 200_000
+	shapes := map[string][2]string{
+		"no rest, payload in the enclosing block": {"suffix", "k"},
+		"no rest, payload below the boundary":     {"prefix", "k"},
+		"named rest, payload below the boundary":  {"prefix", "(head, *tail)"},
+	}
+	for name, shape := range shapes {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			where, params := shape[0], shape[1]
+			atSmall := minMemoryQuotaForLookupNoArgs(t, nestedLookupSource(where, params, small)) -
+				minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("flat", params, small))
+			atLarge := minMemoryQuotaForLookupNoArgs(t, nestedLookupSource(where, params, large)) -
+				minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("flat", params, large))
+
+			if drift := atLarge - atSmall; drift < -1024 || drift > 1024 {
+				t.Fatalf("nesting cost %d bytes over the flat spelling at a %d-byte payload and %d at %d, "+
+					"a %d-byte drift; the surcharge tracks the payload, so the nested spelling is being "+
+					"charged for it twice", atSmall, small, atLarge, large, drift)
+			}
+		})
+	}
+}
+
+// The known over-charge, pinned by its shape rather than by its value.
+//
+// A rest-binding callback returning a value held by the ENCLOSING block's scope is
+// charged for that value twice. liveBaseline subtracts a start value taken over the
+// full graph from a later reading the region memo serves over the prefix alone, and
+// the enclosing block's scope is in neither the prefix nor the start value, so the
+// payload it holds reads as fresh growth on top of a baseline that already carries
+// it. The lookup is charged more than it uses; nothing is let through unchecked.
+//
+// This asserts that the surcharge tracks the payload, which is exactly what the
+// correct shapes above assert it must NOT do. It is written to fail once the two
+// readings are put on one basis, because at that point this shape joins the ones
+// above and belongs in that test rather than this one.
+func TestNestedRestBindingHashLookupOverchargesForTheEnclosingBlocksPayload(t *testing.T) {
+	t.Parallel()
+
+	const small, large = 100_000, 200_000
+	const params = "(head, *tail)"
+	atSmall := minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("suffix", params, small)) -
+		minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("flat", params, small))
+	atLarge := minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("suffix", params, large)) -
+		minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("flat", params, large))
+
+	// The surcharge is one whole payload, so doubling the payload doubles it.
+	if growth := atLarge - atSmall; growth < (large-small)/2 {
+		t.Fatalf("the nested rest-binding spelling cost %d bytes over the flat one at a %d-byte payload "+
+			"and %d at %d: the surcharge no longer tracks the payload, so the retained-output readings "+
+			"have been put on one basis. Move this shape into "+
+			"TestNestedHashLookupDoesNotRechargeTheEnclosingBlocksPayload and delete this test",
+			atSmall, small, atLarge, large)
+	}
+}
+
+// Nesting must not change what a lookup returns, whatever it costs.
+func TestNestedHashLookupsReturnTheSameResults(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		src  string
+		want int64
+	}{
+		"values_at, no rest": {"def run()\n  t = 0\n  [1, 2].each do |x|\n" +
+			"    h = Hash.new { |g, k| x * 10 }\n" +
+			"    h.values_at(:a, :b).each { |v| t = t + v }\n  end\n  t\nend", 60},
+		"values_at, named rest": {"def run()\n  t = 0\n  [1, 2].each do |x|\n" +
+			"    h = Hash.new { |g, (head, *tail)| head + x }\n" +
+			"    h.values_at([5, 6], [7, 8]).each { |v| t = t + v }\n  end\n  t\nend", 30},
+		"fetch_values": {"def run()\n  t = 0\n  [1, 2].each do |x|\n" +
+			"    { }.fetch_values(:a, :b) { |k| x }.each { |v| t = t + v }\n  end\n  t\nend", 6},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 16 << 20}, tc.src)
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if got.Kind() != KindInt || got.Int() != tc.want {
+				t.Fatalf("nested lookup produced %v, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 // intArray builds a receiver of count distinct ints, cheap enough that a test
 // weighing payloads is not measuring the receiver.
 func intArray(count int) Value {
