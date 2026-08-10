@@ -363,16 +363,21 @@ func (exec *Execution) retainedArrayBackingBytes(est *memoryEstimator) int {
 		for _, retained := range held.retained {
 			whole := retained.full[:cap(retained.full)]
 			current := retained.receiver.Array()
-			head, shown := sliceOffsetWithin(whole, current)
+			head, shown, within := sliceOffsetWithin(whole, current)
 			for i, val := range whole {
-				if i >= head && i < head+shown {
+				if within && i >= head && i < head+shown {
 					continue
 				}
 				total += est.value(val)
 			}
-			if shown == 0 && cap(current) == 0 {
-				// The array shows none of this allocation, so nothing else
-				// accounts for any of it, base included.
+			if !within {
+				// The array has moved off this allocation, so nothing else
+				// accounts for any of it, base included. Its capacity is no
+				// measure of this one and must not be netted off: a push that
+				// grew the array onto larger storage would otherwise subtract
+				// that storage's slots, cancelling a charge the graph walk had
+				// correctly made. The same script was admitted at 349,841 bytes
+				// with a record over the old storage and 398,737 without.
 				total += valueSliceBackingBytes(len(whole))
 				continue
 			}
@@ -382,16 +387,18 @@ func (exec *Execution) retainedArrayBackingBytes(est *memoryEstimator) int {
 	return total
 }
 
-// sliceOffsetWithin returns where inner starts within outer's allocation and how
-// many elements it shows there, or zero and zero when it is not part of it.
-func sliceOffsetWithin(outer, inner []Value) (offset, shown int) {
+// sliceOffsetWithin returns where inner starts within outer's allocation and
+// how many elements it shows there. within says whether it is part of that
+// allocation at all, which the offset and count cannot: an array that has moved
+// onto storage of its own is not at offset zero showing nothing.
+func sliceOffsetWithin(outer, inner []Value) (offset, shown int, within bool) {
 	if !sliceWithinAllocation(outer, inner) {
-		return 0, 0
+		return 0, 0, false
 	}
 	size := unsafe.Sizeof(Value{})
 	outerStart := uintptr(unsafe.Pointer(unsafe.SliceData(outer)))
 	innerStart := uintptr(unsafe.Pointer(unsafe.SliceData(inner)))
-	return int((innerStart - outerStart) / size), len(inner)
+	return int((innerStart - outerStart) / size), len(inner), true
 }
 
 // detachedArrayBackingBytes is the memory of every header a shrink has copied

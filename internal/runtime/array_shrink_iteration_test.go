@@ -838,3 +838,46 @@ end`)
 		t.Fatalf("array holds %d elements after the drain, want 0", got.Int())
 	}
 }
+
+// TestRetainedRecordNeverLowersTheQuota pins that holding a record over storage
+// an array has left cannot make a program fit that would not fit without it.
+//
+// The record charges the part of an allocation the array no longer shows, which
+// it worked out by netting the array's own capacity off the allocation's. Once
+// a push moves the array onto storage of its own that capacity is no measure of
+// this allocation, and netting it off subtracts the new storage's slots --
+// cancelling a charge the graph walk had correctly made. The same growth was
+// admitted at 349,841 bytes with a record over the old storage and 398,737
+// without, so a shrink was buying quota rather than costing it.
+func TestRetainedRecordNeverLowersTheQuota(t *testing.T) {
+	t.Parallel()
+
+	const grow = `    i = 0
+    while i < 4000
+      a.push(i)
+      i = i + 1
+    end
+    return a.size`
+	// Below what this growth needs, so neither form may be admitted. A record
+	// that netted off the array's new capacity let the shrinking form through.
+	const quota = 380 << 10
+
+	for _, tc := range []struct{ name, body string }{
+		{"grow", grow},
+		{"shrink_then_grow", "    a.pop\n" + grow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: quota},
+				"def run(a)\n  driver.walk(a) do |x|\n"+tc.body+"\n  end\n  0\nend")
+			_, err := script.Call(context.Background(), "run",
+				[]Value{NewArray([]Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})}, CallOptions{
+					Capabilities: []CapabilityAdapter{arrayArgDriver{}},
+				})
+			if err == nil {
+				t.Fatalf("%s was admitted under a quota it does not fit in", tc.name)
+			}
+		})
+	}
+}
