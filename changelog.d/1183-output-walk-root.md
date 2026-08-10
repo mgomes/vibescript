@@ -15,3 +15,15 @@
   and then raises pays for the walks it forced exactly as one that returns does,
   and a rescued failure leaves nothing behind for a later lookup to be billed for.
   `VIBES_ESTIMATOR_VERIFY` re-derives every commit from scratch.
+- **Known: one nested lookup shape is charged more memory than it uses.** A
+  `Hash#fetch_values` or `Hash#values_at` whose callback destructures with a named
+  rest (`|(head, *tail)|`), nested inside another iterator's block, and returning a
+  value that the enclosing block's own scope holds, is charged for that value
+  twice from its second callback onward. A script doing this needs roughly one
+  extra copy of the returned value's size in `MemoryQuotaBytes`. Nothing is let
+  through unchecked -- the lookup is over-charged, not under-charged -- and the
+  quota still bounds what it can allocate. Flat lookups, callbacks without a named
+  rest, and nested lookups returning a value held outside the enclosing block are
+  all unaffected and cost what they did before. This is a known cost of bounding a
+  path that was previously unbounded, and the accounting fix is deliberately left
+  to its own change.
