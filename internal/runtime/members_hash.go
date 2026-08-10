@@ -950,7 +950,7 @@ func hashMemberQuery(property string) (Value, error) {
 			backing := exec.reserveLoopScratch(arraySlotBackingBytes(len(args)))
 			defer exec.releaseLoopScratch(backing)
 			var out []Value
-			exec.pushOutputWalkRoot(retainedValues(&out))
+			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &out))
 			defer exec.popOutputWalkRoot()
 			out = make([]Value, len(args))
 			// The proc is driven through a runner inside a block-iteration region
@@ -1047,7 +1047,7 @@ func hashMemberQuery(property string) (Value, error) {
 			backing := exec.reserveLoopScratch(arraySlotBackingBytes(len(args)))
 			defer exec.releaseLoopScratch(backing)
 			var out []Value
-			exec.pushOutputWalkRoot(retainedValues(&out))
+			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &out))
 			defer exec.popOutputWalkRoot()
 			out = make([]Value, len(args))
 			// The block is driven through a runner inside a block-iteration region
