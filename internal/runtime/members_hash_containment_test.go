@@ -5082,6 +5082,14 @@ func TestHashValuesAtChargesTheWalkAStatefulProcForces(t *testing.T) {
 	// Deliberately not parallel: this measures step counts, and
 	// baseWalkCacheDisabled is process-wide, so a concurrent test that turns
 	// memoization off would be measured here as extra charge.
+	//
+	// The rule is broader than "measures step counts", which is worth stating
+	// because the narrow version misleads. It is: any test whose expected result
+	// depends on the base-walk memo being live must stay off the parallel phase.
+	// Memory-quota tests are not exempt -- the over-charge one below asserts a
+	// surcharge that exists only while the memo serves readings, was marked
+	// parallel on the reasoning that the switch was a step-count concern, and
+	// duly failed in the full suite while passing alone.
 	const small, large = 400, 1600
 	tmpl := "def run(a, n)\n  counter = [0]\n" +
 		"  h = Hash.new { |g, k| counter[0] = counter[0] + 1; 1 }\n" +
