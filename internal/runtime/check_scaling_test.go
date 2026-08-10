@@ -1,0 +1,409 @@
+package runtime
+
+import (
+	"fmt"
+	"runtime"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// The static checker runs inside CheckWarnings and CheckedCall before any
+// script step executes, so work it does per source element is metered by
+// nothing. Each test below drives a source that reaches one such site and
+// measures what that site handles -- the elements it inspects or copies, or the
+// bytes the check allocates where the copies are the allocation -- asserting
+// the measurement grows with the source rather than with its square.
+//
+// None of them call t.Parallel: the counters and the process allocation total
+// are process-wide, so a concurrent check would fold its own work into them.
+
+func measureCheckWork(t *testing.T, source string) uint64 {
+	t.Helper()
+
+	script := compileScript(t, source)
+	checkWorkUnits.Store(0)
+	checkWorkCounting.Store(true)
+	defer checkWorkCounting.Store(false)
+	script.CheckWarnings()
+	return checkWorkUnits.Load()
+}
+
+func destructuredFillBlockSource(params int) string {
+	names := make([]string, 0, params+1)
+	for i := range params {
+		names = append(names, fmt.Sprintf("a%d", i))
+	}
+	names = append(names, "*rest")
+	return fmt.Sprintf(`
+def f(items: array<int>)
+  items.fill() do |(%s)|
+    1
+  end
+end
+`, strings.Join(names, ", "))
+}
+
+// A destructured block parameter resolved one element at a time rescanned the
+// whole target for its rest element and re-decomposed the yielded value, so an
+// array.fill block taking `(x1, ..., xN, *rest)` cost N*N element inspections
+// during a check (#6).
+func TestCheckDestructuredBlockParamBindStaysLinear(t *testing.T) {
+	small := measureCheckWork(t, destructuredFillBlockSource(2000))
+	large := measureCheckWork(t, destructuredFillBlockSource(4000))
+
+	// Measured 2,002 then 4,002 inspections, a 2.00x step for a doubled
+	// parameter list. Before, the same pair inspected 4.0M and 16.0M, a 4.00x
+	// step. The assertion allows up to 3x so it states the complexity rather
+	// than pinning counts that ordinary checker changes would shift.
+	if large > small*3 {
+		t.Fatalf("doubling the destructured parameters inspected %d elements against %d --"+
+			" over 3x, so binding a destructured block parameter is superlinear again", large, small)
+	}
+}
+
+// The layout is derived once per bind, so it has to keep answering for every
+// position: a rest element whose own head cannot hold the yielded value still
+// has to prove the block never enters, which is what leaves the fill receiver's
+// declared element type standing.
+func TestDestructuredFillBlockKeepsBindingDiagnostics(t *testing.T) {
+	binds := compileScript(t, `
+def f(items: array<int>)
+  items.fill() do |(a, b)|
+    "bad"
+  end
+end
+`)
+	requireCheckWarning(t, binds.CheckWarnings(),
+		"write to items expected element int, got string")
+
+	// A fill yields an int index, which destructures as a one-element sequence,
+	// so the leading target is an int the string annotation can never hold and
+	// the "bad" result never reaches the receiver. items keeps array<int>, and
+	// only the later append contradicts it.
+	neverBinds := compileScript(t, `
+def f(items: array<int>)
+  items.fill() do |(a: string, *rest)|
+    "bad"
+  end
+  items << true
+end
+`)
+	warnings := neverBinds.CheckWarnings()
+	requireCheckWarning(t, warnings, "write to items expected element int, got bool")
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "got string") {
+			t.Fatalf("a block that cannot bind still wrote its result: %v", warnings)
+		}
+	}
+}
+
+func measureCheckAllocation(t *testing.T, source string) uint64 {
+	t.Helper()
+
+	script := compileScript(t, source)
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	script.CheckWarnings()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+func variadicRestCallSource(args int) string {
+	return fmt.Sprintf(`
+def sink(*xs)
+  xs
+end
+
+def f()
+  sink(%s)
+end
+`, strings.TrimSuffix(strings.Repeat("0, ", args), ", "))
+}
+
+// Modeling a rest parameter rebuilt the whole aggregate at every supplied
+// argument, so a call with one static value per argument kept a single
+// alternative and still copied 1 + 2 + ... + N expressions to reach it (#9).
+// This counts allocated bytes because the copies are the allocation.
+func TestCheckVariadicRestCallAllocationStaysLinear(t *testing.T) {
+	small := measureCheckAllocation(t, variadicRestCallSource(1000))
+	large := measureCheckAllocation(t, variadicRestCallSource(2000))
+
+	// Measured 2.7MB then 5.5MB, a 2.0x step for a doubled argument list.
+	// Before, the same pair allocated 71MB and 274MB, a 3.8x step. The
+	// assertion allows up to 3x so it states the complexity rather than pinning
+	// byte counts that ordinary checker changes would shift.
+	if large > small*3 {
+		t.Fatalf("doubling the rest arguments allocated %d bytes against %d -- over 3x,"+
+			" so binding a rest parameter is superlinear in the argument count again", large, small)
+	}
+}
+
+// The aggregate exists so that indexing a rest parameter recovers the exact
+// argument that landed at that position, which is the fact the diagnostic below
+// depends on. Appending in place has to leave every position where it was.
+func TestVariadicRestCallKeepsExactArgumentPositions(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		index string
+		call  string
+	}{
+		{name: "first argument", index: "xs[0]", call: `sink("bad", 1)`},
+		{name: "later argument", index: "xs[2]", call: `sink(1, 2, "bad", 4)`},
+		{name: "last argument", index: "xs[3]", call: `sink(1, 2, 3, "bad")`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := compileScript(t, fmt.Sprintf(`
+def sink(*xs)
+  %s
+end
+
+def take(v: int)
+  v
+end
+
+def f()
+  take(%s)
+end
+`, tc.index, tc.call))
+			requireCheckWarning(t, script.CheckWarnings(),
+				"call to take argument v expected int, got string")
+		})
+	}
+}
+
+func requireCheckWarning(t *testing.T, warnings []CheckWarning, want string) {
+	t.Helper()
+
+	for _, warning := range warnings {
+		if warning.Message == want {
+			return
+		}
+	}
+	t.Fatalf("expected the warning %q, got %v", want, warnings)
+}
+
+func namespaceWriteCallSource(writes int, callee string) string {
+	var body strings.Builder
+	for i := range writes {
+		fmt.Fprintf(&body, "  JSON.m%d = 1\n", i)
+		body.WriteString("  take(callee())\n")
+	}
+	return fmt.Sprintf(`
+def callee()
+  %s
+end
+
+def take(x: int)
+  x
+end
+
+def main()
+%send
+`, callee, body.String())
+}
+
+// A return summary was cached under a context naming every recorded namespace
+// member, so a script that assigns a new member before each call to an
+// unannotated function in a typed position re-sorted and re-joined the whole
+// member list for every call, and kept the result as a map key (#18).
+func TestCheckReturnSummaryContextStaysLinear(t *testing.T) {
+	small := measureCheckWork(t, namespaceWriteCallSource(400, "1"))
+	large := measureCheckWork(t, namespaceWriteCallSource(800, "1"))
+
+	// Measured 2 member names joined at both sizes: the callee's summary never
+	// reads the recorded members, so it is kept under a context that does not
+	// name them and the list is never built again. Before, the same pair joined
+	// 721,800 and 2,883,600 names, a 4.00x step. The assertion allows up to 3x
+	// so it states the complexity rather than pinning counts.
+	if large > small*3 {
+		t.Fatalf("doubling the namespace writes joined %d member names against %d -- over 3x,"+
+			" so keying a return summary is superlinear in the recorded members again", large, small)
+	}
+}
+
+// A summary that does read the recorded members still has to be separated by
+// them: the namespace write below turns a statically known class method into a
+// dynamic one, and the callee's result has to stop being a known string at that
+// point rather than staying whatever the earlier call proved.
+func TestNamespaceDependentReturnSummarySeparatesContexts(t *testing.T) {
+	const callee = `
+def take(v: int)
+  v
+end
+
+def stringified()
+  JSON.stringify(1)
+end
+`
+	before := compileScript(t, callee+`
+def f()
+  take(stringified())
+  JSON.stringify = 1
+  take(stringified())
+end
+`)
+	warnings := before.CheckWarnings()
+	requireCheckWarning(t, warnings, "call to take argument v expected int, got string")
+	if len(warnings) != 1 {
+		t.Fatalf("only the call before the namespace write is decided, got %v", warnings)
+	}
+
+	after := compileScript(t, callee+`
+def f()
+  JSON.stringify = 1
+  take(stringified())
+end
+`)
+	if warnings := after.CheckWarnings(); len(warnings) != 0 {
+		t.Fatalf("a reassigned namespace member left the callee decided: %v", warnings)
+	}
+}
+
+func storedBlockFillSource(n int) string {
+	var body strings.Builder
+	for i := range n {
+		fmt.Fprintf(&body, "    v%d = index + %d\n", i, i)
+	}
+	return fmt.Sprintf(`
+def f(items: array<int>)
+  callback = proc do |index|
+%s    1
+  end
+%send
+`, body.String(), strings.Repeat("  items.fill(&callback)\n", n))
+}
+
+// A block reached through a stored callable is written once and walked again
+// for its result at every site that passes it, so a proc body and the sites
+// passing it multiplied: N body statements filled N times walked N*N (#10).
+func TestCheckStoredBlockResultWalksStayLinear(t *testing.T) {
+	small := measureCheckWork(t, storedBlockFillSource(200))
+	large := measureCheckWork(t, storedBlockFillSource(400))
+
+	// Measured 8,030 then 8,015 nodes walked, which is the cap plus the walk
+	// that reached it. Before, the same pair walked 40,200 and 160,400
+	// statements, a 3.99x step. The assertion allows up to 3x so it states the
+	// complexity rather than pinning counts.
+	if large > small*3 {
+		t.Fatalf("doubling the source walked %d stored block nodes against %d -- over 3x,"+
+			" so resolving a stored block's result is superlinear in the sites passing it again", large, small)
+	}
+}
+
+// A body of one wide expression is one statement, so charging the budget per
+// statement left it able to walk any number of nodes per site: the proc below
+// rechecks every element of its array literal at every site that passes it
+// (#10).
+func wideExpressionStoredBlockSource(n int) string {
+	elements := strings.TrimSuffix(strings.Repeat("1, ", n), ", ")
+	return fmt.Sprintf(`
+def f(items: array<int>)
+  callback = proc do |index|
+    [%s]
+  end
+%send
+`, elements, strings.Repeat("  items.fill(&callback)\n", n))
+}
+
+func TestCheckWideExpressionStoredBlockWalksStayLinear(t *testing.T) {
+	small := measureCheckAllocation(t, wideExpressionStoredBlockSource(400))
+	large := measureCheckAllocation(t, wideExpressionStoredBlockSource(800))
+
+	// Measured 1.4MB then 1.6MB. Charging the budget per statement instead, the
+	// same pair allocated 19MB and 62MB while the budget recorded 400 and 800
+	// units, since one statement is one unit however wide it is. This counts
+	// allocated bytes because the point is what the repeated walks cost, not
+	// what the budget believes they cost.
+	if large > small*3 {
+		t.Fatalf("doubling the source allocated %d bytes against %d -- over 3x, so a wide"+
+			" expression in a stored block escapes the walk budget again", large, small)
+	}
+}
+
+// The cap has to leave ordinary code alone: a proc of a few statements is
+// walked for its result at thousands of sites before it binds, and every one of
+// those sites still decides the receiver's element type exactly, which is what
+// the append below contradicts.
+func TestStoredBlockFillKeepsResultDiagnostics(t *testing.T) {
+	source := func(sites int) string {
+		return fmt.Sprintf(`
+def f(items: array<int>)
+  callback = proc do |index|
+    1
+  end
+%s  items << true
+end
+`, strings.Repeat("  items.fill(&callback)\n", sites))
+	}
+	const want = "write to items expected element int, got bool"
+
+	requireCheckWarning(t, compileScript(t, source(1)).CheckWarnings(), want)
+	requireCheckWarning(t, compileScript(t, source(1000)).CheckWarnings(), want)
+
+	// Past the cap the result reads as inexact, which weakens the receiver's
+	// fact. That can only cost the diagnostic above, never produce another.
+	warnings := compileScript(t, storedBlockFillSource(200)+"").CheckWarnings()
+	if len(warnings) != 0 {
+		t.Fatalf("a stored block past the walk cap reported %v", warnings)
+	}
+}
+
+// rescuedStoredBlockFillSource repeats a fill of the same stored block inside a
+// rescue so that a body which always raises still lets the next site be
+// reached, which is what lets the sites accumulate against the walk cap before
+// the unrescued fill at the end.
+func rescuedStoredBlockFillSource(body, sites int, result string) string {
+	var statements strings.Builder
+	for i := range body {
+		fmt.Fprintf(&statements, "    v%d = index + %d\n", i, i)
+	}
+	guarded := strings.Repeat(`  begin
+    items.fill(&callback)
+  rescue
+    nil
+  end
+`, sites)
+	return fmt.Sprintf(`
+def take(v: int)
+  v
+end
+
+def f()
+  items = [1, 2, 3]
+  callback = proc do |index|
+%s    %s
+  end
+%s  items.fill(&callback)
+  take("bad")
+end
+`, statements.String(), result, guarded)
+}
+
+// Declining the walk must report no more than performing it would. A stored
+// block that always raises leaves the code after the fill unreachable, so the
+// call to take is never diagnosed -- and a run of sites long enough to exhaust
+// the walk cap must not make it reachable again by assuming the body it skipped
+// completes (#10).
+func TestStoredBlockWalkCapAddsNoDiagnostics(t *testing.T) {
+	for _, result := range []string{`raise "boom"`, "1"} {
+		t.Run(result, func(t *testing.T) {
+			underCap := checkWarningMessages(compileScript(t, rescuedStoredBlockFillSource(10, 10, result)).CheckWarnings())
+			overCap := checkWarningMessages(compileScript(t, rescuedStoredBlockFillSource(100, 100, result)).CheckWarnings())
+
+			for _, message := range overCap {
+				if !slices.Contains(underCap, message) {
+					t.Fatalf("exhausting the walk cap reported %q, which the same shape under the"+
+						" cap does not: %v against %v", message, overCap, underCap)
+				}
+			}
+		})
+	}
+
+	// The raising body is the shape the cap could have made reachable, so pin
+	// it directly rather than only as a subset.
+	if messages := checkWarningMessages(compileScript(t, rescuedStoredBlockFillSource(100, 100, `raise "boom"`)).CheckWarnings()); len(messages) != 0 {
+		t.Fatalf("code after a fill whose block always raises was diagnosed: %v", messages)
+	}
+}

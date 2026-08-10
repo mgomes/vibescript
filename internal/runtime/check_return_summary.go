@@ -179,7 +179,7 @@ func (c *scriptChecker) scriptCallableInstanceOrigins(
 
 // scriptFunctionCallMayComplete reports whether an owned script function has
 // any normal result for this call shape. Foreign functions and recursive
-// in-progress analyses remain gradual.
+// in-progress analyzes remain gradual.
 func (c *scriptChecker) scriptFunctionCallMayComplete(
 	call *CallExpr,
 	target staticCallable,
@@ -365,7 +365,7 @@ func (c *scriptChecker) functionReturnAnalysis(
 	if fn == nil {
 		return functionReturnAnalysis{mayComplete: true, bodyMayComplete: true}
 	}
-	key := c.returnSummaryCacheKey(
+	memberFreeKey := c.returnSummaryCallShapeKey(
 		fn,
 		runnableDefaults,
 		hashSuppliedParams,
@@ -373,7 +373,15 @@ func (c *scriptChecker) functionReturnAnalysis(
 		paramFacts,
 		blockAvailable,
 	)
-	if analysis, ok := c.returnAnalyses[key]; ok {
+	if analysis, ok := c.memberFreeReturnAnalyzes[memberFreeKey]; ok {
+		return analysis
+	}
+	key := memberFreeKey
+	key.context = c.runtimeNamespaceMembersKey() + "\x01" + key.context
+	if analysis, ok := c.returnAnalyzes[key]; ok {
+		// This summary was computed by a walk that read the recorded members,
+		// so the caller reusing it inherits that dependence.
+		c.namespaceMemberReads++
 		return analysis
 	}
 	if c.summaryInProgress == nil {
@@ -385,6 +393,7 @@ func (c *scriptChecker) functionReturnAnalysis(
 	c.summaryInProgress[key] = struct{}{}
 	defer delete(c.summaryInProgress, key)
 
+	memberReads := c.namespaceMemberReads
 	collector := c.collectFunctionReturnFacts(
 		fn,
 		runnableDefaults,
@@ -415,26 +424,61 @@ func (c *scriptChecker) functionReturnAnalysis(
 			}
 		}
 	}
-	if c.returnAnalyses == nil {
-		c.returnAnalyses = make(map[returnSummaryCacheKey]functionReturnAnalysis)
-	}
-	c.returnAnalyses[key] = analysis
+	c.retainReturnAnalysis(key, memberFreeKey, memberReads, analysis)
 	return analysis
 }
 
-// returnSummaryCacheKey separates summaries computed under different runtime
-// bindings. A required module or a reassigned namespace member can change a
-// callee from statically known to dynamic, so reusing a fact across those
-// states would make the checker unsound; different call shapes run different
-// parameter defaults, so their effects separate the key too.
-func (c *scriptChecker) returnSummaryCacheKey(
+// maxRetainedSummaryContextBytes caps the cache-key text one check keeps for
+// summaries whose walk read the recorded namespace members. Those keys name
+// every recorded member, and a script that assigns a new member before each
+// call retained one such key per call, so the cache alone grew with the square
+// of the source. Past the cap the memo starts over, which costs a recomputation
+// and nothing else: the summaries it produces are the same either way (#18).
+const maxRetainedSummaryContextBytes = 8 << 20
+
+// retainReturnAnalysis memos a computed summary. A walk that never read the
+// recorded members cannot have depended on them, so its summary answers under
+// every member set and is kept under the member-free key, which is what keeps
+// a script assigning members between calls from recomputing (and re-keying) the
+// same summary once per assignment.
+func (c *scriptChecker) retainReturnAnalysis(
+	key, memberFreeKey returnSummaryCacheKey,
+	memberReadsBefore uint64,
+	analysis functionReturnAnalysis,
+) {
+	if c.namespaceMemberReads == memberReadsBefore {
+		if c.memberFreeReturnAnalyzes == nil {
+			c.memberFreeReturnAnalyzes = make(map[returnSummaryCacheKey]functionReturnAnalysis)
+		}
+		c.memberFreeReturnAnalyzes[memberFreeKey] = analysis
+		return
+	}
+	if c.returnAnalyzes == nil {
+		c.returnAnalyzes = make(map[returnSummaryCacheKey]functionReturnAnalysis)
+	}
+	if c.returnAnalysisContextBytes+len(key.context) > maxRetainedSummaryContextBytes {
+		clear(c.returnAnalyzes)
+		c.returnAnalysisContextBytes = 0
+	}
+	c.returnAnalysisContextBytes += len(key.context)
+	c.returnAnalyzes[key] = analysis
+}
+
+// returnSummaryCallShapeKey separates summaries computed under different module
+// bindings and call shapes. A required module can change a callee from
+// statically known to dynamic, so reusing a fact across those states would make
+// the checker unsound; different call shapes run different parameter defaults,
+// so their effects separate the key too. The recorded namespace members separate
+// it as well, but only for a walk that read them, so they are added by the
+// caller rather than spelled here.
+func (c *scriptChecker) returnSummaryCallShapeKey(
 	fn *ScriptFunction,
 	runnableDefaults, hashSuppliedParams []int,
 	definiteDefaults bool,
 	paramFacts map[string]checkReachableParamFact,
 	blockAvailable bool,
 ) returnSummaryCacheKey {
-	context := c.runtimeCheckContextKey()
+	context := c.runtimeBindingContextKey()
 	if len(runnableDefaults) > 0 {
 		context += "\x01defaults:" + fmt.Sprint(runnableDefaults)
 		if definiteDefaults {

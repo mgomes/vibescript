@@ -165,7 +165,10 @@ type scriptChecker struct {
 	retryExitSites             *[]checkStateSnapshot
 	implicitReturnLeaves       map[Statement]struct{}
 	implicitReturnStates       map[Statement]checkStateSnapshot
-	returnAnalyses             map[returnSummaryCacheKey]functionReturnAnalysis
+	returnAnalyzes             map[returnSummaryCacheKey]functionReturnAnalysis
+	returnAnalysisContextBytes int
+	memberFreeReturnAnalyzes   map[returnSummaryCacheKey]functionReturnAnalysis
+	namespaceMemberReads       uint64
 	summaryInProgress          map[returnSummaryCacheKey]struct{}
 	bindingCompletionProbes    map[Expression]struct{}
 	blockLiteralBindingDepth   int
@@ -176,6 +179,8 @@ type scriptChecker struct {
 	summaryYieldCollector      *returnSummaryCollector
 	summaryYieldBlock          *BlockLiteral
 	summaryYieldBlockWalks     map[*BlockLiteral]int
+	storedBlockWalkNodes       map[*BlockLiteral]uint64
+	walkedNodes                uint64
 	summaryYieldsActive        bool
 	summaryBlockAvailable      bool
 	pinnedExpressionFacts      map[Expression]*TypeExpr
@@ -2120,28 +2125,40 @@ func (c *scriptChecker) reachableFunctionCheckContextKey(
 }
 
 func (c *scriptChecker) runtimeCheckContextKey() string {
+	return c.runtimeBindingContextKey() + "\x00" + c.runtimeNamespaceMembersKey()
+}
+
+// runtimeBindingContextKey names the module bindings and the class-constant
+// opacity a check runs under. It is the part of the runtime context that does
+// not grow with the namespace members a script assigns.
+func (c *scriptChecker) runtimeBindingContextKey() string {
 	root := c.runtimeTypeRoot
 	if root == nil {
 		root = c.typeRoot
 	}
-	memberSet := cloneCheckStringSet(c.runtimeNamespaceMembers)
-	if memberSet == nil && len(c.classConstantContext.namespaceMembers) > 0 {
-		memberSet = make(map[string]struct{}, len(c.classConstantContext.namespaceMembers))
-	}
-	for member := range c.classConstantContext.namespaceMembers {
-		memberSet[member] = struct{}{}
-	}
-	members := make([]string, 0, len(memberSet))
-	for member := range memberSet {
-		members = append(members, member)
-	}
-	slices.Sort(members)
 	return fmt.Sprintf(
-		"%s\x00%t\x00%s",
+		"%s\x00%t",
 		moduleCheckContextKey(root),
 		c.opaqueClassConstants || c.classConstantContext.opaque,
-		strings.Join(members, "\x00"),
 	)
+}
+
+// runtimeNamespaceMembersKey names every namespace member recorded as possibly
+// reassigned. It costs one pass over the recorded members, so a caller that can
+// answer without naming them should not ask.
+func (c *scriptChecker) runtimeNamespaceMembersKey() string {
+	members := make([]string, 0, len(c.runtimeNamespaceMembers)+len(c.classConstantContext.namespaceMembers))
+	for member := range c.runtimeNamespaceMembers {
+		members = append(members, member)
+	}
+	for member := range c.classConstantContext.namespaceMembers {
+		if _, recorded := c.runtimeNamespaceMembers[member]; !recorded {
+			members = append(members, member)
+		}
+	}
+	noteCheckWork(len(members))
+	slices.Sort(members)
+	return strings.Join(members, "\x00")
 }
 
 func cloneReachableParamFacts(facts map[string]checkReachableParamFact) map[string]checkReachableParamFact {
@@ -3178,6 +3195,7 @@ func (c *scriptChecker) recordNonCompletingExpression() {
 }
 
 func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, stmt Statement) {
+	c.walkedNodes++
 	c.predeclareStatementLiveNames(stmt)
 	defer c.postdeclareStatementLiveNames(stmt)
 	switch typed := stmt.(type) {
@@ -4664,6 +4682,7 @@ func autoCallExpectation(autoCall bool) expressionExpectation {
 }
 
 func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression, autoCall bool) bool {
+	c.walkedNodes++
 	completed := c.checkExpressionWithAutoInner(function, expr, autoCall)
 	if !completed && !c.expressionReturnsNonLocally && c.expressionExitSites != nil {
 		c.captureExpressionExitState()
@@ -5496,9 +5515,20 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				blockResult = c.blockLiteralValuesResult(function, blocks)
 			}
 		}
-		if callMayComplete && arrayFillBlockCall &&
-			blockResult.exact && !blockResult.mayComplete {
-			callMayComplete = c.arrayFillCallMayCompleteWithoutInvokingBlock(typed)
+		// A body proved never to complete leaves the fill reachable only where it
+		// can finish without invoking the block. A body the checker declined to
+		// walk cannot claim even that much: the walk it skipped could have
+		// proved the body never completes, and the same skipping weakens the
+		// receiver the without-invoking test reads, so the call is left unable
+		// to complete rather than able to. Assuming otherwise would make code
+		// that proof would have cut reachable, and diagnose it.
+		if callMayComplete {
+			switch {
+			case blockResult.undecided:
+				callMayComplete = false
+			case arrayFillBlockCall && blockResult.exact && !blockResult.mayComplete:
+				callMayComplete = c.arrayFillCallMayCompleteWithoutInvokingBlock(typed)
+			}
 		}
 		c.callArgumentFacts = previousFacts
 		c.callArgumentHints = previousHints
@@ -8817,6 +8847,11 @@ type checkBlockResult struct {
 	fact        *TypeExpr
 	exact       bool
 	mayComplete bool
+	// undecided marks a result the checker declined to compute rather than one
+	// a walk decided as unknown. The walk it skipped could have proved the body
+	// never completes, so a caller reading this must stay as conservative about
+	// reaching the code after the call as that proof would have left it (#10).
+	undecided bool
 }
 
 // checkBlockLiteral walks a block or lambda body. localReturns marks blocks
@@ -9048,6 +9083,31 @@ func (c *scriptChecker) blockImplicitResultFact(statements []Statement) *TypeExp
 	return unionTypeExprs(collector.arms...)
 }
 
+// maxStoredBlockResultNodes caps the statements and expressions one stored
+// block's body may be walked for its result fact across a check. A literal
+// block is walked once per call site it is written at, but a block reached
+// through a stored callable is written once and walked again at every site that
+// passes it, so the two halves of `callback = proc do ... end` and
+// `items.fill(&callback)` multiply: 50 body statements filled 50 times
+// allocated 34MB, 100 by 100 allocated 160MB, and 200 by 200 allocated 831MB,
+// quadrupling per doubling inside CheckWarnings where no script step or memory
+// quota applies. Counting statements alone left a body of one wide expression
+// charged one unit however many nodes it walked, and a proc whose only
+// statement is an N-element array literal filled at N sites allocated 19MB at
+// N=400 and 62MB at N=800 while the budget recorded 400 and 800 units.
+//
+// The walk reads the whole captured scope, so its result cannot be reused
+// across sites without proving that scope unchanged. Past the cap the result
+// reads as undecided instead: the written element is unknown, which weakens the
+// receiver, and the call is left unable to complete. Both are the answers the
+// skipped walk could least afford to contradict -- it might have proved the
+// body always raises, which cuts the code after the fill -- so a site past the
+// cap can lose a diagnostic but can never gain one. A body of one statement
+// costs 3 nodes a walk and a five-statement one 19, so an ordinary proc still
+// decides hundreds to a few thousand sites exactly; the pairs above now
+// allocate 65MB and 87MB, and the wide-expression pair 1.4MB and 1.6MB (#10).
+const maxStoredBlockResultNodes = 8000
+
 func (c *scriptChecker) blockLiteralValuesResult(
 	function string,
 	blocks []checkBlockLiteralValue,
@@ -9060,10 +9120,15 @@ func (c *scriptChecker) blockLiteralValuesResult(
 		if blockValue.lambda && lambdaLiteralArity(blockValue.block) != 1 {
 			continue
 		}
+		if c.storedBlockWalkNodes[blockValue.block] > maxStoredBlockResultNodes {
+			return checkBlockResult{mayComplete: true, undecided: true}
+		}
 		var result checkBlockResult
+		walkedBefore := c.walkedNodes
 		c.withSuppressedWarnings(func() {
 			result = c.checkBlockLiteral(function, blockValue.block, blockValue.lambda)
 		})
+		c.noteStoredBlockResultWalk(blockValue.block, c.walkedNodes-walkedBefore)
 		if !result.exact {
 			return checkBlockResult{mayComplete: true}
 		}
@@ -9080,6 +9145,14 @@ func (c *scriptChecker) blockLiteralValuesResult(
 		exact:       true,
 		mayComplete: true,
 	}
+}
+
+func (c *scriptChecker) noteStoredBlockResultWalk(block *BlockLiteral, walked uint64) {
+	noteCheckWork(int(walked))
+	if c.storedBlockWalkNodes == nil {
+		c.storedBlockWalkNodes = make(map[*BlockLiteral]uint64)
+	}
+	c.storedBlockWalkNodes[block] += walked
 }
 
 // checkCapturedBlockLiteral validates a constructor's retained block without
@@ -12774,18 +12847,7 @@ func (c *scriptChecker) classValueHasDynamicCallableMembers(classDef *ClassDef) 
 	if len(classDef.ClassVars) > 0 || c.opaqueClassConstants || c.classConstantContext.opaque {
 		return true
 	}
-	prefix := classDef.Name + "."
-	for member := range c.classConstantContext.namespaceMembers {
-		if strings.HasPrefix(member, prefix) {
-			return true
-		}
-	}
-	for member := range c.runtimeNamespaceMembers {
-		if strings.HasPrefix(member, prefix) {
-			return true
-		}
-	}
-	return false
+	return c.recordedNamespaceMemberPrefix(classDef.Name + ".")
 }
 
 func classValueMemberMayOverride(classDef *ClassDef, member string) bool {
@@ -13114,6 +13176,41 @@ func (c *scriptChecker) writeVariadicStaticValueKey(
 	}
 }
 
+// appendVariadicAlternativeValues extends every rest aggregate built so far
+// with the static values one supplied argument may evaluate to.
+//
+// The aggregates were rebuilt from scratch at every argument: each alternative
+// copied its whole prefix before appending. maxAlternatives caps how many
+// alternatives exist, not how long one is, so a call whose arguments each have
+// a single static value kept exactly one alternative and still copied
+// 1 + 2 + ... + N expressions to build it. `sink(0, 0, ...)` against
+// `def sink(*xs)` therefore allocated 19MB at 500 arguments, 71MB at 1,000, and
+// 274MB at 2,000, quadrupling per doubling, inside CheckWarnings where no
+// script quota applies. Appending in place leaves that at 1.3MB, 2.7MB, and
+// 5.5MB (#9).
+//
+// Only an argument with more than one static value branches, and branching is
+// self-limiting: each one multiplies the alternative count, which the caller's
+// cap stops after a handful, so the copies branching costs stay bounded by that
+// cap rather than by the argument count.
+func appendVariadicAlternativeValues[T any](alternatives [][]T, values []T) [][]T {
+	if len(values) == 1 {
+		for i := range alternatives {
+			alternatives[i] = append(alternatives[i], values[0])
+		}
+		return alternatives
+	}
+	next := make([][]T, 0, len(alternatives)*len(values))
+	for _, prefix := range alternatives {
+		for _, value := range values {
+			branch := make([]T, len(prefix), len(prefix)+1)
+			copy(branch, prefix)
+			next = append(next, append(branch, value))
+		}
+	}
+	return next
+}
+
 // bindVariadicReachableParamFacts mirrors the runtime's rest parameter binding
 // so indexing the aggregate can recover exact evaluated argument identities.
 func (c *scriptChecker) bindVariadicReachableParamFacts(
@@ -13144,7 +13241,7 @@ func (c *scriptChecker) bindVariadicReachableParamFacts(
 				usedKeywords[param.Name] = struct{}{}
 			}
 		case ParamRest:
-			alternatives := []*ArrayLiteral{{Position: view.pos}}
+			alternatives := [][]Expression{nil}
 			exact := true
 			for _, arg := range view.args[argIndex:] {
 				values, ok := c.evaluatedCallArgumentStaticAlternatives(arg)
@@ -13152,24 +13249,12 @@ func (c *scriptChecker) bindVariadicReachableParamFacts(
 					exact = false
 					break
 				}
-				next := make([]*ArrayLiteral, 0, len(alternatives)*len(values))
-				for _, prefix := range alternatives {
-					for _, value := range values {
-						next = append(next, &ArrayLiteral{
-							Elements: append(
-								append([]Expression(nil), prefix.Elements...),
-								value,
-							),
-							Position: view.pos,
-						})
-					}
-				}
-				alternatives = next
+				alternatives = appendVariadicAlternativeValues(alternatives, values)
 			}
 			if exact && param.Name != "" {
 				staticVals := make([]Expression, len(alternatives))
-				for i, alternative := range alternatives {
-					staticVals[i] = alternative
+				for i, elements := range alternatives {
+					staticVals[i] = &ArrayLiteral{Elements: elements, Position: view.pos}
 				}
 				staticVals = c.internVariadicParamStaticValues(fn, param, staticVals)
 				facts[param.Name] = checkReachableParamFact{
@@ -13179,7 +13264,7 @@ func (c *scriptChecker) bindVariadicReachableParamFacts(
 			}
 			argIndex = len(view.args)
 		case ParamKeywordRest:
-			alternatives := []*HashLiteral{{Position: view.pos}}
+			alternatives := [][]HashPair{nil}
 			exact := true
 			for i, kwarg := range view.kwargs {
 				if _, used := usedKeywords[kwarg.Name]; used ||
@@ -13191,30 +13276,22 @@ func (c *scriptChecker) bindVariadicReachableParamFacts(
 					exact = false
 					break
 				}
-				next := make([]*HashLiteral, 0, len(alternatives)*len(values))
-				for _, prefix := range alternatives {
-					for _, value := range values {
-						next = append(next, &HashLiteral{
-							Pairs: append(
-								append([]HashPair(nil), prefix.Pairs...),
-								HashPair{
-									Key: &StringLiteral{
-										Value:    kwarg.Name,
-										Position: kwarg.Value.Pos(),
-									},
-									Value: value,
-								},
-							),
-							Position: view.pos,
-						})
+				pairs := make([]HashPair, len(values))
+				for i, value := range values {
+					pairs[i] = HashPair{
+						Key: &StringLiteral{
+							Value:    kwarg.Name,
+							Position: kwarg.Value.Pos(),
+						},
+						Value: value,
 					}
 				}
-				alternatives = next
+				alternatives = appendVariadicAlternativeValues(alternatives, pairs)
 			}
 			if exact && param.Name != "" {
 				staticVals := make([]Expression, len(alternatives))
-				for i, alternative := range alternatives {
-					staticVals[i] = alternative
+				for i, pairs := range alternatives {
+					staticVals[i] = &HashLiteral{Pairs: pairs, Position: view.pos}
 				}
 				staticVals = c.internVariadicParamStaticValues(fn, param, staticVals)
 				facts[param.Name] = checkReachableParamFact{
@@ -18287,11 +18364,36 @@ func (c *scriptChecker) namespaceMemberMutated(namespace, property string) bool 
 	if c.scopeHas(memberName) {
 		return true
 	}
+	return c.recordedNamespaceMember(memberName)
+}
+
+// recordedNamespaceMember and recordedNamespaceMemberPrefix are the only reads
+// of the recorded member sets that a walk's answers depend on; everything else
+// touching those sets either writes them or names them for a cache key. Both
+// note the read so a return summary can tell whether its result depends on
+// which members are recorded (#18).
+func (c *scriptChecker) recordedNamespaceMember(memberName string) bool {
+	c.namespaceMemberReads++
 	if _, ok := c.classConstantContext.namespaceMembers[memberName]; ok {
 		return true
 	}
 	_, ok := c.runtimeNamespaceMembers[memberName]
 	return ok
+}
+
+func (c *scriptChecker) recordedNamespaceMemberPrefix(prefix string) bool {
+	c.namespaceMemberReads++
+	for member := range c.classConstantContext.namespaceMembers {
+		if strings.HasPrefix(member, prefix) {
+			return true
+		}
+	}
+	for member := range c.runtimeNamespaceMembers {
+		if strings.HasPrefix(member, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *scriptChecker) scopeHas(key string) bool {
