@@ -714,6 +714,10 @@ func TestSetOpScratchReservesEachSetSeparately(t *testing.T) {
 
 	var first, second membershipSet
 	first.scratch, second.scratch = &scratch, &scratch
+	// Both are told a composite will be looked up in them, which is what makes
+	// them collect rather than skip; see expectProbesFrom.
+	first.expectProbesFrom(composites)
+	second.expectProbesFrom(composites)
 
 	first.addSource(composites, len(composites))
 	if first.scratchErr != nil {
