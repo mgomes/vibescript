@@ -35,6 +35,47 @@ func TestEmptyStringKeyFramingIsCharged(t *testing.T) {
 	}
 }
 
+// TestFailedKeyCanonicalizationChargesPrefixCopy pins the prefix half of the
+// failed-canonicalization cost model. HashKey writes each element's encoding
+// into the level's builder as it goes, so a level that later meets an
+// unsupported element has already copied its whole prefix. Payload-free prefix
+// elements make the gap visible: integers charge nothing of their own, so a
+// level that dropped its copy modeled zero bytes for a canonicalization
+// proportional to the prefix.
+func TestFailedKeyCanonicalizationChargesPrefixCopy(t *testing.T) {
+	t.Parallel()
+
+	cost := func(prefix int) int {
+		elems := make([]Value, prefix, prefix+1)
+		for i := range elems {
+			elems[i] = NewInt(int64(i))
+		}
+		elems = append(elems, NewObject(nil))
+		budget := valueKeyCostNodeBudget
+		_, charge, enc, ok := valueKeyCanonicalizationCost(NewArray(elems), nil, &budget)
+		if ok {
+			t.Fatal("an array holding an object must not be walkable")
+		}
+		if enc != 0 {
+			t.Fatalf("enc = %d, want 0: a discarded level hands no encoding to its parent", enc)
+		}
+		return charge
+	}
+
+	const short, long = 16, 4096
+	atShort, atLong := cost(short), cost(long)
+	if atLong <= atShort {
+		t.Fatalf("modeled %d bytes for a %d-element prefix and %d for a %d-element one; "+
+			"the prefix copy HashKey performs must scale with the prefix",
+			atLong, long, atShort, short)
+	}
+	if want := long * 8; atLong < want {
+		t.Fatalf("modeled %d bytes for a %d-element prefix, want at least %d: every "+
+			"element before the unsupported one is encoded and copied into the builder",
+			atLong, long, want)
+	}
+}
+
 // TestEqualSkipsFlagChargeOnSourceMismatch pins the order of the regex
 // identity charges: a source-length mismatch answers false without either
 // flag string being read, so huge host-provided flags must not turn the
