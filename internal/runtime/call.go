@@ -1465,7 +1465,7 @@ type recursionBudgetKey struct{}
 // goroutine has to publish that rather than say nothing: the context it derives
 // from can carry a budget belonging to a stack it is not running on.
 func contextWithRecursionBudget(ctx context.Context, remaining int) context.Context {
-	if ctx == nil || remaining == recursionBudgetFromContext(ctx) {
+	if remaining == recursionBudgetFromContext(ctx) {
 		return ctx
 	}
 	return context.WithValue(ctx, recursionBudgetKey{}, remaining)
@@ -1485,9 +1485,16 @@ func recursionBudgetFromContext(ctx context.Context) int {
 // over nested Executions on that same stack has to share it. A task job run
 // inline continues its submitter's goroutine, and took a fresh cap: the limit
 // then bounded each level rather than the stack, which is the same defect as a
-// per-execution sleep total resetting for every task worker (#29). Inheriting
-// what is left makes the whole inline chain cost one limit between them, since
-// every level spends at least the frame of the task function it runs.
+// per-execution sleep total resetting for every task worker (#29).
+//
+// What this buys is that the cap carries rather than resets: a level that
+// descended deeply hands on what is left of it, so the usual shape -- a scope
+// opened and awaited at one depth, as Tasks.map does -- costs one limit across
+// the whole chain. It is a snapshot taken where the scope opens, not a pool the
+// levels debit, so it is not a bound on its own: a Tasks.run block that
+// descends after opening its scope is measured before that descent, and a level
+// holding one frame hands on a budget that has barely shrunk. maxInlineTaskDepth
+// is what bounds the number of levels; this bounds what each of them may spend.
 //
 // The engine's own limit still applies when it is tighter, so an adapter
 // re-entering a script on a stricter engine cannot be lent an allowance that
