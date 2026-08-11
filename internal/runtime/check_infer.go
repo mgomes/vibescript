@@ -5176,10 +5176,17 @@ func collectRegionIvarWriteTargets(target Expression, effects *regionIvarEffects
 }
 
 // maxRepeatedRegionBlockWalks caps how often one lambda body is walked for
-// ivar effects per outermost walk of that body, matching the bound the summary
-// walk uses. The first walk uses the caller's facts; the second runs under the
-// state the recursive call left behind and so reaches the writes the recursion
-// enables; a third adds nothing the second did not reach.
+// ivar effects per outermost walk of that body. The first walk uses the
+// caller's facts; the second runs under the state the recursive call left
+// behind and so reaches the writes the recursion enables; a third adds nothing
+// the second did not reach.
+//
+// maxSummaryYieldBlockWalks allows the same two walks but still restores its
+// count at each call site rather than spending it, and cannot be changed to
+// match this one. That walk re-checks the body with the full checker, which
+// prunes on inferred facts, so a yield only a later site enables is reachable
+// only by re-entering at that site; spending the count there stops reaching it
+// and invents a diagnostic on a body whose yield does run.
 const maxRepeatedRegionBlockWalks = 2
 
 // collectRepeatedRegionIvarEffectsFromBlock unions in the ivar effects a
