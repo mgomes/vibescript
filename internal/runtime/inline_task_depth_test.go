@@ -171,3 +171,81 @@ end`, levels))
 		t.Fatalf("nesting %d levels of slotted tasks failed, so the inline limit is charging goroutines that hold their own stack: %v", levels, err)
 	}
 }
+
+// descendingNestScript nests a task group from the bottom of a plain recursive
+// descent, so the frames the level is holding are live when its child starts.
+// Nesting after the descent returned would prove nothing: the budget is read
+// where the scope opens, and by then the frames are gone.
+const descendingNestScript = `def step(n)
+  descend(%d, n)
+end
+
+def descend(k, n)
+  if k > 0
+    return descend(k - 1, n)
+  end
+  if n < %d
+    Tasks.map([n + 1], max: 1, with: :step)
+  end
+  n
+end
+
+def run()
+  Tasks.map([0], max: 1, with: :step)
+  "done"
+end`
+
+// TestInlineTaskJobContinuesItsCallersRecursionBudget pins that the recursion
+// limit bounds the host stack rather than each Execution on it.
+//
+// A task job run inline continues the submitting goroutine's Go stack, but it
+// runs on a new Execution, and that Execution took a fresh recursion cap. The
+// limit then bounded a level rather than the stack: every level could descend
+// the full cap again, so the frames on one goroutine were the cap times the
+// number of levels. It is the same defect as a per-execution sleep total
+// resetting for every task worker, which is why that budget spans the call tree.
+//
+// The host allows one worker, so every nested level is starved and runs inline.
+// Each level holds ten frames of ordinary recursion when it opens its child, so
+// a shared budget is spent within a few levels -- comfortably before the inline
+// depth limit, which is what makes the two limits distinguishable here.
+func TestInlineTaskJobContinuesItsCallersRecursionBudget(t *testing.T) {
+	t.Parallel()
+
+	const guard = 40
+	script := compileScriptWithConfig(t,
+		Config{MaxTaskConcurrency: 1, RecursionLimit: 64},
+		fmt.Sprintf(descendingNestScript, 10, guard))
+
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("%d inline levels each descended 10 frames under a recursion limit of 64 without any of them refusing, so each level got the whole limit again", guard)
+	}
+	if strings.Contains(err.Error(), "inline depth limit") {
+		t.Fatalf("the inline depth limit stopped this, not the recursion budget: each level still got a fresh cap, and only the level count held the stack down: %v", err)
+	}
+	if !strings.Contains(err.Error(), "recursion depth exceeded") {
+		t.Fatalf("want the recursion limit to stop the descent, got: %v", err)
+	}
+}
+
+// TestSlottedTaskJobGetsItsOwnRecursionBudget pins the other side of the same
+// rule: a job that gets a slot runs on a new goroutine, whose Go stack starts
+// empty, so it is entitled to the host's whole recursion limit however deep the
+// execution that queued it had gone.
+//
+// Handing it the submitter's leftovers would make the limit bound a call tree's
+// total depth rather than any one stack, so ordinary nested concurrency would
+// fail at a depth that has nothing to do with the host's stack.
+func TestSlottedTaskJobGetsItsOwnRecursionBudget(t *testing.T) {
+	t.Parallel()
+
+	const levels = 12
+	script := compileScriptWithConfig(t,
+		Config{MaxTaskConcurrency: levels + 2, RecursionLimit: 64},
+		fmt.Sprintf(descendingNestScript, 10, levels))
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("%d levels of slotted tasks, each descending 10 frames on a goroutine of its own under a limit of 64, failed: a fresh goroutine's stack starts empty and must not inherit its submitter's depth: %v", levels, err)
+	}
+}

@@ -154,6 +154,15 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 // goroutine stack per level, which reaches Go's 1 GB stack limit — a fatal,
 // unrecoverable error — in about 76,000 levels.
 //
+// The recursion budget an inline job inherits from its caller does not subsume
+// this. That budget shrinks by the frames each level holds, but a task function
+// whose body is just the nested call holds exactly one frame, and the budget
+// floors at one rather than at zero so that a level with nothing left can still
+// run a leaf. A one-frame function per level therefore sits on that floor
+// forever: with the budget inherited and this count removed, the same script
+// still reached 300 levels and 301 nested Executions. The budget bounds what a
+// chain may do; the count bounds how long it may be.
+//
 // The ceiling is a fixed constant rather than a host setting because it bounds
 // host stack growth, which is not a resource a script's quota profile prices.
 // Eight is well above any real nesting: inline execution is the degraded serial
@@ -173,6 +182,10 @@ type taskGroup struct {
 	// inlineDepth+1. A job that gets a slot starts at zero instead: it runs on
 	// a new goroutine with a stack of its own.
 	inlineDepth int
+	// callerRecursion is the call depth the execution that opened this scope
+	// had left, which a job run inline continues rather than restarts. Zero
+	// when that execution had no cap to share.
+	callerRecursion int
 	// budget is the call tree's shared pool, max the ceiling this group may
 	// draw from it, and running the jobs currently on a slot. Each running job
 	// holds exactly one slot and returns it when it finishes.
@@ -265,6 +278,7 @@ func newTaskGroup(exec *Execution, max int, detachRootGlobals bool) *taskGroup {
 		budget:               budget,
 		max:                  max,
 		inlineDepth:          inlineTaskDepthFromContext(exec.Context()),
+		callerRecursion:      exec.remainingRecursionBudget(),
 	}
 	return group
 }
@@ -846,11 +860,18 @@ func (group *taskGroup) runJob(job *taskJob, inlineDepth int) {
 		return
 	}
 
-	// Published even when it is zero, because group.ctx carries whatever depth
-	// the goroutine that opened this scope was at: a slotted job that did not
-	// clear it would hand its own nested scopes a depth belonging to another
-	// goroutine's stack.
+	// Both are published even when they are zero, because group.ctx carries the
+	// depth and budget of the goroutine that opened this scope: a slotted job
+	// that did not clear them would hand its own nested scopes figures
+	// belonging to a stack it is not running on. A slotted job clears them
+	// precisely because its goroutine starts with an empty stack, so it is
+	// entitled to the host's whole limit however deep its submitter was.
 	ctx := contextWithInlineTaskDepth(contextWithTaskSlot(group.ctx), inlineDepth)
+	inheritedRecursion := 0
+	if inlineDepth > 0 {
+		inheritedRecursion = group.callerRecursion
+	}
+	ctx = contextWithRecursionBudget(ctx, inheritedRecursion)
 	opts := group.callOptionsForJob(job)
 	var workerExhaustion error
 	result, err := group.script.callWithLazyTaskGlobals(ctx, job.functionName, job.callArgs(), opts, group.lazyGlobalsForJob(), &workerExhaustion)

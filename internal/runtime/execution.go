@@ -397,6 +397,25 @@ func (exec *Execution) assignTargetProtectedAccessAllowed(obj Value) bool {
 	}
 }
 
+// remainingRecursionBudget reports how many more frames this execution may push
+// before its cap refuses, for a callee that will continue this goroutine's Go
+// stack. Zero means there is nothing to hand on: a host that disabled the limit
+// has no budget to share, and has accepted that deep recursion grows the host
+// stack.
+func (exec *Execution) remainingRecursionBudget() int {
+	if exec == nil || exec.recursionCap < 1 {
+		return 0
+	}
+	// Never below one, because zero is how "nothing published" reads on the
+	// other side, and a callee handed a fresh cap there would be the reset this
+	// exists to stop. One lets a callee run a leaf and refuse anything deeper.
+	// It is also a floor a caller holding a single frame never leaves, which is
+	// why the inline depth limit counts levels separately (see
+	// maxInlineTaskDepth): this budget bounds what a level may do, not how many
+	// levels there may be.
+	return max(exec.recursionCap-len(exec.callStack), 1)
+}
+
 func (exec *Execution) pushFrame(function string, pos Position, callSiteScript, functionScript *Script) error {
 	if exec.recursionCap > 0 && len(exec.callStack) >= exec.recursionCap {
 		return exec.newRuntimeErrorWithType(runtimeErrorTypeLimit, fmt.Sprintf("recursion depth exceeded (limit %d)", exec.recursionCap), pos)
