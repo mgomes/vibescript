@@ -448,10 +448,10 @@ type taskInlineDepthKey struct{}
 // on top, and it has to cross the Execution boundary a job's call opens.
 //
 // Setting the depth a context already carries returns that context unchanged,
-// which keeps the common case -- a slotted job with nothing stacked above it --
-// free of a per-job allocation.
+// so the common case -- a slotted job with nothing stacked above it, publishing
+// the zero it already reads as -- adds no wrapper of its own.
 func contextWithInlineTaskDepth(ctx context.Context, depth int) context.Context {
-	if ctx == nil || depth == inlineTaskDepthFromContext(ctx) {
+	if depth == inlineTaskDepthFromContext(ctx) {
 		return ctx
 	}
 	return context.WithValue(ctx, taskInlineDepthKey{}, depth)
@@ -758,24 +758,31 @@ func (group *taskGroup) runSlottedJob(job *taskJob) {
 // would deadlock, which is the whole reason inline execution exists -- so the
 // limit is reported through the handle, and travels out as an ordinary task
 // failure that cancels the group and surfaces to the script.
+//
+// A group that is already dead is handed to runJob regardless of depth, which
+// reports the cancellation and runs nothing. The depth is why this job may not
+// run here, but it is not why the group is finished, and a host timeout that
+// happened to land on a deep level should not be reported as a nesting limit.
 func (group *taskGroup) runInlineJob(job *taskJob) {
 	depth := group.inlineDepth + 1
-	if depth > maxInlineTaskDepth {
-		group.failJob(job, fmt.Errorf("task %s failed: %w", job.functionName,
-			guardLimitErrorf("task nesting exceeds the inline depth limit %d; the concurrency budget is spent, so this task would run on its caller's stack", maxInlineTaskDepth)))
+	if depth > maxInlineTaskDepth && group.ctx.Err() == nil {
+		group.failJob(job, guardLimitErrorf(
+			"task nesting exceeds the inline depth limit %d; the concurrency budget is spent, so this task would run on its caller's stack",
+			maxInlineTaskDepth))
 		return
 	}
 	group.runJob(job, depth)
 }
 
-// failJob completes a job that never ran, with the group bookkeeping runJob
-// would have done for it.
+// failJob completes a job that never ran, with the group bookkeeping and the
+// failure wrapping runJob would have given it.
 func (group *taskGroup) failJob(job *taskJob, err error) {
 	defer group.tasks.Done()
 	defer group.releaseJobPayload(job)
 
-	group.recordErr(err)
-	job.handle.complete(NewNil(), err)
+	taskErr := fmt.Errorf("task %s failed: %w", job.functionName, err)
+	group.recordErr(taskErr)
+	job.handle.complete(NewNil(), taskErr)
 }
 
 // takeQueuedJob pops one queued job for a slot that is being handed to this
