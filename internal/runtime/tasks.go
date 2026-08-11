@@ -150,9 +150,10 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 // so the count is both the signal and the cost. Nothing else bounded it: the
 // nested Execution carries a fresh recursion cap, step quota and memory quota,
 // so a task function that opens another starved group per level grew the host
-// stack by a fixed amount forever. Measured at 20 Go frames and 13 KiB of
-// goroutine stack per level, which reaches Go's 1 GB stack limit — a fatal,
-// unrecoverable error — in about 76,000 levels.
+// stack by a fixed amount forever, and added a quota to the sandbox's total
+// with every level. Measured at 20 Go frames and 13 KiB of goroutine stack per
+// level, which reaches Go's 1 GB stack limit — a fatal, unrecoverable error —
+// in about 76,000 levels.
 //
 // The recursion budget an inline job inherits from its caller does not subsume
 // this. That budget shrinks by the frames each level holds, but a task function
@@ -163,11 +164,31 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 // still reached 300 levels and 301 nested Executions. The budget bounds what a
 // chain may do; the count bounds how long it may be.
 //
-// The ceiling is a fixed constant rather than a host setting because it bounds
-// host stack growth, which is not a resource a script's quota profile prices.
-// Eight is well above any real nesting: inline execution is the degraded serial
-// mode a starved group falls back to, not a shape scripts build on.
-const maxInlineTaskDepth = 8
+// Sixteen is chosen against the cost, which is not the stack. Stack is the
+// cheap part: a level is about 20 frames and 13 KiB, so even sixty-four levels
+// is under 1,400 frames, nowhere near the fatal threshold. What each level
+// really costs is a whole Execution with its own memory quota, live at the same
+// time as every other level's -- measured at 148 MiB retained on one goroutine
+// for a 64-deep chain against an 8 MiB per-execution quota. A slot-holding
+// goroutine carries one such chain, so live memory is bounded by the pool times
+// one more than this number times MemoryQuotaBytes, which on the defaults is
+// roughly 17 GiB. Raising this raises that in proportion; it is a multiplier on
+// the host's memory quota, not spare stack headroom.
+//
+// Only the inline factor is this constant's to bound. The pool factor is
+// pre-existing and already bounded, because a slotted level holds its slot for
+// as long as its child runs and so a slotted chain cannot outrun
+// MaxTaskConcurrency; a purely slotted chain multiplies live memory exactly the
+// same way, 145 MiB at 63 levels against the same 8 MiB quota. Inline execution
+// is the factor that had nothing bounding it, because it exists precisely to
+// run without a slot.
+//
+// Sixteen rather than eight because eight refused a shape that is not abuse: a
+// binary divide-and-conquer, which nests one level per split, was refused at
+// 4,096 leaves under the defaults, while sixteen carries it past 65,536 -- more
+// than a step quota lets a script reach anyway. Sixteen rather than more
+// because nothing measured needs it and the memory multiplier is linear in it.
+const maxInlineTaskDepth = 16
 
 type taskGroup struct {
 	script               *Script
