@@ -67,18 +67,58 @@ func (exec *Execution) meteredEquality() EqualityContext {
 // scratch slice: a string header plus slice-slot overhead.
 const hashKeySortScratchEntryBytes = 24
 
-// equalityScratchValidationGranularity bounds the walk scratch that may go
-// unpriced between memory checks. Pricing scratch means estimating the
-// reachable graph, and every check a builtin drives is uncached by
-// construction (see beginBaseWalk), so pricing before each allocation made a
-// compared one-entry hash pay a whole-graph walk to place 24 bytes of key
-// slice: a membership probe over n small hashes ran n uncached walks while
-// charging n steps, turning an O(n) scan into O(n²) host work. Repricing once
-// per granule leaves at most this much scratch unpriced — a rounding error
-// against the smallest quota profile's 16 MiB, and far under the drift the
-// periodic step check already tolerates — while scratch large enough to
-// threaten the quota is still priced before it is allocated.
-const equalityScratchValidationGranularity = 64 << 10
+// Pricing walk scratch means estimating the reachable graph, and every check a
+// builtin drives is uncached by construction (see beginBaseWalk), so pricing
+// before each allocation made a compared one-entry hash pay a whole-graph walk
+// to place 24 bytes of key slice: a membership probe over n small hashes ran n
+// uncached walks while charging n steps, turning an O(n) scan into O(n²) host
+// work. Scratch is therefore repriced once per granule instead.
+//
+// The granule cannot be a fixed byte count. Walk scratch is Go-local and never
+// reserved, so nothing else observes it: whatever goes unpriced is invisible to
+// the periodic check too. A constant sized against the default profile stops
+// meaning anything once a host configures a smaller quota, and says nothing at
+// all about an execution that has nearly exhausted a large one — a 48 KiB
+// comparison would clear a 64 KiB granule with bytes of headroom left.
+//
+// So the granule is derived per check: at most a fixed fraction of the
+// configured quota, shrinking further with the headroom left at the last
+// estimate, so what may go unpriced is always small relative to what remains
+// rather than to a default nobody kept.
+const (
+	// equalityScratchQuotaShift caps the granule at quota>>shift, bounding
+	// unpriced scratch to a fraction of whatever the host configured.
+	equalityScratchQuotaShift = 8
+	// equalityScratchHeadroomShift shrinks the granule as headroom is spent,
+	// so seven eighths of the remaining budget must be consumed by growth the
+	// periodic check does see before unpriced scratch could matter.
+	equalityScratchHeadroomShift = 3
+	// equalityScratchMinGranule floors the headroom term. Without it an
+	// execution parked just under its quota would price every comparison, and
+	// a probe loop over small composites would be back to a whole-graph walk
+	// per candidate — the cost this batching exists to remove, reachable on
+	// purpose. It bounds worst-case unpriced scratch at the limit to a few
+	// KiB, well inside the estimator's own modeling error, and it never
+	// raises the granule above the quota-derived cap.
+	equalityScratchMinGranule = 4 << 10
+)
+
+// equalityScratchGranule returns the walk scratch that may accumulate unpriced
+// before the validator reprices. lastMemoryUsage is only as fresh as the last
+// estimate, so the quota-derived cap is what bounds the granule when that
+// figure is stale; the headroom term only ever tightens it.
+func (exec *Execution) equalityScratchGranule() int {
+	capBytes := exec.memoryQuota >> equalityScratchQuotaShift
+	headroom := exec.memoryQuota - exec.lastMemoryUsage
+	if headroom < 0 {
+		headroom = 0
+	}
+	granule := headroom >> equalityScratchHeadroomShift
+	if floor := min(equalityScratchMinGranule, capBytes); granule < floor {
+		granule = floor
+	}
+	return min(granule, capBytes)
+}
 
 // equalityScratchValidatorFunc returns the cached scratch validator: it holds
 // a reservation only for the duration of one memory check, because the
@@ -113,7 +153,7 @@ func (exec *Execution) equalityScratchValidatorFunc() func(int, Value, Value) er
 				exec.equalityScratchPriced = 0
 				return nil
 			}
-			if bytes-exec.equalityScratchPriced < equalityScratchValidationGranularity {
+			if bytes-exec.equalityScratchPriced < exec.equalityScratchGranule() {
 				return nil
 			}
 			exec.equalityScratchPriced = bytes

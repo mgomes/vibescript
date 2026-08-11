@@ -96,9 +96,12 @@ func legacyHash(prefix string, entries int) Value {
 // loop over such candidates bought one priced comparison and free ones after.
 //
 // Each comparison is measured on its own: a priced walk visits graph nodes, a
-// suppressed one visits none.
+// suppressed one visits none. The quota is chosen so these operands' scratch
+// clears the granule it implies — at a large enough quota the granule exceeds
+// the scratch and nothing is priced at all, which the first-comparison check
+// below catches rather than letting the test pass without measuring anything.
 func TestEachComparisonPricesItsOwnScratch(t *testing.T) {
-	exec := &Execution{root: newEnv(nil), memoryQuota: 64 << 20}
+	exec := &Execution{root: newEnv(nil), memoryQuota: 8 << 20}
 	exec.envStack = exec.envStackArr[:0]
 
 	left, right := legacyHash("a_", 4000), legacyHash("b_", 4000)
@@ -127,6 +130,50 @@ func TestEachComparisonPricesItsOwnScratch(t *testing.T) {
 	}
 }
 
+// Walk scratch is Go-local and never reserved, so whatever the validator
+// declines to price is invisible to the periodic check as well. A granule
+// fixed in bytes therefore stops meaning anything the moment the quota it was
+// sized against is not the quota in force: a host configuring well under the
+// default profile, or an execution that has nearly exhausted a large quota,
+// both leave less headroom than the granule allows to go unpriced. The granule
+// has to track the budget actually remaining, while staying coarse enough at
+// full headroom that small comparisons are still free.
+func TestScratchPricingTracksQuotaAndHeadroom(t *testing.T) {
+	const scratch = 48 << 10
+	big := legacyHash("x_", 4000)
+
+	for _, tc := range []struct {
+		name        string
+		quota, used int
+		wantPriced  bool
+	}{
+		{"host configures a quota below the granule", 128 << 10, 0, true},
+		{"default quota nearly exhausted", 16 << 20, (16 << 20) - (8 << 10), true},
+		{"default quota with ample headroom", 16 << 20, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := &Execution{root: newEnv(nil), memoryQuota: tc.quota}
+			exec.envStack = exec.envStackArr[:0]
+			validate := exec.equalityScratchValidatorFunc()
+
+			// Open the comparison, then state the headroom the last estimate saw.
+			_ = validate(0, big, big)
+			exec.lastMemoryUsage = tc.used
+
+			estimatorVisits.Store(0)
+			estimatorVisitCounting.Store(true)
+			_ = validate(scratch, big, big)
+			estimatorVisitCounting.Store(false)
+
+			priced := estimatorVisits.Load() > 0
+			if priced != tc.wantPriced {
+				t.Errorf("%d KiB of scratch under a %d-byte quota with %d bytes used: priced=%v, want %v",
+					scratch>>10, tc.quota, tc.used, priced, tc.wantPriced)
+			}
+		})
+	}
+}
+
 // Repricing scratch once per granule bounds what goes unpriced; it must not
 // exempt a total that matters. A key slice too big for the quota is still
 // refused before it is allocated, and a walk that reaches the quota one
@@ -149,7 +196,7 @@ func TestEqualityScratchStillRefusesOversizedAllocations(t *testing.T) {
 	fresh.envStack = fresh.envStackArr[:0]
 	climb := fresh.equalityScratchValidatorFunc()
 	refused := false
-	for held := 0; held <= 2*fresh.memoryQuota; held += equalityScratchValidationGranularity {
+	for held := 0; held <= 2*fresh.memoryQuota; held += fresh.equalityScratchGranule() {
 		if err := climb(held, NewNil(), NewNil()); err != nil {
 			refused = true
 			break

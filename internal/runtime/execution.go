@@ -169,6 +169,10 @@ type Execution struct {
 	// priced against the memory quota, so scratch is repriced once per
 	// granule rather than per allocation (see equalityScratchValidatorFunc).
 	equalityScratchPriced int
+	// lastMemoryUsage is the most recent estimator total, used to size the
+	// scratch validator's pricing granule against remaining headroom rather
+	// than against a fixed constant (see equalityScratchGranule).
+	lastMemoryUsage int
 	// equalityCtx pools the metered comparison context behind `==` (see
 	// equalValues). Lazily initialized; nil while a comparison is running or
 	// after one failed.
