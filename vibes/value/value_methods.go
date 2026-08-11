@@ -1749,29 +1749,33 @@ func equalityKeyTextBytes(key Value, onPath map[SliceIdentity]struct{}, budget *
 			if charge += c; charge < 0 {
 				charge = math.MaxInt / 2
 			}
-			if childEnc += e; childEnc < 0 {
-				childEnc = math.MaxInt / 2
-			}
 			if !ok {
+				// The failing element is never encoded, so none of it is
+				// copied into this level's string.
 				walkable = false
 				break
+			}
+			if childEnc += e; childEnc < 0 {
+				childEnc = math.MaxInt / 2
 			}
 		}
 		if id.Ptr != 0 {
 			delete(onPath, id)
 		}
-		if !walkable {
-			// Canonicalization stops at the failing element, so this level's
-			// string is never built: the prefix work already charged stands,
-			// but no copy happens here and no encoding reaches an ancestor.
-			// Propagating the partial encoding would grow the charge with
-			// nesting depth for work never performed, turning the ordinary
-			// unequal answer into a spurious quota error.
-			return charge, 0, false
-		}
-		// This level's canonical string copies every child encoding again.
+		// This level's canonical string copies every child encoding it reached.
+		// Canonicalization writes each element's encoding into the level's
+		// builder as it goes, so the copy is performed for the whole prefix
+		// even when a later element aborts the level.
 		if charge += childEnc; charge < 0 {
 			charge = math.MaxInt / 2
+		}
+		if !walkable {
+			// The aborted level's string is discarded, so no encoding reaches
+			// an ancestor and the ancestor copies nothing of it. Propagating
+			// the partial encoding would instead grow the charge with nesting
+			// depth for copies never performed, turning the ordinary unequal
+			// answer into a spurious quota error.
+			return charge, 0, false
 		}
 		enc := childEnc + 16
 		if enc < 0 {

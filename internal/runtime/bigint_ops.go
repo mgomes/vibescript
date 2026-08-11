@@ -389,9 +389,9 @@ const valueKeyCostNodeBudget = 1 << 16
 // identity (pointer, length, capacity), removed on unwind so shared aliases
 // are charged each time they are canonicalized. walkable reports whether
 // canonicalization would read past this node — an unsupported element, a NaN
-// float, or a cycle stops HashKey immediately, so only the prefix already
-// read is charged — and a spent node budget stops the walk with the cost
-// saturated.
+// float, or a cycle stops HashKey immediately, so a stopped level charges the
+// prefix it read and copied into its builder but hands no encoding to its
+// parent — and a spent node budget stops the walk with the cost saturated.
 func valueKeyCanonicalizationCost(key Value, onPath map[value.SliceIdentity]struct{}, budget *int) (words, charge, enc int, walkable bool) {
 	if *budget <= 0 {
 		return 0, math.MaxInt / 2, math.MaxInt / 2, false
@@ -438,26 +438,30 @@ func valueKeyCanonicalizationCost(key Value, onPath map[value.SliceIdentity]stru
 		w, c, e, ok := valueKeyCanonicalizationCost(elem, onPath, budget)
 		words = saturatingAdd(words, w)
 		charge = saturatingAdd(charge, c)
-		childEnc = saturatingAdd(childEnc, e)
 		if !ok {
+			// The failing element is never encoded, so none of it is copied
+			// into this level's string.
 			walkable = false
 			break
 		}
+		childEnc = saturatingAdd(childEnc, e)
 	}
 	if id.Ptr != 0 {
 		delete(onPath, id)
 	}
+	// This level's canonical string copies every child encoding it reached.
+	// HashKey writes each element's encoding into the level's builder as it
+	// goes, so the copy is performed for the whole prefix even when a later
+	// element aborts the level.
+	charge = saturatingAdd(charge, childEnc)
 	if !walkable {
-		// HashKey stops at the failing element, so this level's canonical
-		// string is never built: the prefix work already charged stands, but
-		// no copy happens here and no encoding reaches an ancestor. Billing
-		// the partial encoding up the chain would grow the charge with
-		// nesting depth for work never performed, letting a quota sized for
-		// the real cost replace the expected unsupported-key error.
+		// The aborted level's string is discarded, so no encoding reaches an
+		// ancestor and the ancestor copies nothing of it. Billing the partial
+		// encoding up the chain would instead grow the charge with nesting
+		// depth for copies never performed, letting a quota sized for the real
+		// cost replace the expected unsupported-key error.
 		return words, charge, 0, false
 	}
-	// This level's canonical string copies every child encoding once more.
-	charge = saturatingAdd(charge, childEnc)
 	return words, charge, saturatingAdd(childEnc, 16), walkable
 }
 

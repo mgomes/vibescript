@@ -603,6 +603,59 @@ func TestEqualityScratchReserverSeesOperands(t *testing.T) {
 	}
 }
 
+// TestEqualityChargeBillsFailedKeyPrefixCopy pins the prefix half of the
+// failed-canonicalization contract. HashKey writes each element's encoding
+// into the level's builder as it goes, so a level that later meets an
+// unsupported element has already copied its whole prefix; that copy is work
+// performed and must be billed even though the level's string is discarded.
+// Payload-free prefix elements make the gap visible: integers charge nothing
+// of their own, so a level that dropped its copy billed zero bytes for a
+// canonicalization proportional to the prefix, leaving repeated comparisons
+// of a retained mutated key effectively free.
+func TestEqualityChargeBillsFailedKeyPrefixCopy(t *testing.T) {
+	t.Parallel()
+
+	build := func(prefix int) value.Value {
+		elems := make([]value.Value, prefix)
+		for i := range elems {
+			elems[i] = value.NewInt(int64(i))
+		}
+		key := value.NewArray(elems)
+		h := value.NewTypedHash(1)
+		if err := h.HashSet(key, value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet: %v", err)
+		}
+		// The key becomes unsupported only after it is retained, exactly as a
+		// script mutating a stored key array does.
+		key.SetArrayElems(append(key.Array(), value.NewObject(nil)))
+		return h
+	}
+
+	charged := func(prefix int) int {
+		ctx, total := meteredContext()
+		if ctx.Equal(build(prefix), build(prefix)) {
+			t.Fatal("hashes with unsupported retained keys must compare unequal")
+		}
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("Err() = %v, want nil (unequal is the normal answer)", err)
+		}
+		return *total
+	}
+
+	const short, long = 16, 4096
+	atShort, atLong := charged(short), charged(long)
+	if atLong <= atShort {
+		t.Fatalf("charged %d bytes for a %d-element prefix and %d for a %d-element one; "+
+			"the prefix copy canonicalization performs must scale with the prefix",
+			atLong, long, atShort, short)
+	}
+	if want := long * 8; atLong < want {
+		t.Fatalf("charged %d bytes for a %d-element prefix, want at least %d: every "+
+			"element before the unsupported one is encoded and copied into the level's builder",
+			atLong, long, want)
+	}
+}
+
 // TestEqualityChargeBillsEmptyStringKeyFraming pins the framing term on the
 // equality-side key model: an array key of thousands of empty strings still
 // canonicalizes nonempty per-leaf framing that every occurrence copies, so
