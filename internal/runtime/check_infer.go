@@ -5175,11 +5175,18 @@ func collectRegionIvarWriteTargets(target Expression, effects *regionIvarEffects
 	}
 }
 
-// maxRepeatedRegionBlockWalks caps how often one lambda body may be walked for
-// ivar effects while the walk it started is still running, matching the bound
-// the summary walk uses. The first walk uses the caller's facts; the second
-// runs under the state the recursive call left behind and so reaches the writes
-// the recursion enables; a third adds nothing the second did not reach.
+// maxRepeatedRegionBlockWalks caps how often one lambda body is walked for
+// ivar effects per outermost walk of that body. The first walk uses the
+// caller's facts; the second runs under the state the recursive call left
+// behind and so reaches the writes the recursion enables; a third adds nothing
+// the second did not reach.
+//
+// maxSummaryYieldBlockWalks allows the same two walks but still restores its
+// count at each call site rather than spending it, and cannot be changed to
+// match this one. That walk re-checks the body with the full checker, which
+// prunes on inferred facts, so a yield only a later site enables is reachable
+// only by re-entering at that site; spending the count there stops reaching it
+// and invents a diagnostic on a body whose yield does run.
 const maxRepeatedRegionBlockWalks = 2
 
 // collectRepeatedRegionIvarEffectsFromBlock unions in the ivar effects a
@@ -5188,6 +5195,13 @@ const maxRepeatedRegionBlockWalks = 2
 // statements once per nested call and never finish. Re-entry collects the
 // writes the recursion can reach rather than declaring every ivar unknown, so
 // recursion that writes no ivar leaves exact facts standing.
+//
+// A walk spends its count rather than borrowing it: a nested walk leaves the
+// count raised for the rest of the outermost walk instead of restoring it on
+// return. The budget then bounds the whole walk, so a body holding N recursive
+// call sites costs 2N statement visits. Restoring the count per site made every
+// site start its own re-entry walk over the same N statements, which is
+// quadratic in a source the checker accepts.
 func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromBlock(
 	block *BlockLiteral,
 	effects *regionIvarEffects,
@@ -5204,13 +5218,9 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromBlock(
 		c.repeatedRegionBlockWalks = make(map[*BlockLiteral]int)
 	}
 	c.repeatedRegionBlockWalks[block] = walks + 1
-	defer func() {
-		if walks == 0 {
-			delete(c.repeatedRegionBlockWalks, block)
-			return
-		}
-		c.repeatedRegionBlockWalks[block] = walks
-	}()
+	if walks == 0 {
+		defer delete(c.repeatedRegionBlockWalks, block)
+	}
 	popScope := c.pushBlockCheckScope(block)
 	defer popScope()
 	if walks > 0 {

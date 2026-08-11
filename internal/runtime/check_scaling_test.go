@@ -1089,3 +1089,45 @@ end
 		t.Fatalf("code after a fill whose block always raises was diagnosed: %v", messages)
 	}
 }
+
+// selfCallingLambdaSource builds a lambda body holding sites recursive
+// `h.call` statements. The repeated-region ivar effect walk resolves each one
+// back to the body it is written in, so the body is a region that reaches
+// itself once per site.
+func selfCallingLambdaSource(sites int) string {
+	var body strings.Builder
+	for range sites {
+		body.WriteString("    h.call\n")
+	}
+	return fmt.Sprintf(`
+def f()
+  h = -> {
+%s  }
+  h.call
+  0
+end
+`, body.String())
+}
+
+// A body that reaches itself is walked twice: once under the caller's facts and
+// once under the state the recursive call left behind. Restoring the walk count
+// when a nested walk returned handed that second walk back to every later site,
+// so a body holding N recursive calls started N walks over the same N
+// statements. CheckWarnings and CheckedCall run before any script step quota,
+// so an embedder statically checking a tenant script paid it in full.
+// This counts allocated bytes because the repeated walks are the allocation:
+// each one pushes a block scope and collects the body's local bindings afresh.
+func TestCheckReentrantIvarEffectWalkStaysLinear(t *testing.T) {
+	small := measureCheckAllocation(t, selfCallingLambdaSource(400))
+	large := measureCheckAllocation(t, selfCallingLambdaSource(800))
+
+	// Measured 882KB then 1.7MB, a 1.97x step for a doubled body. Before, the
+	// same pair allocated 28MB and 109MB, a 3.94x step. The assertion allows up
+	// to 3x so it states the complexity rather than pinning byte counts that
+	// ordinary checker changes would shift.
+	if large > small*3 {
+		t.Fatalf("doubling the recursive calls in one lambda body allocated %d bytes"+
+			" against %d -- over 3x, so collecting a re-entrant region's ivar effects is"+
+			" superlinear in the source", large, small)
+	}
+}
