@@ -513,6 +513,69 @@ end
 	}
 }
 
+// TestCheckWarningsRecursionKeepsIvarFactsAcrossManyCallSites pins the same
+// two facts on a body holding several recursive calls rather than one. The walk
+// count that bounds re-entry is now spent for the whole outermost walk instead
+// of being restored at each site, so the later sites are cut off; cutting them
+// off must not turn into declaring every ivar unknown, and must not stop the
+// write the recursion enables from being collected.
+func TestCheckWarningsRecursionKeepsIvarFactsAcrossManyCallSites(t *testing.T) {
+	t.Parallel()
+
+	const prefix = `
+class User
+  property a: int
+  property b: int
+
+  def initialize()
+    done = false
+`
+	const suffix = `
+    @a = @b
+  end
+end
+
+def run()
+  User.new().a
+end
+`
+	noWrite := compileScript(t, prefix+`    h = -> {
+      if done
+        1
+      else
+        done = true
+        h.call
+        h.call
+        h.call
+        h.call
+      end
+    }
+    h.call
+`+suffix)
+	warnings := checkWarningsWithin(t, noWrite, "many recursive calls writing no ivar")
+	if len(warnings) != 1 || warnings[0].Message != "write to @a expected int, got nil" {
+		t.Fatalf("expected the unset fact for @b to survive recursion at four call sites,"+
+			" got %v", warnings)
+	}
+
+	write := compileScript(t, prefix+`    h = -> {
+      if done
+        @b = 2
+      else
+        done = true
+        h.call
+        h.call
+        h.call
+        h.call
+      end
+    }
+    h.call
+`+suffix)
+	if warnings := checkWarningsWithin(t, write, "many recursive calls writing an ivar"); len(warnings) != 0 {
+		t.Fatalf("expected the nested write to widen @b at four call sites, got %v", warnings)
+	}
+}
+
 // forwardedSendChainSource builds `C.send(:send, ..., :build)` with depth
 // forwarding hops, the flat shape that made the forwarded-target resolver
 // recurse once per argument.
