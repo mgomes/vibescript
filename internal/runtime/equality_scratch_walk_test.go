@@ -75,6 +75,58 @@ func TestHashProbeDoesNotWalkPerComparison(t *testing.T) {
 	}
 }
 
+// legacyHash builds a string-keyed hash with entries keys. Its comparison
+// sorts the key set in one allocation, so the walk reaches its whole scratch
+// footprint in a single reservation.
+func legacyHash(prefix string, entries int) Value {
+	m := make(map[string]Value, entries)
+	for i := range entries {
+		m[fmt.Sprintf("%s%d", prefix, i)] = NewInt(int64(i))
+	}
+	return NewHash(m)
+}
+
+// Batching the pricing by cumulative bytes is only sound inside one walk. A
+// comparison resets the scratch it prices — a reused context explicitly drops
+// the previous walk's footprint — so a watermark that outlives the boundary
+// suppresses the check for every later comparison whose scratch merely matches
+// what an earlier walk already priced. These operands reach their whole
+// footprint in one reservation of equal size every time, which is exactly the
+// case a smaller-byte-count heuristic cannot recognize as a new walk; a probe
+// loop over such candidates bought one priced comparison and free ones after.
+//
+// Each comparison is measured on its own: a priced walk visits graph nodes, a
+// suppressed one visits none.
+func TestEachComparisonPricesItsOwnScratch(t *testing.T) {
+	exec := &Execution{root: newEnv(nil), memoryQuota: 64 << 20}
+	exec.envStack = exec.envStackArr[:0]
+
+	left, right := legacyHash("a_", 4000), legacyHash("b_", 4000)
+	ctx := exec.meteredEquality()
+
+	visits := func() uint64 {
+		estimatorVisits.Store(0)
+		estimatorVisitCounting.Store(true)
+		ctx.Equal(left, right)
+		estimatorVisitCounting.Store(false)
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("comparison: %v", err)
+		}
+		return estimatorVisits.Load()
+	}
+
+	if first := visits(); first == 0 {
+		t.Fatal("the first comparison must price the scratch it allocates")
+	}
+	for i := range 3 {
+		if later := visits(); later == 0 {
+			t.Fatalf("comparison %d priced nothing: the granule watermark outlived "+
+				"the comparison boundary, so every later comparison whose scratch "+
+				"matches an already-priced walk allocates unchecked", i+2)
+		}
+	}
+}
+
 // Repricing scratch once per granule bounds what goes unpriced; it must not
 // exempt a total that matters. A key slice too big for the quota is still
 // refused before it is allocated, and a walk that reaches the quota one

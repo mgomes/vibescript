@@ -1458,15 +1458,32 @@ func releaseOversizedSeen(state *equalityState) {
 	}
 }
 
+// beginWalkScratch opens one comparison's scratch accounting and reports the
+// boundary to the validator as a zero-byte reservation. Scratch from prior
+// walks on a reused context is dead, so the validator must see each walk's own
+// footprint rather than a scan's lifetime total. The boundary has to be said
+// rather than inferred: a validator that batches its checks by cumulative
+// bytes cannot recognize a new walk from the byte count alone, because a
+// walk's first reservation is routinely equal to — or a little above — the
+// total the previous walk already accounted for, which is precisely the case
+// where every later comparison would otherwise go unvalidated.
+func beginWalkScratch(state *equalityState, left, right Value) {
+	state.scratchHeld = 0
+	state.rootLeft, state.rootRight = left, right
+	if state.reserveScratch == nil {
+		return
+	}
+	if err := state.reserveScratch(0, left, right); err != nil && state.err == nil {
+		state.err = err
+	}
+}
+
 // Equal reports whether v and other hold the same kind and value.
 func (c *EqualityContext) Equal(v, other Value) bool {
 	if c.state.seen != nil {
 		clear(c.state.seen)
 	}
-	// Scratch from prior walks on a reused context is dead; the validator
-	// must see each walk's own footprint, not a scan's lifetime total.
-	c.state.scratchHeld = 0
-	c.state.rootLeft, c.state.rootRight = v, other
+	beginWalkScratch(&c.state, v, other)
 	eq := valuesEqual(v, other, &c.state)
 	flushEqualityCharge(&c.state)
 	// The operand roots are read only by the scratch validator during the
@@ -1488,8 +1505,7 @@ func (c *EqualityContext) Eql(v, other Value) bool {
 	if c.state.seen != nil {
 		clear(c.state.seen)
 	}
-	c.state.scratchHeld = 0
-	c.state.rootLeft, c.state.rootRight = v, other
+	beginWalkScratch(&c.state, v, other)
 	eq := valuesEqualWithKinds(v, other, &c.state, true)
 	flushEqualityCharge(&c.state)
 	// See Equal: reused contexts must not retain the compared graphs.

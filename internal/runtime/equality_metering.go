@@ -89,9 +89,11 @@ const equalityScratchValidationGranularity = 64 << 10
 // a set probe's stored element) that no execution root reaches, yet both
 // graphs coexist with the scratch at its peak.
 //
-// bytes is the walk's cumulative held scratch, which resets per comparison and
-// grows within one, so a value below the last priced total means a new walk or
-// released scratch and restarts the granule.
+// bytes is the walk's cumulative held scratch. Zero marks a comparison
+// boundary and retires the granule mark; within a walk the mark is a
+// high-water figure and is deliberately not lowered when scratch is released,
+// because no script code runs mid-walk, so a footprint already priced against
+// this graph cannot have become unsafe before the walk ends.
 func (exec *Execution) equalityScratchValidatorFunc() func(int, Value, Value) error {
 	if exec == nil {
 		return nil
@@ -101,8 +103,15 @@ func (exec *Execution) equalityScratchValidatorFunc() func(int, Value, Value) er
 			if exec.memoryQuota <= 0 {
 				return nil
 			}
-			if bytes < exec.equalityScratchPriced {
+			if bytes == 0 {
+				// A comparison boundary: this walk holds no scratch yet, so
+				// whatever the previous one priced is dead. The mark cannot be
+				// retired by inference — a walk whose first reservation matches
+				// the last total priced is indistinguishable from a
+				// continuation of it — so the boundary is retired here and
+				// only here.
 				exec.equalityScratchPriced = 0
+				return nil
 			}
 			if bytes-exec.equalityScratchPriced < equalityScratchValidationGranularity {
 				return nil
