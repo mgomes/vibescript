@@ -3838,10 +3838,34 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			// An empty removal side returns a shallow copy of the receiver, and
+			// copies no element payload, so none of the metering below reaches
+			// it: no key is canonicalized, nothing is hashed, and no equality
+			// probe runs. The copy is still O(n) in CPU and allocates a fresh
+			// backing of the receiver's length, so it is charged here rather
+			// than left to the paths that never see it. Without this a loop of
+			// twenty argumentless calls cost 291 steps whether the receiver held
+			// 1,000 elements or 16,000.
+			//
+			// The copy itself is not avoidable: the result is an independent
+			// mutable array, so it cannot share the receiver's backing.
+			if len(others) == 0 {
+				left := receiver.Array()
+				// Charged at the tree's rate for moving a Value slot, 64 to the
+				// step, through the same residue-carrying counter destructuring
+				// uses: the unit is identical, and rounding each call down would
+				// leave a loop of sub-64-element copies free however many of
+				// them there were.
+				if err := exec.chargeDestructureScan(len(left)); err != nil {
+					return NewNil(), err
+				}
+				if err := exec.checkProjectedArrayBytesWithCallRoots(len(left), 0, receiver, args, kwargs, block); err != nil {
+					return NewNil(), err
+				}
+			}
 			// With no scalar removal keys the receiver's scalars are never
-			// hashed — an empty removal side only shallow-copies, and an
-			// all-composite one probes through metered equality instead —
-			// so there is nothing to precharge.
+			// hashed — an all-composite removal side probes through metered
+			// equality instead — so there is nothing more to precharge.
 			removalHasScalars := false
 			for _, other := range others {
 				if anyScalarSetKey(other) {

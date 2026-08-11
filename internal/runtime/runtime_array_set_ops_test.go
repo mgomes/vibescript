@@ -800,3 +800,51 @@ func TestDifferenceSkipsCompositesNothingCanProbe(t *testing.T) {
 		})
 	}
 }
+
+// An argumentless Array#difference returns a shallow copy of the receiver. No
+// element is hashed, canonicalized or compared, so none of the metering the
+// removal side carries reaches it -- but the copy is still O(n) in CPU and
+// allocates a fresh backing of the receiver's length, and it must be paid for.
+//
+// It was not: a loop of twenty argumentless calls cost 291 steps whether the
+// receiver held 1,000 elements or 16,000. Nothing else in this file called
+// difference with no arguments, so nothing could have caught it.
+//
+// The assertion is that the cost scales with the receiver rather than pinning a
+// step count. Sixteen times the elements is a sixteenfold copy; four is far above
+// the 1.0x an unbilled copy produces and far below the real ratio.
+//
+// Deliberately not parallel: this measures step counts.
+func TestArgumentlessDifferenceChargesForTheCopy(t *testing.T) {
+	const calls, small, large = 20, 1_000, 16_000
+	src := "def run(a)\n  t = 0\n  i = 0\n  while i < 20\n    t = t + a.difference().length\n    i = i + 1\n  end\n  t\nend"
+
+	stringsOf := func(n int) Value {
+		elems := make([]Value, n)
+		for i := range elems {
+			elems[i] = NewString("abcdefghij")
+		}
+		return NewArray(elems)
+	}
+	minSteps := func(arg Value) int {
+		lo, hi := 1, 40_000_000
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 256 << 20, StepQuota: mid}, src)
+			if _, err := script.Call(context.Background(), "run", []Value{arg}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	atSmall := minSteps(stringsOf(small))
+	atLarge := minSteps(stringsOf(large))
+	if atLarge < atSmall*4 {
+		t.Fatalf("%d argumentless differences over a %d-element receiver needed %d steps and over a "+
+			"%d-element one %d, a %.1fx rise for sixteen times the elements; the shallow copy is "+
+			"not being charged", calls, small, atSmall, large, atLarge, float64(atLarge)/float64(atSmall))
+	}
+}
