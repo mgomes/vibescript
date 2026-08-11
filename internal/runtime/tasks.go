@@ -143,6 +143,23 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 	return result, nil
 }
 
+// maxInlineTaskDepth bounds how many task jobs may nest on one goroutine.
+//
+// A job only runs inline when the shared pool is spent, and each inline level
+// is a whole nested Execution stacked on the submitting goroutine's Go stack,
+// so the count is both the signal and the cost. Nothing else bounded it: the
+// nested Execution carries a fresh recursion cap, step quota and memory quota,
+// so a task function that opens another starved group per level grew the host
+// stack by a fixed amount forever. Measured at 20 Go frames and 13 KiB of
+// goroutine stack per level, which reaches Go's 1 GB stack limit — a fatal,
+// unrecoverable error — in about 76,000 levels.
+//
+// The ceiling is a fixed constant rather than a host setting because it bounds
+// host stack growth, which is not a resource a script's quota profile prices.
+// Eight is well above any real nesting: inline execution is the degraded serial
+// mode a starved group falls back to, not a shape scripts build on.
+const maxInlineTaskDepth = 8
+
 type taskGroup struct {
 	script               *Script
 	ctx                  context.Context
@@ -151,6 +168,11 @@ type taskGroup struct {
 	globals              map[string]Value
 	detachedGlobals      bool
 	inheritedLazyGlobals *taskLazyGlobals
+	// inlineDepth is how many task jobs are already stacked on the goroutine
+	// that opened this scope, so a job this group runs inline lands at
+	// inlineDepth+1. A job that gets a slot starts at zero instead: it runs on
+	// a new goroutine with a stack of its own.
+	inlineDepth int
 	// budget is the call tree's shared pool, max the ceiling this group may
 	// draw from it, and running the jobs currently on a slot. Each running job
 	// holds exactly one slot and returns it when it finishes.
@@ -242,6 +264,7 @@ func newTaskGroup(exec *Execution, max int, detachRootGlobals bool) *taskGroup {
 		inheritedLazyGlobals: inheritedLazyGlobals,
 		budget:               budget,
 		max:                  max,
+		inlineDepth:          inlineTaskDepthFromContext(exec.Context()),
 	}
 	return group
 }
@@ -400,6 +423,32 @@ func taskSlotFromContext(ctx context.Context) bool {
 	}
 	slot, _ := ctx.Value(taskSlotKey{}).(bool)
 	return slot
+}
+
+type taskInlineDepthKey struct{}
+
+// contextWithInlineTaskDepth publishes how many task jobs are stacked on the
+// goroutine this call runs on, so a scope opened inside the call knows how deep
+// its own inline work would land. It rides as a context value for the same
+// reason the pool does: it has to survive the cancel contexts nested calls layer
+// on top, and it has to cross the Execution boundary a job's call opens.
+//
+// Setting the depth a context already carries returns that context unchanged,
+// which keeps the common case -- a slotted job with nothing stacked above it --
+// free of a per-job allocation.
+func contextWithInlineTaskDepth(ctx context.Context, depth int) context.Context {
+	if ctx == nil || depth == inlineTaskDepthFromContext(ctx) {
+		return ctx
+	}
+	return context.WithValue(ctx, taskInlineDepthKey{}, depth)
+}
+
+func inlineTaskDepthFromContext(ctx context.Context) int {
+	if ctx == nil {
+		return 0
+	}
+	depth, _ := ctx.Value(taskInlineDepthKey{}).(int)
+	return depth
 }
 
 type taskBudgetKey struct{}
@@ -674,14 +723,45 @@ func (group *taskGroup) staffDeferred() {
 }
 
 // runSlottedJob runs queued work on one slot until there is none left, then
-// returns the slot. Deferred work run inline by a waiter goes through runJob
-// directly: it never took a slot, because the goroutine running it is one the
-// pool already counted.
+// returns the slot. Deferred work run inline by a waiter goes through
+// runInlineJob instead: it never took a slot, because the goroutine running it
+// is one the pool already counted.
 func (group *taskGroup) runSlottedJob(job *taskJob) {
 	for job != nil {
-		group.runJob(job)
+		// Zero, not the depth the group inherited: this goroutine is new and its
+		// Go stack starts empty, whatever was stacked on the goroutine that
+		// queued the work. Successive jobs here are a loop, not a nesting.
+		group.runJob(job, 0)
 		group, job = group.nextQueuedJob()
 	}
+}
+
+// runInlineJob runs a job on the goroutine that is waiting for it, one level
+// deeper on that goroutine's Go stack than the job that submitted it.
+//
+// Past maxInlineTaskDepth the job is failed rather than run. Refusing to run it
+// at all is not an option -- the waiter would never be released and the tree
+// would deadlock, which is the whole reason inline execution exists -- so the
+// limit is reported through the handle, and travels out as an ordinary task
+// failure that cancels the group and surfaces to the script.
+func (group *taskGroup) runInlineJob(job *taskJob) {
+	depth := group.inlineDepth + 1
+	if depth > maxInlineTaskDepth {
+		group.failJob(job, fmt.Errorf("task %s failed: %w", job.functionName,
+			guardLimitErrorf("task nesting exceeds the inline depth limit %d; the concurrency budget is spent, so this task would run on its caller's stack", maxInlineTaskDepth)))
+		return
+	}
+	group.runJob(job, depth)
+}
+
+// failJob completes a job that never ran, with the group bookkeeping runJob
+// would have done for it.
+func (group *taskGroup) failJob(job *taskJob, err error) {
+	defer group.tasks.Done()
+	defer group.releaseJobPayload(job)
+
+	group.recordErr(err)
+	job.handle.complete(NewNil(), err)
 }
 
 // takeQueuedJob pops one queued job for a slot that is being handed to this
@@ -753,7 +833,10 @@ func (group *taskGroup) nextQueuedJob() (*taskGroup, *taskJob) {
 	}
 }
 
-func (group *taskGroup) runJob(job *taskJob) {
+// runJob runs one job's call. inlineDepth is how many jobs will be stacked on
+// the running goroutine once this one starts: zero on a slot, and the caller's
+// depth plus one when a waiter runs the job on its own goroutine.
+func (group *taskGroup) runJob(job *taskJob, inlineDepth int) {
 	defer group.tasks.Done()
 	defer group.releaseJobPayload(job)
 
@@ -763,9 +846,14 @@ func (group *taskGroup) runJob(job *taskJob) {
 		return
 	}
 
+	// Published even when it is zero, because group.ctx carries whatever depth
+	// the goroutine that opened this scope was at: a slotted job that did not
+	// clear it would hand its own nested scopes a depth belonging to another
+	// goroutine's stack.
+	ctx := contextWithInlineTaskDepth(contextWithTaskSlot(group.ctx), inlineDepth)
 	opts := group.callOptionsForJob(job)
 	var workerExhaustion error
-	result, err := group.script.callWithLazyTaskGlobals(contextWithTaskSlot(group.ctx), job.functionName, job.callArgs(), opts, group.lazyGlobalsForJob(), &workerExhaustion)
+	result, err := group.script.callWithLazyTaskGlobals(ctx, job.functionName, job.callArgs(), opts, group.lazyGlobalsForJob(), &workerExhaustion)
 	if workerExhaustion != nil {
 		workerExhaustion = fmt.Errorf("task %s failed: %w", job.functionName, workerExhaustion)
 	}
@@ -863,7 +951,7 @@ func (group *taskGroup) drainDeferred(target *taskHandle) {
 		group.running++
 		group.mu.Unlock()
 
-		group.runJob(job)
+		group.runInlineJob(job)
 
 		group.mu.Lock()
 		group.running--
