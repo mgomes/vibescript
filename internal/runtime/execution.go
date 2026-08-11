@@ -165,6 +165,10 @@ type Execution struct {
 	// equalityScratchCheck caches the equality scratch validator closure
 	// (see equalityScratchValidatorFunc). Lazily initialized.
 	equalityScratchCheck func(int, Value, Value) error
+	// equalityScratchPriced is the walk-scratch total the validator last
+	// priced against the memory quota, so scratch is repriced once per
+	// granule rather than per allocation (see equalityScratchValidatorFunc).
+	equalityScratchPriced int
 	// equalityCtx pools the metered comparison context behind `==` (see
 	// equalValues). Lazily initialized; nil while a comparison is running or
 	// after one failed.

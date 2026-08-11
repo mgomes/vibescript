@@ -67,6 +67,19 @@ func (exec *Execution) meteredEquality() EqualityContext {
 // scratch slice: a string header plus slice-slot overhead.
 const hashKeySortScratchEntryBytes = 24
 
+// equalityScratchValidationGranularity bounds the walk scratch that may go
+// unpriced between memory checks. Pricing scratch means estimating the
+// reachable graph, and every check a builtin drives is uncached by
+// construction (see beginBaseWalk), so pricing before each allocation made a
+// compared one-entry hash pay a whole-graph walk to place 24 bytes of key
+// slice: a membership probe over n small hashes ran n uncached walks while
+// charging n steps, turning an O(n) scan into O(n²) host work. Repricing once
+// per granule leaves at most this much scratch unpriced — a rounding error
+// against the smallest quota profile's 16 MiB, and far under the drift the
+// periodic step check already tolerates — while scratch large enough to
+// threaten the quota is still priced before it is allocated.
+const equalityScratchValidationGranularity = 64 << 10
+
 // equalityScratchValidatorFunc returns the cached scratch validator: it holds
 // a reservation only for the duration of one memory check, because the
 // walk's Go-local slices are invisible to the estimator and freed before any
@@ -75,6 +88,10 @@ const hashKeySortScratchEntryBytes = 24
 // along as extra roots: they can be temporaries (a host capability's return,
 // a set probe's stored element) that no execution root reaches, yet both
 // graphs coexist with the scratch at its peak.
+//
+// bytes is the walk's cumulative held scratch, which resets per comparison and
+// grows within one, so a value below the last priced total means a new walk or
+// released scratch and restarts the granule.
 func (exec *Execution) equalityScratchValidatorFunc() func(int, Value, Value) error {
 	if exec == nil {
 		return nil
@@ -84,6 +101,13 @@ func (exec *Execution) equalityScratchValidatorFunc() func(int, Value, Value) er
 			if exec.memoryQuota <= 0 {
 				return nil
 			}
+			if bytes < exec.equalityScratchPriced {
+				exec.equalityScratchPriced = 0
+			}
+			if bytes-exec.equalityScratchPriced < equalityScratchValidationGranularity {
+				return nil
+			}
+			exec.equalityScratchPriced = bytes
 			delta := exec.reserveLoopScratch(bytes)
 			err := exec.checkMemoryWith(left, right)
 			exec.releaseLoopScratch(delta)
