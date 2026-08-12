@@ -3859,7 +3859,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 				if err := exec.chargeDestructureScan(len(left)); err != nil {
 					return NewNil(), err
 				}
-				if err := exec.checkProjectedArrayBytesWithCallRoots(len(left), 0, receiver, args, kwargs, block); err != nil {
+				if err := exec.checkProjectedArrayBytesWithCallRoots(len(left), 0, 0, receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
 				}
 			}

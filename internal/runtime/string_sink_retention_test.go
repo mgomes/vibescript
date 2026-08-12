@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"regexp"
 	goruntime "runtime"
 	"strings"
 	"testing"
@@ -645,5 +646,110 @@ end`)
 	if perMatch := (above - below) / 50; perMatch > 150 {
 		t.Fatalf("50 matches past the 256-match boundary cost %d bytes each (%d to %d), want at most 150: the result backing grows past what the preflight charges",
 			perMatch, below, above)
+	}
+}
+
+// lowestAllocOverRunsAccepted reports the smallest number of bytes any of
+// several identical accepted calls allocated.
+//
+// Callers are not parallel: TotalAlloc is process-wide.
+func lowestAllocOverRunsAccepted(t *testing.T, source, arg string) int64 {
+	t.Helper()
+
+	lowest := int64(1) << 62
+	for range 5 {
+		script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: 64 << 20}, source)
+		var before, after goruntime.MemStats
+		goruntime.GC()
+		goruntime.ReadMemStats(&before)
+		if _, err := script.Call(context.Background(), "run", []Value{NewString(arg)}, CallOptions{}); err != nil {
+			t.Fatalf("call failed: %v", err)
+		}
+		goruntime.ReadMemStats(&after)
+		lowest = min(lowest, int64(after.TotalAlloc-before.TotalAlloc))
+	}
+	return lowest
+}
+
+// TestLinesDoesNotMaterializeItsLinesTwice pins that String#lines walks the
+// receiver instead of building a slice of lines to copy out of.
+//
+// It used to call stringLines first, so the receiver, a []string of every line,
+// the result's slots and every copy were live together while the preflight
+// priced only the last two -- 81,920 bytes of slice backing unpriced against
+// 200,056 charged at 4,000 lines, and growing with the line count. Walking twice
+// with forEachLine removes the scratch rather than pricing it.
+//
+// The assertion is what lines allocates over split for the same document, not
+// what it allocates outright. Both build an array of the same pieces from the
+// same receiver, so the difference is the scratch and nothing else; and a
+// difference cancels the constant the race detector adds to every measurement,
+// where a ratio would be compressed by it. The gap was 243,968 bytes and is
+// 3,984 now.
+//
+// Not parallel: it measures process-wide allocation.
+func TestLinesDoesNotMaterializeItsLinesTwice(t *testing.T) {
+	doc := strings.Repeat("a\n", 4000)
+	walked := lowestAllocOverRunsAccepted(t, `def run(s)
+  s.lines.length
+end`, doc)
+	split := lowestAllocOverRunsAccepted(t, `def run(s)
+  s.split("\n", -1).length
+end`, doc)
+
+	if gap := walked - split; gap > 100<<10 {
+		t.Fatalf("lines allocated %d bytes over split for the same document (%d vs %d), want at most %d: it is materializing the lines before copying them",
+			gap, walked, split, 100<<10)
+	}
+}
+
+// TestScanTableChargeFollowsItsCapacity pins that the engine's index table is
+// charged for the backing it holds rather than the matches it found.
+//
+// FindAllStringSubmatchIndex grows its outer [][]int, so cap can substantially
+// exceed len -- 6,485 slots for 5,000 matches against 1,135 for 1,000. The table
+// stays live for the whole build, so charging it by length left that spare
+// backing unpriced while the copies were made.
+//
+// The assertion is the marginal quota a match costs across two sizes whose
+// overshoot differs, not a fixed quota, so it survives retuning of what a match
+// costs. Following the match count gives 91.00 bytes per match; following the
+// backing gives 99.10, and the 8.1 between them is exactly the extra spare
+// capacity over that range, (1,485 - 135) slots of 24 bytes across 4,000
+// matches. Both figures come from a binary search over quotas, which is exact,
+// so the gap needs no tolerance for noise.
+//
+// Not parallel: it binary-searches quotas.
+func TestScanTableChargeFollowsItsCapacity(t *testing.T) {
+	minimumQuota := func(matches int) int {
+		subject := strings.Repeat("ab", matches)
+		lo, hi := 1, 64<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: mid},
+				`def run(s)
+  s.scan("a")
+end`)
+			if _, err := script.Call(context.Background(), "run", []Value{NewString(subject)}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	// Guard the fixture: if neither table overshoots, the two models agree and
+	// this test would pass without exercising anything.
+	small := regexp.MustCompile("a").FindAllStringSubmatchIndex(strings.Repeat("ab", 1000), -1)
+	large := regexp.MustCompile("a").FindAllStringSubmatchIndex(strings.Repeat("ab", 5000), -1)
+	if spare := (cap(large) - len(large)) - (cap(small) - len(small)); spare <= 0 {
+		t.Fatalf("fixture no longer overshoots more at 5,000 matches than at 1,000 (spare %d): this test would pass vacuously", spare)
+	}
+
+	perMatch := float64(minimumQuota(5000)-minimumQuota(1000)) / 4000.0
+	if perMatch < 95 {
+		t.Fatalf("a match costs %.2f bytes of quota across the 1,000-to-5,000 range, want at least 95: the index table is charged by match count rather than by the backing it holds",
+			perMatch)
 	}
 }

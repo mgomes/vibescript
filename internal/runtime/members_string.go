@@ -333,17 +333,6 @@ func forEachLine(text string, yield func(line string) error) error {
 	return nil
 }
 
-// stringLines splits text into lines following the same rules as forEachLine,
-// matching Ruby's String#lines.
-func stringLines(text string) []string {
-	var lines []string
-	_ = forEachLine(text, func(line string) error {
-		lines = append(lines, line)
-		return nil
-	})
-	return lines
-}
-
 // stringPartition splits text around the first occurrence of sep, mirroring
 // Ruby's String#partition. It returns the segment before the separator, the
 // separator itself, and the segment after it. When the separator is absent the
@@ -755,14 +744,14 @@ func reserveProjectedStringSplitResult(exec *Execution, receiver Value, args []V
 	if err := exec.checkStepBudgetFor(projection.count); err != nil {
 		return err
 	}
-	return exec.checkProjectedArrayBytesWithCallRoots(projection.count, projection.payload, receiver, args, kwargs, block)
+	return exec.checkProjectedArrayBytesWithCallRoots(projection.count, projection.payload, 0, receiver, args, kwargs, block)
 }
 
 func reserveProjectedStringSplitResultWithPositionalRoots(exec *Execution, receiver, arg0, arg1 Value, argCount int, projection stringSplitProjection) error {
 	if err := exec.checkStepBudgetFor(projection.count); err != nil {
 		return err
 	}
-	return exec.checkProjectedArrayBytesWithPositionalCallRoots(projection.count, projection.payload, receiver, arg0, arg1, argCount)
+	return exec.checkProjectedArrayBytesWithPositionalCallRoots(projection.count, projection.payload, 0, receiver, arg0, arg1, argCount)
 }
 
 func planStringSplitCall(receiver, arg0, arg1 Value, argCount int) (stringSplitCall, error) {
@@ -4360,7 +4349,7 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 	// The engine's index table stays live the whole time the result is built from
 	// it, so charge its actual footprint into the accumulator's baseline; the
 	// per-element checks then see index table + growing result together.
-	if err := acc.reserveScratch(projectedRegexSubmatchIndexBytes(len(allMatches), groups)); err != nil {
+	if err := acc.reserveScratch(actualRegexSubmatchIndexBytes(allMatches, groups)); err != nil {
 		return NewNil(), err
 	}
 
@@ -4414,7 +4403,7 @@ func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]in
 	// reserveYieldedCopy below: only one is live at a time, and folding the
 	// largest of them in here instead would keep those bytes charged while the
 	// block runs and count the copy twice.
-	delta := exec.reserveLoopScratch(projectedRegexSubmatchIndexBytes(len(allMatches), groups))
+	delta := exec.reserveLoopScratch(actualRegexSubmatchIndexBytes(allMatches, groups))
 	defer exec.releaseLoopScratch(delta)
 	// reserveLoopScratch only folds the table into the baseline; the call-root-aware
 	// check here rejects a table that already overflows the quota -- together with
@@ -4507,7 +4496,7 @@ func scanMatchBudget(exec *Execution, groups int, receiver Value, args []Value, 
 	// per-match price carries the overshoot the append can leave behind.
 	perMatch := saturatingAdd(
 		projectedRegexSubmatchIndexBytes(1, groups),
-		regexScanOuterSliceGrowthBytes,
+		regexSubmatchIndexSlotBytes(1),
 	)
 	if perMatch <= 0 {
 		return 0, false
@@ -4626,15 +4615,48 @@ func regexpMinMatchRunes(re *syntax.Regexp) int {
 // the worst-case guard and the accumulator seed -- which share this projection so the
 // up-front rejection and the running budget reserve the same bytes -- honest about
 // the table's true coexisting footprint rather than just its integer payload.
-// regexScanOuterSliceGrowthBytes is the headroom charged per match for the
-// outer [][]int slice's growth capacity (see scanMatchBudget).
-const regexScanOuterSliceGrowthBytes = estimatedSliceBaseBytes
+//
+// The table is two allocations with two different counts, and every caller
+// builds its figure from the same two units below so they cannot drift: one
+// index row per match that exists, and one outer slot per slot the backing
+// holds, filled or not. scanMatchBudget bounded the table before the engine ran
+// and charged an extra slot per match for growth, while the accumulator seed and
+// the preflight priced one slot per match and no growth at all -- two models of
+// one quantity that disagreed, and the disagreement was the under-charge.
+// Once the table exists its capacity is a fact rather than a model, which is
+// what actualRegexSubmatchIndexBytes reads.
+func regexSubmatchIndexRowBytes(groups int) int {
+	return saturatingMul(saturatingAdd(2, saturatingMul(2, groups)), estimatedIntBytes)
+}
 
+// regexSubmatchIndexSlotBytes returns what n outer [][]int slots cost, whether
+// or not the engine filled them.
+func regexSubmatchIndexSlotBytes(n int) int {
+	return saturatingMul(n, estimatedSliceBaseBytes)
+}
+
+// projectedRegexSubmatchIndexBytes bounds the table for matchCount matches
+// before it exists, when its capacity cannot be read. It assumes one slot per
+// match; scanMatchBudget adds a second for the growth Go's append can leave
+// behind, which bounds the spare capacity measured here (1.3x to 1.7x length).
 func projectedRegexSubmatchIndexBytes(matchCount, groups int) int {
-	intsPerMatch := saturatingAdd(2, saturatingMul(2, groups))
-	indexBytesPerMatch := saturatingMul(intsPerMatch, estimatedIntBytes)
-	bytesPerMatch := saturatingAdd(indexBytesPerMatch, estimatedSliceBaseBytes)
-	return saturatingMul(matchCount, bytesPerMatch)
+	return saturatingAdd(
+		saturatingMul(matchCount, regexSubmatchIndexRowBytes(groups)),
+		regexSubmatchIndexSlotBytes(matchCount),
+	)
+}
+
+// actualRegexSubmatchIndexBytes returns the table's real footprint once the
+// engine has returned it: one row per match, and one slot per slot of capacity.
+//
+// FindAllStringSubmatchIndex grows its outer slice, so cap can substantially
+// exceed len -- 6,485 slots for 5,000 matches, 35,640 bytes the length-based
+// figure missed while the table stayed live through the whole build.
+func actualRegexSubmatchIndexBytes(allMatches [][]int, groups int) int {
+	return saturatingAdd(
+		saturatingMul(len(allMatches), regexSubmatchIndexRowBytes(groups)),
+		regexSubmatchIndexSlotBytes(cap(allMatches)),
+	)
 }
 
 func (exec *Execution) guardStringScanOutputFootprint(allMatches [][]int, groups int) error {
@@ -4707,11 +4729,16 @@ func (exec *Execution) checkProjectedScanOutputBytes(text string, allMatches [][
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
-	payload := projectedRegexSubmatchIndexBytes(len(allMatches), groups)
+	payload := 0
 	for _, loc := range allMatches {
 		payload = saturatingAdd(payload, projectedRegexElementPayloadBytes(text, loc, groups))
 	}
-	return exec.checkProjectedArrayBytesWithCallRoots(projectedScanResultSlots(allMatches), payload, receiver, args, kwargs, block)
+	// The engine's table is live scratch, not result payload: it is held for the
+	// whole build and freed after, and its capacity is read rather than modeled.
+	return exec.checkProjectedArrayBytesWithCallRoots(
+		projectedScanResultSlots(allMatches), payload,
+		actualRegexSubmatchIndexBytes(allMatches, groups),
+		receiver, args, kwargs, block)
 }
 
 // reserveYieldedCopy reserves payload for a copy a block iterator is about to
@@ -4874,14 +4901,16 @@ func stringMemberTextOps(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.lines does not take arguments")
 			}
 			text := receiver.String()
-			lines := stringLines(text)
-			if err := exec.checkProjectedStringLineBytes(text, lines, receiver, args, kwargs, block); err != nil {
+			count, payload := projectedStringLines(text)
+			// No scratch: forEachLine walks without materializing the lines.
+			if err := exec.checkProjectedArrayBytesWithCallRoots(count, payload, 0, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
-			values := make([]Value, len(lines))
-			for i, line := range lines {
-				values[i] = NewString(clonedWindow(text, line))
-			}
+			values := make([]Value, 0, count)
+			_ = forEachLine(text, func(line string) error {
+				values = append(values, NewString(clonedWindow(text, line)))
+				return nil
+			})
 			return NewArray(values), nil
 		}), nil
 	case "bytes":
@@ -5678,22 +5707,28 @@ func detachedPartitionValue(exec *Execution, receiver Value, head, sep, tail str
 	}), nil
 }
 
-// checkProjectedStringLineBytes rejects a String#lines result before its lines
-// are copied out of the receiver.
+// projectedStringLines counts the lines in text and what they cost once each
+// owns its bytes, without allocating the lines or a slice to hold them.
 //
-// The lines were windows onto the receiver and cost nothing to produce, so the
-// member reserved nothing; detaching them allocates the receiver's length over
-// again and that has to be weighed before it is written, not priced afterwards
-// by the post-call check. A receiver with no line ending at all yields one line
-// spanning the whole string, which clonedWindow hands back untouched and this
-// charges a header for, so the common single-line case still reserves nothing
-// but the array.
-func (exec *Execution) checkProjectedStringLineBytes(text string, lines []string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
-	payload := 0
-	for _, line := range lines {
+// String#lines used to materialize a []string and copy out of it, so the
+// receiver, that slice, the result's slots and every copy were live together
+// while only the last two were priced -- 81,920 bytes unpriced against 200,056
+// charged for a 4,000-line receiver, a quarter to a third of the charge at every
+// size and growing with the line count. Walking twice removes the scratch
+// instead of pricing it: forEachLine allocates nothing, so the peak is now the
+// result alone and the projection describes all of it.
+//
+// A receiver with no line ending at all is one line spanning the whole string,
+// which clonedWindow hands back untouched and detachedWindowPayloadBytes charges
+// a header for, so the common single-line case still projects nothing but the
+// array.
+func projectedStringLines(text string) (count, payload int) {
+	_ = forEachLine(text, func(line string) error {
+		count++
 		payload = saturatingAdd(payload, detachedWindowPayloadBytes(text, line))
-	}
-	return exec.checkProjectedArrayBytesWithCallRoots(len(lines), payload, receiver, args, kwargs, block)
+		return nil
+	})
+	return count, payload
 }
 
 // checkProjectedPartitionBytes rejects a partition result before any part of it
@@ -5708,7 +5743,7 @@ func (exec *Execution) checkProjectedStringLineBytes(text string, lines []string
 func (exec *Execution) checkProjectedPartitionBytes(text, head, tail string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	payload := saturatingAdd(detachedWindowPayloadBytes(text, head), detachedWindowPayloadBytes(text, tail))
 	payload = saturatingAdd(payload, estimatedStringHeaderBytes)
-	return exec.checkProjectedArrayBytesWithCallRoots(3, payload, receiver, args, kwargs, block)
+	return exec.checkProjectedArrayBytesWithCallRoots(3, payload, 0, receiver, args, kwargs, block)
 }
 
 // detachedWindow returns w's characters as a string that does not hold text's
