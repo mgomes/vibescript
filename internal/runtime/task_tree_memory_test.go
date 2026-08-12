@@ -924,3 +924,76 @@ func TestRefusalNamesTheInheritedCeiling(t *testing.T) {
 		t.Fatalf("refusal did not name the inherited ceiling of %d that actually bound it: %v", inherited, err)
 	}
 }
+
+// reentrantProbe re-enters the script through a capability, which is a nesting
+// path that no task group creates.
+type reentrantProbe struct {
+	script **Script
+	fn     string
+}
+
+func (p reentrantProbe) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{"probe": NewObject(map[string]Value{
+		"reenter": NewBuiltin("probe.reenter", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			// Re-entered with the running execution's own context, which is how
+			// a capability adapter calls back into a script. No capabilities are
+			// passed, so the inner call cannot recurse.
+			if _, err := (*p.script).Call(exec.Context(), p.fn, nil, CallOptions{}); err != nil {
+				return NewNil(), err
+			}
+			return NewNil(), nil
+		}),
+	})}, nil
+}
+
+// TestCapabilityReentryJoinsTheCallersChain pins that a call made through a
+// capability is part of the chain it was made from.
+//
+// The chain node used to be published onto a context only by newTaskGroup. That
+// is a side channel: a task group is not the only way a nested call is made. A
+// capability adapter re-entering a script with exec.Context() handed the callee
+// its grandparent's node, or none at all, so the callee started a fresh chain
+// and got the host's whole allowance again -- the very defect this change
+// exists to close, reachable by a path with no task in it.
+//
+// The node now travels on the execution's own context, the way the sleeping
+// budget does, so it reaches everything the call drives.
+//
+// The outer level holds its payload across the re-entry, and the inner call
+// allocates one of its own; either fits alone, and together they do not.
+func TestCapabilityReentryJoinsTheCallersChain(t *testing.T) {
+	t.Parallel()
+
+	const (
+		quota  = 4 << 20
+		chunks = 500 // ~2.5 MiB each
+	)
+
+	chunk := strings.Repeat("q", 5000)
+	source := fmt.Sprintf(chunkPayloadFn, chunk) + fmt.Sprintf(`
+def inner()
+  mine = payload(%d)
+  mine.size
+end
+
+def run()
+  held = payload(%d)
+  probe.reenter()
+  held.size
+end`, chunks, chunks)
+
+	script := compileScriptWithConfig(t,
+		Config{MemoryQuotaBytes: quota, StepQuota: Unlimited}, source)
+
+	holder := script
+	_, err := script.Call(context.Background(), "run", nil,
+		callOptionsWithCapabilities(reentrantProbe{script: &holder, fn: "inner"}))
+
+	if err == nil {
+		t.Fatalf("an outer call holding ~2.5 MiB re-entered the script through a capability, which allocated ~2.5 MiB more, and the %d MiB ceiling refused neither: the inner call started a chain of its own, so re-entry through a capability hands out the whole allowance again",
+			quota>>20)
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("re-entry stopped for an unrelated reason: %v", err)
+	}
+}

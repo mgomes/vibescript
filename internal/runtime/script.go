@@ -126,9 +126,6 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if lazyTaskGlobals != nil {
-		ctx = contextWithTaskLazyGlobals(ctx, lazyTaskGlobals)
-	}
 	if err := ctx.Err(); err != nil {
 		return NewNil(), err
 	}
@@ -168,6 +165,16 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	rebinder.inboundDataFast = scanInboundCallValues(args, opts.Keywords)
 
 	exec := newExecutionForCall(s, ctx, root, opts)
+	// Applied to the execution's own context, after it is built, so that this
+	// wrapper stays outermost. taskLazyGlobalsFromContext identifies its context
+	// by a type assertion on the outermost value rather than through ctx.Value,
+	// so anything wrapped on afterwards hides a task's inherited globals -- and
+	// newExecutionForCall wraps, to carry the memory chain the way it carries
+	// the sleeping budget. Binding these before that wrapping made nested tasks
+	// fail with "undefined variable".
+	if lazyTaskGlobals != nil {
+		exec.ctx = contextWithTaskLazyGlobals(exec.ctx, lazyTaskGlobals)
+	}
 	if observeExhaustion != nil {
 		defer func() { *observeExhaustion = exec.observedExhaustion() }()
 	}
