@@ -1535,11 +1535,16 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 		callOptions:   childCallOptions,
 		sleepBudget:   sleeping,
 	}
-	// Linked to the caller's node here, where the nesting level is created. The
-	// node is published onto the context by newTaskGroup rather than here; see
-	// memoryChain.initForCall for why this must not wrap the context.
+	// Linked to the caller's node and then published onto this execution's own
+	// context, the way the sleeping budget is, so that it reaches everything
+	// this call drives rather than only what a task group captures. Published
+	// by newTaskGroup alone it traveled a side channel: a capability adapter
+	// re-entering a script with exec.Context() handed the callee its
+	// grandparent's node, or none, so that callee started a chain of its own
+	// and its footprint never reached this level.
 	if exec.memChainNode.initForCall(ctx, script.engine.config.MemoryQuotaBytes) {
 		exec.memChain = &exec.memChainNode
+		exec.ctx = contextWithMemoryChain(exec.ctx, exec.memChain)
 		// An engine with no quota of its own adopts the ceiling it inherited as
 		// its own. Every memory check guards on memoryQuota before doing
 		// anything -- there are some sixty such guards -- so without this an
