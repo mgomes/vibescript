@@ -674,7 +674,7 @@ func TestStringScanIndexTableAndResultChargedTogether(t *testing.T) {
 				return err
 			}
 		}
-		out := make([]Value, 0, min(len(allMatches), stringScanInitialCap))
+		out := make([]Value, 0, projectedScanResultSlots(allMatches))
 		for _, loc := range allMatches {
 			out = append(out, stringScanElement(subject.String(), loc, groups))
 			if err := acc.add(out[len(out)-1], cap(out)); err != nil {

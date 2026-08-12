@@ -333,17 +333,6 @@ func forEachLine(text string, yield func(line string) error) error {
 	return nil
 }
 
-// stringLines splits text into lines following the same rules as forEachLine,
-// matching Ruby's String#lines.
-func stringLines(text string) []string {
-	var lines []string
-	_ = forEachLine(text, func(line string) error {
-		lines = append(lines, line)
-		return nil
-	})
-	return lines
-}
-
 // stringPartition splits text around the first occurrence of sep, mirroring
 // Ruby's String#partition. It returns the segment before the separator, the
 // separator itself, and the segment after it. When the separator is absent the
@@ -710,10 +699,21 @@ func newStringSplitProjection(source, part string) stringSplitProjection {
 
 func (projection *stringSplitProjection) add(source, part string) {
 	projection.count++
-	projection.payload = saturatingAdd(projection.payload, stringSplitPartPayloadBytes(source, part))
+	projection.payload = saturatingAdd(projection.payload, detachedWindowPayloadBytes(source, part))
 }
 
-func stringSplitPartPayloadBytes(source, part string) int {
+// detachedWindowPayloadBytes reports what one window onto source costs once it
+// has been detached from it, and is the projection side of clonedWindow: split
+// parts, partition components and lines are all priced by this rule.
+//
+// The two must agree on what allocates. clonedWindow copies nothing for an
+// empty window (strings.Clone hands back the shared empty string) nor for one
+// as long as source, which for a window means source itself; both are charged a
+// header alone here. sameStringBacking is the stricter test of the two -- a
+// same-length string that is not a window onto source is charged its bytes and
+// copied by neither -- so any disagreement over-charges rather than letting an
+// allocation through unpriced.
+func detachedWindowPayloadBytes(source, part string) int {
 	if len(part) == 0 || sameStringBacking(source, part) {
 		return estimatedStringHeaderBytes
 	}
@@ -744,14 +744,14 @@ func reserveProjectedStringSplitResult(exec *Execution, receiver Value, args []V
 	if err := exec.checkStepBudgetFor(projection.count); err != nil {
 		return err
 	}
-	return exec.checkProjectedArrayBytesWithCallRoots(projection.count, projection.payload, receiver, args, kwargs, block)
+	return exec.checkProjectedArrayBytesWithCallRoots(projection.count, projection.payload, 0, receiver, args, kwargs, block)
 }
 
 func reserveProjectedStringSplitResultWithPositionalRoots(exec *Execution, receiver, arg0, arg1 Value, argCount int, projection stringSplitProjection) error {
 	if err := exec.checkStepBudgetFor(projection.count); err != nil {
 		return err
 	}
-	return exec.checkProjectedArrayBytesWithPositionalCallRoots(projection.count, projection.payload, receiver, arg0, arg1, argCount)
+	return exec.checkProjectedArrayBytesWithPositionalCallRoots(projection.count, projection.payload, 0, receiver, arg0, arg1, argCount)
 }
 
 func planStringSplitCall(receiver, arg0, arg1 Value, argCount int) (stringSplitCall, error) {
@@ -843,11 +843,24 @@ func stringSplitResultFromPositionalRoots(exec *Execution, receiver, arg0, arg1 
 	return stringSplitCallResult(exec, receiver, split)
 }
 
-func appendStringSplitPart(exec *Execution, values *[]Value, part string) error {
+// appendStringSplitPart appends one split part, copied out of the source it was
+// cut from (see clonedWindow).
+//
+// Every part is a window onto source, so keeping one of them pinned the whole
+// subject: `(big + "|x").split("|")[1]` was charged one byte and held a
+// megabyte, and 200 of them retained 192.1 MiB under an 8 MiB quota. The parts
+// of one split add up to the subject, so keeping all of them was already priced
+// honestly and only a kept subset amplified.
+//
+// The copy needs no reservation of its own: detachedWindowPayloadBytes already
+// projects each part at its own length -- header only for an empty part or one
+// that spans the whole source -- which is exactly the set clonedWindow copies
+// nothing for, so the reservation the caller already made covers these bytes.
+func appendStringSplitPart(exec *Execution, values *[]Value, source, part string) error {
 	if err := exec.step(); err != nil {
 		return err
 	}
-	*values = append(*values, NewString(part))
+	*values = append(*values, NewString(clonedWindow(source, part)))
 	return nil
 }
 
@@ -860,7 +873,7 @@ func stringSplitWhitespaceResult(exec *Execution, text string, limit, count int)
 		return NewArray(values), nil
 	}
 	if limit == 1 {
-		if err := appendStringSplitPart(exec, &values, text); err != nil {
+		if err := appendStringSplitPart(exec, &values, text, text); err != nil {
 			return NewNil(), err
 		}
 		return NewArray(values), nil
@@ -875,7 +888,7 @@ func stringSplitWhitespaceResult(exec *Execution, text string, limit, count int)
 			break
 		}
 		if limit > 0 && len(values) == limit-1 {
-			if err := appendStringSplitPart(exec, &values, text[i:]); err != nil {
+			if err := appendStringSplitPart(exec, &values, text, text[i:]); err != nil {
 				return NewNil(), err
 			}
 			return NewArray(values), nil
@@ -884,12 +897,12 @@ func stringSplitWhitespaceResult(exec *Execution, text string, limit, count int)
 		for i < n && !isRubyASCIISpace(text[i]) {
 			i++
 		}
-		if err := appendStringSplitPart(exec, &values, text[start:i]); err != nil {
+		if err := appendStringSplitPart(exec, &values, text, text[start:i]); err != nil {
 			return NewNil(), err
 		}
 	}
 	if limit != 0 && isRubyASCIISpace(text[n-1]) {
-		if err := appendStringSplitPart(exec, &values, ""); err != nil {
+		if err := appendStringSplitPart(exec, &values, text, ""); err != nil {
 			return NewNil(), err
 		}
 	}
@@ -905,14 +918,14 @@ func stringSplitEmptySeparatorResult(exec *Execution, text string, limit, count 
 		return NewArray(values), nil
 	}
 	if limit == 1 {
-		if err := appendStringSplitPart(exec, &values, text); err != nil {
+		if err := appendStringSplitPart(exec, &values, text, text); err != nil {
 			return NewNil(), err
 		}
 		return NewArray(values), nil
 	}
 	for i := 0; i < len(text); {
 		if limit > 1 && len(values) == limit-1 {
-			if err := appendStringSplitPart(exec, &values, text[i:]); err != nil {
+			if err := appendStringSplitPart(exec, &values, text, text[i:]); err != nil {
 				return NewNil(), err
 			}
 			return NewArray(values), nil
@@ -920,12 +933,12 @@ func stringSplitEmptySeparatorResult(exec *Execution, text string, limit, count 
 		start := i
 		_, width := utf8.DecodeRuneInString(text[i:])
 		i += width
-		if err := appendStringSplitPart(exec, &values, text[start:i]); err != nil {
+		if err := appendStringSplitPart(exec, &values, text, text[start:i]); err != nil {
 			return NewNil(), err
 		}
 	}
 	if limit != 0 {
-		if err := appendStringSplitPart(exec, &values, ""); err != nil {
+		if err := appendStringSplitPart(exec, &values, text, ""); err != nil {
 			return NewNil(), err
 		}
 	}
@@ -949,12 +962,12 @@ func stringSplitSeparatorResult(exec *Execution, text, sep string, limit, count 
 				break
 			}
 			end := start + idx
-			if err := appendStringSplitPart(exec, &values, text[start:end]); err != nil {
+			if err := appendStringSplitPart(exec, &values, text, text[start:end]); err != nil {
 				return NewNil(), err
 			}
 			start = end + len(sep)
 		}
-		if err := appendStringSplitPart(exec, &values, text[start:]); err != nil {
+		if err := appendStringSplitPart(exec, &values, text, text[start:]); err != nil {
 			return NewNil(), err
 		}
 	case limit < 0:
@@ -965,7 +978,7 @@ func stringSplitSeparatorResult(exec *Execution, text, sep string, limit, count 
 			if idx >= 0 {
 				end = start + idx
 			}
-			if err := appendStringSplitPart(exec, &values, text[start:end]); err != nil {
+			if err := appendStringSplitPart(exec, &values, text, text[start:end]); err != nil {
 				return NewNil(), err
 			}
 			if idx < 0 {
@@ -987,12 +1000,12 @@ func stringSplitSeparatorResult(exec *Execution, text, sep string, limit, count 
 				pendingEmpty++
 			} else {
 				for range pendingEmpty {
-					if err := appendStringSplitPart(exec, &values, ""); err != nil {
+					if err := appendStringSplitPart(exec, &values, text, ""); err != nil {
 						return NewNil(), err
 					}
 				}
 				pendingEmpty = 0
-				if err := appendStringSplitPart(exec, &values, part); err != nil {
+				if err := appendStringSplitPart(exec, &values, text, part); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -1022,6 +1035,19 @@ func stringSplitResult(exec *Execution, parts []string, acc *arrayBuildAccumulat
 	return NewArray(values), nil
 }
 
+// chompDefault removes one trailing line ending from text, mirroring Ruby's
+// argumentless String#chomp. A "\r\n" pair counts as one ending.
+//
+// The result stays a window onto text rather than being detached like every
+// other trimming member, and so does chopDefault's. Both remove a fixed few
+// bytes -- at most two here, at most one rune there -- so a single call leaves
+// at most that many bytes of the receiver unpriced, where chomp(sep),
+// chomp("") and the strip family each remove an unbounded amount in one call
+// and had to be detached. Reaching a meaningful gap needs one call per byte
+// removed, which the step quota prices, and closing it would cost a full copy
+// of the receiver on every call: `s = s.chop` down a megabyte would copy a
+// terabyte to save a megabyte, and chop is in stringConstantCostMembers
+// precisely because it does not read the receiver today.
 func chompDefault(text string) string {
 	if strings.HasSuffix(text, "\r\n") {
 		return text[:len(text)-2]
@@ -1037,6 +1063,9 @@ func chompDefault(text string) string {
 // bytes are removed together. Otherwise one logical character (a full UTF-8
 // rune) is removed rather than a single byte, so trailing multibyte characters
 // are handled correctly. An empty string is returned unchanged.
+//
+// Like chompDefault, the result stays a window onto text; see that function for
+// why the bounded few bytes it leaves unpriced are not worth a copy.
 func chopDefault(text string) string {
 	if strings.HasSuffix(text, "\r\n") {
 		return text[:len(text)-2]
@@ -4204,12 +4233,25 @@ func stringRIndexResult(exec *Execution, receiver, needle Value, offset int) (Va
 	return NewInt(int64(index)), nil
 }
 
-// stringScanInitialCap bounds the result slice's initial capacity so a subject
-// that yields few matches under a tight step or memory quota does not reserve a
-// large backing array before the per-match checks can reject the call. append
-// grows the backing as matches accumulate, keeping the live allocation
-// proportional to the matches the quotas actually permit.
-const stringScanInitialCap = 256
+// projectedScanResultSlots reports how many slots String#scan's result backing
+// will hold, which is exactly one per match.
+//
+// The build used to start at a capped capacity and let append grow it, so that
+// a subject yielding few matches did not reserve a large backing before the
+// per-match checks could reject the call. checkProjectedScanOutputBytes now
+// weighs the whole backing, every element and the index table against the quota
+// before the first match is copied, which subsumes that guard and is stricter
+// than it was: nothing is allocated until the complete result has been approved.
+//
+// Growing instead of preallocating also made the projection wrong in the unsafe
+// direction. append overshoots -- 257 matches reached a capacity of 575, leaving
+// 318 slots and 10,176 bytes unpriced -- while the preflight charged the logical
+// match count, so the last and largest match could be copied before acc.add saw
+// the real backing. Allocating the count that was approved makes the projection
+// exact and lowers the peak rather than raising it.
+func projectedScanResultSlots(allMatches [][]int) int {
+	return len(allMatches)
+}
 
 // stringScan implements String#scan with Ruby's capture-aware result shape while
 // keeping its memory bounded by the sandbox quotas. With no capture groups each
@@ -4296,16 +4338,22 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 	if err := exec.guardStringScanOutputFootprint(allMatches, groups); err != nil {
 		return NewNil(), err
 	}
+	// Weigh every copy before the first one is made. The accumulator below
+	// charges each element only once it exists, which let one large match be
+	// cloned past the quota before anything checked it.
+	if err := exec.checkProjectedScanOutputBytes(text, allMatches, groups, receiver, args, kwargs, block); err != nil {
+		return NewNil(), err
+	}
 
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	// The engine's index table stays live the whole time the result is built from
 	// it, so charge its actual footprint into the accumulator's baseline; the
 	// per-element checks then see index table + growing result together.
-	if err := acc.reserveScratch(projectedRegexSubmatchIndexBytes(len(allMatches), groups)); err != nil {
+	if err := acc.reserveScratch(actualRegexSubmatchIndexBytes(allMatches, groups)); err != nil {
 		return NewNil(), err
 	}
 
-	out := make([]Value, 0, min(len(allMatches), stringScanInitialCap))
+	out := make([]Value, 0, projectedScanResultSlots(allMatches))
 	for _, loc := range allMatches {
 		// Charge a step per match so a pattern that produces a flood of matches
 		// cannot starve the step quota or cancellation checks while the result is
@@ -4350,7 +4398,12 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 // reservedScratchBytes, so the two coexisting costs are charged together rather
 // than each fitting the quota separately while their sum exceeds it.
 func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]int, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-	delta := exec.reserveLoopScratch(projectedRegexSubmatchIndexBytes(len(allMatches), groups))
+	// The table is reserved for the whole loop because it is live for the whole
+	// loop. Each match's copy is reserved separately, around the copy alone, by
+	// reserveYieldedCopy below: only one is live at a time, and folding the
+	// largest of them in here instead would keep those bytes charged while the
+	// block runs and count the copy twice.
+	delta := exec.reserveLoopScratch(actualRegexSubmatchIndexBytes(allMatches, groups))
 	defer exec.releaseLoopScratch(delta)
 	// reserveLoopScratch only folds the table into the baseline; the call-root-aware
 	// check here rejects a table that already overflows the quota -- together with
@@ -4370,7 +4423,13 @@ func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]in
 		if err := exec.step(); err != nil {
 			return NewNil(), err
 		}
+		copyDelta, err := exec.reserveYieldedCopy(
+			projectedRegexElementPayloadBytes(text, loc, groups), receiver, args, kwargs, block)
+		if err != nil {
+			return NewNil(), err
+		}
 		blockArg[0] = stringScanElement(text, loc, groups)
+		exec.releaseLoopScratch(copyDelta)
 		if _, err := runner.call(blockArg[:]); err != nil {
 			return NewNil(), err
 		}
@@ -4437,7 +4496,7 @@ func scanMatchBudget(exec *Execution, groups int, receiver Value, args []Value, 
 	// per-match price carries the overshoot the append can leave behind.
 	perMatch := saturatingAdd(
 		projectedRegexSubmatchIndexBytes(1, groups),
-		regexScanOuterSliceGrowthBytes,
+		regexSubmatchIndexSlotBytes(1),
 	)
 	if perMatch <= 0 {
 		return 0, false
@@ -4556,39 +4615,177 @@ func regexpMinMatchRunes(re *syntax.Regexp) int {
 // the worst-case guard and the accumulator seed -- which share this projection so the
 // up-front rejection and the running budget reserve the same bytes -- honest about
 // the table's true coexisting footprint rather than just its integer payload.
-// regexScanOuterSliceGrowthBytes is the headroom charged per match for the
-// outer [][]int slice's growth capacity (see scanMatchBudget).
-const regexScanOuterSliceGrowthBytes = estimatedSliceBaseBytes
+//
+// The table is two allocations with two different counts, and every caller
+// builds its figure from the same two units below so they cannot drift: one
+// index row per match that exists, and one outer slot per slot the backing
+// holds, filled or not. scanMatchBudget bounded the table before the engine ran
+// and charged an extra slot per match for growth, while the accumulator seed and
+// the preflight priced one slot per match and no growth at all -- two models of
+// one quantity that disagreed, and the disagreement was the under-charge.
+// Once the table exists its capacity is a fact rather than a model, which is
+// what actualRegexSubmatchIndexBytes reads.
+func regexSubmatchIndexRowBytes(groups int) int {
+	return saturatingMul(saturatingAdd(2, saturatingMul(2, groups)), estimatedIntBytes)
+}
 
+// regexSubmatchIndexSlotBytes returns what n outer [][]int slots cost, whether
+// or not the engine filled them.
+func regexSubmatchIndexSlotBytes(n int) int {
+	return saturatingMul(n, estimatedSliceBaseBytes)
+}
+
+// projectedRegexSubmatchIndexBytes bounds the table for matchCount matches
+// before it exists, when its capacity cannot be read. It assumes one slot per
+// match; scanMatchBudget adds a second for the growth Go's append can leave
+// behind, which bounds the spare capacity measured here (1.3x to 1.7x length).
 func projectedRegexSubmatchIndexBytes(matchCount, groups int) int {
-	intsPerMatch := saturatingAdd(2, saturatingMul(2, groups))
-	indexBytesPerMatch := saturatingMul(intsPerMatch, estimatedIntBytes)
-	bytesPerMatch := saturatingAdd(indexBytesPerMatch, estimatedSliceBaseBytes)
-	return saturatingMul(matchCount, bytesPerMatch)
+	return saturatingAdd(
+		saturatingMul(matchCount, regexSubmatchIndexRowBytes(groups)),
+		regexSubmatchIndexSlotBytes(matchCount),
+	)
+}
+
+// actualRegexSubmatchIndexBytes returns the table's real footprint once the
+// engine has returned it: one row per match, and one slot per slot of capacity.
+//
+// FindAllStringSubmatchIndex grows its outer slice, so cap can substantially
+// exceed len -- 6,485 slots for 5,000 matches, 35,640 bytes the length-based
+// figure missed while the table stayed live through the whole build.
+func actualRegexSubmatchIndexBytes(allMatches [][]int, groups int) int {
+	return saturatingAdd(
+		saturatingMul(len(allMatches), regexSubmatchIndexRowBytes(groups)),
+		regexSubmatchIndexSlotBytes(cap(allMatches)),
+	)
 }
 
 func (exec *Execution) guardStringScanOutputFootprint(allMatches [][]int, groups int) error {
 	outputBytes := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(len(allMatches), estimatedValueBytes))
 	for _, loc := range allMatches {
-		if groups == 0 {
-			outputBytes = saturatingAdd(outputBytes, projectedRegexStringPayloadBytes(loc[0], loc[1]))
-		} else {
-			outputBytes = saturatingAdd(outputBytes, estimatedSliceBaseBytes)
-			outputBytes = saturatingAdd(outputBytes, saturatingMul(groups, estimatedValueBytes))
-			for g := range groups {
-				start := loc[(g+1)*2]
-				end := loc[(g+1)*2+1]
-				if start < 0 || end < 0 {
-					continue
-				}
-				outputBytes = saturatingAdd(outputBytes, projectedRegexStringPayloadBytes(start, end))
-			}
-		}
+		outputBytes = saturatingAdd(outputBytes, projectedRegexElementPayloadBytes("", loc, groups))
 		if outputBytes > maxRegexInputBytes {
 			return exec.latchExhaustion(fmt.Errorf("%w: string.scan output exceeds limit %d bytes", errOutputLimitExceeded, maxRegexInputBytes))
 		}
 	}
 	return nil
+}
+
+// projectedRegexElementPayloadBytes returns what one stringScanElement costs
+// beyond the slot it occupies in the result: the match string, or the capture
+// array with one string per participating group.
+//
+// text is the subject the pieces are windows onto, and may be empty to price a
+// piece that is always copied. clonedWindow allocates nothing for a piece as
+// long as the whole subject, so passing the subject charges a header alone for
+// it -- `s.scan("^.*$")` copies nothing and must not be billed for the copy it
+// does not make. guardStringScanOutputFootprint passes "" because it bounds the
+// engine's worst case against a fixed host cap rather than pricing the
+// allocation, and lowering that bound would move an existing rejection.
+func projectedRegexElementPayloadBytes(text string, loc []int, groups int) int {
+	if groups == 0 {
+		return projectedRegexWindowBytes(text, loc[0], loc[1])
+	}
+	payload := saturatingAdd(estimatedSliceBaseBytes, saturatingMul(groups, estimatedValueBytes))
+	for g := range groups {
+		start := loc[(g+1)*2]
+		end := loc[(g+1)*2+1]
+		if start < 0 || end < 0 {
+			continue
+		}
+		payload = saturatingAdd(payload, projectedRegexWindowBytes(text, start, end))
+	}
+	return payload
+}
+
+// projectedRegexWindowBytes prices one text[start:end] piece the way
+// clonedWindow allocates it.
+func projectedRegexWindowBytes(text string, start, end int) int {
+	if end >= start && end-start == len(text) && len(text) > 0 {
+		return estimatedStringHeaderBytes
+	}
+	return projectedRegexStringPayloadBytes(start, end)
+}
+
+// checkProjectedScanOutputBytes rejects a scan result before any of its matches
+// are copied out of the subject.
+//
+// Everything the array form holds at its peak is weighed here together: the
+// call roots, the engine's index table, the result's slots, and every element's
+// payload. All four coexist -- the table stays live the whole time the elements
+// are built from it -- and checking them apart is what let a subject of many
+// small matches followed by one large one through: roots plus output fit, roots
+// plus table fit, and their sum did not, so the last match was cloned before
+// acc.add could reject it. That allocated 3.71 MiB under a 1.8 MB quota.
+//
+// The host-cap guard above walks the same element numbers but compares them to
+// a fixed limit rather than the quota, and the accumulator's per-element check
+// runs only after an element exists, so neither weighed the copies in time.
+//
+// Counting the table here does not double-charge the acc.reserveScratch that
+// follows. This is a one-shot check that stores nothing; that call folds the
+// table into the accumulator's own baseline for the per-element checks. Each
+// check counts the table exactly once.
+func (exec *Execution) checkProjectedScanOutputBytes(text string, allMatches [][]int, groups int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	payload := 0
+	for _, loc := range allMatches {
+		payload = saturatingAdd(payload, projectedRegexElementPayloadBytes(text, loc, groups))
+	}
+	// The engine's table is live scratch, not result payload: it is held for the
+	// whole build and freed after, and its capacity is read rather than modeled.
+	return exec.checkProjectedArrayBytesWithCallRoots(
+		projectedScanResultSlots(allMatches), payload,
+		actualRegexSubmatchIndexBytes(allMatches, groups),
+		receiver, args, kwargs, block)
+}
+
+// reserveYieldedCopy reserves payload for a copy a block iterator is about to
+// make and verifies it fits beside the live call roots. The caller must release
+// the returned reservation as soon as the copy exists and before the block runs.
+//
+// The extent is the whole point, and it is bounded on both sides. Reserved any
+// later and the copy is allocated before anything weighs it. Held any longer --
+// across the block call -- and the same bytes are counted twice: once as this
+// reservation and once as the value the block's own checks now reach through the
+// bound parameter. Holding it across the call rejected a scan block under a
+// 1.5 MB quota holding a 600 KB receiver and one 600 KB copy, and an each_line
+// under 2.4 MB holding a 1 MB receiver and one 1 MB copy, both of which fit.
+//
+// Only one copy is live at a time in these loops: the block argument is
+// overwritten each yield, and a copy the block keeps is reachable from the
+// block's own roots by the time the next check walks them. That is why a single
+// copy is reserved here rather than the whole output the array form projects.
+//
+// detachedSubstring implements this same contract for members that return one
+// value; this exists for scan, whose element may be a capture array of several
+// copies rather than a single string.
+//
+// Known residual: the previous yield is still reachable when the next copy is
+// made. The loop's block-argument slot holds it until it is overwritten, and a
+// block whose body cannot capture its scope reuses one environment whose
+// bindings are cleared at the start of the next call rather than at the end of
+// the last, so the copy before it survives across this reservation. The
+// transient peak is therefore the receiver and two copies where this charges the
+// receiver and one: an each_line over two 1 MB lines that retains neither runs
+// under 3,003,966 bytes, while the same receiver with a block that does retain
+// both -- which the walk can see -- is charged 4,004,313. The gap is bounded by
+// one yielded value, so by the receiver's own length, and scan's block form has
+// the same lifetime.
+//
+// Closing it needs the runner to drop its argument binding when a call ends
+// instead of when the next begins, which every iterator built on blockCallRunner
+// shares. Charging the previous copy here instead would double-count the case
+// where the block kept it, because the walk already reaches it there -- the
+// false rejection this reservation's extent exists to avoid.
+func (exec *Execution) reserveYieldedCopy(payload int, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, error) {
+	delta := exec.reserveLoopScratch(payload)
+	if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+		exec.releaseLoopScratch(delta)
+		return 0, err
+	}
+	return delta, nil
 }
 
 func projectedRegexStringPayloadBytes(start, end int) int {
@@ -4602,9 +4799,16 @@ func projectedRegexStringPayloadBytes(start, end int) int {
 // match string when the pattern has no capture groups, otherwise an array holding
 // each captured substring with nil for groups that did not participate. loc is a
 // FindAllStringSubmatchIndex result element, indexed into text.
+//
+// Each piece is copied out of the subject (see clonedWindow). A match is a
+// window onto text, so keeping one pinned the whole subject however little it
+// matched: 200 three-character matches of a megabyte retained 192.1 MiB under
+// an 8 MiB quota. projectedRegexStringPayloadBytes already charges every piece
+// its own length, so the guard and the accumulator that ran before this point
+// have reserved these bytes.
 func stringScanElement(text string, loc []int, groups int) Value {
 	if groups == 0 {
-		return NewString(text[loc[0]:loc[1]])
+		return NewString(clonedWindow(text, text[loc[0]:loc[1]]))
 	}
 	captures := make([]Value, groups)
 	for g := range groups {
@@ -4614,7 +4818,7 @@ func stringScanElement(text string, loc []int, groups int) Value {
 			captures[g] = NewNil()
 			continue
 		}
-		captures[g] = NewString(text[start:end])
+		captures[g] = NewString(clonedWindow(text, text[start:end]))
 	}
 	return NewArray(captures)
 }
@@ -4696,11 +4900,17 @@ func stringMemberTextOps(property string) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.lines does not take arguments")
 			}
-			lines := stringLines(receiver.String())
-			values := make([]Value, len(lines))
-			for i, line := range lines {
-				values[i] = NewString(line)
+			text := receiver.String()
+			count, payload := projectedStringLines(text)
+			// No scratch: forEachLine walks without materializing the lines.
+			if err := exec.checkProjectedArrayBytesWithCallRoots(count, payload, 0, receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
+			values := make([]Value, 0, count)
+			_ = forEachLine(text, func(line string) error {
+				values = append(values, NewString(clonedWindow(text, line)))
+				return nil
+			})
 			return NewArray(values), nil
 		}), nil
 	case "bytes":
@@ -4800,14 +5010,26 @@ func stringMemberTextOps(property string) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.each_line does not take arguments")
 			}
+			text := receiver.String()
 			runner, err := newBlockCallRunner(exec, block, "string.each_line", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
 			var blockArg [1]Value
-			if err := forEachLine(receiver.String(), func(line string) error {
-				blockArg[0] = NewString(line)
-				_, err := runner.call(blockArg[:])
+			if err := forEachLine(text, func(line string) error {
+				// Reserved across the copy and released the moment it exists,
+				// so it is never unweighed and never counted twice while the
+				// block runs. This is detachedSubstring's contract without its
+				// deferred release, which cost more than the check it guards
+				// when a document yields thousands of short lines.
+				copyDelta, err := exec.reserveYieldedCopy(
+					detachedWindowPayloadBytes(text, line), receiver, args, kwargs, block)
+				if err != nil {
+					return err
+				}
+				blockArg[0] = NewString(clonedWindow(text, line))
+				exec.releaseLoopScratch(copyDelta)
+				_, err = runner.call(blockArg[:])
 				return err
 			}); err != nil {
 				return NewNil(), err
@@ -5020,15 +5242,16 @@ func stringMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.strip does not take arguments")
 			}
-			return NewString(rubyStrip(receiver.String())), nil
+			text := receiver.String()
+			return detachedStringValue(exec, text, rubyStrip(text), receiver, args, kwargs, block)
 		}), nil
 	case "strip!":
 		return NewAutoBuiltin("string.strip!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.strip! does not take arguments")
 			}
-			updated := rubyStrip(receiver.String())
-			return stringBangResult(receiver.String(), updated), nil
+			original := receiver.String()
+			return detachedBangResult(exec, original, rubyStrip(original), receiver, args, kwargs, block)
 		}), nil
 	case "squish":
 		return NewAutoBuiltin("string.squish", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -5050,30 +5273,32 @@ func stringMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.lstrip does not take arguments")
 			}
-			return NewString(rubyLstrip(receiver.String())), nil
+			text := receiver.String()
+			return detachedStringValue(exec, text, rubyLstrip(text), receiver, args, kwargs, block)
 		}), nil
 	case "lstrip!":
 		return NewAutoBuiltin("string.lstrip!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.lstrip! does not take arguments")
 			}
-			updated := rubyLstrip(receiver.String())
-			return stringBangResult(receiver.String(), updated), nil
+			original := receiver.String()
+			return detachedBangResult(exec, original, rubyLstrip(original), receiver, args, kwargs, block)
 		}), nil
 	case "rstrip":
 		return NewAutoBuiltin("string.rstrip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.rstrip does not take arguments")
 			}
-			return NewString(rubyRstrip(receiver.String())), nil
+			text := receiver.String()
+			return detachedStringValue(exec, text, rubyRstrip(text), receiver, args, kwargs, block)
 		}), nil
 	case "rstrip!":
 		return NewAutoBuiltin("string.rstrip!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.rstrip! does not take arguments")
 			}
-			updated := rubyRstrip(receiver.String())
-			return stringBangResult(receiver.String(), updated), nil
+			original := receiver.String()
+			return detachedBangResult(exec, original, rubyRstrip(original), receiver, args, kwargs, block)
 		}), nil
 	case "chomp":
 		return NewAutoBuiltin("string.chomp", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -5094,10 +5319,10 @@ func stringMemberTransforms(property string) (Value, error) {
 			}
 			sep := args[0].String()
 			if sep == "" {
-				return NewString(strings.TrimRight(text, "\r\n")), nil
+				return detachedStringValue(exec, text, strings.TrimRight(text, "\r\n"), receiver, args, kwargs, block)
 			}
 			if strings.HasSuffix(text, sep) {
-				return NewString(text[:len(text)-len(sep)]), nil
+				return detachedStringValue(exec, text, text[:len(text)-len(sep)], receiver, args, kwargs, block)
 			}
 			return NewString(text), nil
 		}), nil
@@ -5120,10 +5345,10 @@ func stringMemberTransforms(property string) (Value, error) {
 			}
 			sep := args[0].String()
 			if sep == "" {
-				return stringBangResult(original, strings.TrimRight(original, "\r\n")), nil
+				return detachedBangResult(exec, original, strings.TrimRight(original, "\r\n"), receiver, args, kwargs, block)
 			}
 			if strings.HasSuffix(original, sep) {
-				return stringBangResult(original, original[:len(original)-len(sep)]), nil
+				return detachedBangResult(exec, original, original[:len(original)-len(sep)], receiver, args, kwargs, block)
 			}
 			return NewNil(), nil
 		}), nil
@@ -5167,7 +5392,8 @@ func stringMemberTransforms(property string) (Value, error) {
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.delete_prefix prefix must be string")
 			}
-			return NewString(strings.TrimPrefix(receiver.String(), args[0].String())), nil
+			text := receiver.String()
+			return detachedStringValue(exec, text, strings.TrimPrefix(text, args[0].String()), receiver, args, kwargs, block)
 		}), nil
 	case "delete_prefix!":
 		return NewAutoBuiltin("string.delete_prefix!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -5177,8 +5403,8 @@ func stringMemberTransforms(property string) (Value, error) {
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.delete_prefix! prefix must be string")
 			}
-			updated := strings.TrimPrefix(receiver.String(), args[0].String())
-			return stringBangResult(receiver.String(), updated), nil
+			original := receiver.String()
+			return detachedBangResult(exec, original, strings.TrimPrefix(original, args[0].String()), receiver, args, kwargs, block)
 		}), nil
 	case "delete_suffix":
 		return NewAutoBuiltin("string.delete_suffix", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -5188,7 +5414,8 @@ func stringMemberTransforms(property string) (Value, error) {
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.delete_suffix suffix must be string")
 			}
-			return NewString(strings.TrimSuffix(receiver.String(), args[0].String())), nil
+			text := receiver.String()
+			return detachedStringValue(exec, text, strings.TrimSuffix(text, args[0].String()), receiver, args, kwargs, block)
 		}), nil
 	case "delete_suffix!":
 		return NewAutoBuiltin("string.delete_suffix!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -5198,8 +5425,8 @@ func stringMemberTransforms(property string) (Value, error) {
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.delete_suffix! suffix must be string")
 			}
-			updated := strings.TrimSuffix(receiver.String(), args[0].String())
-			return stringBangResult(receiver.String(), updated), nil
+			original := receiver.String()
+			return detachedBangResult(exec, original, strings.TrimSuffix(original, args[0].String()), receiver, args, kwargs, block)
 		}), nil
 	case "tr":
 		return NewAutoBuiltin("string.tr", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -5412,6 +5639,36 @@ func detachedSubstring(exec *Execution, text, sub string, receiver Value, args [
 	return clonedWindow(text, sub), nil
 }
 
+// detachedStringValue wraps sub as the string value a member returns, detached
+// from text's backing (see detachedSubstring).
+//
+// It is the shape almost every substring-returning member needs: one window,
+// one value, priced together. detachedByteslice sits beside it rather than
+// above it -- byteslice adds a scan charge because it is exempt from the
+// receiver-length charge chargeStringScanBeforeCall applies to everyone else,
+// and billing that charge here would double-charge every caller.
+func detachedStringValue(exec *Execution, text, sub string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	detached, err := detachedSubstring(exec, text, sub, receiver, args, kwargs, block)
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewString(detached), nil
+}
+
+// detachedBangResult is stringBangResult for a mutator whose result is a window
+// onto its receiver.
+//
+// The unchanged case returns nil and never builds a value, so it is answered
+// before anything is copied or reserved. Every other case differs from the
+// receiver in length -- these mutators only ever remove bytes -- which is
+// exactly when detachedSubstring copies, so the two agree on when work happens.
+func detachedBangResult(exec *Execution, original, updated string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if updated == original {
+		return NewNil(), nil
+	}
+	return detachedStringValue(exec, original, updated, receiver, args, kwargs, block)
+}
+
 // detachedPartitionValue builds the three-element result String#partition and
 // String#rpartition return, with the head and tail copied out of the receiver's
 // backing (see clonedWindow).
@@ -5450,20 +5707,43 @@ func detachedPartitionValue(exec *Execution, receiver Value, head, sep, tail str
 	}), nil
 }
 
+// projectedStringLines counts the lines in text and what they cost once each
+// owns its bytes, without allocating the lines or a slice to hold them.
+//
+// String#lines used to materialize a []string and copy out of it, so the
+// receiver, that slice, the result's slots and every copy were live together
+// while only the last two were priced -- 81,920 bytes unpriced against 200,056
+// charged for a 4,000-line receiver, a quarter to a third of the charge at every
+// size and growing with the line count. Walking twice removes the scratch
+// instead of pricing it: forEachLine allocates nothing, so the peak is now the
+// result alone and the projection describes all of it.
+//
+// A receiver with no line ending at all is one line spanning the whole string,
+// which clonedWindow hands back untouched and detachedWindowPayloadBytes charges
+// a header for, so the common single-line case still projects nothing but the
+// array.
+func projectedStringLines(text string) (count, payload int) {
+	_ = forEachLine(text, func(line string) error {
+		count++
+		payload = saturatingAdd(payload, detachedWindowPayloadBytes(text, line))
+		return nil
+	})
+	return count, payload
+}
+
 // checkProjectedPartitionBytes rejects a partition result before any part of it
 // exists: the two detached components, the three string values wrapping them,
 // and the three-slot array, all weighed together against the call's live roots.
 //
-// stringSplitPartPayloadBytes computes each component the way split already
-// does, which is exactly the rule here: a component that still shares the
+// detachedWindowPayloadBytes prices each component: one that still shares the
 // receiver's backing (the whole string, when the separator is absent) or is
 // empty costs only its header, because clonedWindow allocates nothing for it.
 // The separator is the argument's own string, already counted among the roots,
 // so only the value header wrapping it is new.
 func (exec *Execution) checkProjectedPartitionBytes(text, head, tail string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
-	payload := saturatingAdd(stringSplitPartPayloadBytes(text, head), stringSplitPartPayloadBytes(text, tail))
+	payload := saturatingAdd(detachedWindowPayloadBytes(text, head), detachedWindowPayloadBytes(text, tail))
 	payload = saturatingAdd(payload, estimatedStringHeaderBytes)
-	return exec.checkProjectedArrayBytesWithCallRoots(3, payload, receiver, args, kwargs, block)
+	return exec.checkProjectedArrayBytesWithCallRoots(3, payload, 0, receiver, args, kwargs, block)
 }
 
 // detachedWindow returns w's characters as a string that does not hold text's

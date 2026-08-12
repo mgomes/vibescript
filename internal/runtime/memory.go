@@ -962,22 +962,37 @@ func (exec *Execution) checkProjectedIntArrayBytesWithLive(count, liveSlots int,
 }
 
 // checkProjectedArrayBytesWithCallRoots rejects an array result whose slot
-// backing and precomputed retained element payload would exceed the quota while
-// the builtin's receiver, arguments, keyword arguments, and block are live.
-func (exec *Execution) checkProjectedArrayBytesWithCallRoots(slotCount, payloadBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+// backing, precomputed retained element payload, and still-live scratch would
+// exceed the quota while the builtin's receiver, arguments, keyword arguments,
+// and block are live.
+//
+// liveScratchBytes is what the caller is still holding while the result is
+// built and which the root walk cannot see: an index table the engine returned,
+// a temporary slice the elements are copied out of. It is a required argument
+// rather than an optional one because omitting it is invisible. A preflight
+// that priced only the result read as complete, and twice on one change it was
+// not: String#lines held a []string of every line beside the result it copied
+// into, 81,920 bytes unpriced against 200,056 charged at 4,000 lines, and
+// String#scan held an index table whose spare capacity went uncounted. Both
+// projections fit a quota the real peak exceeded. Passing an explicit zero is a
+// claim that nothing else is live, and is worth stating.
+func (exec *Execution) checkProjectedArrayBytesWithCallRoots(slotCount, payloadBytes, liveScratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 	used := exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
 	used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
 	used = saturatingAdd(used, payloadBytes)
+	used = saturatingAdd(used, liveScratchBytes)
 	if used > exec.memoryQuota {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
 
-func (exec *Execution) checkProjectedArrayBytesWithPositionalCallRoots(slotCount, payloadBytes int, receiver, arg0, arg1 Value, argCount int) error {
+// checkProjectedArrayBytesWithPositionalCallRoots is the positional-root form of
+// checkProjectedArrayBytesWithCallRoots; liveScratchBytes means the same thing.
+func (exec *Execution) checkProjectedArrayBytesWithPositionalCallRoots(slotCount, payloadBytes, liveScratchBytes int, receiver, arg0, arg1 Value, argCount int) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
@@ -985,6 +1000,7 @@ func (exec *Execution) checkProjectedArrayBytesWithPositionalCallRoots(slotCount
 	used := exec.estimateMemoryUsageForPositionalCallRoots(NewNil(), receiver, arg0, arg1, argCount, NewNil())
 	used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
 	used = saturatingAdd(used, payloadBytes)
+	used = saturatingAdd(used, liveScratchBytes)
 	if used > exec.memoryQuota {
 		return exec.memoryQuotaExceededError()
 	}
