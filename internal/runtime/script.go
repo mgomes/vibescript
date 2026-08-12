@@ -53,6 +53,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 
 	exec := newExecutionForCall(s, ctx, root, opts)
 	defer exec.releaseBaseWalkCache()
+	defer exec.releaseMemoryChain()
 
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
 		return NewNil(), err
@@ -171,6 +172,7 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 		defer func() { *observeExhaustion = exec.observedExhaustion() }()
 	}
 	defer exec.releaseBaseWalkCache()
+	defer exec.releaseMemoryChain()
 
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
 		return NewNil(), err

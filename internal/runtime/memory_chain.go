@@ -55,6 +55,15 @@ type memoryChain struct {
 	// concurrent siblings sum a shared ancestor on every check of their own,
 	// and a lock there would serialize the hot path.
 	marginal atomic.Int64
+	// descendantHigh is the largest total any live chain below this node has
+	// published, so a check here accounts for levels beneath it as well as
+	// above. Held as a high-water while children are live and dropped when the
+	// last of them finishes; see release.
+	descendantHigh atomic.Int64
+	// liveChildren counts the nested levels currently running under this node,
+	// which is what tells release when descendantHigh no longer stands for
+	// anything.
+	liveChildren atomic.Int32
 	// limit is the tightest ceiling in the chain, resolved once at
 	// construction. Like sleepBudget it is decided on the chain's fixed
 	// limits and never on what is left of them: an allowance moves in both
@@ -75,16 +84,80 @@ func (c *memoryChain) publishAndExceeds(marginal int) bool {
 		marginal = 0
 	}
 	c.marginal.Store(int64(marginal))
-	return c.total() > c.limit
+
+	// The path this level sits on, from here down to the deepest live level
+	// below it.
+	below := c.descendantHigh.Load()
+	total := int64(marginal) + below
+
+	// One upward pass does both jobs: it sums the ancestors into this check,
+	// and it tells each ancestor how much is live beneath it. Without the
+	// second, the ceiling held in one direction only -- a check walking toward
+	// the root cannot see a level below it, so a parent that grew while its
+	// child was still holding memory was admitted against a total that omitted
+	// the child. Measured at 7.15 MiB live against a 4 MiB ceiling, admitted.
+	running := total
+	for node := c.parent; node != nil; node = node.parent {
+		node.raiseDescendantHigh(running)
+		m := node.marginal.Load()
+		total += m
+		running += m
+	}
+	return total > c.limit
 }
 
-// total sums what every level from here to the chain root currently holds.
+// raiseDescendantHigh records that a chain below this node holds at least
+// value, keeping the largest such figure seen while it has live children.
+//
+// It is a maximum over the paths below, never a sum of them. Siblings run
+// concurrently but a chain is one path through the tree, so charging a level
+// for the deepest chain beneath it bounds depth without letting the width of a
+// flat map aggregate -- which is the distinction this whole design rests on.
+func (c *memoryChain) raiseDescendantHigh(value int64) {
+	for {
+		current := c.descendantHigh.Load()
+		if current >= value {
+			return
+		}
+		if c.descendantHigh.CompareAndSwap(current, value) {
+			return
+		}
+	}
+}
+
+// total reports what this level's chain currently holds: everything from the
+// deepest live level below it up to the chain root.
 func (c *memoryChain) total() int64 {
-	total := int64(0)
+	total := c.descendantHigh.Load()
 	for node := c; node != nil; node = node.parent {
 		total += node.marginal.Load()
 	}
 	return total
+}
+
+// addChild registers a nested level, so that what is live below this node can
+// be forgotten once none of them are running.
+func (c *memoryChain) addChild() {
+	c.liveChildren.Add(1)
+}
+
+// release retires a finished level: it stops contributing, and when the last
+// child of its parent goes the parent forgets what was below it.
+//
+// The high-water is what makes this necessary. Kept forever it would be a
+// permanent over-charge -- a deep chain that finished would go on refusing its
+// parent's later work -- so it is dropped exactly when there is nothing below
+// to justify it.
+func (c *memoryChain) release() {
+	c.marginal.Store(0)
+	c.descendantHigh.Store(0)
+	parent := c.parent
+	if parent == nil {
+		return
+	}
+	if parent.liveChildren.Add(-1) <= 0 {
+		parent.descendantHigh.Store(0)
+	}
 }
 
 // initForCall links this node to the node its caller published on the context
@@ -123,6 +196,9 @@ func (c *memoryChain) initForCall(ctx context.Context, quota int) bool {
 	}
 	c.parent = parent
 	c.limit = limit
+	if parent != nil {
+		parent.addChild()
+	}
 	return true
 }
 
