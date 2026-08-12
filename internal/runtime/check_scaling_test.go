@@ -696,6 +696,107 @@ func TestMutatorPreservationTracksFactsBelowTheKeyDepth(t *testing.T) {
 	}
 }
 
+// sharedFactDagSource builds a fact that binds the same node under both keys at
+// every level, so levels lines produce a fact with levels nodes and 2^levels
+// paths through them, then hands two independently built copies of it to the
+// exact comparison: the mutator's operand rebinds the receiver to the second.
+// Nothing shares a node between the two, so the pointer-identity shortcut never
+// fires and every pair has to be compared on its own.
+func sharedFactDagSource(levels int) string {
+	build := func(name string) string {
+		var b strings.Builder
+		fmt.Fprintf(&b, "  %s = { a: 1, b: 1 }\n", name)
+		for range levels {
+			fmt.Fprintf(&b, "  %s = { a: %s, b: %s }\n", name, name, name)
+		}
+		return b.String()
+	}
+	return fmt.Sprintf(`
+def f()
+%s  h = { w: x, pad: 1 }
+  rebind = -> {
+%s    h = { w: y, pad: 1 }
+    "s"
+  }
+  h[:pad] = "v#{rebind.call}"
+  h
+end
+`, build("x"), build("y"))
+}
+
+// A fact is a DAG, not a tree. Walking one as a tree reaches the same left/right
+// child pair once per path rather than once per pair, so comparing two
+// independently built copies of a fact that shares its nodes cost 2^levels
+// comparisons: 20 lines took 2,097,152 of them and every line after that
+// doubled it, inside CheckWarnings where no script step or memory quota applies.
+// Only pairs that came back equal can be reached twice -- the first difference
+// ends the whole comparison -- so remembering those walks the DAG as a DAG.
+func TestExactFactComparisonWalksSharedNodesOnce(t *testing.T) {
+	small := measureCheckWork(t, sharedFactDagSource(10))
+	large := measureCheckWork(t, sharedFactDagSource(20))
+
+	// Measured 65 then 68 node-pair comparisons, a 1.05x step for ten more
+	// levels of sharing. Before, the same pair compared 2,048 and 2,097,152, a
+	// 1,024x step. The assertion allows up to 3x so it states the complexity
+	// rather than pinning counts that ordinary checker changes would shift.
+	if large > small*3 {
+		t.Fatalf("ten more levels of shared-node nesting compared %d node pairs against"+
+			" %d -- over 3x, so the exact fact comparison walks a DAG as a tree", large, small)
+	}
+}
+
+// sharedFactDag builds the same shape the source above does, directly, so the
+// exactness of the memo can be pinned without going through inference.
+func sharedFactDag(levels int, leaf *TypeExpr) *TypeExpr {
+	node := leaf
+	for range levels {
+		node = &TypeExpr{
+			Kind:  TypeShape,
+			Name:  shapeKeysSymbolMarker,
+			Shape: map[string]*TypeExpr{"a": node, "b": node},
+		}
+	}
+	return node
+}
+
+// The memo short-circuits a pair it has already proved equal, so it must record
+// only pairs that are equal and must not let a difference below it pass. The
+// equal case also has to prove the memo engaged at all: without it the same
+// comparison costs 2^levels, so a visit count near the level count is what says
+// the DAG was walked as a DAG rather than that the facts were small.
+func TestExactFactComparisonKeepsSharedNodesExact(t *testing.T) {
+	const levels = 24
+
+	var walk typeFactWalk
+	if !typeFactsIdenticalCounted(
+		sharedFactDag(levels, checkTypeInt),
+		sharedFactDag(levels, checkTypeInt),
+		&walk,
+	) {
+		t.Fatalf("two independently built copies of the same %d-level fact compared unequal", levels)
+	}
+	if walk.visited > maxUnmemoizedFactPairVisits+levels {
+		t.Fatalf("comparing two %d-level shared-node facts visited %d pairs, so the memo"+
+			" never engaged and the assertion above proves nothing about a DAG", levels, walk.visited)
+	}
+
+	if typeFactsIdentical(
+		sharedFactDag(levels, checkTypeInt),
+		sharedFactDag(levels, checkTypeString),
+	) {
+		t.Fatalf("a %d-level fact differing only at its leaf compared equal", levels)
+	}
+
+	// A difference reachable through one key but not the other is what a memo
+	// that recorded pairs before proving them would let through.
+	left := sharedFactDag(levels, checkTypeInt)
+	right := sharedFactDag(levels, checkTypeInt)
+	right.Shape["b"] = sharedFactDag(levels-1, checkTypeString)
+	if typeFactsIdentical(left, right) {
+		t.Fatalf("a %d-level fact differing under one key of the root compared equal", levels)
+	}
+}
+
 // checkWarningMessagesWithSplitShapeBudget checks one script with the exact and
 // widening budgets set independently, so a fact can cross the first without
 // crossing the second and take the widening route rather than being given up.
