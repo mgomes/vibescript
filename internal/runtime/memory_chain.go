@@ -89,9 +89,16 @@ type memoryChain struct {
 	// its parent's, so limits never rise going down a path and the deepest node's
 	// limit is the tightest on it.
 	descendantHeadroom atomic.Int64
-	// liveDescendants counts the nested levels currently running under this
-	// node, which is what tells clearHeadroomIfIdle when the headroom no longer
-	// stands for anything.
+	// liveDescendants counts every level still running anywhere below this node,
+	// not just its immediate children, which is what tells clearHeadroomIfIdle
+	// when the headroom no longer stands for anything.
+	//
+	// Transitive because retirement is not ordered by depth. A level can return
+	// while a call it started through a capability is still running, so counting
+	// only immediate children let a grandparent see itself as idle and drop a
+	// constraint that a live great-grandchild still justified. "Nothing below me
+	// is live" is the predicate the clearing actually needs, so it is the one
+	// that is counted.
 	liveDescendants atomic.Int32
 	// limit is the tightest ceiling in the chain, resolved once at
 	// construction. Like sleepBudget it is decided on the chain's fixed
@@ -180,32 +187,38 @@ func (c *memoryChain) tightenHeadroom(value int64) {
 	}
 }
 
-// register records this node as live beneath its parent, so that what is live
-// below the parent can be forgotten once nothing is.
+// register records this node as live beneath every one of its ancestors, so
+// that none of them can forget what is below it while it runs.
 func (c *memoryChain) register() {
-	if c.parent != nil {
-		c.parent.liveDescendants.Add(1)
+	for node := c.parent; node != nil; node = node.parent {
+		node.liveDescendants.Add(1)
 	}
 }
 
 // release retires a finished level: it stops contributing, and when the last
-// level below its parent goes the parent forgets what was below it.
+// child of its parent goes the parent forgets what was below it.
 //
-// The headroom is what makes this necessary. Kept forever it would be a
-// permanent over-constraint -- a deep chain that finished would go on refusing
-// its parent's later work -- so it is dropped exactly when there is nothing
-// below to justify it.
+// What it does NOT do is discard what is live below itself. A descendant can
+// outlive this level: a capability adapter can start a nested call with the
+// published binding context and let it run on after the call that made it has
+// returned. Clearing unconditionally erased such a callee's accounting while it
+// was still allocating, and if it then blocked without another memory check, an
+// ancestor was admitted against a total that omitted it indefinitely.
+//
+// So retirement hands the accounting on rather than dropping it. This node's own
+// bytes go, because its own memory is gone; what its descendants hold stays
+// until they retire in their turn, and the last of them clears it through the
+// same idle check. The node itself stays reachable for exactly as long as a
+// child still points at it.
 func (c *memoryChain) release() {
 	c.marginal.Store(0)
+	// This level's own accounting goes only when nothing below it is left.
 	c.clearHeadroomIfIdle()
-	parent := c.parent
-	if parent == nil {
-		return
+	for node := c.parent; node != nil; node = node.parent {
+		if node.liveDescendants.Add(-1) <= 0 {
+			node.clearHeadroomIfIdle()
+		}
 	}
-	if parent.liveDescendants.Add(-1) > 0 {
-		return
-	}
-	parent.clearHeadroomIfIdle()
 }
 
 // clearHeadroomIfIdle forgets what was live below this node, but only while
