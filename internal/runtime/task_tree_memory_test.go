@@ -892,3 +892,35 @@ end`, nested, levels, after)
 			quota>>20, levels, err)
 	}
 }
+
+// TestRefusalNamesTheInheritedCeiling pins that a refusal reports the bound that
+// actually stopped it.
+//
+// A looser callee under a tighter caller is refused at the caller's ceiling but
+// used to report its own quota, so an 8 MiB engine announced an 8 MiB failure
+// when the real bound was the caller's. That sends whoever reads it to tune the
+// engine that was never the constraint.
+func TestRefusalNamesTheInheritedCeiling(t *testing.T) {
+	t.Parallel()
+
+	const (
+		ownQuota  = 64 << 20
+		inherited = 1 << 20
+	)
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: ownQuota}
+	exec.memChainNode.parent = &memoryChain{limit: inherited}
+	exec.memChainNode.limit = inherited
+	exec.memChain = &exec.memChainNode
+
+	err := exec.memoryQuotaExceededError()
+	if err == nil {
+		t.Fatalf("no error built")
+	}
+	if strings.Contains(err.Error(), fmt.Sprint(ownQuota)) {
+		t.Fatalf("refusal named this execution's own quota of %d, which is not what stopped it; a host reading this tunes the wrong limit: %v", ownQuota, err)
+	}
+	if !strings.Contains(err.Error(), fmt.Sprint(inherited)) {
+		t.Fatalf("refusal did not name the inherited ceiling of %d that actually bound it: %v", inherited, err)
+	}
+}

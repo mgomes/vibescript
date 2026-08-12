@@ -676,7 +676,24 @@ func (s *baseWalkSession) close() {
 // value goes out of scope, so without the latch a rescuing loop could exceed
 // the quota forever one allocation at a time.
 func (exec *Execution) memoryQuotaExceededError() error {
-	return exec.latchExhaustion(fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota))
+	return exec.latchExhaustion(fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.effectiveMemoryLimit()))
+}
+
+// effectiveMemoryLimit reports the bound that actually constrains this
+// execution: its own quota, or the tighter ceiling it inherited from a caller.
+//
+// Naming the local quota alone told a host the wrong number. A script on an
+// 8 MiB engine re-entered from a 1 MiB caller is refused at 1 MiB but reported
+// "8388608 bytes", which sends whoever reads it to tune the engine that was
+// never the constraint.
+func (exec *Execution) effectiveMemoryLimit() int {
+	limit := exec.memoryQuota
+	if chain := exec.memChain; chain != nil && chain.limit > 0 {
+		if inherited := int(chain.limit); limit <= 0 || inherited < limit {
+			limit = inherited
+		}
+	}
+	return limit
 }
 
 // memoryExceeded reports whether a just-measured graph estimate breaches either
