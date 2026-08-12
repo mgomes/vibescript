@@ -997,3 +997,35 @@ end`, chunks, chunks)
 		t.Fatalf("re-entry stopped for an unrelated reason: %v", err)
 	}
 }
+
+// TestUnlimitedCalleeRegistersAsALiveChild pins that every kind of callee
+// registers with its parent, not just a bounded one.
+//
+// The unlimited branch of initForCall returned before registering, so a parent
+// with only unlimited children believed it had none. It would then clear what
+// was live below it, and that child's footprint never reached any ancestor --
+// so the ceiling stopped applying to exactly the callee that has no bound of
+// its own.
+func TestUnlimitedCalleeRegistersAsALiveChild(t *testing.T) {
+	t.Parallel()
+
+	parent := &memoryChain{limit: 4096}
+	ctx := contextWithMemoryChain(context.Background(), parent)
+
+	var unlimited memoryChain
+	if !unlimited.initForCall(ctx, Unlimited) {
+		t.Fatalf("an unlimited callee under a bounded caller must join the chain")
+	}
+	if got := parent.liveChildren.Load(); got != 1 {
+		t.Fatalf("parent counted %d live children after an unlimited callee joined, want 1: unregistered, it lets its parent clear what is live below and its own footprint reaches no ancestor", got)
+	}
+
+	// And a bounded one, so the check cannot pass by counting everything twice.
+	var bounded memoryChain
+	if !bounded.initForCall(ctx, 1024) {
+		t.Fatalf("a bounded callee must join the chain")
+	}
+	if got := parent.liveChildren.Load(); got != 2 {
+		t.Fatalf("parent counted %d live children after two callees joined, want 2", got)
+	}
+}
