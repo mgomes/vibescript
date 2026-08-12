@@ -2993,7 +2993,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			return NewHash(out), nil
 		}), nil
 	case "map":
-		return NewAutoBuiltin("hash.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("hash.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (mapped Value, err error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.map does not take arguments")
 			}
@@ -3015,13 +3015,24 @@ func hashMemberTransforms(property string) (Value, error) {
 			// held on the Go stack during the call.
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 
-			// The reservation is what makes the backing visible to checks that
-			// run inside the block body, which cannot see a Go-local slice. It
-			// is raised before the runner is constructed because the runner
+			// The reservation is what makes the result backing visible to checks
+			// that run inside the block body, which cannot see a Go-local slice.
+			// It is raised before the runner is constructed because the runner
 			// snapshots its bind baseline once, at construction.
-			retained := newRetainedOutputScratch(exec)
-			defer retained.release()
-			retained.reserve(arraySlotBackingBytes(hashEntryCount(receiver)))
+			backing := exec.reserveLoopScratch(arraySlotBackingBytes(hashEntryCount(receiver)))
+			defer exec.releaseLoopScratch(backing)
+			// The results the backing holds are registered rather than reserved.
+			// Reserving them charged the same payload twice whenever the block
+			// also kept its result somewhere reachable: the reservation reaches
+			// the check through estimateScalarBase while the graph walk reaches
+			// the block's own copy. A walk root deduplicates on identity, so an
+			// aliased result is counted once and a result held only here is still
+			// counted (see memory_output.go).
+			var produced []Value
+			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &produced))
+			// Settled on the way out rather than only after a successful block
+			// call, so a block that raises pays what one that returns pays.
+			defer func() { err = exec.endOutputWalkRoot(err) }()
 
 			runner, err := newBlockCallRunner(exec, block, "hash.map", receiver, nil, kwargs)
 			if err != nil {
@@ -3043,11 +3054,6 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out := make([]Value, 0, count)
-				// Reserve the preallocated backing before the first block call,
-				// not after it returns: the backing is live from the make above,
-				// so a block allocating its large temporary on the very first
-				// entry would otherwise be measured without it.
-				retained.reserve(acc.accumulatedBytes(cap(out)))
 				var blockArg [1]Value
 				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
@@ -3078,10 +3084,11 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					out = append(out, val)
+					produced = out
+					exec.addRetainedOutput(val)
 					if err := acc.addConservative(val, cap(out)); err != nil {
 						return NewNil(), err
 					}
-					retained.reserve(acc.accumulatedBytes(cap(out)))
 				}
 				return NewArray(out), nil
 			}
@@ -3108,9 +3115,6 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			out := make([]Value, 0, len(entries))
-			// Reserve the preallocated backing before the first block call; see
-			// the typed branch above.
-			retained.reserve(acc.accumulatedBytes(cap(out)))
 			var blockArg [1]Value
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
@@ -3155,10 +3159,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out = append(out, val)
+				produced = out
+				exec.addRetainedOutput(val)
 				if err := acc.addConservative(val, cap(out)); err != nil {
 					return NewNil(), err
 				}
-				retained.reserve(acc.accumulatedBytes(cap(out)))
 			}
 			return NewArray(out), nil
 		}), nil
