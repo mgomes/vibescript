@@ -1076,3 +1076,47 @@ func TestClearingDescendantsPreservesANewChild(t *testing.T) {
 		t.Fatalf("descendant accounting was %d with no live children, want 0: a finished chain must stop charging its ancestor", got)
 	}
 }
+
+// TestDescendantAccountingNeverUnderstatesWhileChildrenRun pins the direction
+// of the residual in descendant accounting, which is a decision rather than an
+// accident.
+//
+// A child that grows, releases most of it and keeps running leaves its peak
+// charged to its ancestors until the last of that ancestor's children exits.
+// Lowering it exactly needs the maximum across the other children, which is not
+// knowable without walking them, and walking siblings is the width traversal
+// this design exists to avoid. Lowering it on a "there is only one live child"
+// observation was implemented and then withdrawn: that observation races with a
+// second child registering, and losing the race understates the total -- the
+// direction in which a ceiling can be exceeded.
+//
+// So the figure is conservative on purpose. It can refuse work that would have
+// fit; it cannot admit work that does not. This test pins that direction. If
+// someone later finds a way to lower it safely, this is the test to change, and
+// the reasoning above is what has to be answered.
+func TestDescendantAccountingNeverUnderstatesWhileChildrenRun(t *testing.T) {
+	t.Parallel()
+
+	parent := &memoryChain{limit: 1 << 20}
+	parent.addChild()
+	child := &memoryChain{parent: parent, limit: 1 << 20}
+
+	child.publishAndExceeds(9000)
+	if got := parent.descendantHigh.Load(); got != 9000 {
+		t.Fatalf("parent recorded %d below it after its only child published 9000", got)
+	}
+
+	// The child shrinks. The figure stays: conservative, and never below what a
+	// live child has actually held.
+	child.publishAndExceeds(1000)
+	if got := parent.descendantHigh.Load(); got < 9000 {
+		t.Fatalf("descendant accounting fell to %d while a child was still live: lowering it races with a sibling registering, and an understated total is how a ceiling gets exceeded", got)
+	}
+
+	// And with the last child gone it is dropped, or a finished chain would
+	// charge its ancestor forever.
+	child.release()
+	if got := parent.descendantHigh.Load(); got != 0 {
+		t.Fatalf("descendant accounting was %d after the last child exited, want 0", got)
+	}
+}

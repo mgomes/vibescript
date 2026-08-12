@@ -60,6 +60,13 @@ type memoryChain struct {
 	// above. Held as a high-water while children are live and dropped when the
 	// last of them finishes; see release.
 	descendantHigh atomic.Int64
+	// descendantLimit is the tightest ceiling any live chain below this node
+	// runs under, or zero when nothing below constrains it. The bytes alone
+	// were not enough: a 4 MiB callee re-entered from an 8 MiB caller was
+	// checked against 4 MiB when it published and against the caller's 8 MiB
+	// when the caller did, so the caller could grow the shared path past the
+	// callee's ceiling. A ceiling travels with the total it applies to.
+	descendantLimit atomic.Int64
 	// liveChildren counts the nested levels currently running under this node,
 	// which is what tells release when descendantHigh no longer stands for
 	// anything.
@@ -97,34 +104,54 @@ func (c *memoryChain) publishAndExceeds(marginal int) bool {
 	// child was still holding memory was admitted against a total that omitted
 	// the child. Measured at 7.15 MiB live against a 4 MiB ceiling, admitted.
 	running := total
+	// The tightest ceiling this path runs under, which ancestors must apply to
+	// it as well as their own.
+	pathLimit := c.effectiveLimit()
 	for node := c.parent; node != nil; node = node.parent {
-		node.recordDescendantPath(running)
+		node.raiseDescendantHigh(running)
+		node.tightenDescendantLimit(pathLimit)
 		m := node.marginal.Load()
 		total += m
 		running += m
 	}
-	return total > c.limit
+	return total > c.effectiveLimit()
 }
 
-// recordDescendantPath records what the chain below this node, running through
-// the child that is publishing, currently holds.
+// effectiveLimit reports the ceiling in force at this node: its own, or the
+// tighter one belonging to a live chain below it.
 //
-// With a single live child that path is the only path below, so the figure is
-// set exactly and a child that shrinks stops being charged its peak. That is
-// the deep-nesting shape this whole design is about, so it is the case worth
-// being exact in.
+// A path is bounded by the tightest limit anywhere along it. This node already
+// knows its own and every ancestor's, because initForCall resolved those into
+// c.limit; what it cannot know without being told is that something below runs
+// under a tighter one.
+func (c *memoryChain) effectiveLimit() int64 {
+	limit := c.limit
+	if below := c.descendantLimit.Load(); below > 0 && below < limit {
+		limit = below
+	}
+	return limit
+}
+
+// tightenDescendantLimit records that a chain below this node runs under at
+// most limit.
 //
-// With siblings it can only be raised. Lowering would need the maximum across
-// the others, which is not knowable without walking them, and walking siblings
-// is the width traversal this design exists to avoid. The cost is that a
-// shrunken sibling keeps being charged its peak until the last of them exits;
-// that is conservative, and bounded by the deepest path actually reached.
-func (c *memoryChain) recordDescendantPath(value int64) {
-	if c.liveChildren.Load() == 1 {
-		c.descendantHigh.Store(value)
+// A minimum, as descendantHigh is a maximum, and conservative in the same way:
+// with two live children under different ceilings the tighter is applied to
+// both paths. Pairing each path with its own ceiling would mean tracking the
+// paths separately, which is the width traversal this design avoids.
+func (c *memoryChain) tightenDescendantLimit(limit int64) {
+	if limit <= 0 {
 		return
 	}
-	c.raiseDescendantHigh(value)
+	for {
+		current := c.descendantLimit.Load()
+		if current > 0 && current <= limit {
+			return
+		}
+		if c.descendantLimit.CompareAndSwap(current, limit) {
+			return
+		}
+	}
 }
 
 // raiseDescendantHigh records that a chain below this node holds at least
@@ -134,6 +161,22 @@ func (c *memoryChain) recordDescendantPath(value int64) {
 // concurrently but a chain is one path through the tree, so charging a level
 // for the deepest chain beneath it bounds depth without letting the width of a
 // flat map aggregate -- which is the distinction this whole design rests on.
+//
+// It only ever rises while children are live, and that is a decision rather
+// than an oversight. Lowering it exactly needs the maximum across the other
+// children, which is not knowable without walking them, and walking siblings is
+// the width traversal this design exists to avoid. Lowering it on the strength
+// of a "there is only one child" observation was tried and withdrawn: the
+// observation races with a second child registering, and losing that race
+// understates the total, which is the direction that lets a ceiling be
+// exceeded. A conservative figure that is occasionally too high is worth more
+// here than an exact one that is occasionally too low.
+//
+// The residual is therefore that a child which grows, releases, and then keeps
+// running leaves its peak charged to its ancestors until the last of that
+// ancestor's children exits -- at which point release drops it. Bounded by the
+// deepest path actually reached, and in the safe direction: it can refuse work
+// that would have fit, never admit work that does not.
 func (c *memoryChain) raiseDescendantHigh(value int64) {
 	for {
 		current := c.descendantHigh.Load()
@@ -172,6 +215,7 @@ func (c *memoryChain) addChild() {
 func (c *memoryChain) release() {
 	c.marginal.Store(0)
 	c.descendantHigh.Store(0)
+	c.descendantLimit.Store(0)
 	parent := c.parent
 	if parent == nil {
 		return
@@ -205,6 +249,8 @@ func (c *memoryChain) clearDescendantHighIfIdle() {
 			return
 		}
 		if c.descendantHigh.CompareAndSwap(high, 0) {
+			// The ceiling that came with those bytes goes with them.
+			c.descendantLimit.Store(0)
 			return
 		}
 	}
