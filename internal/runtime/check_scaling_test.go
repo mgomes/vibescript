@@ -1131,3 +1131,57 @@ func TestCheckReentrantIvarEffectWalkStaysLinear(t *testing.T) {
 			" superlinear in the source", large, small)
 	}
 }
+
+// yieldingSelfCallingLambdaSource builds a summarized function holding a lambda
+// that reaches itself at sites call sites and yields at the end. The summary
+// walk re-checks the whole body once per site to find the yields a recursive
+// call can enable, so the body is walked once per site it holds.
+func yieldingSelfCallingLambdaSource(sites int) string {
+	var body strings.Builder
+	for range sites {
+		body.WriteString("    h.call\n")
+	}
+	return fmt.Sprintf(`
+def f()
+  h = -> {
+%s    yield
+  }
+  h.call
+  0
+end
+
+def g()
+  f() do
+    1
+  end
+end
+`, body.String())
+}
+
+// The walk that lets a reachable yield poison a function summary re-enters the
+// lambda body at every recursive call site, because a yield only a later site
+// enables is reachable only from there. The count that bounds re-entry is
+// restored when a nested walk returns and has to be, so a body holding N
+// recursive calls walked its own N statements N times. CheckWarnings and
+// CheckedCall run before any script step quota, so an embedder statically
+// checking a tenant script paid that on a source well inside MaxSourceBytes:
+// 320 recursive calls in one yielding body took 4m14s.
+//
+// What bounds it instead is that a re-entry can only ever record one thing, and
+// recording it saturates the summary. This counts the statements the summary
+// walks visit, which is the work itself rather than a proxy for it.
+func TestCheckSummaryYieldReentryWalkStaysLinear(t *testing.T) {
+	small := measureCheckWork(t, yieldingSelfCallingLambdaSource(40))
+	large := measureCheckWork(t, yieldingSelfCallingLambdaSource(80))
+
+	// Measured 164 then 324 statement visits, a 1.98x step for a doubled body.
+	// Before, the same pair visited 3,362 and 13,122, a 3.90x step, and took
+	// 608ms and 4.5s against 25ms and 97ms. The assertion allows up to 3x so it
+	// states the complexity rather than pinning counts that ordinary checker
+	// changes would shift.
+	if large > small*3 {
+		t.Fatalf("doubling the recursive calls in one yielding lambda body visited %d"+
+			" statements against %d -- over 3x, so re-checking an invoked lambda for"+
+			" summary yields is superlinear in the source", large, small)
+	}
+}
