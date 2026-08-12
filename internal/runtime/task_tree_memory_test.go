@@ -511,3 +511,79 @@ func TestNestedTasksShareOneInheritedGlobalWithinTheQuota(t *testing.T) {
 			levels, sharedSize>>20, quota>>20, err)
 	}
 }
+
+// TestUnlimitedChildEnforcesAnInheritedCeiling pins that an engine with no
+// memory quota of its own still honors the chain it was re-entered from.
+//
+// A capability adapter can re-enter a script on a different engine. When that
+// engine sets MemoryQuotaBytes: Unlimited, initForCall deliberately keeps it in
+// the caller's chain -- but every memory check guards on memoryQuota before
+// doing anything, some sixty of them, so all of those guards returned early and
+// the node was never published to or enforced. Re-entering an unbounded engine
+// was then the way out of a bounded caller's sandbox, the same hole the
+// sleeping budget closes by keeping an inherited budget whatever the callee
+// allows.
+//
+// The execution adopts the inherited ceiling as its own quota, which is what
+// makes every one of those guards see an active bound.
+func TestUnlimitedChildEnforcesAnInheritedCeiling(t *testing.T) {
+	t.Parallel()
+
+	const inheritedLimit = 512 << 10
+
+	var (
+		mu       sync.Mutex
+		gotQuota int
+		gotChain bool
+	)
+	probe := quotaObserverProbe{observe: func(exec *Execution) {
+		mu.Lock()
+		gotQuota = exec.memoryQuota
+		gotChain = exec.memChain != nil
+		mu.Unlock()
+	}}
+
+	engine := MustNewEngine(Config{MemoryQuotaBytes: Unlimited, StepQuota: Unlimited})
+	script, err := engine.Compile(`def run()
+  probe.observe()
+  "done"
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	// The bounded caller this unlimited engine is re-entered from.
+	parent := &memoryChain{limit: inheritedLimit}
+	ctx := contextWithMemoryChain(context.Background(), parent)
+
+	if _, err := script.Call(ctx, "run", nil, callOptionsWithCapabilities(probe)); err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+
+	if !gotChain {
+		t.Fatalf("an unlimited engine re-entered from a bounded caller built no chain node, so the caller's ceiling does not reach it at all")
+	}
+	if gotQuota <= 0 {
+		t.Fatalf("an unlimited engine re-entered from a bounded caller ran with memoryQuota %d: every memory check guards on that before consulting the chain, so the inherited ceiling is never enforced and re-entering an unbounded engine escapes the caller's sandbox", gotQuota)
+	}
+	if gotQuota != inheritedLimit {
+		t.Fatalf("adopted quota %d, want the inherited ceiling %d", gotQuota, inheritedLimit)
+	}
+}
+
+// quotaObserverProbe hands the running Execution to a Go callback so a test can
+// read the bound it is actually running under.
+type quotaObserverProbe struct {
+	observe func(exec *Execution)
+}
+
+func (p quotaObserverProbe) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"probe": NewObject(map[string]Value{
+			"observe": NewBuiltin("probe.observe", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+				p.observe(exec)
+				return NewNil(), nil
+			}),
+		}),
+	}, nil
+}

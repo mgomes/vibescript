@@ -1566,6 +1566,18 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 	// memoryChain.initForCall for why this must not wrap the context.
 	if exec.memChainNode.initForCall(ctx, script.engine.config.MemoryQuotaBytes) {
 		exec.memChain = &exec.memChainNode
+		// An engine with no quota of its own adopts the ceiling it inherited as
+		// its own. Every memory check guards on memoryQuota before doing
+		// anything -- there are some sixty such guards -- so without this an
+		// unlimited script re-entered from a bounded task context returned
+		// early from all of them and never published to or enforced the chain
+		// its node was deliberately linked into. Re-entering an unbounded
+		// engine was then the way out of a bounded caller's sandbox, which is
+		// the hole sleepBudgetForCall closes by keeping an inherited budget
+		// whatever the callee's own setting says.
+		if exec.memoryQuota <= 0 {
+			exec.memoryQuota = int(exec.memChainNode.limit)
+		}
 	}
 	// The module stacks stay nil: most calls never require a module,
 	// and append allocates them on first use.
