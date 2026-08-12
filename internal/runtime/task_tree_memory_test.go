@@ -1029,3 +1029,50 @@ func TestUnlimitedCalleeRegistersAsALiveChild(t *testing.T) {
 		t.Fatalf("parent counted %d live children after two callees joined, want 2", got)
 	}
 }
+
+// TestClearingDescendantsPreservesANewChild pins that retiring a level cannot
+// discard accounting a newly started level has already published.
+//
+// A parent's last child exiting while a fresh child publishes is a lost update:
+// the exiting child cleared what was live below its parent, wiping the figure
+// the new child had just recorded, and since a level only republishes on its
+// next memory check, the under-charge could stand for as long as that level ran
+// without allocating again.
+//
+// The interleaving is driven here rather than raced, because a lost update
+// reproduced by repetition is a flaky test either way: the two halves of the
+// exiting child's release are called around the new child's arrival, which is
+// exactly the order that loses it. That means this test names
+// clearDescendantHighIfIdle and so cannot be run against the commit before it
+// existed; what it pins is the invariant -- clearing must never discard the
+// accounting of a live child -- rather than the timing.
+func TestClearingDescendantsPreservesANewChild(t *testing.T) {
+	t.Parallel()
+
+	parent := &memoryChain{limit: 1 << 20}
+
+	// One live child, which is now exiting: the first half of its release.
+	parent.addChild()
+	if remaining := parent.liveChildren.Add(-1); remaining != 0 {
+		t.Fatalf("expected the exiting child to be the last, got %d remaining", remaining)
+	}
+
+	// Before the second half runs, a new child starts and publishes.
+	parent.addChild()
+	parent.raiseDescendantHigh(4000)
+
+	// The exiting child finishes its release.
+	parent.clearDescendantHighIfIdle()
+
+	if got := parent.descendantHigh.Load(); got != 4000 {
+		t.Fatalf("descendant accounting was %d after a child exited alongside a new one publishing 4000: the exiting child discarded a live child's figure, and nothing restores it until that child's next check", got)
+	}
+
+	// The other half of the rule: with nothing live, the figure must go, or a
+	// finished chain would charge its parent forever.
+	parent.liveChildren.Store(0)
+	parent.clearDescendantHighIfIdle()
+	if got := parent.descendantHigh.Load(); got != 0 {
+		t.Fatalf("descendant accounting was %d with no live children, want 0: a finished chain must stop charging its ancestor", got)
+	}
+}

@@ -155,8 +155,37 @@ func (c *memoryChain) release() {
 	if parent == nil {
 		return
 	}
-	if parent.liveChildren.Add(-1) <= 0 {
-		parent.descendantHigh.Store(0)
+	if parent.liveChildren.Add(-1) > 0 {
+		return
+	}
+	parent.clearDescendantHighIfIdle()
+}
+
+// clearDescendantHighIfIdle drops what was live below this node, but only while
+// nothing below it is live.
+//
+// Storing zero unconditionally lost a new child's accounting: a parent's last
+// child exiting concurrently with a fresh child publishing would clear the
+// figure the new child had just raised, and since the new child only republishes
+// on its next check, that under-charge could stand indefinitely.
+//
+// The compare-and-swap is what closes it. Clearing only the exact value that was
+// observed means a concurrent raise makes the swap fail, and the retry then sees
+// the live child and leaves its figure alone. A child that registers after the
+// liveChildren check but has not published yet loses nothing, because there is
+// nothing of its own recorded to lose.
+func (c *memoryChain) clearDescendantHighIfIdle() {
+	for {
+		high := c.descendantHigh.Load()
+		if high == 0 {
+			return
+		}
+		if c.liveChildren.Load() != 0 {
+			return
+		}
+		if c.descendantHigh.CompareAndSwap(high, 0) {
+			return
+		}
 	}
 }
 
