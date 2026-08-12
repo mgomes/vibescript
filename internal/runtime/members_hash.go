@@ -388,14 +388,18 @@ func (exec *Execution) maxProjectedTypedHashEntries(scratchBytes int, receiver V
 	used := exec.hashCallRootBytes(receiver, args, kwargs, block)
 	used = saturatingAdd(used, scratchBytes)
 	used = saturatingAdd(used, estimatedValueBytes+estimatedHashDataBytes+estimatedMapBaseBytes)
-	if used >= exec.memoryQuota {
+	// The bound in force, not just this execution's own quota: a tighter ceiling
+	// inherited from a caller would otherwise be budgeted against room the chain
+	// does not have.
+	limit := exec.effectiveMemoryLimit()
+	if used >= limit {
 		return 0
 	}
-	if saturatingAdd(used, estimatedSliceBaseBytes) > exec.memoryQuota {
+	if saturatingAdd(used, estimatedSliceBaseBytes) > limit {
 		return 0
 	}
 	perEntry := estimatedMapEntryBytes + 2*estimatedHashLookupKeyBytes + estimatedHashEntryBytes
-	return (exec.memoryQuota - used - estimatedSliceBaseBytes) / perEntry
+	return (limit - used - estimatedSliceBaseBytes) / perEntry
 }
 
 func newTypedResultHash(capacity int) Value {
