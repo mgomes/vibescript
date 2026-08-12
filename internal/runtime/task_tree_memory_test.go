@@ -634,3 +634,74 @@ func TestHardValueCheckPublishesToTheChain(t *testing.T) {
 		t.Fatalf("the soft probe consulted the chain; it must answer for this execution alone, or a speculative value that is never built can refuse a sibling's real allocation")
 	}
 }
+
+// classHeavyNestScript builds a script whose every level clones a substantial
+// set of class definitions into a root env of its own.
+func classHeavyNestScript(classes, levels int) string {
+	var b strings.Builder
+	for i := range classes {
+		fmt.Fprintf(&b, `class Thing%d
+  def initialize(a)
+    @a = a
+  end
+  def value()
+    @a
+  end
+  def label()
+    "thing-%d-with-a-reasonably-long-literal-payload-to-make-the-definition-cost-something"
+  end
+end
+
+`, i, i)
+	}
+	fmt.Fprintf(&b, `def step(n)
+  if n < %d
+    Tasks.map([n + 1], max: 1, with: :step)
+  end
+  n
+end
+
+def run()
+  Tasks.map([0], max: 1, with: :step)
+  "done"
+end`, levels)
+	return b.String()
+}
+
+// TestFreshPerCallSetupIsChargedNotSubtracted pins that a level's own cloned
+// definitions count against the chain.
+//
+// Script.Call builds a root env for every nested level and clones the call's
+// classes, enums and capability bindings into it. Those are unique to the level
+// rather than inherited, but the baseline was the whole entry estimate, so
+// memoryExceeded subtracted them from every later contribution. Each level
+// therefore got a free allowance the size of its own definitions -- measured at
+// 17,398 bytes per level for the hundred-class script here, 1.06 MiB across a
+// 64-deep chain -- and a definition-heavy chain could multiply that setup while
+// every level stayed inside its individual quota. That is a smaller copy of the
+// defect the chain exists to close.
+//
+// The levels allocate nothing of their own, so the setup is the only thing that
+// can exhaust the quota here.
+func TestFreshPerCallSetupIsChargedNotSubtracted(t *testing.T) {
+	t.Parallel()
+
+	const (
+		classes = 100
+		levels  = 63
+		quota   = 256 << 10
+	)
+
+	script := compileScriptWithConfig(t,
+		Config{MaxTaskConcurrency: levels + 2, MemoryQuotaBytes: quota, StepQuota: Unlimited},
+		classHeavyNestScript(classes, levels))
+
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("a %d-level chain of a %d-class script ran to completion under a %d KiB quota although each level clones its own copy of every definition: the per-call setup is being subtracted as if inherited, so each level got a free allowance the size of its own definitions",
+			levels, classes, quota>>10)
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("chain stopped for an unrelated reason: %v", err)
+	}
+}

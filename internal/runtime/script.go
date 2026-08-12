@@ -57,6 +57,9 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
 		return NewNil(), err
 	}
+	// Taken before any global binds, so it names what this call inherited and
+	// nothing it built for itself. See captureMemoryInheritedBaseline.
+	exec.captureMemoryInheritedBaseline()
 
 	if err := bindGlobalsForCall(exec, root, rebinder, opts.Globals); err != nil {
 		return NewNil(), err
@@ -65,7 +68,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryEstablishingBaseline(); err != nil {
+	if err := exec.checkMemory(); err != nil {
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
@@ -172,6 +175,9 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
 		return NewNil(), err
 	}
+	// Taken before any global binds, so it names what this call inherited and
+	// nothing it built for itself. See captureMemoryInheritedBaseline.
+	exec.captureMemoryInheritedBaseline()
 
 	if err := bindGlobalsForCallLazy(exec, root, rebinder, opts.Globals); err != nil {
 		return NewNil(), err
@@ -185,7 +191,7 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryEstablishingBaseline(); err != nil {
+	if err := exec.checkMemory(); err != nil {
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 

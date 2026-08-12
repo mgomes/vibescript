@@ -108,10 +108,12 @@ type Execution struct {
 	// into the chain costs no allocation on the task spawn path. memChain
 	// points at it when the chain is active and is nil otherwise.
 	memChainNode memoryChain
-	// memBaseline is what this execution's graph cost before any of the
-	// script's own code ran: the root env, the globals bound into it and the
-	// modules it inherited. Subtracting it is what keeps structure shared with
-	// an ancestor from being counted once per level.
+	// memBaseline is what this execution inherited: the task globals it was
+	// handed and the modules it arrived with, which is the structure an
+	// ancestor already charges. Subtracting it keeps one shared global from
+	// being counted once per level. It deliberately excludes this call's own
+	// root env, cloned classes and enums, and capability bindings, which are
+	// fresh per level and are charged. See captureMemoryInheritedBaseline.
 	memBaseline int
 	// memBaselineSet marks the baseline as established. Until it is, this
 	// execution has nothing of its own by definition -- it is still binding the
