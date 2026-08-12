@@ -197,6 +197,69 @@ end`)
 	}
 }
 
+// TestScanMatchesDoNotRetainTheirSubject pins that a kept scan match stops
+// holding the string it was found in.
+//
+// A match is a window onto the subject, so however little it matched it pinned
+// the whole subject: 200 three-character matches of a megabyte retained 192.1
+// MiB under an 8 MiB quota. The capture form is covered as well, since it builds
+// its pieces in a separate loop, and so is the block form, whose yielded value
+// a block can keep.
+//
+// Not parallel: it measures process-wide heap.
+func TestScanMatchesDoNotRetainTheirSubject(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		expr string
+	}{
+		{"whole match", `(big + "zzz").scan("zzz")[0]`},
+		{"capture", `(big + "zzz").scan("(z)z")[0][0]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			held := retainedHeapBytes(t, retentionScript(t, tc.expr), retentionSeed(), 200)
+			assertUnderRetentionLimit(t, "scan matches", held)
+		})
+	}
+
+	t.Run("block", func(t *testing.T) {
+		script := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: 8 << 20},
+			`def run(seed)
+  kept = []
+  i = 0
+  while i < 200
+    big = seed * 200 + "zzz"
+    big.scan("zzz") { |m| kept.push(m) }
+    i = i + 1
+  end
+  kept
+end`)
+		held := retainedHeapBytes(t, script, retentionSeed(), 200)
+		assertUnderRetentionLimit(t, "yielded scan matches", held)
+	})
+}
+
+// TestScanKeepsItsMatches pins that detaching the matches did not change what
+// String#scan returns, across the no-capture, capture and non-participating
+// group shapes.
+func TestScanKeepsItsMatches(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run(s)
+  yielded = []
+  s.scan("(a)|(漢)") { |m| yielded.push(m) }
+  [s.scan("漢"), s.scan("(a)(b)"), s.scan("(a)|(漢)"), s.scan("zz"), yielded]
+end`)
+	got, err := script.Call(context.Background(), "run", []Value{NewString("ab漢ab")}, CallOptions{})
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	want := `[["漢"], [["a", "b"], ["a", "b"]], [["a", nil], [nil, "漢"], ["a", nil]], [], ` +
+		`[["a", nil], [nil, "漢"], ["a", nil]]]`
+	if got.Inspect() != want {
+		t.Fatalf("scans = %s, want %s", got.Inspect(), want)
+	}
+}
+
 // newlineRetentionSeed is a newline-only seed, so `seed * 200` in
 // retentionScript is a megabyte that chomp("") reduces to whatever content
 // precedes it.

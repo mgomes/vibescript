@@ -4642,9 +4642,16 @@ func projectedRegexStringPayloadBytes(start, end int) int {
 // match string when the pattern has no capture groups, otherwise an array holding
 // each captured substring with nil for groups that did not participate. loc is a
 // FindAllStringSubmatchIndex result element, indexed into text.
+//
+// Each piece is copied out of the subject (see clonedWindow). A match is a
+// window onto text, so keeping one pinned the whole subject however little it
+// matched: 200 three-character matches of a megabyte retained 192.1 MiB under
+// an 8 MiB quota. projectedRegexStringPayloadBytes already charges every piece
+// its own length, so the guard and the accumulator that ran before this point
+// have reserved these bytes.
 func stringScanElement(text string, loc []int, groups int) Value {
 	if groups == 0 {
-		return NewString(text[loc[0]:loc[1]])
+		return NewString(clonedWindow(text, text[loc[0]:loc[1]]))
 	}
 	captures := make([]Value, groups)
 	for g := range groups {
@@ -4654,7 +4661,7 @@ func stringScanElement(text string, loc []int, groups int) Value {
 			captures[g] = NewNil()
 			continue
 		}
-		captures[g] = NewString(text[start:end])
+		captures[g] = NewString(clonedWindow(text, text[start:end]))
 	}
 	return NewArray(captures)
 }
