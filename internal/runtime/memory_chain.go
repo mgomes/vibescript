@@ -178,6 +178,7 @@ func (c *memoryChain) release() {
 // breaking global inheritance -- which is why the two steps are separated.
 func (c *memoryChain) initForCall(ctx context.Context, quota int) bool {
 	parent := memoryChainFromContext(ctx)
+	limit := int64(quota)
 	if quota <= 0 {
 		// An engine with no quota of its own still belongs to a bounded
 		// caller's chain. Dropping the inherited node here would make
@@ -186,16 +187,16 @@ func (c *memoryChain) initForCall(ctx context.Context, quota int) bool {
 		if parent == nil {
 			return false
 		}
-		c.parent = parent
-		c.limit = parent.limit
-		return true
-	}
-	limit := int64(quota)
-	if parent != nil && parent.limit < limit {
+		limit = parent.limit
+	} else if parent != nil && parent.limit < limit {
 		limit = parent.limit
 	}
 	c.parent = parent
 	c.limit = limit
+	// Registered on the single path out, for every kind of callee. Registering
+	// only in the bounded branch left an unlimited callee unregistered, so its
+	// parent believed it had no live children: the parent then cleared what was
+	// live below it and this level's footprint never reached any ancestor.
 	if parent != nil {
 		parent.addChild()
 	}
