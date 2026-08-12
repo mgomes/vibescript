@@ -1,0 +1,478 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	goruntime "runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+)
+
+// taskDepthMemorySample is what one nesting level reports about itself. The
+// goroutine and stack counts are not incidental: they are what prove which
+// nesting shape a test actually exercised, so an assertion about depth cannot
+// pass because the runtime quietly stopped nesting the way the test intended.
+type taskDepthMemorySample struct {
+	goroutine       int64
+	stackExecutions int
+}
+
+// taskDepthMemoryProbe is a capability the script calls once per nesting level.
+// It returns whether to nest again, so a regression is bounded by the probe
+// rather than by the host running out of memory.
+type taskDepthMemoryProbe struct {
+	mu      *sync.Mutex
+	guard   int64
+	deepest *int64
+	samples map[int64]taskDepthMemorySample
+}
+
+func (p taskDepthMemoryProbe) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"probe": NewObject(map[string]Value{
+			"nest_again": NewBuiltin("probe.nest_again", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+				depth := args[0].Int()
+				sample := taskDepthMemorySample{
+					goroutine:       taskProbeGoroutineID(),
+					stackExecutions: taskProbeStackExecutions(),
+				}
+				p.mu.Lock()
+				p.samples[depth] = sample
+				if depth > *p.deepest {
+					*p.deepest = depth
+				}
+				p.mu.Unlock()
+				return NewBool(depth < p.guard), nil
+			}),
+		}),
+	}, nil
+}
+
+// taskProbeGoroutineID parses the calling goroutine's id from its stack header.
+// There is no supported accessor and the id is only compared for equality, to
+// tell a slotted chain (a goroutine per level) from an inline one.
+func taskProbeGoroutineID() int64 {
+	var buf [64]byte
+	n := goruntime.Stack(buf[:], false)
+	header := strings.TrimPrefix(string(buf[:n]), "goroutine ")
+	if idx := strings.IndexByte(header, ' '); idx >= 0 {
+		header = header[:idx]
+	}
+	id, _ := strconv.ParseInt(header, 10, 64)
+	return id
+}
+
+// taskProbeStackExecutions counts nested Executions on the calling goroutine by
+// counting callWithLazyTaskGlobals frames, the same way the inline depth probe
+// does. One means nothing below this level ran inline.
+func taskProbeStackExecutions() int {
+	pcs := make([]uintptr, 4096)
+	for {
+		n := goruntime.Callers(0, pcs)
+		if n == len(pcs) {
+			pcs = make([]uintptr, 2*len(pcs))
+			continue
+		}
+		count := 0
+		frames := goruntime.CallersFrames(pcs[:n])
+		for {
+			frame, more := frames.Next()
+			if strings.Contains(frame.Function, "callWithLazyTaskGlobals") {
+				count++
+			}
+			if !more {
+				break
+			}
+		}
+		return count
+	}
+}
+
+// taskDepthMemoryScript allocates a payload per nesting level and holds it live
+// across the nested call, so the chain's live set grows by one payload per
+// level. The payload is built by doubling because the language has no string
+// repeat operator, and built rather than embedded so each level holds a
+// distinct allocation rather than a shared constant.
+const taskDepthMemoryScript = `def payload(k)
+  s = "abcdefghabcdefgh"
+  i = 0
+  while i < k
+    s = s + s
+    i = i + 1
+  end
+  s
+end
+
+def step(n)
+  buf = payload(%d)
+  if probe.nest_again(n)
+    Tasks.map([n + 1], max: 1, with: :step)
+  end
+  buf.size
+end
+
+def run()
+  Tasks.map([0], max: 1, with: :step)
+  "done"
+end`
+
+// runTaskDepthMemoryProbe drives the nesting script and reports the deepest
+// level reached with every level's sample.
+func runTaskDepthMemoryProbe(t *testing.T, cfg Config, doublings int, guard int64) (int64, map[int64]taskDepthMemorySample, error) {
+	t.Helper()
+
+	script := compileScriptWithConfig(t, cfg, fmt.Sprintf(taskDepthMemoryScript, doublings))
+	samples := map[int64]taskDepthMemorySample{}
+	var deepest int64
+	probe := taskDepthMemoryProbe{mu: &sync.Mutex{}, guard: guard, deepest: &deepest, samples: samples}
+
+	_, err := script.Call(context.Background(), "run", nil, callOptionsWithCapabilities(probe))
+	return deepest, samples, err
+}
+
+// summarizeTaskDepthShape reports the distinct goroutines the chain ran on and
+// the most nested Executions found on any single one.
+func summarizeTaskDepthShape(samples map[int64]taskDepthMemorySample, deepest int64) (goroutines, maxOnOneStack int) {
+	seen := map[int64]bool{}
+	for depth := int64(0); depth <= deepest; depth++ {
+		s, ok := samples[depth]
+		if !ok {
+			continue
+		}
+		seen[s.goroutine] = true
+		if s.stackExecutions > maxOnOneStack {
+			maxOnOneStack = s.stackExecutions
+		}
+	}
+	return len(seen), maxOnOneStack
+}
+
+const (
+	// taskDepthQuota is the per-execution memory quota these tests configure.
+	taskDepthQuota = 8 << 20
+	// taskDepthDoublings builds a 2 MiB payload from a 16-byte seed, so four
+	// levels already hold more than the quota between them.
+	taskDepthDoublings = 17
+	taskDepthPayload   = 2 << 20
+	// taskDepthMaxLevels is the deepest a chain holding taskDepthPayload per
+	// level can honestly reach under taskDepthQuota, with a level of slack for
+	// the estimator's own overhead.
+	taskDepthMaxLevels = taskDepthQuota/taskDepthPayload + 1
+)
+
+// TestSlottedTaskNestingCannotMultiplyTheMemoryQuota pins that the host's
+// memory quota bounds a chain of nested tasks rather than each level of it.
+//
+// Every nested level runs on an Execution of its own, and each Execution read
+// MemoryQuotaBytes fresh from the engine config, so the sandbox's live memory
+// multiplied with nesting depth while every individual level looked permitted.
+// Measured before the fix: 63 levels each holding 2 MiB reached the probe's
+// guard with no error at all, 130 MiB live against an 8 MiB quota -- 16x what
+// the host configured, refused by nothing.
+//
+// The pool is what bounds this shape's length, so it is bounded but wildly
+// larger than the configured quota. Depth is the axis: a level holds its worker
+// slot for as long as its child runs, so a slotted chain cannot outrun
+// MaxTaskConcurrency, and the multiplier is the pool times the quota.
+func TestSlottedTaskNestingCannotMultiplyTheMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	const (
+		guard   = 63
+		workers = 64
+	)
+
+	deepest, samples, err := runTaskDepthMemoryProbe(t,
+		Config{MaxTaskConcurrency: workers, MemoryQuotaBytes: taskDepthQuota, StepQuota: Unlimited},
+		taskDepthDoublings, guard)
+
+	goroutines, maxOnOneStack := summarizeTaskDepthShape(samples, deepest)
+
+	// The conditions that make the defect possible, asserted so the test cannot
+	// pass because nesting stopped for some unrelated reason. Without these, a
+	// runtime that refused to nest at all would satisfy every check below.
+	if deepest < 2 {
+		t.Fatalf("only reached depth %d, too shallow to have nested at all", deepest)
+	}
+	if maxOnOneStack != 1 {
+		t.Fatalf("max %d nested Executions on one goroutine, want 1: levels ran inline, so this is not the slotted shape under test", maxOnOneStack)
+	}
+	if goroutines < int(deepest)+1 {
+		t.Fatalf("%d levels ran on only %d goroutines, so they were not each slotted onto a worker of their own", deepest+1, goroutines)
+	}
+
+	if err == nil {
+		t.Fatalf("a chain of %d slotted levels each holding %d MiB reached the probe guard against a %d MiB quota with no error: roughly %d MiB live, refused by nothing",
+			deepest+1, taskDepthPayload>>20, taskDepthQuota>>20, ((deepest+1)*taskDepthPayload)>>20)
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("nesting stopped at depth %d with an unrelated error, so the memory quota is not what stopped it: %v", deepest, err)
+	}
+	if deepest > taskDepthMaxLevels {
+		t.Fatalf("reached depth %d holding roughly %d MiB against a %d MiB quota; the quota is still being handed out per level",
+			deepest, ((deepest+1)*taskDepthPayload)>>20, taskDepthQuota>>20)
+	}
+}
+
+// TestInlineTaskNestingCannotMultiplyTheMemoryQuota pins the same bound for the
+// shape that runs on its caller's goroutine.
+//
+// The inline and slotted shapes were byte for byte identical at equal depth
+// before the fix -- both held exactly 34 MiB at depth 16 -- so the
+// multiplication follows nesting rather than inlining, and the inline depth cap
+// added earlier cannot be what fixes it. That cap bounded this shape at 16
+// levels, which is still 4.5x an 8 MiB quota, and it stopped the chain for a
+// reason that has nothing to do with memory.
+//
+// This test therefore also pins which limit does the stopping: a failure naming
+// the inline depth limit means memory is still unbounded here and the chain
+// merely ran out of permitted nesting.
+func TestInlineTaskNestingCannotMultiplyTheMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// One worker, taken by the outer level, so every nested level is starved
+	// and runs on the goroutine waiting for it.
+	const (
+		guard   = 63
+		workers = 1
+	)
+
+	deepest, samples, err := runTaskDepthMemoryProbe(t,
+		Config{MaxTaskConcurrency: workers, MemoryQuotaBytes: taskDepthQuota, StepQuota: Unlimited},
+		taskDepthDoublings, guard)
+
+	goroutines, maxOnOneStack := summarizeTaskDepthShape(samples, deepest)
+
+	if deepest < 2 {
+		t.Fatalf("only reached depth %d, too shallow to have nested at all", deepest)
+	}
+	if goroutines != 1 {
+		t.Fatalf("%d levels ran on %d goroutines, want 1: they were slotted, so this is not the inline shape under test", deepest+1, goroutines)
+	}
+	if maxOnOneStack < int(deepest)+1 {
+		t.Fatalf("only %d nested Executions on the goroutine for %d levels, so the levels did not stack inline as this test intends", maxOnOneStack, deepest+1)
+	}
+
+	if err == nil {
+		t.Fatalf("a chain of %d inline levels each holding %d MiB against a %d MiB quota was refused by nothing",
+			deepest+1, taskDepthPayload>>20, taskDepthQuota>>20)
+	}
+	if strings.Contains(err.Error(), "inline depth limit") {
+		t.Fatalf("the inline depth limit stopped this at depth %d, not the memory quota: live memory still multiplies with depth up to that cap: %v", deepest, err)
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("nesting stopped at depth %d with an unrelated error: %v", deepest, err)
+	}
+	if deepest > taskDepthMaxLevels {
+		t.Fatalf("reached depth %d holding roughly %d MiB against a %d MiB quota; the quota is still being handed out per level",
+			deepest, ((deepest+1)*taskDepthPayload)>>20, taskDepthQuota>>20)
+	}
+}
+
+// TestFlatTaskMapIsNotChargedForItsSiblings is the over-correction guard, and
+// it is the test that has to keep passing rather than the one that has to start.
+//
+// Bounding depth by summing a chain is one small step from bounding width by
+// summing a whole tree, and that step would refuse ordinary programs: measured
+// on this shape, summing the workers charges 256 MiB for a script whose real
+// peak is 4 MiB. Width is already bounded by MaxTaskConcurrency, which a host
+// sets deliberately; a sibling must not be charged for what its siblings hold.
+//
+// Every worker here allocates a payload that is comfortably within the quota on
+// its own but far outside it summed across the map.
+func TestFlatTaskMapIsNotChargedForItsSiblings(t *testing.T) {
+	t.Parallel()
+
+	const (
+		workers = 32
+		// 1 MiB each: 32 MiB summed across the map, against an 8 MiB quota.
+		doublings = 16
+	)
+
+	script := compileScriptWithConfig(t,
+		Config{MaxTaskConcurrency: workers, MemoryQuotaBytes: taskDepthQuota, StepQuota: Unlimited},
+		fmt.Sprintf(`def payload(k)
+  s = "abcdefghabcdefgh"
+  i = 0
+  while i < k
+    s = s + s
+    i = i + 1
+  end
+  s
+end
+
+def step(n)
+  payload(%d).size
+end
+
+def run()
+  Tasks.map((0...%d).to_a, max: %d, with: :step)
+  "done"
+end`, doublings, workers, workers))
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("a flat map of %d workers each holding 1 MiB was refused under an %d MiB quota, so siblings are being charged for one another and ordinary concurrency is now bounded by the map's width: %v",
+			workers, taskDepthQuota>>20, err)
+	}
+}
+
+// sharedGlobalNestScript reads one shared global at every nesting level, so the
+// levels allocate nothing of their own and whatever the chain is charged is
+// charged for structure they all share.
+const sharedGlobalNestScript = `def step(n)
+  seen = shared_blob.size
+  if n < %d
+    Tasks.map([n + 1], max: 1, with: :step)
+  end
+  seen
+end
+
+def run()
+  Tasks.map([0], max: 1, with: :step)
+  "done"
+end`
+
+// smallestPassingQuotaForSharedGlobalChain bisects the smallest memory quota a
+// chain of the given depth passes under. Pass/fail is monotone in the quota, so
+// the boundary is exact and any change in what the chain is charged moves it.
+func smallestPassingQuotaForSharedGlobalChain(t *testing.T, levels int, shared Value) int {
+	t.Helper()
+
+	const upper = 64 << 20
+	opts := CallOptions{Globals: map[string]Value{"shared_blob": shared}}
+	run := func(quota int) error {
+		script := compileScriptWithConfig(t,
+			Config{MaxTaskConcurrency: 64, MemoryQuotaBytes: quota, StepQuota: Unlimited},
+			fmt.Sprintf(sharedGlobalNestScript, levels))
+		_, err := script.Call(context.Background(), "run", nil, opts)
+		return err
+	}
+
+	if err := run(upper); err != nil {
+		t.Fatalf("chain of %d levels failed even under a %d MiB quota: %v", levels, upper>>20, err)
+	}
+	lo, hi := 1, upper
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		if run(mid) == nil {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
+	}
+	return lo
+}
+
+// TestSharedGlobalIsNotChargedOncePerNestingLevel pins that structure a level
+// shares with its ancestors is not charged again for every level of depth.
+//
+// The memory quota is a deduplicating walk of a reachable graph, and every level
+// can reach the globals, but each level walks its own graph. Summing whole
+// per-level estimates therefore counts one shared global once per level:
+// measured at 17x for a 4 MiB global read at seventeen levels, 68 MiB charged
+// for 4 MiB of real memory. A chain bound built on that sum would refuse
+// scripts like this one, whose levels allocate nothing of their own.
+//
+// The property asserted is that the charge does not grow with depth, which is
+// what separates a marginal accounting from a naive sum. It is asserted by
+// bisecting the smallest quota each depth passes under rather than by picking
+// one quota, because that boundary moves the moment anything is charged per
+// level.
+//
+// The chain is charged a constant extra copy of the inherited globals, because
+// the outermost execution and the first task level both charge them and the
+// first level's baseline is taken before it materializes its own. That is a
+// fixed 2x on the globals, not a multiplier on depth: measured at 2.01 MiB for
+// one level and 2.03 MiB for thirty-two against a 1 MiB global, where a naive
+// sum would have needed 33 MiB.
+func TestSharedGlobalIsNotChargedOncePerNestingLevel(t *testing.T) {
+	t.Parallel()
+
+	const sharedSize = 1 << 20
+	shared := NewString(strings.Repeat("s", sharedSize))
+
+	shallow := smallestPassingQuotaForSharedGlobalChain(t, 1, shared)
+	deep := smallestPassingQuotaForSharedGlobalChain(t, 32, shared)
+
+	t.Logf("smallest passing quota: 1 level = %d bytes, 32 levels = %d bytes", shallow, deep)
+
+	// Thirty-two levels may cost a little more than one -- each level does hold
+	// its own frames -- but nothing close to a copy of the global per level.
+	// Half the global is far below the 31 extra copies a naive sum would need
+	// and far above the few hundred bytes per level actually observed.
+	if growth := deep - shallow; growth > sharedSize/2 {
+		t.Fatalf("going from 1 to 32 nesting levels raised the required quota by %d bytes against a shared global of %d bytes: the global is being charged per level rather than once for the chain (a naive sum would need %d bytes)",
+			growth, sharedSize, 32*sharedSize)
+	}
+	// The other side of the same rule: the chain must still be charged for the
+	// global at all. A bound that charged nothing would pass the check above
+	// for the wrong reason.
+	if shallow < sharedSize {
+		t.Fatalf("a chain reading a %d byte global passed under a quota of only %d bytes, so the global is not being charged at all", sharedSize, shallow)
+	}
+}
+
+// TestMemoryChainLimitIsTheTightestInTheChain pins that a nested engine cannot
+// widen the bound it runs under, and that a level's ceiling is decided on the
+// chain's fixed limits rather than on whatever is left of them.
+func TestMemoryChainLimitIsTheTightestInTheChain(t *testing.T) {
+	t.Parallel()
+
+	outer := &memoryChain{limit: 1000}
+	ctx := contextWithMemoryChain(context.Background(), outer)
+
+	var looser memoryChain
+	if !looser.initForCall(ctx, 5000) {
+		t.Fatalf("a call under a bounded caller must get an active chain node")
+	}
+	if looser.limit != 1000 {
+		t.Fatalf("a looser callee resolved to limit %d, want the caller's tighter 1000: re-entering a more permissive engine would be the way out of the sandbox", looser.limit)
+	}
+
+	var tighter memoryChain
+	if !tighter.initForCall(ctx, 200) {
+		t.Fatalf("a call under a bounded caller must get an active chain node")
+	}
+	if tighter.limit != 200 {
+		t.Fatalf("a tighter callee resolved to limit %d, want its own 200", tighter.limit)
+	}
+
+	// An engine with no bound of its own still belongs to its caller's chain.
+	var unlimited memoryChain
+	if !unlimited.initForCall(ctx, Unlimited) {
+		t.Fatalf("an unlimited callee under a bounded caller must still join the chain, or re-entering it would escape the caller's bound")
+	}
+	if unlimited.limit != 1000 {
+		t.Fatalf("an unlimited callee resolved to limit %d, want the caller's 1000", unlimited.limit)
+	}
+
+	// With no caller and no bound there is nothing to enforce.
+	var free memoryChain
+	if free.initForCall(context.Background(), Unlimited) {
+		t.Fatalf("an unlimited call with no bounded caller must not build a chain node")
+	}
+}
+
+// TestMemoryChainNeverRunsBackwards pins that publishing cannot credit the
+// chain. The marginal is a difference between two independent graph walks, so a
+// level whose graph shrank below the baseline it entered with would otherwise
+// hand its ancestors allowance the host never granted.
+func TestMemoryChainNeverRunsBackwards(t *testing.T) {
+	t.Parallel()
+
+	root := &memoryChain{limit: 1000}
+	root.publishAndExceeds(900)
+
+	child := &memoryChain{parent: root, limit: 1000}
+	if child.publishAndExceeds(-500) {
+		t.Fatalf("a negative marginal should cost nothing, but the chain reported itself over its limit")
+	}
+	if got := child.total(); got != 900 {
+		t.Fatalf("chain total %d after a negative publish, want 900: a negative marginal credited the chain and handed out allowance the host never granted", got)
+	}
+	if !child.publishAndExceeds(200) {
+		t.Fatalf("900 already held plus 200 published exceeds the limit of 1000, but the chain allowed it")
+	}
+}
