@@ -421,7 +421,7 @@ func TestSharedGlobalIsNotChargedOncePerNestingLevel(t *testing.T) {
 func TestMemoryChainLimitIsTheTightestInTheChain(t *testing.T) {
 	t.Parallel()
 
-	outer := &memoryChain{limit: 1000}
+	outer := newMemoryChain(nil, 1000)
 	ctx := contextWithMemoryChain(context.Background(), outer)
 
 	var looser memoryChain
@@ -463,15 +463,15 @@ func TestMemoryChainLimitIsTheTightestInTheChain(t *testing.T) {
 func TestMemoryChainNeverRunsBackwards(t *testing.T) {
 	t.Parallel()
 
-	root := &memoryChain{limit: 1000}
+	root := newMemoryChain(nil, 1000)
 	root.publishAndExceeds(900)
 
-	child := &memoryChain{parent: root, limit: 1000}
+	child := newMemoryChain(root, 1000)
 	if child.publishAndExceeds(-500) {
 		t.Fatalf("a negative marginal should cost nothing, but the chain reported itself over its limit")
 	}
-	if got := child.total(); got != 900 {
-		t.Fatalf("chain total %d after a negative publish, want 900: a negative marginal credited the chain and handed out allowance the host never granted", got)
+	if got := root.marginal.Load(); got != 900 {
+		t.Fatalf("root holds %d after a child published a negative marginal, want 900: a negative marginal credited the chain and handed out allowance the host never granted", got)
 	}
 	if !child.publishAndExceeds(200) {
 		t.Fatalf("900 already held plus 200 published exceeds the limit of 1000, but the chain allowed it")
@@ -554,7 +554,7 @@ end`)
 	}
 
 	// The bounded caller this unlimited engine is re-entered from.
-	parent := &memoryChain{limit: inheritedLimit}
+	parent := newMemoryChain(nil, inheritedLimit)
 	ctx := contextWithMemoryChain(context.Background(), parent)
 
 	if _, err := script.Call(ctx, "run", nil, callOptionsWithCapabilities(probe)); err != nil {
@@ -605,12 +605,13 @@ func TestHardValueCheckPublishesToTheChain(t *testing.T) {
 
 	const limit = 4096
 
-	ancestor := &memoryChain{limit: limit}
+	ancestor := newMemoryChain(nil, limit)
 	ancestor.publishAndExceeds(limit - 512)
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	exec.memChainNode.parent = ancestor
 	exec.memChainNode.limit = limit
+	exec.memChainNode.descendantHeadroom.Store(noDescendantConstraint)
 	exec.memChain = &exec.memChainNode
 	exec.memBaselineSet = true
 
@@ -628,6 +629,7 @@ func TestHardValueCheckPublishesToTheChain(t *testing.T) {
 	soft := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	soft.memChainNode.parent = ancestor
 	soft.memChainNode.limit = limit
+	soft.memChainNode.descendantHeadroom.Store(noDescendantConstraint)
 	soft.memChain = &soft.memChainNode
 	soft.memBaselineSet = true
 
@@ -909,8 +911,9 @@ func TestRefusalNamesTheInheritedCeiling(t *testing.T) {
 	)
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: ownQuota}
-	exec.memChainNode.parent = &memoryChain{limit: inherited}
+	exec.memChainNode.parent = newMemoryChain(nil, inherited)
 	exec.memChainNode.limit = inherited
+	exec.memChainNode.descendantHeadroom.Store(noDescendantConstraint)
 	exec.memChain = &exec.memChainNode
 
 	err := exec.memoryQuotaExceededError()
@@ -1009,14 +1012,14 @@ end`, chunks, chunks)
 func TestUnlimitedCalleeRegistersAsALiveChild(t *testing.T) {
 	t.Parallel()
 
-	parent := &memoryChain{limit: 4096}
+	parent := newMemoryChain(nil, 4096)
 	ctx := contextWithMemoryChain(context.Background(), parent)
 
 	var unlimited memoryChain
 	if !unlimited.initForCall(ctx, Unlimited) {
 		t.Fatalf("an unlimited callee under a bounded caller must join the chain")
 	}
-	if got := parent.liveChildren.Load(); got != 1 {
+	if got := parent.liveDescendants.Load(); got != 1 {
 		t.Fatalf("parent counted %d live children after an unlimited callee joined, want 1: unregistered, it lets its parent clear what is live below and its own footprint reaches no ancestor", got)
 	}
 
@@ -1025,7 +1028,7 @@ func TestUnlimitedCalleeRegistersAsALiveChild(t *testing.T) {
 	if !bounded.initForCall(ctx, 1024) {
 		t.Fatalf("a bounded callee must join the chain")
 	}
-	if got := parent.liveChildren.Load(); got != 2 {
+	if got := parent.liveDescendants.Load(); got != 2 {
 		t.Fatalf("parent counted %d live children after two callees joined, want 2", got)
 	}
 }
@@ -1034,90 +1037,91 @@ func TestUnlimitedCalleeRegistersAsALiveChild(t *testing.T) {
 // discard accounting a newly started level has already published.
 //
 // A parent's last child exiting while a fresh child publishes is a lost update:
-// the exiting child cleared what was live below its parent, wiping the figure
-// the new child had just recorded, and since a level only republishes on its
-// next memory check, the under-charge could stand for as long as that level ran
-// without allocating again.
+// the exiting child cleared what was live below its parent, wiping what the new
+// child had just recorded, and since a level only republishes on its next memory
+// check, the under-charge could stand for as long as that level ran without
+// allocating again.
 //
 // The interleaving is driven here rather than raced, because a lost update
 // reproduced by repetition is a flaky test either way: the two halves of the
 // exiting child's release are called around the new child's arrival, which is
 // exactly the order that loses it. That means this test names
-// clearDescendantHighIfIdle and so cannot be run against the commit before it
-// existed; what it pins is the invariant -- clearing must never discard the
-// accounting of a live child -- rather than the timing.
+// clearHeadroomIfIdle and so cannot be run against a commit before it existed;
+// what it pins is the invariant -- clearing must never discard the accounting of
+// a live child -- rather than the timing.
 func TestClearingDescendantsPreservesANewChild(t *testing.T) {
 	t.Parallel()
 
-	parent := &memoryChain{limit: 1 << 20}
+	parent := newMemoryChain(nil, 1<<20)
 
-	// One live child, which is now exiting: the first half of its release.
-	parent.addChild()
-	if remaining := parent.liveChildren.Add(-1); remaining != 0 {
-		t.Fatalf("expected the exiting child to be the last, got %d remaining", remaining)
+	// One live descendant, which is now exiting: the first half of its release.
+	newMemoryChain(parent, 1<<20).register()
+	if remaining := parent.liveDescendants.Add(-1); remaining != 0 {
+		t.Fatalf("expected the exiting descendant to be the last, got %d remaining", remaining)
 	}
 
-	// Before the second half runs, a new child starts and publishes.
-	parent.addChild()
-	parent.raiseDescendantHigh(4000)
+	// Before the second half runs, a new descendant starts and publishes.
+	newMemoryChain(parent, 1<<20).register()
+	parent.tightenHeadroom(4000)
 
 	// The exiting child finishes its release.
-	parent.clearDescendantHighIfIdle()
+	parent.clearHeadroomIfIdle()
 
-	if got := parent.descendantHigh.Load(); got != 4000 {
-		t.Fatalf("descendant accounting was %d after a child exited alongside a new one publishing 4000: the exiting child discarded a live child's figure, and nothing restores it until that child's next check", got)
+	if got := parent.descendantHeadroom.Load(); got != 4000 {
+		t.Fatalf("descendant headroom was %d after a child exited alongside a new one leaving 4000: the exiting child discarded a live child's figure, and nothing restores it until that child's next check", got)
 	}
 
-	// The other half of the rule: with nothing live, the figure must go, or a
-	// finished chain would charge its parent forever.
-	parent.liveChildren.Store(0)
-	parent.clearDescendantHighIfIdle()
-	if got := parent.descendantHigh.Load(); got != 0 {
-		t.Fatalf("descendant accounting was %d with no live children, want 0: a finished chain must stop charging its ancestor", got)
+	// The other half of the rule: with nothing live, the constraint must go, or
+	// a finished chain would bind its parent forever.
+	parent.liveDescendants.Store(0)
+	parent.clearHeadroomIfIdle()
+	if got := parent.descendantHeadroom.Load(); got != noDescendantConstraint {
+		t.Fatalf("descendant headroom was %d with no live children, want no constraint: a finished chain must stop binding its ancestor", got)
 	}
 }
 
-// TestDescendantAccountingNeverUnderstatesWhileChildrenRun pins the direction
+// TestDescendantAccountingNeverOverstatesRoomWhileChildrenRun pins the direction
 // of the residual in descendant accounting, which is a decision rather than an
 // accident.
 //
-// A child that grows, releases most of it and keeps running leaves its peak
-// charged to its ancestors until the last of that ancestor's children exits.
-// Lowering it exactly needs the maximum across the other children, which is not
+// A child that grows, releases most of it and keeps running holds its ancestors
+// to its tightest moment until the last of that ancestor's children exits.
+// Relaxing that exactly needs the loosest of the other children, which is not
 // knowable without walking them, and walking siblings is the width traversal
-// this design exists to avoid. Lowering it on a "there is only one live child"
+// this design exists to avoid. Relaxing it on a "there is only one live child"
 // observation was implemented and then withdrawn: that observation races with a
-// second child registering, and losing the race understates the total -- the
+// second child registering, and losing the race overstates the room left -- the
 // direction in which a ceiling can be exceeded.
 //
 // So the figure is conservative on purpose. It can refuse work that would have
 // fit; it cannot admit work that does not. This test pins that direction. If
-// someone later finds a way to lower it safely, this is the test to change, and
+// someone later finds a way to relax it safely, this is the test to change, and
 // the reasoning above is what has to be answered.
-func TestDescendantAccountingNeverUnderstatesWhileChildrenRun(t *testing.T) {
+func TestDescendantAccountingNeverOverstatesRoomWhileChildrenRun(t *testing.T) {
 	t.Parallel()
 
-	parent := &memoryChain{limit: 1 << 20}
-	parent.addChild()
-	child := &memoryChain{parent: parent, limit: 1 << 20}
+	parent := newMemoryChain(nil, 1<<20)
+	child := newMemoryChain(parent, 1<<20)
+	child.register()
 
 	child.publishAndExceeds(9000)
-	if got := parent.descendantHigh.Load(); got != 9000 {
-		t.Fatalf("parent recorded %d below it after its only child published 9000", got)
+	tight := parent.descendantHeadroom.Load()
+	if tight >= noDescendantConstraint {
+		t.Fatalf("parent recorded no constraint below it after its only child published 9000")
 	}
 
-	// The child shrinks. The figure stays: conservative, and never below what a
-	// live child has actually held.
+	// The child shrinks. The room left does not grow back: conservative, and
+	// never more than a live child has actually justified.
 	child.publishAndExceeds(1000)
-	if got := parent.descendantHigh.Load(); got < 9000 {
-		t.Fatalf("descendant accounting fell to %d while a child was still live: lowering it races with a sibling registering, and an understated total is how a ceiling gets exceeded", got)
+	if got := parent.descendantHeadroom.Load(); got > tight {
+		t.Fatalf("descendant headroom relaxed from %d to %d while a child was still live: relaxing races with a sibling registering, and overstated room is how a ceiling gets exceeded", tight, got)
 	}
 
-	// And with the last child gone it is dropped, or a finished chain would
-	// charge its ancestor forever.
+	// And with the last child gone the constraint is dropped, or a finished
+	// chain would bind its ancestor forever.
 	child.release()
-	if got := parent.descendantHigh.Load(); got != 0 {
-		t.Fatalf("descendant accounting was %d after the last child exited, want 0", got)
+	if got := parent.descendantHeadroom.Load(); got != noDescendantConstraint {
+		t.Fatalf("descendant headroom was %d after the last child exited, want no constraint", got)
 	}
 }
 
@@ -1127,9 +1131,9 @@ func TestDescendantAccountingNeverUnderstatesWhileChildrenRun(t *testing.T) {
 // The chain carried the bytes a descendant held but not the ceiling those bytes
 // ran under. A 4 MiB callee re-entered from an 8 MiB caller was therefore checked
 // against 4 MiB when it published and against the caller's 8 MiB when the caller
-// published, so the caller could publish and grow the shared path past the
-// callee's ceiling while the callee sat blocked. A path is bounded by the
-// tightest limit anywhere along it, so the ceiling now travels with the total.
+// published, so the caller could grow the shared path past the callee's ceiling
+// while the callee sat blocked. Both now travel as one number: the room a
+// descendant leaves its ancestors is its ceiling less what it already holds.
 func TestDescendantCeilingBindsAnAncestorsGrowth(t *testing.T) {
 	t.Parallel()
 
@@ -1138,7 +1142,7 @@ func TestDescendantCeilingBindsAnAncestorsGrowth(t *testing.T) {
 		inner = 4 << 20
 	)
 
-	parent := &memoryChain{limit: outer}
+	parent := newMemoryChain(nil, outer)
 	ctx := contextWithMemoryChain(context.Background(), parent)
 
 	var child memoryChain
@@ -1157,14 +1161,14 @@ func TestDescendantCeilingBindsAnAncestorsGrowth(t *testing.T) {
 	// The caller now grows by 2 MiB. The shared path is 5 MiB, inside the
 	// caller's own 8 MiB but past the 4 MiB the callee runs under.
 	if !parent.publishAndExceeds(2 << 20) {
-		t.Fatalf("the caller grew the shared path to 5 MiB while a callee bounded at %d MiB held 3 MiB of it, and was admitted: the chain carries the descendant's bytes but not the ceiling they run under, so the tighter limit stops applying the moment an ancestor is the one growing",
+		t.Fatalf("the caller grew the shared path to 5 MiB while a callee bounded at %d MiB held 3 MiB of it, and was admitted: the chain carried the descendant's bytes but not the ceiling they run under, so the tighter limit stopped applying the moment an ancestor was the one growing",
 			inner>>20)
 	}
 
-	// And the ceiling is released with the bytes, or the caller would stay
+	// And the constraint is released with the callee, or the caller would stay
 	// bound by a callee that has finished.
 	child.release()
-	if got := parent.effectiveLimit(); got != outer {
+	if got := parent.headroom(); got != outer {
 		t.Fatalf("caller still bound at %d after its callee finished, want its own %d", got, outer)
 	}
 }
@@ -1238,3 +1242,4 @@ end`, chunks, chunks)
 		t.Fatalf("re-entry stopped for an unrelated reason: %v", err)
 	}
 }
+

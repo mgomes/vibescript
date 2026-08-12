@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"math"
 	"sync/atomic"
 )
 
@@ -44,10 +45,22 @@ import (
 // 256 MiB charged for a script that really peaks at 4 MiB. That is a public API
 // question about a tree-level ceiling, not a side effect of this fix.
 //
-// Chain scope is also why nothing has to be torn down. A level sums only its
-// own ancestors, so a finished sibling was never in anyone's total and a
-// finished child leaves its parent's total untouched. There is no registry to
-// deregister from and no teardown hook to miss.
+// Chain scope keeps siblings out of one another's totals: a level sums only its
+// own ancestors, so a finished sibling was never in anyone's figure.
+//
+// It does not, however, mean nothing has to be torn down. A check has to see
+// what is live below it as well as above -- an ancestor growing under a blocked
+// descendant is the ordinary slotted shape -- so a node carries a figure derived
+// from its descendants, and that figure has to be dropped when they finish or a
+// completed chain would bind its ancestors forever. Retirement is therefore real
+// work, and it is ordered by what is still running rather than by depth: a level
+// can return while a call it started through a capability is still going.
+//
+// noDescendantConstraint is the headroom of a node with nothing live below it:
+// no descendant restricts what it and its ancestors may hold, so only its own
+// limit applies.
+const noDescendantConstraint = math.MaxInt64
+
 type memoryChain struct {
 	parent *memoryChain
 	// marginal is what this level currently holds beyond what it inherited,
@@ -55,22 +68,31 @@ type memoryChain struct {
 	// concurrent siblings sum a shared ancestor on every check of their own,
 	// and a lock there would serialize the hot path.
 	marginal atomic.Int64
-	// descendantHigh is the largest total any live chain below this node has
-	// published, so a check here accounts for levels beneath it as well as
-	// above. Held as a high-water while children are live and dropped when the
-	// last of them finishes; see release.
-	descendantHigh atomic.Int64
-	// descendantLimit is the tightest ceiling any live chain below this node
-	// runs under, or zero when nothing below constrains it. The bytes alone
-	// were not enough: a 4 MiB callee re-entered from an 8 MiB caller was
-	// checked against 4 MiB when it published and against the caller's 8 MiB
-	// when the caller did, so the caller could grow the shared path past the
-	// callee's ceiling. A ceiling travels with the total it applies to.
-	descendantLimit atomic.Int64
-	// liveChildren counts the nested levels currently running under this node,
-	// which is what tells release when descendantHigh no longer stands for
-	// anything.
-	liveChildren atomic.Int32
+	// descendantHeadroom is the most this node and its ancestors may hold
+	// between them without breaching a live chain below it, or
+	// noDescendantConstraint when nothing below constrains them.
+	//
+	// It is one number rather than a pair, and that is the point. The bytes a
+	// descendant holds and the ceiling those bytes run under only ever matter
+	// combined: a path is refused when prefix + bytesBelow exceeds the deepest
+	// limit on it, which rearranges to prefix > deepestLimit - bytesBelow. That
+	// difference is the whole constraint a descendant places on its ancestors.
+	//
+	// Keeping the two separately was a correctness problem, not just a verbose
+	// one. They have to move together, they were updated by independent atomics,
+	// and every ordering between them was a window in which an ancestor read a
+	// stale ceiling against fresh bytes. Two review rounds produced two races of
+	// exactly that shape. One value has no such window, and needs no
+	// synchronization between parts that no longer exist.
+	//
+	// The collapse is only sound because initForCall resolves each limit against
+	// its parent's, so limits never rise going down a path and the deepest node's
+	// limit is the tightest on it.
+	descendantHeadroom atomic.Int64
+	// liveDescendants counts the nested levels currently running under this
+	// node, which is what tells clearHeadroomIfIdle when the headroom no longer
+	// stands for anything.
+	liveDescendants atomic.Int32
 	// limit is the tightest ceiling in the chain, resolved once at
 	// construction. Like sleepBudget it is decided on the chain's fixed
 	// limits and never on what is left of them: an allowance moves in both
@@ -92,165 +114,123 @@ func (c *memoryChain) publishAndExceeds(marginal int) bool {
 	}
 	c.marginal.Store(int64(marginal))
 
-	// The path this level sits on, from here down to the deepest live level
-	// below it.
-	below := c.descendantHigh.Load()
-	total := int64(marginal) + below
+	// What this level and everything live below it leaves for its ancestors.
+	headroom := c.headroom()
 
-	// One upward pass does both jobs: it sums the ancestors into this check,
-	// and it tells each ancestor how much is live beneath it. Without the
-	// second, the ceiling held in one direction only -- a check walking toward
-	// the root cannot see a level below it, so a parent that grew while its
-	// child was still holding memory was admitted against a total that omitted
-	// the child. Measured at 7.15 MiB live against a 4 MiB ceiling, admitted.
-	running := total
-	// The tightest ceiling this path runs under, which ancestors must apply to
-	// it as well as their own.
-	pathLimit := c.effectiveLimit()
+	// One upward pass does both jobs: it sums the ancestors into this check, and
+	// it tells each ancestor how little room the chain below it has left.
+	//
+	// Without the second, the ceiling held in one direction only -- a check
+	// walking toward the root cannot see a level below it, so a parent that grew
+	// while its child was still holding memory was admitted against a total that
+	// omitted the child. Measured at 7.15 MiB live against a 4 MiB ceiling.
+	//
+	// acc is the bytes strictly below each node as the walk reaches it, and ends
+	// as this node's prefix: itself plus every ancestor.
+	acc := int64(marginal)
 	for node := c.parent; node != nil; node = node.parent {
-		node.raiseDescendantHigh(running)
-		node.tightenDescendantLimit(pathLimit)
-		m := node.marginal.Load()
-		total += m
-		running += m
+		node.tightenHeadroom(headroom - acc)
+		acc += node.marginal.Load()
 	}
-	return total > c.effectiveLimit()
+	return acc > headroom
 }
 
-// effectiveLimit reports the ceiling in force at this node: its own, or the
-// tighter one belonging to a live chain below it.
-//
-// A path is bounded by the tightest limit anywhere along it. This node already
-// knows its own and every ancestor's, because initForCall resolved those into
-// c.limit; what it cannot know without being told is that something below runs
-// under a tighter one.
-func (c *memoryChain) effectiveLimit() int64 {
+// headroom reports the most this node's prefix -- itself and its ancestors --
+// may hold: its own ceiling, or whatever tighter room a live chain below it has
+// left, whichever binds first.
+func (c *memoryChain) headroom() int64 {
 	limit := c.limit
-	if below := c.descendantLimit.Load(); below > 0 && below < limit {
+	if below := c.descendantHeadroom.Load(); below < limit {
 		limit = below
 	}
 	return limit
 }
 
-// tightenDescendantLimit records that a chain below this node runs under at
-// most limit.
+// tightenHeadroom records that a chain below this node leaves it at most value.
 //
-// A minimum, as descendantHigh is a maximum, and conservative in the same way:
-// with two live children under different ceilings the tighter is applied to
-// both paths. Pairing each path with its own ceiling would mean tracking the
-// paths separately, which is the width traversal this design avoids.
-func (c *memoryChain) tightenDescendantLimit(limit int64) {
-	if limit <= 0 {
-		return
-	}
-	for {
-		current := c.descendantLimit.Load()
-		if current > 0 && current <= limit {
-			return
-		}
-		if c.descendantLimit.CompareAndSwap(current, limit) {
-			return
-		}
-	}
-}
-
-// raiseDescendantHigh records that a chain below this node holds at least
-// value, keeping the largest such figure seen while it has live children.
+// A minimum over the paths below, never a sum of them. Siblings run concurrently
+// but a chain is one path through the tree, so constraining a level by the
+// tightest chain beneath it bounds depth without letting the width of a flat map
+// aggregate -- the distinction this whole design rests on.
 //
-// It is a maximum over the paths below, never a sum of them. Siblings run
-// concurrently but a chain is one path through the tree, so charging a level
-// for the deepest chain beneath it bounds depth without letting the width of a
-// flat map aggregate -- which is the distinction this whole design rests on.
-//
-// It only ever rises while children are live, and that is a decision rather
-// than an oversight. Lowering it exactly needs the maximum across the other
+// It only ever tightens while children are live, and that is a decision rather
+// than an oversight. Relaxing it exactly needs the loosest of the other
 // children, which is not knowable without walking them, and walking siblings is
-// the width traversal this design exists to avoid. Lowering it on the strength
+// the width traversal this design exists to avoid. Relaxing it on the strength
 // of a "there is only one child" observation was tried and withdrawn: the
 // observation races with a second child registering, and losing that race
-// understates the total, which is the direction that lets a ceiling be
-// exceeded. A conservative figure that is occasionally too high is worth more
-// here than an exact one that is occasionally too low.
+// overstates the room left, which is the direction that lets a ceiling be
+// exceeded. A conservative figure that occasionally leaves too little room is
+// worth more here than an exact one that occasionally leaves too much.
 //
-// The residual is therefore that a child which grows, releases, and then keeps
-// running leaves its peak charged to its ancestors until the last of that
-// ancestor's children exits -- at which point release drops it. Bounded by the
-// deepest path actually reached, and in the safe direction: it can refuse work
-// that would have fit, never admit work that does not.
-func (c *memoryChain) raiseDescendantHigh(value int64) {
+// The residual is that a child which grows, releases and keeps running holds its
+// ancestors to its tightest moment until the last of that ancestor's children
+// exits. Bounded by the deepest path actually reached, and in the safe
+// direction: it can refuse work that would have fit, never admit work that does
+// not.
+func (c *memoryChain) tightenHeadroom(value int64) {
 	for {
-		current := c.descendantHigh.Load()
-		if current >= value {
+		current := c.descendantHeadroom.Load()
+		if current <= value {
 			return
 		}
-		if c.descendantHigh.CompareAndSwap(current, value) {
+		if c.descendantHeadroom.CompareAndSwap(current, value) {
 			return
 		}
 	}
 }
 
-// total reports what this level's chain currently holds: everything from the
-// deepest live level below it up to the chain root.
-func (c *memoryChain) total() int64 {
-	total := c.descendantHigh.Load()
-	for node := c; node != nil; node = node.parent {
-		total += node.marginal.Load()
+// register records this node as live beneath its parent, so that what is live
+// below the parent can be forgotten once nothing is.
+func (c *memoryChain) register() {
+	if c.parent != nil {
+		c.parent.liveDescendants.Add(1)
 	}
-	return total
-}
-
-// addChild registers a nested level, so that what is live below this node can
-// be forgotten once none of them are running.
-func (c *memoryChain) addChild() {
-	c.liveChildren.Add(1)
 }
 
 // release retires a finished level: it stops contributing, and when the last
-// child of its parent goes the parent forgets what was below it.
+// level below its parent goes the parent forgets what was below it.
 //
-// The high-water is what makes this necessary. Kept forever it would be a
-// permanent over-charge -- a deep chain that finished would go on refusing its
-// parent's later work -- so it is dropped exactly when there is nothing below
-// to justify it.
+// The headroom is what makes this necessary. Kept forever it would be a
+// permanent over-constraint -- a deep chain that finished would go on refusing
+// its parent's later work -- so it is dropped exactly when there is nothing
+// below to justify it.
 func (c *memoryChain) release() {
 	c.marginal.Store(0)
-	c.descendantHigh.Store(0)
-	c.descendantLimit.Store(0)
+	c.clearHeadroomIfIdle()
 	parent := c.parent
 	if parent == nil {
 		return
 	}
-	if parent.liveChildren.Add(-1) > 0 {
+	if parent.liveDescendants.Add(-1) > 0 {
 		return
 	}
-	parent.clearDescendantHighIfIdle()
+	parent.clearHeadroomIfIdle()
 }
 
-// clearDescendantHighIfIdle drops what was live below this node, but only while
+// clearHeadroomIfIdle forgets what was live below this node, but only while
 // nothing below it is live.
 //
-// Storing zero unconditionally lost a new child's accounting: a parent's last
-// child exiting concurrently with a fresh child publishing would clear the
-// figure the new child had just raised, and since the new child only republishes
+// Storing the empty value unconditionally lost a new child's accounting: a
+// parent's last child exiting concurrently with a fresh child publishing would
+// clear what the new child had just recorded, and since a level only republishes
 // on its next check, that under-charge could stand indefinitely.
 //
-// The compare-and-swap is what closes it. Clearing only the exact value that was
-// observed means a concurrent raise makes the swap fail, and the retry then sees
-// the live child and leaves its figure alone. A child that registers after the
-// liveChildren check but has not published yet loses nothing, because there is
-// nothing of its own recorded to lose.
-func (c *memoryChain) clearDescendantHighIfIdle() {
+// The compare-and-swap is what closes it. Replacing only the exact value that
+// was observed means a concurrent tightening makes the swap fail, and the retry
+// then sees the live child and leaves its figure alone. A child that registers
+// after the liveChildren check but has not published yet loses nothing, because
+// it has recorded nothing to lose.
+func (c *memoryChain) clearHeadroomIfIdle() {
 	for {
-		high := c.descendantHigh.Load()
-		if high == 0 {
+		current := c.descendantHeadroom.Load()
+		if current == noDescendantConstraint {
 			return
 		}
-		if c.liveChildren.Load() != 0 {
+		if c.liveDescendants.Load() != 0 {
 			return
 		}
-		if c.descendantHigh.CompareAndSwap(high, 0) {
-			// The ceiling that came with those bytes goes with them.
-			c.descendantLimit.Store(0)
+		if c.descendantHeadroom.CompareAndSwap(current, noDescendantConstraint) {
 			return
 		}
 	}
@@ -289,14 +269,25 @@ func (c *memoryChain) initForCall(ctx context.Context, quota int) bool {
 	}
 	c.parent = parent
 	c.limit = limit
+	// A node with nothing below it is bound only by its own ceiling. The zero
+	// value would mean the opposite -- no room at all -- so it is set here, on
+	// the one path that brings a node into use.
+	c.descendantHeadroom.Store(noDescendantConstraint)
 	// Registered on the single path out, for every kind of callee. Registering
 	// only in the bounded branch left an unlimited callee unregistered, so its
-	// parent believed it had no live children: the parent then cleared what was
-	// live below it and this level's footprint never reached any ancestor.
-	if parent != nil {
-		parent.addChild()
-	}
+	// ancestors believed nothing was live below them: they then cleared what was
+	// live below and this level's footprint never reached any of them.
+	c.register()
 	return true
+}
+
+// newMemoryChain builds a node outside a call, for tests. The zero value of
+// descendantHeadroom means "no room", not "no constraint", so a node must never
+// be built by struct literal alone.
+func newMemoryChain(parent *memoryChain, limit int64) *memoryChain {
+	c := &memoryChain{parent: parent, limit: limit}
+	c.descendantHeadroom.Store(noDescendantConstraint)
+	return c
 }
 
 type memoryChainKey struct{}
