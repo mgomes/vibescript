@@ -20,6 +20,13 @@
   charged 68 MiB for a single 4 MiB global read at seventeen levels. The charge
   does not grow with depth: a 1 MiB global read at 32 levels needs 2.03 MiB,
   against 2.01 MiB at one level, where a naive sum would need 33 MiB.
+- **Fixed: an unlimited engine re-entered from a bounded caller now honors the
+  caller's ceiling.** A capability adapter can re-enter a script on a different
+  engine, and one configured with `MemoryQuotaBytes: Unlimited` previously ran
+  with no memory bound at all even when the caller had one — so re-entering an
+  unbounded engine was a way out of a bounded caller's sandbox. Such a call now
+  adopts the ceiling it inherited, the same rule the sleeping budget already
+  applies. A call with no bounded caller is unaffected.
 - **Unchanged: the width of a flat `Tasks.map`.** Only the ancestor chain
   aggregates; siblings are not charged for one another. Bounding width too would
   make the quota literally true for the whole call, but it would refuse a
