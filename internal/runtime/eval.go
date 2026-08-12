@@ -1914,6 +1914,23 @@ func (exec *Execution) callBlockValue(block Value, args []Value, pos Position) (
 }
 
 func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge *blockBindCharge, pos Position, chargedRoots ...Value) (Value, error) {
+	// Pay for the bind charge's construction walk before running the callback it
+	// was built for. The walk is recorded where it happens rather than charged
+	// there, because that site cannot return an error, and settling it in each
+	// driver's loop instead made it a convention every new driver had to
+	// remember. This is the one point every block invocation passes through, so
+	// settling here means a driver cannot run a callback without first paying for
+	// the walk that preceded it.
+	//
+	// The counter is filled once, when the runner's bind charge is built, which is
+	// before the first callback -- so settling after each callback still lets that
+	// first one run on a quota the walk had already spent, and a driver that omits
+	// the call entirely lets the whole loop run. Over a 40,000-node reachable
+	// graph, a lookup whose construction walk cost 625 steps against a quota of
+	// 100 ran a callback anyway; it now runs none.
+	if err := exec.chargeRetainedOutputWalk(); err != nil {
+		return NewNil(), err
+	}
 	// Script re-entry runs with full periodic memory checks: suspend any
 	// accumulator-metered sections the driving builtin left active for the
 	// duration of the block body (see beginAccumulatorMeteredSection).

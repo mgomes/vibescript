@@ -177,10 +177,21 @@ func (exec *Execution) outputWalkBytes(est *memoryEstimator) int {
 }
 
 // chargeRetainedOutputWalk bills the step quota for the estimator work recorded
-// since it was last called. A driver calls it after each callback, so the quota
-// trips inside the loop rather than after unbounded work, and endOutputWalkRoot
-// calls it once more on the way out, so the last callback's share is billed
-// whether that callback returned or raised.
+// since it was last called.
+//
+// Drivers do not call this. It is settled at two structural points instead:
+// callBlock settles before running any callback, so a loop cannot spend a quota
+// the walk preceding it had already exhausted, and endOutputWalkRoot settles on
+// the way out, so a walk whose block was never invoked is still billed and
+// nothing is left on the execution for a later driver to be charged for.
+//
+// Making these the only two settlement points is deliberate. As a per-driver
+// convention it could not be right: the counter is filled once, when the bind
+// charge is built, which is before the driver's first callback, so settling
+// after each callback still let that first one run on a quota the walk had
+// already spent. A driver that omitted the call entirely ran its whole loop, and
+// the omission is invisible until a script pairs a large reachable graph with a
+// low step quota.
 //
 // Despite the name, what is recorded is NOT the retained-output walk. That walk is
 // unbilled (see outputWalkBytes for why). What reaches this counter is the bind
