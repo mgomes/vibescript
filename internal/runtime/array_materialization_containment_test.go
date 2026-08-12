@@ -34,22 +34,35 @@ func TestArrayMapReservesOutputBeforeBlockCalls(t *testing.T) {
 	}
 }
 
-func TestArrayMapReservesRetainedPayloadBeforeLaterBlockCalls(t *testing.T) {
+// A result array.map has already kept lives in a Go-local slice no reachable
+// root points at, so a check performed inside a later block call has to reach it
+// through the registered output root or not at all. This drives the block twice
+// and asserts that what the second call measures already contains the first
+// call's payload.
+//
+// It measures through estimateMemoryUsage rather than reservedScratchBytes on
+// purpose. Reserving the payload as scratch was the previous mechanism, and it
+// charged the same bytes twice whenever the block also stored its result
+// somewhere reachable: the reservation reached the check as a scalar while the
+// graph walk reached the block's own copy. Asserting on the estimate keeps the
+// property (the retained output is in front of later checks) while leaving the
+// mechanism free, and it exercises whichever beginBaseWalk branch the block body
+// actually runs on -- a root walked in only some of those branches would leave
+// this measuring a total that omits the payload.
+func TestArrayMapCountsRetainedPayloadInLaterBlockCalls(t *testing.T) {
 	t.Parallel()
 
 	const retainedPayloadBytes = 64 * 1024
 	receiver := largeIntArray(2)
 	retainedPayload := NewString(strings.Repeat("x", retainedPayloadBytes))
 	expectedRetained := newMemoryEstimator().valuePayload(retainedPayload)
-	expectedBacking := arraySlotBackingBytes(len(receiver.Array()))
-	expectedReserved := expectedBacking + expectedRetained
 	calls := 0
-	block := arrayMapRetainedPayloadProbeBlock(retainedPayload.String(), expectedReserved, &calls)
+	block := arrayMapRetainedPayloadProbeBlock(retainedPayload.String(), expectedRetained, &calls)
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	got, err := callArrayMember(t, exec, receiver, "map", nil, block)
 	if err != nil {
-		t.Fatalf("array.map retained payload reservation error = %v", err)
+		t.Fatalf("array.map retained payload accounting error = %v", err)
 	}
 	if calls != 2 {
 		t.Fatalf("array.map block calls = %d, want 2", calls)
@@ -57,6 +70,9 @@ func TestArrayMapReservesRetainedPayloadBeforeLaterBlockCalls(t *testing.T) {
 	compareArrays(t, got, []Value{retainedPayload, retainedPayload})
 	if exec.reservedScratchBytes != 0 {
 		t.Fatalf("array.map leaked %d scratch bytes after success", exec.reservedScratchBytes)
+	}
+	if len(exec.outputWalkRoots) != 0 {
+		t.Fatalf("array.map left %d output walk roots registered after success", len(exec.outputWalkRoots))
 	}
 }
 
@@ -795,12 +811,14 @@ func constantBoolBlockValue(value bool) Value {
 	return NewBlock(nil, body, newEnv(nil))
 }
 
-func arrayMapRetainedPayloadProbeBlock(payload string, expectedReservedBeforeSecondCall int, calls *int) Value {
+func arrayMapRetainedPayloadProbeBlock(payload string, expectedRetainedBeforeSecondCall int, calls *int) Value {
 	pos := Position{Line: 1, Column: 1}
 	probe := NewBuiltin("test.array_map_payload_probe", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
 		*calls++
-		if *calls == 2 && exec.reservedScratchBytes < expectedReservedBeforeSecondCall {
-			return NewNil(), fmt.Errorf("reserved scratch before second map block call = %d, want at least %d", exec.reservedScratchBytes, expectedReservedBeforeSecondCall)
+		if *calls == 2 {
+			if used := exec.estimateMemoryUsage(); used < expectedRetainedBeforeSecondCall {
+				return NewNil(), fmt.Errorf("memory measured before second map block call = %d, want at least the %d retained bytes the first call produced", used, expectedRetainedBeforeSecondCall)
+			}
 		}
 		return NewString(payload), nil
 	})

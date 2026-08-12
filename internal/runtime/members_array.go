@@ -1212,7 +1212,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			return NewNil(), nil
 		}), nil
 	case "map":
-		return NewAutoBuiltin("array.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (mapped Value, err error) {
 			if err := ensureBlock(block, "array.map"); err != nil {
 				return NewNil(), err
 			}
@@ -1225,13 +1225,35 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err := scratch.reserve(arraySlotBackingBytes(len(arr))); err != nil {
 				return NewNil(), err
 			}
+			// Built before the root is registered below, so its baseline walks the
+			// receiver exactly once. A Value's inline header is counted per
+			// occurrence and only its payload deduplicates, so an accumulator
+			// snapshotted after the registration would count that header twice --
+			// once through the root, once through its own call-root walk.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			// Every result stays in a Go-local slice until the array below exists,
+			// so the checks inside later block calls cannot reach it. Registering
+			// the filled prefix as a walk root puts the whole retained output in
+			// each of those checks, re-derived as the block leaves it.
+			//
+			// Reserving its bytes as scratch, which is what this did before, put
+			// the same payload in front of those checks twice whenever the block
+			// also kept its result somewhere reachable: the reservation is added by
+			// estimateScalarBase while the graph walk reaches the block's own copy.
+			// A walk root deduplicates on identity instead, so an aliased result is
+			// counted once and a result held only here is still counted (see
+			// memory_output.go).
+			results := make([]Value, len(arr))
+			var produced []Value
+			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &produced))
+			// Settled on the way out rather than only after a successful block
+			// call, so a block that raises pays what one that returns pays.
+			defer func() { err = exec.endOutputWalkRoot(err) }()
 			runner, err := newBlockCallRunner(exec, block, "array.map", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
 			defer exec.beginBlockIterationRegion().end()
-			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
-			result := make([]Value, len(arr))
 			var blockArg [1]Value
 			for i, item := range arr {
 				if err := exec.step(); err != nil {
@@ -1242,19 +1264,14 @@ func arrayMemberQuery(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				result[i] = val
-				// Retained payloads live in the Go-local result slice before the
-				// returned array exists, so later block calls must charge them as
-				// scratch while they allocate their own transients.
-				retainedBefore := acc.retainedPayloadBytes()
+				results[i] = val
+				produced = results[:i+1]
+				exec.addRetainedOutput(val)
 				if err := acc.addConservativeToReservedBacking(val); err != nil {
 					return NewNil(), err
 				}
-				if err := scratch.reserve(acc.retainedPayloadBytes() - retainedBefore); err != nil {
-					return NewNil(), err
-				}
 			}
-			return NewArray(result), nil
+			return NewArray(results), nil
 		}), nil
 	case "map_with_index":
 		return NewAutoBuiltin("array.map_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
