@@ -1414,6 +1414,11 @@ type equalityState struct {
 	// handed to reserveScratch with every validation.
 	rootLeft  Value
 	rootRight Value
+	// releaseScratch tells the validator that the walk has finished with its
+	// scratch, so a validator holding an accounting reservation against it
+	// retires that reservation rather than carrying it into unrelated work.
+	// nil means the validator keeps no such reservation.
+	releaseScratch func()
 	// roundScratchAlloc maps a requested scratch allocation to the capacity
 	// the allocator actually reserves for it (size-class rounding), so a
 	// rendered display key is validated at its realized backing size. nil
@@ -1458,17 +1463,45 @@ func releaseOversizedSeen(state *equalityState) {
 	}
 }
 
+// beginWalkScratch opens one comparison's scratch accounting and reports the
+// boundary to the validator as a zero-byte reservation. Scratch from prior
+// walks on a reused context is dead, so the validator must see each walk's own
+// footprint rather than a scan's lifetime total. The boundary has to be said
+// rather than inferred: a validator that batches its checks by cumulative
+// bytes cannot recognize a new walk from the byte count alone, because a
+// walk's first reservation is routinely equal to — or a little above — the
+// total the previous walk already accounted for, which is precisely the case
+// where every later comparison would otherwise go unvalidated.
+func beginWalkScratch(state *equalityState, left, right Value) {
+	state.scratchHeld = 0
+	state.rootLeft, state.rootRight = left, right
+	if state.reserveScratch == nil {
+		return
+	}
+	if err := state.reserveScratch(0, left, right); err != nil && state.err == nil {
+		state.err = err
+	}
+}
+
+// endWalkScratch closes a comparison's scratch accounting. The walk's slices
+// are unreachable once it returns, so anything a validator reserved against
+// them is retired here even though the comparison answered without error.
+func endWalkScratch(state *equalityState) {
+	state.scratchHeld = 0
+	if state.releaseScratch != nil {
+		state.releaseScratch()
+	}
+}
+
 // Equal reports whether v and other hold the same kind and value.
 func (c *EqualityContext) Equal(v, other Value) bool {
 	if c.state.seen != nil {
 		clear(c.state.seen)
 	}
-	// Scratch from prior walks on a reused context is dead; the validator
-	// must see each walk's own footprint, not a scan's lifetime total.
-	c.state.scratchHeld = 0
-	c.state.rootLeft, c.state.rootRight = v, other
+	beginWalkScratch(&c.state, v, other)
 	eq := valuesEqual(v, other, &c.state)
 	flushEqualityCharge(&c.state)
+	endWalkScratch(&c.state)
 	// The operand roots are read only by the scratch validator during the
 	// walk. A context that outlives the comparison (the runtime pools one
 	// per execution and embeds them in set helpers) must not keep the
@@ -1488,10 +1521,10 @@ func (c *EqualityContext) Eql(v, other Value) bool {
 	if c.state.seen != nil {
 		clear(c.state.seen)
 	}
-	c.state.scratchHeld = 0
-	c.state.rootLeft, c.state.rootRight = v, other
+	beginWalkScratch(&c.state, v, other)
 	eq := valuesEqualWithKinds(v, other, &c.state, true)
 	flushEqualityCharge(&c.state)
+	endWalkScratch(&c.state)
 	// See Equal: reused contexts must not retain the compared graphs.
 	c.state.rootLeft, c.state.rootRight = Value{}, Value{}
 	releaseOversizedSeen(&c.state)
@@ -1522,6 +1555,18 @@ func (c *EqualityContext) SetScratchReserver(reserve func(bytes int, left, right
 // rounder reserves requests at their exact size.
 func (c *EqualityContext) SetScratchAllocRounder(round func(bytes int) int) {
 	c.state.roundScratchAlloc = round
+}
+
+// SetScratchReleaser installs a callback invoked when a comparison finishes
+// with its transient scratch. A validator that only inspects the total it is
+// handed needs nothing here. One that holds an accounting reservation against
+// the walk's scratch — so that memory checks elsewhere account for it while
+// the walk runs — retires that reservation here, since the slices are
+// unreachable once the comparison returns. It is separate from the reserver so
+// that the reserved figure stays a plain byte count rather than carrying a
+// sentinel for the walk's lifecycle.
+func (c *EqualityContext) SetScratchReleaser(release func()) {
+	c.state.releaseScratch = release
 }
 
 // SetCharge installs a byte charge invoked for the string and symbol payloads
