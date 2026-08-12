@@ -5020,15 +5020,16 @@ func stringMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.strip does not take arguments")
 			}
-			return NewString(rubyStrip(receiver.String())), nil
+			text := receiver.String()
+			return detachedStringValue(exec, text, rubyStrip(text), receiver, args, kwargs, block)
 		}), nil
 	case "strip!":
 		return NewAutoBuiltin("string.strip!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.strip! does not take arguments")
 			}
-			updated := rubyStrip(receiver.String())
-			return stringBangResult(receiver.String(), updated), nil
+			original := receiver.String()
+			return detachedBangResult(exec, original, rubyStrip(original), receiver, args, kwargs, block)
 		}), nil
 	case "squish":
 		return NewAutoBuiltin("string.squish", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -5050,30 +5051,32 @@ func stringMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.lstrip does not take arguments")
 			}
-			return NewString(rubyLstrip(receiver.String())), nil
+			text := receiver.String()
+			return detachedStringValue(exec, text, rubyLstrip(text), receiver, args, kwargs, block)
 		}), nil
 	case "lstrip!":
 		return NewAutoBuiltin("string.lstrip!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.lstrip! does not take arguments")
 			}
-			updated := rubyLstrip(receiver.String())
-			return stringBangResult(receiver.String(), updated), nil
+			original := receiver.String()
+			return detachedBangResult(exec, original, rubyLstrip(original), receiver, args, kwargs, block)
 		}), nil
 	case "rstrip":
 		return NewAutoBuiltin("string.rstrip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.rstrip does not take arguments")
 			}
-			return NewString(rubyRstrip(receiver.String())), nil
+			text := receiver.String()
+			return detachedStringValue(exec, text, rubyRstrip(text), receiver, args, kwargs, block)
 		}), nil
 	case "rstrip!":
 		return NewAutoBuiltin("string.rstrip!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.rstrip! does not take arguments")
 			}
-			updated := rubyRstrip(receiver.String())
-			return stringBangResult(receiver.String(), updated), nil
+			original := receiver.String()
+			return detachedBangResult(exec, original, rubyRstrip(original), receiver, args, kwargs, block)
 		}), nil
 	case "chomp":
 		return NewAutoBuiltin("string.chomp", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -5410,6 +5413,36 @@ func detachedSubstring(exec *Execution, text, sub string, receiver Value, args [
 		}
 	}
 	return clonedWindow(text, sub), nil
+}
+
+// detachedStringValue wraps sub as the string value a member returns, detached
+// from text's backing (see detachedSubstring).
+//
+// It is the shape almost every substring-returning member needs: one window,
+// one value, priced together. detachedByteslice sits beside it rather than
+// above it -- byteslice adds a scan charge because it is exempt from the
+// receiver-length charge chargeStringScanBeforeCall applies to everyone else,
+// and billing that charge here would double-charge every caller.
+func detachedStringValue(exec *Execution, text, sub string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	detached, err := detachedSubstring(exec, text, sub, receiver, args, kwargs, block)
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewString(detached), nil
+}
+
+// detachedBangResult is stringBangResult for a mutator whose result is a window
+// onto its receiver.
+//
+// The unchanged case returns nil and never builds a value, so it is answered
+// before anything is copied or reserved. Every other case differs from the
+// receiver in length -- these mutators only ever remove bytes -- which is
+// exactly when detachedSubstring copies, so the two agree on when work happens.
+func detachedBangResult(exec *Execution, original, updated string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if updated == original {
+		return NewNil(), nil
+	}
+	return detachedStringValue(exec, original, updated, receiver, args, kwargs, block)
 }
 
 // detachedPartitionValue builds the three-element result String#partition and
