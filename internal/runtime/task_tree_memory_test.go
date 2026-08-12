@@ -1076,3 +1076,41 @@ func TestClearingDescendantsPreservesANewChild(t *testing.T) {
 		t.Fatalf("descendant accounting was %d with no live children, want 0: a finished chain must stop charging its ancestor", got)
 	}
 }
+
+// TestShrinkingSoleChildStopsBeingChargedItsPeak pins that a level whose only
+// descendant shrinks is charged what that descendant now holds, not what it once
+// held.
+//
+// The figure below a node could only ever be raised, so a child that grew and
+// then released most of its memory left its peak charged against its parent for
+// as long as it ran. With one live child the path through it is the only path
+// below, so it can be recorded exactly; with siblings it stays a high-water,
+// because lowering would need the maximum across the others and walking siblings
+// is the width traversal this design avoids.
+func TestShrinkingSoleChildStopsBeingChargedItsPeak(t *testing.T) {
+	t.Parallel()
+
+	parent := &memoryChain{limit: 1 << 20}
+	parent.addChild()
+	child := &memoryChain{parent: parent, limit: 1 << 20}
+
+	child.publishAndExceeds(9000)
+	if got := parent.descendantHigh.Load(); got != 9000 {
+		t.Fatalf("parent recorded %d below it after its only child published 9000", got)
+	}
+
+	child.publishAndExceeds(1000)
+	if got := parent.descendantHigh.Load(); got != 1000 {
+		t.Fatalf("parent still records %d below it after its only child shrank to 1000: the peak is charged for as long as the child runs, against memory it no longer holds", got)
+	}
+
+	// With a second live child the figure is a maximum again, so the larger of
+	// the two paths stands and neither can lower the other.
+	parent.addChild()
+	sibling := &memoryChain{parent: parent, limit: 1 << 20}
+	sibling.publishAndExceeds(7000)
+	child.publishAndExceeds(500)
+	if got := parent.descendantHigh.Load(); got != 7000 {
+		t.Fatalf("parent records %d below it with a 7000 sibling live, want 7000: one child must not lower a figure another child's path justifies", got)
+	}
+}

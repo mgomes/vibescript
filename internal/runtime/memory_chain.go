@@ -98,12 +98,33 @@ func (c *memoryChain) publishAndExceeds(marginal int) bool {
 	// the child. Measured at 7.15 MiB live against a 4 MiB ceiling, admitted.
 	running := total
 	for node := c.parent; node != nil; node = node.parent {
-		node.raiseDescendantHigh(running)
+		node.recordDescendantPath(running)
 		m := node.marginal.Load()
 		total += m
 		running += m
 	}
 	return total > c.limit
+}
+
+// recordDescendantPath records what the chain below this node, running through
+// the child that is publishing, currently holds.
+//
+// With a single live child that path is the only path below, so the figure is
+// set exactly and a child that shrinks stops being charged its peak. That is
+// the deep-nesting shape this whole design is about, so it is the case worth
+// being exact in.
+//
+// With siblings it can only be raised. Lowering would need the maximum across
+// the others, which is not knowable without walking them, and walking siblings
+// is the width traversal this design exists to avoid. The cost is that a
+// shrunken sibling keeps being charged its peak until the last of them exits;
+// that is conservative, and bounded by the deepest path actually reached.
+func (c *memoryChain) recordDescendantPath(value int64) {
+	if c.liveChildren.Load() == 1 {
+		c.descendantHigh.Store(value)
+		return
+	}
+	c.raiseDescendantHigh(value)
 }
 
 // raiseDescendantHigh records that a chain below this node holds at least
