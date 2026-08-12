@@ -126,3 +126,103 @@ func TestRetainedOutputIsWeighedAgainstInBlockTransients(t *testing.T) {
 		})
 	}
 }
+
+// countingRestBindingBlock is the smallest block that both forces a bind charge
+// (a rest-collecting destructure parameter is the only shape that does) and
+// reports how many times it actually ran.
+func countingRestBindingBlock(calls *int) Value {
+	pos := Position{Line: 1, Column: 1}
+	probe := NewBuiltin("test.callback_probe", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		*calls++
+		return NewNil(), nil
+	})
+	env := newEnv(nil)
+	env.Define("__probe__", probe)
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "head", Position: pos}},
+			{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+		},
+	}
+	body := []Statement{&ExprStmt{Position: pos, Expr: &CallExpr{
+		Position: pos,
+		Callee:   &Identifier{Name: "__probe__", Position: pos},
+	}}}
+	return NewBlock([]Param{{Kind: ParamNormal, Target: target}}, body, env)
+}
+
+// Registering an output root makes a rest-binding block's bind charge walk the
+// reachable graph, and that walk is charged to the step quota. It is recorded
+// where it happens rather than charged there, because that site cannot return an
+// error, so something has to settle the counter.
+//
+// Settling it in each driver's loop is not enough, and that is the point of this
+// test. The counter is filled once, when the runner is constructed, before the
+// first callback -- so a driver that only settles after each callback still lets
+// the first one run, and a driver that forgets entirely lets the whole loop run
+// on a quota the walk had already exhausted. Over an 80,000-node graph that was
+// 12 callbacks and 1,298 steps against a quota of 100.
+//
+// callBlock settles instead, which is the one point every block invocation
+// passes through: no callback can run before the walk that preceded it is paid
+// for. With the graph far larger than the quota, that means no callback runs at
+// all.
+func TestConstructionWalkIsPaidBeforeAnyCallback(t *testing.T) {
+	t.Parallel()
+
+	const graphNodes = 20_000
+	const stepQuota = 100
+	const rows = 12
+
+	graph := make([]Value, graphNodes)
+	for i := range graphNodes {
+		graph[i] = NewInt(int64(i))
+	}
+
+	arrayRows := make([]Value, rows)
+	hashRows := make(map[string]Value, rows)
+	for i := range rows {
+		arrayRows[i] = NewArray([]Value{NewInt(int64(i)), NewInt(int64(i))})
+		hashRows[string(rune('a'+i))] = NewInt(int64(i))
+	}
+
+	tests := []struct {
+		name   string
+		invoke func(t *testing.T, exec *Execution, block Value) error
+	}{
+		{"array.map", func(t *testing.T, exec *Execution, block Value) error {
+			_, err := callArrayMember(t, exec, NewArray(arrayRows), "map", nil, block)
+			return err
+		}},
+		{"hash.map", func(t *testing.T, exec *Execution, block Value) error {
+			_, err := callHashMember(t, exec, NewHash(hashRows), "map", nil, block)
+			return err
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			calls := 0
+			block := countingRestBindingBlock(&calls)
+			exec := &Execution{ctx: context.Background(), quota: stepQuota, memoryQuota: 1 << 30}
+			exec.root = newEnv(nil)
+			exec.root.Define("graph", NewArray(graph))
+			exec.envStack = append(exec.envStack, exec.root)
+
+			err := tc.invoke(t, exec, block)
+			if err == nil {
+				t.Fatalf("%s completed under a %d-step quota while its bind charge walked a %d-node graph; "+
+					"that walk costs about %d steps and must exhaust the quota",
+					tc.name, stepQuota, graphNodes, graphNodes/estimatorNodesPerStep)
+			}
+			if calls != 0 {
+				t.Fatalf("%s ran %d callbacks under a %d-step quota that its %d-step construction walk had "+
+					"already exhausted; the walk is being settled after the callbacks it precedes rather "+
+					"than before them", tc.name, calls, stepQuota, graphNodes/estimatorNodesPerStep)
+			}
+		})
+	}
+}
