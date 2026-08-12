@@ -1570,7 +1570,6 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 	// and its footprint never reached this level.
 	if exec.memChainNode.initForCall(ctx, script.engine.config.MemoryQuotaBytes) {
 		exec.memChain = &exec.memChainNode
-		exec.ctx = contextWithMemoryChain(exec.ctx, exec.memChain)
 		// An engine with no quota of its own adopts the ceiling it inherited as
 		// its own. Every memory check guards on memoryQuota before doing
 		// anything -- there are some sixty such guards -- so without this an

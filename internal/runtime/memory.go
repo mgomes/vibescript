@@ -547,7 +547,7 @@ func (exec *Execution) baseWalkSessionsAreCheap() bool {
 	if exec.baseWalkOpen {
 		return false
 	}
-	globals := taskLazyGlobalsFromContext(exec.Context())
+	globals := taskLazyGlobalsFromContext(exec.ctx)
 	if exec.blockRegionBaseWalkEngaged(globals) {
 		return true
 	}
@@ -563,7 +563,7 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		est := newMemoryEstimator()
 		return baseWalkSession{exec: exec, est: est, base: exec.estimateMemoryUsageBase(est)}
 	}
-	globals := taskLazyGlobalsFromContext(exec.Context())
+	globals := taskLazyGlobalsFromContext(exec.ctx)
 	scalars := exec.estimateScalarBase()
 	est := &exec.memoryEst
 	walked0 := est.walked
@@ -778,7 +778,7 @@ func (exec *Execution) captureMemoryInheritedBaseline() {
 		return
 	}
 	est := newMemoryEstimator()
-	exec.memBaseline = exec.estimateGraphTail(est, taskLazyGlobalsFromContext(exec.Context()))
+	exec.memBaseline = exec.estimateGraphTail(est, taskLazyGlobalsFromContext(exec.ctx))
 	exec.memBaselineSet = true
 }
 
@@ -2585,7 +2585,7 @@ func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []
 	// retainedOutputMarginalBytes instead would fall back to a second graph walk
 	// here, because a nested driver has just invalidated the memo by registering.
 	base := exec.estimateScalarBase()
-	base = saturatingAdd(base, exec.estimateGraphBase(rootEst, taskLazyGlobalsFromContext(exec.Context())))
+	base = saturatingAdd(base, exec.estimateGraphBase(rootEst, taskLazyGlobalsFromContext(exec.ctx)))
 	// Metered for the same reason the retained-output fallback's basis walk is,
 	// and only while a driver output is registered: that is exactly when this
 	// construction is script-repeatable, because a lookup builds its runner inside
@@ -3049,7 +3049,7 @@ func (r *loopScratchReservation) release() {
 // re-walked.
 func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	total := exec.estimateScalarBase()
-	total += exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.Context()))
+	total += exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.ctx))
 	return saturatingAdd(total, exec.outputWalkBytes(est))
 }
 
