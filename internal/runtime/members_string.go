@@ -843,11 +843,24 @@ func stringSplitResultFromPositionalRoots(exec *Execution, receiver, arg0, arg1 
 	return stringSplitCallResult(exec, receiver, split)
 }
 
-func appendStringSplitPart(exec *Execution, values *[]Value, part string) error {
+// appendStringSplitPart appends one split part, copied out of the source it was
+// cut from (see clonedWindow).
+//
+// Every part is a window onto source, so keeping one of them pinned the whole
+// subject: `(big + "|x").split("|")[1]` was charged one byte and held a
+// megabyte, and 200 of them retained 192.1 MiB under an 8 MiB quota. The parts
+// of one split add up to the subject, so keeping all of them was already priced
+// honestly and only a kept subset amplified.
+//
+// The copy needs no reservation of its own: stringSplitPartPayloadBytes already
+// projects each part at its own length -- header only for an empty part or one
+// that spans the whole source -- which is exactly the set clonedWindow copies
+// nothing for, so the reservation the caller already made covers these bytes.
+func appendStringSplitPart(exec *Execution, values *[]Value, source, part string) error {
 	if err := exec.step(); err != nil {
 		return err
 	}
-	*values = append(*values, NewString(part))
+	*values = append(*values, NewString(clonedWindow(source, part)))
 	return nil
 }
 
@@ -860,7 +873,7 @@ func stringSplitWhitespaceResult(exec *Execution, text string, limit, count int)
 		return NewArray(values), nil
 	}
 	if limit == 1 {
-		if err := appendStringSplitPart(exec, &values, text); err != nil {
+		if err := appendStringSplitPart(exec, &values, text, text); err != nil {
 			return NewNil(), err
 		}
 		return NewArray(values), nil
@@ -875,7 +888,7 @@ func stringSplitWhitespaceResult(exec *Execution, text string, limit, count int)
 			break
 		}
 		if limit > 0 && len(values) == limit-1 {
-			if err := appendStringSplitPart(exec, &values, text[i:]); err != nil {
+			if err := appendStringSplitPart(exec, &values, text, text[i:]); err != nil {
 				return NewNil(), err
 			}
 			return NewArray(values), nil
@@ -884,12 +897,12 @@ func stringSplitWhitespaceResult(exec *Execution, text string, limit, count int)
 		for i < n && !isRubyASCIISpace(text[i]) {
 			i++
 		}
-		if err := appendStringSplitPart(exec, &values, text[start:i]); err != nil {
+		if err := appendStringSplitPart(exec, &values, text, text[start:i]); err != nil {
 			return NewNil(), err
 		}
 	}
 	if limit != 0 && isRubyASCIISpace(text[n-1]) {
-		if err := appendStringSplitPart(exec, &values, ""); err != nil {
+		if err := appendStringSplitPart(exec, &values, text, ""); err != nil {
 			return NewNil(), err
 		}
 	}
@@ -905,14 +918,14 @@ func stringSplitEmptySeparatorResult(exec *Execution, text string, limit, count 
 		return NewArray(values), nil
 	}
 	if limit == 1 {
-		if err := appendStringSplitPart(exec, &values, text); err != nil {
+		if err := appendStringSplitPart(exec, &values, text, text); err != nil {
 			return NewNil(), err
 		}
 		return NewArray(values), nil
 	}
 	for i := 0; i < len(text); {
 		if limit > 1 && len(values) == limit-1 {
-			if err := appendStringSplitPart(exec, &values, text[i:]); err != nil {
+			if err := appendStringSplitPart(exec, &values, text, text[i:]); err != nil {
 				return NewNil(), err
 			}
 			return NewArray(values), nil
@@ -920,12 +933,12 @@ func stringSplitEmptySeparatorResult(exec *Execution, text string, limit, count 
 		start := i
 		_, width := utf8.DecodeRuneInString(text[i:])
 		i += width
-		if err := appendStringSplitPart(exec, &values, text[start:i]); err != nil {
+		if err := appendStringSplitPart(exec, &values, text, text[start:i]); err != nil {
 			return NewNil(), err
 		}
 	}
 	if limit != 0 {
-		if err := appendStringSplitPart(exec, &values, ""); err != nil {
+		if err := appendStringSplitPart(exec, &values, text, ""); err != nil {
 			return NewNil(), err
 		}
 	}
@@ -949,12 +962,12 @@ func stringSplitSeparatorResult(exec *Execution, text, sep string, limit, count 
 				break
 			}
 			end := start + idx
-			if err := appendStringSplitPart(exec, &values, text[start:end]); err != nil {
+			if err := appendStringSplitPart(exec, &values, text, text[start:end]); err != nil {
 				return NewNil(), err
 			}
 			start = end + len(sep)
 		}
-		if err := appendStringSplitPart(exec, &values, text[start:]); err != nil {
+		if err := appendStringSplitPart(exec, &values, text, text[start:]); err != nil {
 			return NewNil(), err
 		}
 	case limit < 0:
@@ -965,7 +978,7 @@ func stringSplitSeparatorResult(exec *Execution, text, sep string, limit, count 
 			if idx >= 0 {
 				end = start + idx
 			}
-			if err := appendStringSplitPart(exec, &values, text[start:end]); err != nil {
+			if err := appendStringSplitPart(exec, &values, text, text[start:end]); err != nil {
 				return NewNil(), err
 			}
 			if idx < 0 {
@@ -987,12 +1000,12 @@ func stringSplitSeparatorResult(exec *Execution, text, sep string, limit, count 
 				pendingEmpty++
 			} else {
 				for range pendingEmpty {
-					if err := appendStringSplitPart(exec, &values, ""); err != nil {
+					if err := appendStringSplitPart(exec, &values, text, ""); err != nil {
 						return NewNil(), err
 					}
 				}
 				pendingEmpty = 0
-				if err := appendStringSplitPart(exec, &values, part); err != nil {
+				if err := appendStringSplitPart(exec, &values, text, part); err != nil {
 					return NewNil(), err
 				}
 			}

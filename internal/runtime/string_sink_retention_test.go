@@ -77,6 +77,56 @@ func TestAffixRemovalDoesNotRetainItsBacking(t *testing.T) {
 	}
 }
 
+// TestSplitPartsDoNotRetainTheirSubject pins that a kept split part stops
+// holding the string it was cut from.
+//
+// Every part is a window onto the subject, so keeping one short part pinned the
+// whole subject: each shape below was charged about one byte, held a megabyte,
+// and retained 192.1 MiB across 200 of them under an 8 MiB quota. Both the
+// separator and the whitespace forms are covered, and the limit argument as
+// well, because each builds its parts in a different loop.
+//
+// Not parallel: it measures process-wide heap.
+func TestSplitPartsDoNotRetainTheirSubject(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seed string
+		expr string
+	}{
+		{"separator", retentionSeed(), `(big + "|x").split("|")[1]`},
+		{"separator with limit", retentionSeed(), `(big + "|x").split("|", -1)[1]`},
+		{"whitespace", retentionSeed(), `(big + " x").split[1]`},
+		{"whitespace with limit", retentionSeed(), `(big + " x").split(" ", -1)[1]`},
+		{"empty separator", retentionSeed(), `(big + "x").split("", 2)[0]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			held := retainedHeapBytes(t, retentionScript(t, tc.expr), tc.seed, 200)
+			assertUnderRetentionLimit(t, "split parts", held)
+		})
+	}
+}
+
+// TestSplitKeepsItsParts pins that detaching the parts did not change what
+// String#split returns across the separator, whitespace, empty-separator and
+// limit forms.
+func TestSplitKeepsItsParts(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run(s)
+  [s.split("|"), s.split("|", 2), s.split("|", -1), s.split, s.split(" "),
+   s.split(""), s.split("", 2), s.split(nil), s.split("zz"), s.split(s)]
+end`)
+	got, err := script.Call(context.Background(), "run", []Value{NewString("a漢|b| ")}, CallOptions{})
+	if err != nil {
+		t.Fatalf("split failed: %v", err)
+	}
+	want := `[["a漢", "b", " "], ["a漢", "b| "], ["a漢", "b", " "], ["a漢|b|"], ["a漢|b|"], ` +
+		`["a", "漢", "|", "b", "|", " "], ["a", "漢|b| "], ["a漢|b|"], ["a漢|b| "], []]`
+	if got.Inspect() != want {
+		t.Fatalf("splits = %s, want %s", got.Inspect(), want)
+	}
+}
+
 // newlineRetentionSeed is a newline-only seed, so `seed * 200` in
 // retentionScript is a megabyte that chomp("") reduces to whatever content
 // precedes it.
