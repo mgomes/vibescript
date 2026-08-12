@@ -41,6 +41,97 @@ func TestStripFamilyDoesNotRetainItsBacking(t *testing.T) {
 	}
 }
 
+// TestAffixRemovalDoesNotRetainItsBacking pins that chomp, delete_prefix and
+// delete_suffix stop holding the string they trimmed.
+//
+// Each removes an amount the caller chooses -- a whole separator, every
+// trailing newline, an entire prefix or suffix -- so one call can leave a
+// one-character result pinning a megabyte. Each shape below was charged one
+// byte, held the megabyte, and retained 192.1 MiB across 200 of them under an
+// 8 MiB quota.
+//
+// The argumentless chomp and chop are deliberately absent: they remove a fixed
+// few bytes, so their result is never small enough to amplify anything (see
+// chompDefault).
+//
+// Not parallel: it measures process-wide heap.
+func TestAffixRemovalDoesNotRetainItsBacking(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seed string
+		expr string
+	}{
+		{"chomp separator", retentionSeed(), `("x" + big).chomp(big)`},
+		{"chomp! separator", retentionSeed(), `("x" + big).chomp!(big)`},
+		{"chomp newlines", newlineRetentionSeed(), `("x" + big).chomp("")`},
+		{"chomp! newlines", newlineRetentionSeed(), `("x" + big).chomp!("")`},
+		{"delete_prefix", retentionSeed(), `(big + "x").delete_prefix(big)`},
+		{"delete_prefix!", retentionSeed(), `(big + "x").delete_prefix!(big)`},
+		{"delete_suffix", retentionSeed(), `("x" + big).delete_suffix(big)`},
+		{"delete_suffix!", retentionSeed(), `("x" + big).delete_suffix!(big)`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			held := retainedHeapBytes(t, retentionScript(t, tc.expr), tc.seed, 200)
+			assertUnderRetentionLimit(t, "trimmed strings", held)
+		})
+	}
+}
+
+// newlineRetentionSeed is a newline-only seed, so `seed * 200` in
+// retentionScript is a megabyte that chomp("") reduces to whatever content
+// precedes it.
+func newlineRetentionSeed() string {
+	return strings.Repeat("\n", 5_000)
+}
+
+// TestAffixRemovalKeepsItsCharacters pins that detaching the result did not
+// change what chomp, delete_prefix and delete_suffix yield, across the
+// separator forms Ruby distinguishes and the affixes that do not match.
+func TestAffixRemovalKeepsItsCharacters(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run(s)
+  [s.chomp, s.chomp(""), s.chomp("b"), s.chomp(nil), s.chomp("zz"), s.chomp(s),
+   s.chomp!, s.chomp!(""), s.chomp!("b"), s.chomp!(nil), s.chomp!("zz"), s.chomp!(s),
+   s.delete_prefix("a"), s.delete_prefix("zz"), s.delete_prefix(s), s.delete_prefix(""),
+   s.delete_suffix("b"), s.delete_suffix("zz"), s.delete_suffix(s), s.delete_suffix(""),
+   s.delete_prefix!("a"), s.delete_prefix!("zz"), s.delete_suffix!("b"), s.delete_suffix!("zz")]
+end`)
+	got, err := script.Call(context.Background(), "run", []Value{NewString("a漢b")}, CallOptions{})
+	if err != nil {
+		t.Fatalf("affix removal failed: %v", err)
+	}
+	want := `["a漢b", "a漢b", "a漢", "a漢b", "a漢b", "", ` +
+		`nil, nil, "a漢", nil, nil, "", ` +
+		`"漢b", "a漢b", "", "a漢b", ` +
+		`"a漢", "a漢b", "", "a漢b", ` +
+		`"漢b", nil, "a漢", nil]`
+	if got.Inspect() != want {
+		t.Fatalf("affix removals = %s, want %s", got.Inspect(), want)
+	}
+}
+
+// TestChompStripsEveryTrailingNewline pins the multi-newline behavior of
+// chomp("") through the detaching path, which the single-line cases above
+// cannot distinguish from removing one ending.
+func TestChompStripsEveryTrailingNewline(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run(s)
+  [s.chomp, s.chomp(""), s.chomp!, s.chomp!("")]
+end`)
+	got, err := script.Call(context.Background(), "run", []Value{NewString("a\r\n\r\n\n")}, CallOptions{})
+	if err != nil {
+		t.Fatalf("chomp failed: %v", err)
+	}
+	results := got.Array()
+	for i, want := range []string{"a\r\n\r\n", "a", "a\r\n\r\n", "a"} {
+		if results[i].String() != want {
+			t.Fatalf("chomp result %d = %q, want %q", i, results[i].String(), want)
+		}
+	}
+}
+
 // TestStripFamilyKeepsItsCharacters pins that detaching the result did not
 // change what the strip family yields, including the NUL byte Ruby's strip
 // treats as whitespace, an all-whitespace receiver, a receiver with nothing to

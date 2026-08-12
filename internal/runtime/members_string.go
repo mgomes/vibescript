@@ -1022,6 +1022,19 @@ func stringSplitResult(exec *Execution, parts []string, acc *arrayBuildAccumulat
 	return NewArray(values), nil
 }
 
+// chompDefault removes one trailing line ending from text, mirroring Ruby's
+// argumentless String#chomp. A "\r\n" pair counts as one ending.
+//
+// The result stays a window onto text rather than being detached like every
+// other trimming member, and so does chopDefault's. Both remove a fixed few
+// bytes -- at most two here, at most one rune there -- so a single call leaves
+// at most that many bytes of the receiver unpriced, where chomp(sep),
+// chomp("") and the strip family each remove an unbounded amount in one call
+// and had to be detached. Reaching a meaningful gap needs one call per byte
+// removed, which the step quota prices, and closing it would cost a full copy
+// of the receiver on every call: `s = s.chop` down a megabyte would copy a
+// terabyte to save a megabyte, and chop is in stringConstantCostMembers
+// precisely because it does not read the receiver today.
 func chompDefault(text string) string {
 	if strings.HasSuffix(text, "\r\n") {
 		return text[:len(text)-2]
@@ -1037,6 +1050,9 @@ func chompDefault(text string) string {
 // bytes are removed together. Otherwise one logical character (a full UTF-8
 // rune) is removed rather than a single byte, so trailing multibyte characters
 // are handled correctly. An empty string is returned unchanged.
+//
+// Like chompDefault, the result stays a window onto text; see that function for
+// why the bounded few bytes it leaves unpriced are not worth a copy.
 func chopDefault(text string) string {
 	if strings.HasSuffix(text, "\r\n") {
 		return text[:len(text)-2]
@@ -5097,10 +5113,10 @@ func stringMemberTransforms(property string) (Value, error) {
 			}
 			sep := args[0].String()
 			if sep == "" {
-				return NewString(strings.TrimRight(text, "\r\n")), nil
+				return detachedStringValue(exec, text, strings.TrimRight(text, "\r\n"), receiver, args, kwargs, block)
 			}
 			if strings.HasSuffix(text, sep) {
-				return NewString(text[:len(text)-len(sep)]), nil
+				return detachedStringValue(exec, text, text[:len(text)-len(sep)], receiver, args, kwargs, block)
 			}
 			return NewString(text), nil
 		}), nil
@@ -5123,10 +5139,10 @@ func stringMemberTransforms(property string) (Value, error) {
 			}
 			sep := args[0].String()
 			if sep == "" {
-				return stringBangResult(original, strings.TrimRight(original, "\r\n")), nil
+				return detachedBangResult(exec, original, strings.TrimRight(original, "\r\n"), receiver, args, kwargs, block)
 			}
 			if strings.HasSuffix(original, sep) {
-				return stringBangResult(original, original[:len(original)-len(sep)]), nil
+				return detachedBangResult(exec, original, original[:len(original)-len(sep)], receiver, args, kwargs, block)
 			}
 			return NewNil(), nil
 		}), nil
@@ -5170,7 +5186,8 @@ func stringMemberTransforms(property string) (Value, error) {
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.delete_prefix prefix must be string")
 			}
-			return NewString(strings.TrimPrefix(receiver.String(), args[0].String())), nil
+			text := receiver.String()
+			return detachedStringValue(exec, text, strings.TrimPrefix(text, args[0].String()), receiver, args, kwargs, block)
 		}), nil
 	case "delete_prefix!":
 		return NewAutoBuiltin("string.delete_prefix!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -5180,8 +5197,8 @@ func stringMemberTransforms(property string) (Value, error) {
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.delete_prefix! prefix must be string")
 			}
-			updated := strings.TrimPrefix(receiver.String(), args[0].String())
-			return stringBangResult(receiver.String(), updated), nil
+			original := receiver.String()
+			return detachedBangResult(exec, original, strings.TrimPrefix(original, args[0].String()), receiver, args, kwargs, block)
 		}), nil
 	case "delete_suffix":
 		return NewAutoBuiltin("string.delete_suffix", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -5191,7 +5208,8 @@ func stringMemberTransforms(property string) (Value, error) {
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.delete_suffix suffix must be string")
 			}
-			return NewString(strings.TrimSuffix(receiver.String(), args[0].String())), nil
+			text := receiver.String()
+			return detachedStringValue(exec, text, strings.TrimSuffix(text, args[0].String()), receiver, args, kwargs, block)
 		}), nil
 	case "delete_suffix!":
 		return NewAutoBuiltin("string.delete_suffix!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -5201,8 +5219,8 @@ func stringMemberTransforms(property string) (Value, error) {
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.delete_suffix! suffix must be string")
 			}
-			updated := strings.TrimSuffix(receiver.String(), args[0].String())
-			return stringBangResult(receiver.String(), updated), nil
+			original := receiver.String()
+			return detachedBangResult(exec, original, strings.TrimSuffix(original, args[0].String()), receiver, args, kwargs, block)
 		}), nil
 	case "tr":
 		return NewAutoBuiltin("string.tr", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
