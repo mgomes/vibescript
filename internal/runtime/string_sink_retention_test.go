@@ -2,9 +2,94 @@ package runtime
 
 import (
 	"context"
+	goruntime "runtime"
 	"strings"
 	"testing"
 )
+
+// detachSubjectBytes is the receiver size the ordering test below builds its
+// cases from. String#scan caps its subject at maxRegexInputBytes, so it sits
+// comfortably under that while staying large enough that a second copy of it is
+// unmistakable in an allocation count.
+const detachSubjectBytes = 600 << 10
+
+// allocatedByRejectedCall reports how many bytes the process allocated while
+// running a call the memory quota must reject, and fails if the call succeeds.
+//
+// A detaching copy has to be weighed before it is made, not after: a check that
+// runs once the copy exists reports the quota correctly but has already
+// allocated past it. Requiring the rejection is what stops the opposite
+// regression -- handing the undetached window back on the failure path would
+// make the call succeed and reintroduce the retention these tests exist for.
+//
+// Callers are not parallel: TotalAlloc is process-wide.
+func allocatedByRejectedCall(t *testing.T, quota int, source, arg string) int64 {
+	t.Helper()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: quota}, source)
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	got, err := script.Call(context.Background(), "run", []Value{NewString(arg)}, CallOptions{})
+	goruntime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatalf("the call must be rejected by the quota, got %s", got.Inspect())
+	}
+	return int64(after.TotalAlloc) - int64(before.TotalAlloc)
+}
+
+// TestDetachingCopiesAreReservedBeforeTheyAreMade pins that a member rejected by
+// the memory quota has not already copied its result out of the receiver.
+//
+// String#scan and String#each_line built their copy first and let the next check
+// -- the accumulator's per-element charge, or the block call -- discover the
+// overrun afterwards, so a rejected call allocated 0.64 MiB, 0.60 MiB and 4.02
+// MiB respectively past quotas of 900 KiB, 900 KiB and 6 MiB. lines, split and
+// strip project or reserve their copies up front and are here as controls.
+//
+// Not parallel: it measures process-wide allocation.
+func TestDetachingCopiesAreReservedBeforeTheyAreMade(t *testing.T) {
+	subject := strings.Repeat("a", detachSubjectBytes)
+	// Room for the receiver and its overhead, but not for a second copy of it.
+	const quota = detachSubjectBytes + (detachSubjectBytes / 2)
+
+	for _, tc := range []struct {
+		name   string
+		source string
+		arg    string
+	}{
+		{"scan", `def run(s)
+  s.scan("a+")
+end`, "b" + subject},
+		{"scan with a block", `def run(s)
+  kept = []
+  s.scan("a+") { |m| kept.push(m) }
+  kept
+end`, "b" + subject},
+		{"each_line", `def run(s)
+  kept = []
+  s.each_line { |l| kept.push(l) }
+  kept
+end`, subject + "\nb"},
+		{"lines (control)", `def run(s)
+  s.lines
+end`, subject + "\nb"},
+		{"split (control)", `def run(s)
+  s.split("|")
+end`, subject + "|b"},
+		{"strip (control)", `def run(s)
+  s.strip
+end`, " " + subject},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			allocated := allocatedByRejectedCall(t, quota, tc.source, tc.arg)
+			if limit := int64(detachSubjectBytes / 2); allocated > limit {
+				t.Fatalf("a rejected call allocated %.2f MiB, want under %.2f MiB: the copy was made before it was weighed",
+					float64(allocated)/(1<<20), float64(limit)/(1<<20))
+			}
+		})
+	}
+}
 
 // whitespaceRetentionSeed is a padding-only seed, so `seed * 200` in
 // retentionScript is a megabyte of whitespace that a strip reduces to whatever

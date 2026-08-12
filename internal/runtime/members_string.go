@@ -4336,6 +4336,12 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 	if err := exec.guardStringScanOutputFootprint(allMatches, groups); err != nil {
 		return NewNil(), err
 	}
+	// Weigh every copy before the first one is made. The accumulator below
+	// charges each element only once it exists, which let one large match be
+	// cloned past the quota before anything checked it.
+	if err := exec.checkProjectedScanOutputBytes(text, allMatches, groups, receiver, args, kwargs, block); err != nil {
+		return NewNil(), err
+	}
 
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	// The engine's index table stays live the whole time the result is built from
@@ -4390,7 +4396,16 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 // reservedScratchBytes, so the two coexisting costs are charged together rather
 // than each fitting the quota separately while their sum exceeds it.
 func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]int, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-	delta := exec.reserveLoopScratch(projectedRegexSubmatchIndexBytes(len(allMatches), groups))
+	// The largest match's copy joins the table in the reservation. Only one
+	// element is live at a time here, so the peak is the table plus the biggest
+	// single element rather than the whole output, but that element is copied
+	// before runner.call can weigh it and so has to be reserved first: a 600 KiB
+	// match allocated 0.60 MiB under a 900 KiB quota before being rejected.
+	scratch := saturatingAdd(
+		projectedRegexSubmatchIndexBytes(len(allMatches), groups),
+		maxRegexElementPayloadBytes(exec, text, allMatches, groups),
+	)
+	delta := exec.reserveLoopScratch(scratch)
 	defer exec.releaseLoopScratch(delta)
 	// reserveLoopScratch only folds the table into the baseline; the call-root-aware
 	// check here rejects a table that already overflows the quota -- together with
@@ -4610,25 +4625,83 @@ func projectedRegexSubmatchIndexBytes(matchCount, groups int) int {
 func (exec *Execution) guardStringScanOutputFootprint(allMatches [][]int, groups int) error {
 	outputBytes := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(len(allMatches), estimatedValueBytes))
 	for _, loc := range allMatches {
-		if groups == 0 {
-			outputBytes = saturatingAdd(outputBytes, projectedRegexStringPayloadBytes(loc[0], loc[1]))
-		} else {
-			outputBytes = saturatingAdd(outputBytes, estimatedSliceBaseBytes)
-			outputBytes = saturatingAdd(outputBytes, saturatingMul(groups, estimatedValueBytes))
-			for g := range groups {
-				start := loc[(g+1)*2]
-				end := loc[(g+1)*2+1]
-				if start < 0 || end < 0 {
-					continue
-				}
-				outputBytes = saturatingAdd(outputBytes, projectedRegexStringPayloadBytes(start, end))
-			}
-		}
+		outputBytes = saturatingAdd(outputBytes, projectedRegexElementPayloadBytes("", loc, groups))
 		if outputBytes > maxRegexInputBytes {
 			return exec.latchExhaustion(fmt.Errorf("%w: string.scan output exceeds limit %d bytes", errOutputLimitExceeded, maxRegexInputBytes))
 		}
 	}
 	return nil
+}
+
+// projectedRegexElementPayloadBytes returns what one stringScanElement costs
+// beyond the slot it occupies in the result: the match string, or the capture
+// array with one string per participating group.
+//
+// text is the subject the pieces are windows onto, and may be empty to price a
+// piece that is always copied. clonedWindow allocates nothing for a piece as
+// long as the whole subject, so passing the subject charges a header alone for
+// it -- `s.scan("^.*$")` copies nothing and must not be billed for the copy it
+// does not make. guardStringScanOutputFootprint passes "" because it bounds the
+// engine's worst case against a fixed host cap rather than pricing the
+// allocation, and lowering that bound would move an existing rejection.
+func projectedRegexElementPayloadBytes(text string, loc []int, groups int) int {
+	if groups == 0 {
+		return projectedRegexWindowBytes(text, loc[0], loc[1])
+	}
+	payload := saturatingAdd(estimatedSliceBaseBytes, saturatingMul(groups, estimatedValueBytes))
+	for g := range groups {
+		start := loc[(g+1)*2]
+		end := loc[(g+1)*2+1]
+		if start < 0 || end < 0 {
+			continue
+		}
+		payload = saturatingAdd(payload, projectedRegexWindowBytes(text, start, end))
+	}
+	return payload
+}
+
+// projectedRegexWindowBytes prices one text[start:end] piece the way
+// clonedWindow allocates it.
+func projectedRegexWindowBytes(text string, start, end int) int {
+	if end >= start && end-start == len(text) && len(text) > 0 {
+		return estimatedStringHeaderBytes
+	}
+	return projectedRegexStringPayloadBytes(start, end)
+}
+
+// checkProjectedScanOutputBytes rejects a scan result before any of its matches
+// are copied out of the subject.
+//
+// The host-cap guard above walks the same numbers but compares them to a fixed
+// limit, and the accumulator's per-element check runs only after an element has
+// been built, so nothing weighed the copies against the memory quota until they
+// already existed: a 600 KiB match of a 600 KiB subject allocated 0.64 MiB
+// under a 900 KiB quota before being rejected. Projecting the whole result up
+// front is what split and lines already do.
+func (exec *Execution) checkProjectedScanOutputBytes(text string, allMatches [][]int, groups int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	payload := 0
+	for _, loc := range allMatches {
+		payload = saturatingAdd(payload, projectedRegexElementPayloadBytes(text, loc, groups))
+	}
+	return exec.checkProjectedArrayBytesWithCallRoots(len(allMatches), payload, receiver, args, kwargs, block)
+}
+
+// maxRegexElementPayloadBytes returns the largest single element the matches
+// would produce, which is the whole peak when only one element is live at a
+// time -- the block form overwrites its argument each yield, so the previous
+// match is unreachable before the next is built.
+func maxRegexElementPayloadBytes(exec *Execution, text string, allMatches [][]int, groups int) int {
+	if exec.memoryQuota <= 0 {
+		return 0
+	}
+	largest := 0
+	for _, loc := range allMatches {
+		largest = max(largest, projectedRegexElementPayloadBytes(text, loc, groups))
+	}
+	return largest
 }
 
 func projectedRegexStringPayloadBytes(start, end int) int {
@@ -4851,12 +4924,17 @@ func stringMemberTextOps(property string) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.each_line does not take arguments")
 			}
+			text := receiver.String()
+			release, err := exec.reserveLongestLineCopy(text, receiver, args, kwargs, block)
+			if err != nil {
+				return NewNil(), err
+			}
+			defer release()
 			runner, err := newBlockCallRunner(exec, block, "string.each_line", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
 			var blockArg [1]Value
-			text := receiver.String()
 			if err := forEachLine(text, func(line string) error {
 				blockArg[0] = NewString(clonedWindow(text, line))
 				_, err := runner.call(blockArg[:])
@@ -5535,6 +5613,45 @@ func detachedPartitionValue(exec *Execution, receiver Value, head, sep, tail str
 		NewString(sep),
 		NewString(clonedWindow(text, tail)),
 	}), nil
+}
+
+// reserveLongestLineCopy holds the largest line String#each_line will copy
+// against the quota for the whole walk, and rejects the call up front when it
+// does not fit beside the receiver.
+//
+// Only one line is live at a time -- the block argument is overwritten each
+// yield, and a line the block keeps is reachable from the block's own roots
+// when runner.call weighs it -- so the peak this has to price is the single
+// biggest copy, not the sum. That is also why it reserves once rather than per
+// line: a per-line reservation would walk the execution's roots on every
+// iteration, which for a 2,000-line document is 2,000 walks to price a peak
+// that never changes.
+//
+// Without it the copy was made before runner.call could weigh it, so a receiver
+// with one long line allocated 4.02 MiB under a 6 MiB quota before the limit
+// was reported. A receiver with no line ending at all is one line spanning the
+// whole string, which clonedWindow hands back untouched and this charges a
+// header for, so the single-line case still reserves nothing.
+//
+// The returned function releases the reservation and must be deferred.
+func (exec *Execution) reserveLongestLineCopy(text string, receiver Value, args []Value, kwargs map[string]Value, block Value) (func(), error) {
+	// An unlimited quota reserves nothing, so the pre-pass over the receiver is
+	// pure cost there and is skipped rather than computed and discarded.
+	if exec.memoryQuota <= 0 {
+		return func() {}, nil
+	}
+	largest := 0
+	_ = forEachLine(text, func(line string) error {
+		largest = max(largest, detachedWindowPayloadBytes(text, line))
+		return nil
+	})
+	delta := exec.reserveLoopScratch(largest)
+	release := func() { exec.releaseLoopScratch(delta) }
+	if err := exec.checkMemoryWithCallRoots(NewNil(), receiver, args, kwargs, block); err != nil {
+		release()
+		return func() {}, err
+	}
+	return release, nil
 }
 
 // checkProjectedStringLineBytes rejects a String#lines result before its lines
