@@ -547,6 +547,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 		previousBlockLocalBreakCollector := c.blockLocalBreakCollector
 		previousYieldCollector := c.summaryYieldCollector
 		previousYieldBlock := c.summaryYieldBlock
+		previousYieldReentryWalks := c.summaryYieldReentryWalks
 		previousYieldsActive := c.summaryYieldsActive
 		previousBlockAvailable := c.summaryBlockAvailable
 		previousPinned := c.pinnedExpressionFacts
@@ -583,6 +584,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 		c.blockLocalBreakCollector = nil
 		c.summaryYieldCollector = collector
 		c.summaryYieldBlock = nil
+		c.summaryYieldReentryWalks = 0
 		c.summaryYieldsActive = true
 		c.summaryBlockAvailable = blockAvailable
 		c.pinnedExpressionFacts = nil
@@ -628,6 +630,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 			c.blockLocalBreakCollector = previousBlockLocalBreakCollector
 			c.summaryYieldCollector = previousYieldCollector
 			c.summaryYieldBlock = previousYieldBlock
+			c.summaryYieldReentryWalks = previousYieldReentryWalks
 			c.summaryYieldsActive = previousYieldsActive
 			c.summaryBlockAvailable = previousBlockAvailable
 			c.pinnedExpressionFacts = previousPinned

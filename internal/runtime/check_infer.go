@@ -11446,9 +11446,9 @@ func (c *scriptChecker) noteShapeRefinement(ty *TypeExpr, state shapeRefinementS
 // it grow faster than the source does -- but a source that did would show up in
 // this counter rather than nowhere.
 func sameTypeFact(existing, written *TypeExpr) bool {
-	visited := 0
-	same := typeFactsIdenticalCounted(existing, written, &visited)
-	noteCheckWork(visited)
+	var walk typeFactWalk
+	same := typeFactsIdenticalCounted(existing, written, &walk)
+	noteCheckWork(walk.visited)
 	return same
 }
 
@@ -11464,9 +11464,49 @@ func sameTypeFact(existing, written *TypeExpr) bool {
 // bucket -- cheap, and wrong only by grouping facts that are not the same --
 // and calls this to confirm before dropping one.
 func typeFactsIdentical(left, right *TypeExpr) bool {
-	visited := 0
-	return typeFactsIdenticalCounted(left, right, &visited)
+	var walk typeFactWalk
+	same := typeFactsIdenticalCounted(left, right, &walk)
+	// Charged like sameTypeFact's: this walk is bounded by the pairs the two
+	// facts reach rather than by a budget, so a source that makes it grow
+	// faster than its own text shows up in this counter rather than nowhere.
+	noteCheckWork(walk.visited)
+	return same
 }
+
+// typeFactPair names one left/right node pair an exact comparison reached.
+type typeFactPair struct{ left, right *TypeExpr }
+
+// typeFactWalk is what one exact comparison accumulates: the node pairs it had
+// to compare, and the pairs it has already proved equal.
+type typeFactWalk struct {
+	visited int
+	equal   map[typeFactPair]struct{}
+}
+
+// maxUnmemoizedFactPairVisits is how many node pairs a comparison compares
+// before it starts recording the ones it proved equal.
+//
+// A fact is a DAG, not a tree: `x = { a: x, b: x }` binds the same node under
+// both keys, so N of those lines build a fact with N nodes and 2^N paths
+// through them. Comparing two such facts built independently -- which is what a
+// mutator operand that rebinds its receiver hands this, and what two union arms
+// sharing a bucket hand it -- never hits the pointer-identity shortcut, so
+// walking it as a tree reaches the same child pair once per path. 22 lines took
+// 443ms and every line after that doubled it, inside CheckWarnings where no
+// script step or memory quota applies.
+//
+// Remembering the pairs already proved equal walks the DAG as a DAG, and only
+// pairs that came back equal need remembering: the first difference ends the
+// whole comparison, so an unequal pair is never reached twice.
+//
+// The threshold is what keeps that free for the comparisons that are not DAGs.
+// Ordinary facts settle in a handful of pairs, and allocating a map for each of
+// them would cost more than the walk it protects -- these run on every field
+// write of a growing shape. Below the threshold nothing is allocated and
+// nothing is recorded; a walk that stays small never learns the map exists. A
+// walk that crosses it pays at most this many repeated pairs first, which is a
+// constant, and is linear in the pairs it reaches from then on.
+const maxUnmemoizedFactPairVisits = 64
 
 // typeFactsIdenticalCounted is typeFactsIdentical, counting the nodes it had to
 // compare to decide, for the caller that charges the walk.
@@ -11476,14 +11516,18 @@ func typeFactsIdentical(left, right *TypeExpr) bool {
 // compared by lookup rather than by rendering sorted names, which also drops
 // the key's ambiguity: a field name holding the key's own delimiters cannot
 // make two different shapes agree here.
-func typeFactsIdenticalCounted(left, right *TypeExpr, visited *int) bool {
+func typeFactsIdenticalCounted(left, right *TypeExpr, walk *typeFactWalk) bool {
 	if left == right {
 		return true
 	}
 	if left == nil || right == nil {
 		return false
 	}
-	*visited++
+	pair := typeFactPair{left: left, right: right}
+	if _, proved := walk.equal[pair]; proved {
+		return true
+	}
+	walk.visited++
 	if left.Kind != right.Kind || left.Name != right.Name ||
 		left.Nullable != right.Nullable || left.Optional != right.Optional ||
 		left.Open != right.Open ||
@@ -11493,20 +11537,28 @@ func typeFactsIdenticalCounted(left, right *TypeExpr, visited *int) bool {
 		return false
 	}
 	for i, arg := range left.TypeArgs {
-		if !typeFactsIdenticalCounted(arg, right.TypeArgs[i], visited) {
+		if !typeFactsIdenticalCounted(arg, right.TypeArgs[i], walk) {
 			return false
 		}
 	}
 	for name, field := range left.Shape {
 		other, named := right.Shape[name]
-		if !named || !typeFactsIdenticalCounted(field, other, visited) {
+		if !named || !typeFactsIdenticalCounted(field, other, walk) {
 			return false
 		}
 	}
 	for i, option := range left.Union {
-		if !typeFactsIdenticalCounted(option, right.Union[i], visited) {
+		if !typeFactsIdenticalCounted(option, right.Union[i], walk) {
 			return false
 		}
+	}
+	// Recorded on the way back up, so a pair's own subtree is already in the
+	// memo when a second edge reaches it.
+	if walk.visited > maxUnmemoizedFactPairVisits {
+		if walk.equal == nil {
+			walk.equal = make(map[typeFactPair]struct{})
+		}
+		walk.equal[pair] = struct{}{}
 	}
 	return true
 }
@@ -14264,12 +14316,17 @@ func (c *scriptChecker) mutatorCallArgumentFact(arg Expression, argumentFacts ma
 // follow, and an argument walk that poisoned or rebound the local already
 // invalidated the captured fact. Only a statement-level call whose local
 // still carries the captured fact can keep the declared bound.
+//
+// "Still carries" has to be decided, not grouped, so it walks. The write the
+// call applies lands on the captured fact and is bound back to the local, so
+// answering yes about a local an argument rebound puts a fact the script
+// stopped holding back in place.
 func (c *scriptChecker) mutatorCallPreservable(call *CallExpr, name string, receiverFact *TypeExpr) bool {
 	if Expression(call) != c.expressionStatementRoot {
 		return false
 	}
 	current := c.localTypeFor(name)
-	return current != nil && typeFactKey(current) == typeFactKey(receiverFact)
+	return current != nil && typeFactsIdentical(current, receiverFact)
 }
 
 func cloneArrayMutatorExpansionChoices(choices map[int]int) map[int]int {
@@ -14869,14 +14926,18 @@ func (c *scriptChecker) applyHashMutatorCallFacts(
 // still about the same fact the writes were checked against.
 //
 // A walk that left the fact alone leaves the same node in place, so identity
-// settles the case that matters without serializing a wide fact twice to
-// discover it: doing that on every field write of a growing shape allocated
-// 185MB across 2,000 writes (#14).
+// settles the case that matters without comparing a wide fact node for node to
+// discover it. Serializing both sides to compare them was what made that
+// expensive -- doing it on every field write of a growing shape allocated 185MB
+// across 2,000 writes (#14) -- and typeFactsIdentical keeps the identity
+// shortcut at every level rather than only at the root, allocates nothing, and
+// stops at the first difference, so it is cheaper than the key it replaces as
+// well as exact.
 func mutatorReceiverFactIntact(current, captured *TypeExpr) bool {
 	if current == captured {
 		return current != nil
 	}
-	return current != nil && typeFactKey(current) == typeFactKey(captured)
+	return current != nil && typeFactsIdentical(current, captured)
 }
 
 func (c *scriptChecker) invalidateElementWriteAliases(name string, written *TypeExpr) {
@@ -17222,16 +17283,29 @@ func typeExprFactSizeRemaining(ty *TypeExpr, depth int, remaining *int) bool {
 // typeExprArms returns ok=false when it hits the limit and every caller refuses
 // to conclude, and typeExprFactSizeRemaining answers with a bool the same way.
 // This one hands back a string that looks like a complete answer and carries no
-// sign it stopped early, so a caller has to already know. Two defects came from
+// sign it stopped early, so a caller has to already know. Four defects came from
 // callers that did not: a field write took a matching key for proof that the
-// write restated the field and left the receiver bound to the fact it had, and
-// the union join took one for proof that an arm was a duplicate and dropped the
-// written shape. Both are in the shape-write path and both now walk.
+// write restated the field, the union join took one for proof that an arm was a
+// duplicate, and the two mutator predicates took one for proof that an argument
+// walk had left the receiver's local alone and put a fact the script had
+// stopped holding back in place. All four now walk.
 //
-// The rule that generalizes: an approximate answer has to carry its own
-// exactness. If a third caller needs proof from this, the fix is to make it
-// report whether it truncated rather than to keep auditing callers -- the
-// remaining ones want the grouping and are correct with it.
+// The rule that generalizes is that an approximate answer has to carry its own
+// exactness, and there were two ways to give this one that: report whether it
+// truncated, or stop asking it the question it cannot answer. The second is
+// what happened, at every caller that decides, and the reason is that all four
+// compare one pair. typeFactsIdentical is not a fallback for those -- it is
+// cheaper than the key outright, since it allocates nothing, stops at the first
+// difference instead of rendering both sides in full, and treats the same node
+// as the same fact at every level rather than only at the root. A truncation
+// flag would have bought them nothing but a refusal to conclude on deep facts,
+// which is a wrong answer where the walk has a right one.
+//
+// Every caller left groups: four cache keys and the union join's bucket, all of
+// which want facts that render alike in one bucket and are correct with it. A
+// new caller that needs to decide should call typeFactsIdentical rather than
+// reach for this, and one that needs to decide across many pairs should use
+// this as a bucket and confirm with that, which is what the join does.
 func typeFactKey(ty *TypeExpr) string {
 	var b strings.Builder
 	appendTypeFactKey(&b, ty, 0)

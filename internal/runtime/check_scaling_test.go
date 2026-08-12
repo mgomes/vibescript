@@ -631,6 +631,172 @@ end
 	}
 }
 
+// mutatorReceiverRebindSource builds a witnessed shape whose `w` field nests
+// depth levels deep, rebinds the local to a shape differing only at that leaf
+// while the mutator's own value operand is being walked, and then reads the
+// leaf. write is the mutator statement; the rebind happens inside a string
+// interpolation so the written value stays a known type and the write lands.
+func mutatorReceiverRebindSource(depth int, write string) string {
+	nest := func(leaf string) string {
+		return strings.Repeat("{ a: ", depth) + leaf + strings.Repeat(" }", depth)
+	}
+	return fmt.Sprintf(`
+def take(v: string)
+  v
+end
+
+def f()
+  h = { w: %s, pad: 1 }
+  rebind = -> { h = { w: %s, pad: 1 }; "x" }
+%s
+  take(h[:w]%s)
+end
+`, nest("1"), nest(`"s"`), write, strings.Repeat("[:a]", depth))
+}
+
+// A mutator preserves its receiver's fact only when the local still carries the
+// fact the writes were checked against, and the write it applies lands on that
+// captured fact and is bound back to the local. Deciding "still carries" from
+// typeFactKey could not tell: the key stops at maxTypeArmDepth and renders
+// everything below as `?`, so a value operand that rebound the local to a shape
+// differing only that deep produced a matching key, the rebind was read as
+// having left the local alone, and the write put the shape the script had
+// stopped holding back in place. Reading the rebound field then answered from
+// the old shape and the call was reported against correct code.
+//
+// Both predicates that decide this are covered: the indexed write reaches
+// mutatorReceiverFactIntact and the store reaches mutatorCallPreservable.
+//
+// The depths bracket the cutoff on both sides so the test states where the
+// boundary is rather than that one exists. The control is the same body without
+// the rebind, which must stay diagnosed at every depth -- otherwise the shallow
+// cases pass because the read stopped resolving rather than because the fact
+// survived, and the deep ones would mean nothing.
+func TestMutatorPreservationTracksFactsBelowTheKeyDepth(t *testing.T) {
+	for _, write := range []string{
+		`  h[:pad] = "v#{rebind.call}"`,
+		`  h.store(:pad, "v#{rebind.call}")`,
+	} {
+		for _, depth := range []int{2, 7, 8, 9, 10, 14} {
+			t.Run(fmt.Sprintf("%s depth %d", strings.TrimSpace(write), depth), func(t *testing.T) {
+				source := mutatorReceiverRebindSource(depth, write)
+				if warnings := checkWarningMessages(compileScript(t, source).CheckWarnings()); len(warnings) != 0 {
+					t.Fatalf("a %d-level rebind was read as leaving the receiver alone, so the"+
+						" mutator put back the shape the local stopped holding: %v", depth, warnings)
+				}
+
+				control := mutatorReceiverRebindSource(depth, `  h[:pad] = "v"`)
+				warnings := checkWarningMessages(compileScript(t, control).CheckWarnings())
+				if len(warnings) != 1 || !strings.Contains(warnings[0], "expected string, got int") {
+					t.Fatalf("the un-rebound control must still be diagnosed at depth %d, or the"+
+						" assertion above passes for the wrong reason: %v", depth, warnings)
+				}
+			})
+		}
+	}
+}
+
+// sharedFactDagSource builds a fact that binds the same node under both keys at
+// every level, so levels lines produce a fact with levels nodes and 2^levels
+// paths through them, then hands two independently built copies of it to the
+// exact comparison: the mutator's operand rebinds the receiver to the second.
+// Nothing shares a node between the two, so the pointer-identity shortcut never
+// fires and every pair has to be compared on its own.
+func sharedFactDagSource(levels int) string {
+	build := func(name string) string {
+		var b strings.Builder
+		fmt.Fprintf(&b, "  %s = { a: 1, b: 1 }\n", name)
+		for range levels {
+			fmt.Fprintf(&b, "  %s = { a: %s, b: %s }\n", name, name, name)
+		}
+		return b.String()
+	}
+	return fmt.Sprintf(`
+def f()
+%s  h = { w: x, pad: 1 }
+  rebind = -> {
+%s    h = { w: y, pad: 1 }
+    "s"
+  }
+  h[:pad] = "v#{rebind.call}"
+  h
+end
+`, build("x"), build("y"))
+}
+
+// A fact is a DAG, not a tree. Walking one as a tree reaches the same left/right
+// child pair once per path rather than once per pair, so comparing two
+// independently built copies of a fact that shares its nodes cost 2^levels
+// comparisons: 20 lines took 2,097,152 of them and every line after that
+// doubled it, inside CheckWarnings where no script step or memory quota applies.
+// Only pairs that came back equal can be reached twice -- the first difference
+// ends the whole comparison -- so remembering those walks the DAG as a DAG.
+func TestExactFactComparisonWalksSharedNodesOnce(t *testing.T) {
+	small := measureCheckWork(t, sharedFactDagSource(10))
+	large := measureCheckWork(t, sharedFactDagSource(20))
+
+	// Measured 65 then 68 node-pair comparisons, a 1.05x step for ten more
+	// levels of sharing. Before, the same pair compared 2,048 and 2,097,152, a
+	// 1,024x step. The assertion allows up to 3x so it states the complexity
+	// rather than pinning counts that ordinary checker changes would shift.
+	if large > small*3 {
+		t.Fatalf("ten more levels of shared-node nesting compared %d node pairs against"+
+			" %d -- over 3x, so the exact fact comparison walks a DAG as a tree", large, small)
+	}
+}
+
+// sharedFactDag builds the same shape the source above does, directly, so the
+// exactness of the memo can be pinned without going through inference.
+func sharedFactDag(levels int, leaf *TypeExpr) *TypeExpr {
+	node := leaf
+	for range levels {
+		node = &TypeExpr{
+			Kind:  TypeShape,
+			Name:  shapeKeysSymbolMarker,
+			Shape: map[string]*TypeExpr{"a": node, "b": node},
+		}
+	}
+	return node
+}
+
+// The memo short-circuits a pair it has already proved equal, so it must record
+// only pairs that are equal and must not let a difference below it pass. The
+// equal case also has to prove the memo engaged at all: without it the same
+// comparison costs 2^levels, so a visit count near the level count is what says
+// the DAG was walked as a DAG rather than that the facts were small.
+func TestExactFactComparisonKeepsSharedNodesExact(t *testing.T) {
+	const levels = 24
+
+	var walk typeFactWalk
+	if !typeFactsIdenticalCounted(
+		sharedFactDag(levels, checkTypeInt),
+		sharedFactDag(levels, checkTypeInt),
+		&walk,
+	) {
+		t.Fatalf("two independently built copies of the same %d-level fact compared unequal", levels)
+	}
+	if walk.visited > maxUnmemoizedFactPairVisits+levels {
+		t.Fatalf("comparing two %d-level shared-node facts visited %d pairs, so the memo"+
+			" never engaged and the assertion above proves nothing about a DAG", levels, walk.visited)
+	}
+
+	if typeFactsIdentical(
+		sharedFactDag(levels, checkTypeInt),
+		sharedFactDag(levels, checkTypeString),
+	) {
+		t.Fatalf("a %d-level fact differing only at its leaf compared equal", levels)
+	}
+
+	// A difference reachable through one key but not the other is what a memo
+	// that recorded pairs before proving them would let through.
+	left := sharedFactDag(levels, checkTypeInt)
+	right := sharedFactDag(levels, checkTypeInt)
+	right.Shape["b"] = sharedFactDag(levels-1, checkTypeString)
+	if typeFactsIdentical(left, right) {
+		t.Fatalf("a %d-level fact differing under one key of the root compared equal", levels)
+	}
+}
+
 // checkWarningMessagesWithSplitShapeBudget checks one script with the exact and
 // widening budgets set independently, so a fact can cross the first without
 // crossing the second and take the widening route rather than being given up.
@@ -1129,5 +1295,59 @@ func TestCheckReentrantIvarEffectWalkStaysLinear(t *testing.T) {
 		t.Fatalf("doubling the recursive calls in one lambda body allocated %d bytes"+
 			" against %d -- over 3x, so collecting a re-entrant region's ivar effects is"+
 			" superlinear in the source", large, small)
+	}
+}
+
+// yieldingSelfCallingLambdaSource builds a summarized function holding a lambda
+// that reaches itself at sites call sites and yields at the end. The summary
+// walk re-checks the whole body once per site to find the yields a recursive
+// call can enable, so the body is walked once per site it holds.
+func yieldingSelfCallingLambdaSource(sites int) string {
+	var body strings.Builder
+	for range sites {
+		body.WriteString("    h.call\n")
+	}
+	return fmt.Sprintf(`
+def f()
+  h = -> {
+%s    yield
+  }
+  h.call
+  0
+end
+
+def g()
+  f() do
+    1
+  end
+end
+`, body.String())
+}
+
+// The walk that lets a reachable yield poison a function summary re-enters the
+// lambda body at every recursive call site, because a yield only a later site
+// enables is reachable only from there. The count that bounds re-entry is
+// restored when a nested walk returns and has to be, so a body holding N
+// recursive calls walked its own N statements N times. CheckWarnings and
+// CheckedCall run before any script step quota, so an embedder statically
+// checking a tenant script paid that on a source well inside MaxSourceBytes:
+// 320 recursive calls in one yielding body took 4m14s.
+//
+// What bounds it instead is that a re-entry can only ever record one thing, and
+// recording it saturates the summary. This counts the statements the summary
+// walks visit, which is the work itself rather than a proxy for it.
+func TestCheckSummaryYieldReentryWalkStaysLinear(t *testing.T) {
+	small := measureCheckWork(t, yieldingSelfCallingLambdaSource(40))
+	large := measureCheckWork(t, yieldingSelfCallingLambdaSource(80))
+
+	// Measured 164 then 324 statement visits, a 1.98x step for a doubled body.
+	// Before, the same pair visited 3,362 and 13,122, a 3.90x step, and took
+	// 608ms and 4.5s against 25ms and 97ms. The assertion allows up to 3x so it
+	// states the complexity rather than pinning counts that ordinary checker
+	// changes would shift.
+	if large > small*3 {
+		t.Fatalf("doubling the recursive calls in one yielding lambda body visited %d"+
+			" statements against %d -- over 3x, so re-checking an invoked lambda for"+
+			" summary yields is superlinear in the source", large, small)
 	}
 }

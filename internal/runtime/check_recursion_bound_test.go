@@ -622,3 +622,138 @@ func TestCheckWarningsForwardedSendChainOverCapStaysGradual(t *testing.T) {
 		}
 	}
 }
+
+// summaryYieldLaterSiteSource builds a summarized function whose lambda reaches
+// itself at sites call sites, flips the guard the yield sits behind after the
+// first of them, and yields only behind that guard. Re-entering at the first
+// site runs with the guard still false and prunes the yield; only re-entering
+// at a later site reaches it. body replaces the yield in the control.
+func summaryYieldLaterSiteSource(sites int, body string) string {
+	var calls strings.Builder
+	calls.WriteString("      h.call\n")
+	calls.WriteString("      ready = true\n")
+	for range sites - 1 {
+		calls.WriteString("      h.call\n")
+	}
+	return fmt.Sprintf(`
+def invoke()
+  ready = false
+  guarded = false
+  h = -> {
+    if guarded
+      if ready
+        %s
+      end
+    else
+      guarded = true
+%s    end
+    1
+  }
+  h.call
+  1
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(invoke() { "s" })
+end
+`, body, calls.String())
+}
+
+// TestCheckWarningsSummaryYieldSurvivesALaterCallSite pins the re-entry the
+// summary yield walk cannot give up. The walk count that bounds it is restored
+// at each call site rather than spent, unlike the ivar effect walk's: this walk
+// re-checks the body with the full checker, which prunes on inferred facts, so
+// a yield only a later site enables is reachable only by re-entering there.
+// Spending the count instead drops the yield, leaves the summary claiming the
+// exact int the body would produce without it, and reports a mismatch against
+// correct code.
+//
+// The control is what keeps the first assertion from passing for the wrong
+// reason. "No warning" is also what a source that stopped reaching the boundary
+// measures, so the same body with the yield replaced has to still be diagnosed.
+func TestCheckWarningsSummaryYieldSurvivesALaterCallSite(t *testing.T) {
+	t.Parallel()
+
+	for _, sites := range []int{2, 3, 4, maxSummaryYieldReentryWalks} {
+		yields := compileScript(t, summaryYieldLaterSiteSource(sites, "yield"))
+		label := fmt.Sprintf("a yield enabled at call site %d of %d", 2, sites)
+		if warnings := checkWarningsWithin(t, yields, label); len(warnings) != 0 {
+			t.Fatalf("%s: expected the later site's re-entry to reach the yield and"+
+				" withdraw the summary, got %v", label, warnings)
+		}
+
+		control := compileScript(t, summaryYieldLaterSiteSource(sites, "1"))
+		warnings := checkWarningsWithin(t, control, "the same body with no yield")
+		if len(warnings) != 1 ||
+			warnings[0].Message != "call to takes_string argument value expected string, got int" {
+			t.Fatalf("%d sites: the yield-free control must still be diagnosed, or the"+
+				" assertion above passes for the wrong reason, got %v", sites, warnings)
+		}
+	}
+}
+
+// TestCheckWarningsSummaryYieldGivesUpPastTheReentryBudget states what the
+// bound costs. A re-entry that finds a yield saturates the summary and makes
+// every later one a provable no-op, but a body whose yield is never reachable
+// has no such stopping point, and proving one does not exist is the quadratic
+// itself. Past the budget the walk records the yield rather than denying it, so
+// the summary is withdrawn instead of being claimed exact -- the same answer the
+// checker already gives for a lambda it cannot resolve, and the opposite of the
+// direction that invents a diagnostic.
+func TestCheckWarningsSummaryYieldGivesUpPastTheReentryBudget(t *testing.T) {
+	t.Parallel()
+
+	// The guard is flipped after every call site, so no site's re-entry reaches
+	// the yield and the summary stays exact until the budget decides otherwise.
+	source := func(sites int) string {
+		var calls strings.Builder
+		for range sites {
+			calls.WriteString("      h.call\n")
+		}
+		calls.WriteString("      ready = true\n")
+		return fmt.Sprintf(`
+def invoke()
+  ready = false
+  guarded = false
+  h = -> {
+    if guarded
+      if ready
+        yield
+      end
+    else
+      guarded = true
+%s    end
+    1
+  }
+  h.call
+  1
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(invoke() { "s" })
+end
+`, calls.String())
+	}
+
+	within := compileScript(t, source(maxSummaryYieldReentryWalks))
+	warnings := checkWarningsWithin(t, within, "a body within the re-entry budget")
+	if len(warnings) != 1 ||
+		warnings[0].Message != "call to takes_string argument value expected string, got int" {
+		t.Fatalf("a body whose yield never runs must keep its exact summary while the"+
+			" budget lasts, got %v", warnings)
+	}
+
+	past := compileScript(t, source(maxSummaryYieldReentryWalks+1))
+	if warnings := checkWarningsWithin(t, past, "a body past the re-entry budget"); len(warnings) != 0 {
+		t.Fatalf("past the budget the summary is withdrawn rather than claimed exact,"+
+			" so nothing should be reported, got %v", warnings)
+	}
+}

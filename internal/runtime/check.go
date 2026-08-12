@@ -179,6 +179,7 @@ type scriptChecker struct {
 	summaryYieldCollector      *returnSummaryCollector
 	summaryYieldBlock          *BlockLiteral
 	summaryYieldBlockWalks     map[*BlockLiteral]int
+	summaryYieldReentryWalks   int
 	storedBlockWalkNodes       map[*BlockLiteral]uint64
 	walkedNodes                uint64
 	typeExprNodeCounts         map[*TypeExpr]int
@@ -18156,7 +18157,43 @@ func (c *scriptChecker) checkScriptCallInvokedLambdaSummaryYields(
 // the second did not already reach, which bounds a body that calls itself (#7).
 // The walks change no facts of their own, so a guard the recursion leaves
 // invariant keeps excluding the branches it excluded before.
+//
+// The count is restored at each call site rather than spent, unlike
+// maxRepeatedRegionBlockWalks. It has to be: a yield only a later site enables
+// is reachable only by re-entering there, and spending the count drops it and
+// invents a diagnostic on a body whose yield does run. What bounds the work
+// instead is maxSummaryYieldReentryWalks, below.
 const maxSummaryYieldBlockWalks = 2
+
+// maxSummaryYieldReentryWalks caps the re-entry walks one function summary may
+// run in total. Per-site re-entry is what the precision above rests on, so a
+// body holding N recursive call sites re-walks its own N statements N times:
+// the walks are linear in the source and the statement visits are its square,
+// paid inside CheckWarnings where no script step or memory quota applies.
+//
+// A re-entry can only ever do one thing -- record that a yield the first walk
+// pruned is reachable -- and that record saturates the collector, so the first
+// re-entry to find a yield makes every later one a provable no-op. That is what
+// summaryYieldReentryUseless reports, and it is exact: a body whose yield is
+// reachable pays one re-entry however many sites it holds.
+//
+// A body whose yield is never reachable has no such stopping point, and no walk
+// can prove one exists without being the quadratic itself. Past this budget the
+// walk therefore stops guessing and takes the conservative answer -- it records
+// the yield rather than denying it, which is the same summary the checker
+// already produces for a lambda it cannot resolve at all. Denying it is what
+// spending maxSummaryYieldBlockWalks does, and that direction invents
+// diagnostics on correct code.
+const maxSummaryYieldReentryWalks = 8
+
+// summaryYieldReentryUseless reports whether the summary collector has already
+// recorded everything a re-entry walk could contribute. A re-entry's only
+// product is recordReturnSummaryResult(collector, nil, nil), which sets both
+// unknown and instanceOriginsUnknown and is a no-op once they are set.
+func (c *scriptChecker) summaryYieldReentryUseless() bool {
+	collector := c.summaryYieldCollector
+	return collector != nil && collector.unknown && collector.instanceOriginsUnknown
+}
 
 // checkInvokedLambdaSummaryYields rechecks an executed lambda with local
 // return semantics intact while allowing reachable yields to poison the
@@ -18171,9 +18208,20 @@ func (c *scriptChecker) checkInvokedLambdaSummaryYields(function string, block *
 	if walks >= maxSummaryYieldBlockWalks {
 		return
 	}
+	if walks > 0 {
+		if c.summaryYieldReentryUseless() {
+			return
+		}
+		if c.summaryYieldReentryWalks >= maxSummaryYieldReentryWalks {
+			c.recordReturnSummaryResult(c.summaryYieldCollector, nil, nil)
+			return
+		}
+		c.summaryYieldReentryWalks++
+	}
 	if c.summaryYieldBlockWalks == nil {
 		c.summaryYieldBlockWalks = make(map[*BlockLiteral]int)
 	}
+	noteCheckWork(len(block.Body))
 	c.summaryYieldBlockWalks[block] = walks + 1
 	defer func() {
 		if walks == 0 {
