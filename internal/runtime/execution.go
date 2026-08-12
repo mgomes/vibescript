@@ -122,6 +122,9 @@ type Execution struct {
 	// inherited graph as this level's marginal, and since a quota refusal is
 	// latched, that transient over-charge became permanent.
 	memBaselineSet bool
+	// publishedCtx is the context handed to nested calls, built on demand by
+	// Context() and remembered so a level that nests repeatedly pays once.
+	publishedCtx context.Context
 	// exhausted latches the first genuine budget-exhaustion error (step
 	// quota, memory quota, or output limit) raised on this execution. Once
 	// set, step() fails immediately with it and no rescue clause matches any
@@ -750,8 +753,44 @@ func (exec *Execution) currentRescuedError() error {
 // that have been carved into sibling packages (vibes/capability/...)
 // rely on it to forward cancellation and request-scoped values to host
 // callbacks without reaching into unexported runtime fields.
+// Context returns the context a nested call made from this execution should
+// run under. It carries this execution's memory-chain node, so that anything
+// this call drives -- a task group, or a capability adapter re-entering a
+// script -- links to this level rather than starting a chain of its own.
+//
+// The node is attached here rather than in newExecutionForCall because that is
+// one context allocation per execution, and most executions never start a
+// nested call: eagerly attaching it cost +41 allocations per operation on a
+// forty-item flat map, the shape this change must not move. Built on demand and
+// remembered, only a level that actually nests pays for it. An Execution runs on
+// one goroutine, so the cached value needs no synchronization.
+//
+// Internal readers that only want the task globals use exec.ctx directly; they
+// run on every memory check, and there is nothing for them in the wrapper.
 func (exec *Execution) Context() context.Context {
-	return exec.ctx
+	if exec.memChain == nil {
+		return exec.ctx
+	}
+	if exec.publishedCtx == nil {
+		exec.publishedCtx = exec.contextWithChainPublished()
+	}
+	return exec.publishedCtx
+}
+
+// contextWithChainPublished attaches this execution's chain node, keeping the
+// task-globals wrapper outermost.
+//
+// taskLazyGlobalsFromContext identifies its context by a type assertion on the
+// outermost value rather than through ctx.Value, so anything wrapped on top of
+// it hides a task's inherited globals. Putting it back is what keeps that true
+// here. This is the second place that fragility has shaped a design; it is
+// filed separately, and fixing it would let this be a plain WithValue.
+func (exec *Execution) contextWithChainPublished() context.Context {
+	ctx := contextWithMemoryChain(exec.ctx, exec.memChain)
+	if lazy := taskLazyGlobalsFromContext(exec.ctx); lazy != nil {
+		ctx = contextWithTaskLazyGlobals(ctx, lazy)
+	}
+	return ctx
 }
 
 // Step accounts for one interpreter step against quota and memory
