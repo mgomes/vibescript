@@ -1120,3 +1120,51 @@ func TestDescendantAccountingNeverUnderstatesWhileChildrenRun(t *testing.T) {
 		t.Fatalf("descendant accounting was %d after the last child exited, want 0", got)
 	}
 }
+
+// TestDescendantCeilingBindsAnAncestorsGrowth pins that a tighter ceiling below
+// a node applies to that node's own allocations too.
+//
+// The chain carried the bytes a descendant held but not the ceiling those bytes
+// ran under. A 4 MiB callee re-entered from an 8 MiB caller was therefore checked
+// against 4 MiB when it published and against the caller's 8 MiB when the caller
+// published, so the caller could publish and grow the shared path past the
+// callee's ceiling while the callee sat blocked. A path is bounded by the
+// tightest limit anywhere along it, so the ceiling now travels with the total.
+func TestDescendantCeilingBindsAnAncestorsGrowth(t *testing.T) {
+	t.Parallel()
+
+	const (
+		outer = 8 << 20
+		inner = 4 << 20
+	)
+
+	parent := &memoryChain{limit: outer}
+	ctx := contextWithMemoryChain(context.Background(), parent)
+
+	var child memoryChain
+	if !child.initForCall(ctx, inner) {
+		t.Fatalf("a bounded callee under a bounded caller must join the chain")
+	}
+	if child.limit != inner {
+		t.Fatalf("callee resolved to limit %d, want its own tighter %d", child.limit, inner)
+	}
+
+	// The callee publishes 3 MiB, which fits its own 4 MiB ceiling, and blocks.
+	if child.publishAndExceeds(3 << 20) {
+		t.Fatalf("3 MiB under a 4 MiB ceiling must be admitted")
+	}
+
+	// The caller now grows by 2 MiB. The shared path is 5 MiB, inside the
+	// caller's own 8 MiB but past the 4 MiB the callee runs under.
+	if !parent.publishAndExceeds(2 << 20) {
+		t.Fatalf("the caller grew the shared path to 5 MiB while a callee bounded at %d MiB held 3 MiB of it, and was admitted: the chain carries the descendant's bytes but not the ceiling they run under, so the tighter limit stops applying the moment an ancestor is the one growing",
+			inner>>20)
+	}
+
+	// And the ceiling is released with the bytes, or the caller would stay
+	// bound by a callee that has finished.
+	child.release()
+	if got := parent.effectiveLimit(); got != outer {
+		t.Fatalf("caller still bound at %d after its callee finished, want its own %d", got, outer)
+	}
+}
