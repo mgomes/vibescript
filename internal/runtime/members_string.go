@@ -710,10 +710,21 @@ func newStringSplitProjection(source, part string) stringSplitProjection {
 
 func (projection *stringSplitProjection) add(source, part string) {
 	projection.count++
-	projection.payload = saturatingAdd(projection.payload, stringSplitPartPayloadBytes(source, part))
+	projection.payload = saturatingAdd(projection.payload, detachedWindowPayloadBytes(source, part))
 }
 
-func stringSplitPartPayloadBytes(source, part string) int {
+// detachedWindowPayloadBytes reports what one window onto source costs once it
+// has been detached from it, and is the projection side of clonedWindow: split
+// parts, partition components and lines are all priced by this rule.
+//
+// The two must agree on what allocates. clonedWindow copies nothing for an
+// empty window (strings.Clone hands back the shared empty string) nor for one
+// as long as source, which for a window means source itself; both are charged a
+// header alone here. sameStringBacking is the stricter test of the two -- a
+// same-length string that is not a window onto source is charged its bytes and
+// copied by neither -- so any disagreement over-charges rather than letting an
+// allocation through unpriced.
+func detachedWindowPayloadBytes(source, part string) int {
 	if len(part) == 0 || sameStringBacking(source, part) {
 		return estimatedStringHeaderBytes
 	}
@@ -852,7 +863,7 @@ func stringSplitResultFromPositionalRoots(exec *Execution, receiver, arg0, arg1 
 // of one split add up to the subject, so keeping all of them was already priced
 // honestly and only a kept subset amplified.
 //
-// The copy needs no reservation of its own: stringSplitPartPayloadBytes already
+// The copy needs no reservation of its own: detachedWindowPayloadBytes already
 // projects each part at its own length -- header only for an empty part or one
 // that spans the whole source -- which is exactly the set clonedWindow copies
 // nothing for, so the reservation the caller already made covers these bytes.
@@ -4725,10 +4736,14 @@ func stringMemberTextOps(property string) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.lines does not take arguments")
 			}
-			lines := stringLines(receiver.String())
+			text := receiver.String()
+			lines := stringLines(text)
+			if err := exec.checkProjectedStringLineBytes(text, lines, receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			values := make([]Value, len(lines))
 			for i, line := range lines {
-				values[i] = NewString(line)
+				values[i] = NewString(clonedWindow(text, line))
 			}
 			return NewArray(values), nil
 		}), nil
@@ -4834,8 +4849,9 @@ func stringMemberTextOps(property string) (Value, error) {
 				return NewNil(), err
 			}
 			var blockArg [1]Value
-			if err := forEachLine(receiver.String(), func(line string) error {
-				blockArg[0] = NewString(line)
+			text := receiver.String()
+			if err := forEachLine(text, func(line string) error {
+				blockArg[0] = NewString(clonedWindow(text, line))
 				_, err := runner.call(blockArg[:])
 				return err
 			}); err != nil {
@@ -5514,18 +5530,35 @@ func detachedPartitionValue(exec *Execution, receiver Value, head, sep, tail str
 	}), nil
 }
 
+// checkProjectedStringLineBytes rejects a String#lines result before its lines
+// are copied out of the receiver.
+//
+// The lines were windows onto the receiver and cost nothing to produce, so the
+// member reserved nothing; detaching them allocates the receiver's length over
+// again and that has to be weighed before it is written, not priced afterwards
+// by the post-call check. A receiver with no line ending at all yields one line
+// spanning the whole string, which clonedWindow hands back untouched and this
+// charges a header for, so the common single-line case still reserves nothing
+// but the array.
+func (exec *Execution) checkProjectedStringLineBytes(text string, lines []string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	payload := 0
+	for _, line := range lines {
+		payload = saturatingAdd(payload, detachedWindowPayloadBytes(text, line))
+	}
+	return exec.checkProjectedArrayBytesWithCallRoots(len(lines), payload, receiver, args, kwargs, block)
+}
+
 // checkProjectedPartitionBytes rejects a partition result before any part of it
 // exists: the two detached components, the three string values wrapping them,
 // and the three-slot array, all weighed together against the call's live roots.
 //
-// stringSplitPartPayloadBytes computes each component the way split already
-// does, which is exactly the rule here: a component that still shares the
+// detachedWindowPayloadBytes prices each component: one that still shares the
 // receiver's backing (the whole string, when the separator is absent) or is
 // empty costs only its header, because clonedWindow allocates nothing for it.
 // The separator is the argument's own string, already counted among the roots,
 // so only the value header wrapping it is new.
 func (exec *Execution) checkProjectedPartitionBytes(text, head, tail string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
-	payload := saturatingAdd(stringSplitPartPayloadBytes(text, head), stringSplitPartPayloadBytes(text, tail))
+	payload := saturatingAdd(detachedWindowPayloadBytes(text, head), detachedWindowPayloadBytes(text, tail))
 	payload = saturatingAdd(payload, estimatedStringHeaderBytes)
 	return exec.checkProjectedArrayBytesWithCallRoots(3, payload, receiver, args, kwargs, block)
 }

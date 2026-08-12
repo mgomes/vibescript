@@ -127,6 +127,76 @@ end`)
 	}
 }
 
+// TestLinesDoNotRetainTheirSubject pins that a kept line stops holding the
+// string it was cut from, both from the array String#lines returns and from the
+// value String#each_line yields.
+//
+// Each line is a window onto the receiver, so keeping one short line pinned the
+// whole receiver: 200 of them retained 192.1 MiB under an 8 MiB quota.
+//
+// Not parallel: it measures process-wide heap.
+func TestLinesDoNotRetainTheirSubject(t *testing.T) {
+	t.Run("lines", func(t *testing.T) {
+		held := retainedHeapBytes(t, retentionScript(t, `(big + "\nx").lines[1]`), retentionSeed(), 200)
+		assertUnderRetentionLimit(t, "lines", held)
+	})
+
+	t.Run("each_line", func(t *testing.T) {
+		script := compileScriptWithConfig(t, Config{StepQuota: 50_000_000, MemoryQuotaBytes: 8 << 20},
+			`def run(seed)
+  kept = []
+  i = 0
+  while i < 200
+    big = seed * 200 + "\nx"
+    big.each_line do |line|
+      if line.length == 1
+        kept.push(line)
+      end
+    end
+    i = i + 1
+  end
+  kept
+end`)
+		held := retainedHeapBytes(t, script, retentionSeed(), 200)
+		assertUnderRetentionLimit(t, "yielded lines", held)
+	})
+}
+
+// TestLinesKeepTheirCharacters pins that detaching the lines did not change
+// what String#lines and String#each_line yield, including the trailing line
+// ending each line keeps and a receiver with no ending at all.
+func TestLinesKeepTheirCharacters(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run(s)
+  yielded = []
+  s.each_line { |line| yielded.push(line) }
+  [s.lines, yielded]
+end`)
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"multiple lines", "a漢\nb\n", `[["a漢\n", "b\n"], ["a漢\n", "b\n"]]`},
+		{"no trailing ending", "a\nb", `[["a\n", "b"], ["a\n", "b"]]`},
+		{"no ending at all", "a漢b", `[["a漢b"], ["a漢b"]]`},
+		{"blank lines", "\n\n", `[["\n", "\n"], ["\n", "\n"]]`},
+		{"empty", "", `[[], []]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := script.Call(context.Background(), "run", []Value{NewString(tc.in)}, CallOptions{})
+			if err != nil {
+				t.Fatalf("lines failed: %v", err)
+			}
+			if got.Inspect() != tc.want {
+				t.Fatalf("lines over %q = %s, want %s", tc.in, got.Inspect(), tc.want)
+			}
+		})
+	}
+}
+
 // newlineRetentionSeed is a newline-only seed, so `seed * 200` in
 // retentionScript is a megabyte that chomp("") reduces to whatever content
 // precedes it.
