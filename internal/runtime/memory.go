@@ -1502,7 +1502,7 @@ func (acc *arrayBuildAccumulator) reserveScratch(scratchBytes int) error {
 		return nil
 	}
 	acc.base = saturatingAdd(acc.base, scratchBytes)
-	if acc.base > acc.exec.memoryQuota {
+	if acc.exec.memoryExceeded(acc.base) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1527,7 +1527,7 @@ func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 
 	acc.payload = saturatingAdd(acc.payload, acc.est.valuePayload(val))
 
-	if used := acc.projected(backingCap); used > acc.exec.memoryQuota {
+	if used := acc.projected(backingCap); acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1543,7 +1543,7 @@ func (acc *arrayBuildAccumulator) addToReservedBacking(val Value) error {
 	}
 
 	acc.payload = saturatingAdd(acc.payload, acc.est.valuePayload(val))
-	if used := saturatingAdd(acc.base, acc.payload); used > acc.exec.memoryQuota {
+	if used := saturatingAdd(acc.base, acc.payload); acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1563,7 +1563,7 @@ func (acc *arrayBuildAccumulator) addConservative(val Value, backingCap int) err
 	}
 	acc.payload = saturatingAdd(acc.payload, acc.result.valuePayload(val))
 
-	if used := acc.projected(backingCap); used > acc.exec.memoryQuota {
+	if used := acc.projected(backingCap); acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1578,7 +1578,7 @@ func (acc *arrayBuildAccumulator) addConservativeToReservedBacking(val Value) er
 		acc.result = newMemoryEstimator()
 	}
 	acc.payload = saturatingAdd(acc.payload, acc.result.valuePayload(val))
-	if used := saturatingAdd(acc.base, acc.payload); used > acc.exec.memoryQuota {
+	if used := saturatingAdd(acc.base, acc.payload); acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1621,7 +1621,7 @@ func (acc *arrayBuildAccumulator) checkTransient(transient Value, backingCap int
 	}
 
 	transientBytes := s.est.value(transient)
-	if used := saturatingAdd(acc.projected(backingCap), transientBytes); used > acc.exec.memoryQuota {
+	if used := saturatingAdd(acc.projected(backingCap), transientBytes); acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1644,7 +1644,7 @@ func (acc *arrayBuildAccumulator) checkRetainedPayloadBytes(slotCount, payloadBy
 		return nil
 	}
 	used := saturatingAdd(acc.projected(slotCount), payloadBytes)
-	if used > acc.exec.memoryQuota {
+	if acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1701,7 +1701,7 @@ func (acc *arrayBuildAccumulator) checkSlotArrays(slotCounts ...int) error {
 	for _, slotCount := range slotCounts {
 		used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
 	}
-	if used > acc.exec.memoryQuota {
+	if acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1945,7 +1945,7 @@ func (acc *hashLiteralBuildAccumulator) addDistinctEntry(current map[string]hash
 			payload := saturatingAdd(hashLiteralKeyPayload(est, lookupKey, key), est.valuePayload(val))
 			return saturatingAdd(entryStructural, payload)
 		})
-		if used > acc.exec.memoryQuota {
+		if acc.exec.memoryExceeded(used) {
 			return acc.exec.memoryQuotaExceededError()
 		}
 		if err := acc.exec.chargeEstimatorWalk(nodes); err != nil {
@@ -2005,7 +2005,7 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 			payload := saturatingAdd(hashLiteralKeyPayload(est, candidate.lookupKey, candidate.key), est.valuePayload(candidate.value))
 			return saturatingAdd(entryStructural, payload)
 		})
-		if used > acc.exec.memoryQuota {
+		if acc.exec.memoryExceeded(used) {
 			return acc.exec.memoryQuotaExceededError()
 		}
 		if err := acc.exec.chargeEstimatorWalk(nodes); err != nil {
@@ -2037,7 +2037,7 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 	incoming := saturatingAdd(entryStructural, saturatingAdd(keyPayload, valuePayload))
 	base, baseNodes := acc.liveBase()
 	nodes += baseNodes
-	if used := saturatingAdd(saturatingAdd(base, acc.retained), incoming); used > acc.exec.memoryQuota {
+	if used := saturatingAdd(saturatingAdd(base, acc.retained), incoming); acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	if err := acc.exec.chargeEstimatorWalk(nodes); err != nil {
@@ -2192,7 +2192,7 @@ func (acc *hashLiteralBuildAccumulator) checkQuota(current map[string]hashLitera
 		base, nodes = acc.liveBase()
 		used = saturatingAdd(base, acc.retained)
 	}
-	if used > acc.exec.memoryQuota {
+	if acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return acc.exec.chargeEstimatorWalk(nodes)
@@ -2352,7 +2352,7 @@ func (acc *hashBuildAccumulator) checkTransient(transient Value) error {
 	}
 
 	used := saturatingAdd(saturatingAdd(acc.base, acc.built), s.est.value(transient))
-	if used > acc.exec.memoryQuota {
+	if acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -2362,7 +2362,7 @@ func (acc *hashBuildAccumulator) checkTransient(transient Value) error {
 // exceeds the quota.
 func (acc *hashBuildAccumulator) checkQuota() error {
 	used := saturatingAdd(acc.base, acc.built)
-	if used > acc.exec.memoryQuota {
+	if acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -2588,7 +2588,7 @@ func (c *blockBindCharge) begin(args []Value, chargedRoots ...Value) error {
 	c.built = 0
 	for _, root := range chargedRoots {
 		c.built = saturatingAdd(c.built, c.rootEst.probe(root))
-		if saturatingAdd(c.liveBaseline(), c.built) > c.exec.memoryQuota {
+		if c.exec.memoryExceeded(saturatingAdd(c.liveBaseline(), c.built)) {
 			return c.exec.memoryQuotaExceededError()
 		}
 		c.est.value(root)
@@ -2610,7 +2610,7 @@ func (c *blockBindCharge) charge(value Value) error {
 		return nil
 	}
 	c.built = saturatingAdd(c.built, c.est.value(value))
-	if saturatingAdd(c.liveBaseline(), c.built) > c.exec.memoryQuota {
+	if c.exec.memoryExceeded(saturatingAdd(c.liveBaseline(), c.built)) {
 		return c.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -2638,7 +2638,7 @@ func (c *blockBindCharge) projectRestWindow(count int) error {
 		return nil
 	}
 	window := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(count, estimatedValueBytes))
-	if saturatingAdd(saturatingAdd(c.liveBaseline(), c.built), window) > c.exec.memoryQuota {
+	if c.exec.memoryExceeded(saturatingAdd(saturatingAdd(c.liveBaseline(), c.built), window)) {
 		return c.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -2917,7 +2917,7 @@ func newLoopScratchReservation(exec *Execution, receiver Value, args []Value, kw
 		return reservation, nil
 	}
 	reservation.baseline = exec.hashCallRootBytes(receiver, args, kwargs, block)
-	if reservation.baseline > exec.memoryQuota {
+	if exec.memoryExceeded(reservation.baseline) {
 		return loopScratchReservation{}, exec.memoryQuotaExceededError()
 	}
 	return reservation, nil
