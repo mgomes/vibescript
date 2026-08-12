@@ -3903,3 +3903,16 @@ func (exec *Execution) reserveCallerRetainedRoots(blockArgs []Value) (int, bool)
 	}
 	return exec.reserveLoopScratch(total - base), true
 }
+
+// releaseMemoryChain retires this execution's chain node as its call returns.
+//
+// A level that has finished holds nothing, so leaving its published figure in
+// place would charge the chain for memory that is gone; and the high-water of
+// what was live below a node has to be dropped once nothing is, or a deep chain
+// that completed would go on refusing its parent's later work.
+func (exec *Execution) releaseMemoryChain() {
+	if exec.memChain == nil {
+		return
+	}
+	exec.memChain.release()
+}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // taskDepthMemorySample is what one nesting level reports about itself. The
@@ -703,5 +704,191 @@ func TestFreshPerCallSetupIsChargedNotSubtracted(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "memory quota exceeded") {
 		t.Fatalf("chain stopped for an unrelated reason: %v", err)
+	}
+}
+
+// chunkPayloadFn is a payload builder that grows an array of distinct strings.
+// It avoids the doubling a string-concatenation payload needs, whose transient
+// peak is half again the result and trips the quota before two levels can hold
+// their payloads at once.
+const chunkPayloadFn = `def payload(n)
+  out = []
+  i = 0
+  while i < n
+    out.push("p" + i.to_s + %q)
+    i = i + 1
+  end
+  out
+end
+`
+
+// ancestorGrowthProbe holds a child's payload live while its parent allocates,
+// which is the ordering a chain that only walks toward the root cannot see.
+type ancestorGrowthProbe struct {
+	childHolding chan struct{}
+	release      chan struct{}
+	once         *sync.Once
+	// bothHeld records that the parent finished its own allocation while the
+	// child was still holding its payload. That is the state the ceiling is
+	// supposed to make unreachable.
+	bothHeld *bool
+	mu       *sync.Mutex
+}
+
+func (p ancestorGrowthProbe) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{"probe": NewObject(map[string]Value{
+		"child_holding": NewBuiltin("probe.child_holding", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			p.once.Do(func() { close(p.childHolding) })
+			// Cancellation is the normal exit here, not the exception: when the
+			// ceiling refuses the parent, the group is canceled and nothing will
+			// ever reach the release. Waiting only on the release parked this
+			// child until its timeout and made a passing test take 30 seconds.
+			select {
+			case <-p.release:
+			case <-exec.Context().Done():
+			case <-time.After(30 * time.Second):
+			}
+			return NewNil(), nil
+		}),
+		"wait_for_child": NewBuiltin("probe.wait_for_child", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			select {
+			case <-p.childHolding:
+			case <-time.After(30 * time.Second):
+			}
+			return NewNil(), nil
+		}),
+		"both_held": NewBuiltin("probe.both_held", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			p.mu.Lock()
+			*p.bothHeld = true
+			p.mu.Unlock()
+			return NewNil(), nil
+		}),
+	})}, nil
+}
+
+// TestAncestorGrowthIsCheckedAgainstLiveDescendants pins that the ceiling holds
+// in both directions.
+//
+// A check summed from the checking level toward the root, so it saw every
+// ancestor and no descendant. That is right when the deepest live level is the
+// one growing, which is the shape the original measurements used. It is wrong
+// when an ancestor grows while a descendant is still holding memory -- and that
+// is the ordinary slotted shape, since a parent holds its slot for as long as
+// its child runs and can allocate between its own checks. Measured before the
+// fix: 7.15 MiB live across two levels against a 4 MiB ceiling, admitted.
+//
+// What a check adds is the largest total any live chain below it has published,
+// a maximum over the paths below rather than a sum of them. A sum would make
+// the width of a flat map aggregate, which is the thing this design exists not
+// to do.
+//
+// The parent here waits until the child is holding its payload before
+// allocating its own, so the two are live together by construction.
+func TestAncestorGrowthIsCheckedAgainstLiveDescendants(t *testing.T) {
+	t.Parallel()
+
+	const (
+		quota  = 4 << 20
+		chunks = 500 // ~2.5 MiB per level: fits alone, not together
+	)
+
+	chunk := strings.Repeat("q", 5000)
+	source := fmt.Sprintf(chunkPayloadFn, chunk) + fmt.Sprintf(`
+def child(n)
+  buf = payload(%d)
+  probe.child_holding()
+  buf.size
+end
+
+def run()
+  Tasks.run(max: 4) do |tasks|
+    t = tasks.spawn(:child, 1)
+    probe.wait_for_child()
+    mine = payload(%d)
+    probe.both_held()
+    t.value + mine.size
+  end
+end`, chunks, chunks)
+
+	script := compileScriptWithConfig(t,
+		Config{MaxTaskConcurrency: 8, MemoryQuotaBytes: quota, StepQuota: Unlimited}, source)
+
+	var (
+		mu       sync.Mutex
+		bothHeld bool
+	)
+	probe := ancestorGrowthProbe{
+		childHolding: make(chan struct{}),
+		release:      make(chan struct{}),
+		once:         &sync.Once{},
+		bothHeld:     &bothHeld,
+		mu:           &mu,
+	}
+	// Whatever happens, never leave the child parked: a refused parent never
+	// reaches the release, and a test that hangs is worse than one that fails.
+	defer close(probe.release)
+
+	_, err := script.Call(context.Background(), "run", nil, callOptionsWithCapabilities(probe))
+
+	mu.Lock()
+	held := bothHeld
+	mu.Unlock()
+
+	if held {
+		t.Fatalf("a parent finished allocating ~2.5 MiB while its child was still holding ~2.5 MiB, against a %d MiB ceiling: the check walks from the checking level toward the root, so an ancestor growing under a live descendant is admitted against a total that omits it",
+			quota>>20)
+	}
+	if err == nil {
+		t.Fatalf("the parent was never admitted, but nothing was reported either; a refused allocation must surface as an error")
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("stopped for an unrelated reason: %v", err)
+	}
+}
+
+// TestFinishedDescendantsStopChargingTheirAncestor is the over-correction guard
+// for the descendant accounting above.
+//
+// What is live below a node is kept as a high-water while its children run, so
+// that an ancestor cannot grow into space a descendant already holds. Kept
+// after they finish it would be a permanent over-charge: a deep chain that
+// completed would go on refusing its parent's later work, which is memory that
+// no longer exists.
+//
+// Here a chain runs and completes, and only then does the outermost level
+// allocate something that fits on its own but would not fit beside the chain's
+// high-water.
+func TestFinishedDescendantsStopChargingTheirAncestor(t *testing.T) {
+	t.Parallel()
+
+	const (
+		quota  = 8 << 20
+		levels = 3
+		nested = 200  // ~1 MiB per nested level
+		after  = 1200 // ~6 MiB once the chain is gone
+	)
+
+	chunk := strings.Repeat("q", 5000)
+	source := fmt.Sprintf(chunkPayloadFn, chunk) + fmt.Sprintf(`
+def deep(n)
+  buf = payload(%d)
+  if n < %d
+    Tasks.map([n + 1], max: 1, with: :deep)
+  end
+  buf.size
+end
+
+def run()
+  Tasks.map([0], max: 1, with: :deep)
+  later = payload(%d)
+  later.size
+end`, nested, levels, after)
+
+	script := compileScriptWithConfig(t,
+		Config{MaxTaskConcurrency: 16, MemoryQuotaBytes: quota, StepQuota: Unlimited}, source)
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("allocating ~6 MiB under an %d MiB quota failed after a %d-level chain had already finished: the memory those levels held is gone, so continuing to charge for it refuses work the host allows: %v",
+			quota>>20, levels, err)
 	}
 }
