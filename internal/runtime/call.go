@@ -1535,6 +1535,12 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 		callOptions:   childCallOptions,
 		sleepBudget:   sleeping,
 	}
+	// Linked to the caller's node here, where the nesting level is created. The
+	// node is published onto the context by newTaskGroup rather than here; see
+	// memoryChain.initForCall for why this must not wrap the context.
+	if exec.memChainNode.initForCall(ctx, script.engine.config.MemoryQuotaBytes) {
+		exec.memChain = &exec.memChainNode
+	}
 	// The module stacks stay nil: most calls never require a module,
 	// and append allocates them on first use.
 	exec.callStack = exec.callStackArr[:0]

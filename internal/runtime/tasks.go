@@ -288,6 +288,15 @@ func newTaskGroup(exec *Execution, max int, detachRootGlobals bool) *taskGroup {
 		budget = newTaskConcurrencyBudget(exec.hostTaskConcurrencyLimit())
 	}
 	ctx = contextWithTaskBudget(ctx, budget)
+	// Every job this group runs builds its own Execution with its own memory
+	// quota, and each of those quotas was the host's whole allowance: nesting
+	// multiplied live memory by the depth of the chain, unrefused. Publishing
+	// this execution's node here, while the group captures the context its
+	// workers will run under, is what makes a nested level charge its own
+	// footprint against the chain that reaches back to the root instead of
+	// starting a fresh allowance. It is published before any worker runs, for
+	// the same reason the sleeping budget is.
+	ctx = contextWithMemoryChain(ctx, exec.memChain)
 	group := &taskGroup{
 		script:               taskScript(exec),
 		ctx:                  ctx,

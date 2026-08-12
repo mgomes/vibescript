@@ -65,7 +65,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemory(); err != nil {
+	if err := exec.checkMemoryEstablishingBaseline(); err != nil {
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
@@ -185,7 +185,7 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemory(); err != nil {
+	if err := exec.checkMemoryEstablishingBaseline(); err != nil {
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
