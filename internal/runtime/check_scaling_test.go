@@ -631,6 +631,71 @@ end
 	}
 }
 
+// mutatorReceiverRebindSource builds a witnessed shape whose `w` field nests
+// depth levels deep, rebinds the local to a shape differing only at that leaf
+// while the mutator's own value operand is being walked, and then reads the
+// leaf. write is the mutator statement; the rebind happens inside a string
+// interpolation so the written value stays a known type and the write lands.
+func mutatorReceiverRebindSource(depth int, write string) string {
+	nest := func(leaf string) string {
+		return strings.Repeat("{ a: ", depth) + leaf + strings.Repeat(" }", depth)
+	}
+	return fmt.Sprintf(`
+def take(v: string)
+  v
+end
+
+def f()
+  h = { w: %s, pad: 1 }
+  rebind = -> { h = { w: %s, pad: 1 }; "x" }
+%s
+  take(h[:w]%s)
+end
+`, nest("1"), nest(`"s"`), write, strings.Repeat("[:a]", depth))
+}
+
+// A mutator preserves its receiver's fact only when the local still carries the
+// fact the writes were checked against, and the write it applies lands on that
+// captured fact and is bound back to the local. Deciding "still carries" from
+// typeFactKey could not tell: the key stops at maxTypeArmDepth and renders
+// everything below as `?`, so a value operand that rebound the local to a shape
+// differing only that deep produced a matching key, the rebind was read as
+// having left the local alone, and the write put the shape the script had
+// stopped holding back in place. Reading the rebound field then answered from
+// the old shape and the call was reported against correct code.
+//
+// Both predicates that decide this are covered: the indexed write reaches
+// mutatorReceiverFactIntact and the store reaches mutatorCallPreservable.
+//
+// The depths bracket the cutoff on both sides so the test states where the
+// boundary is rather than that one exists. The control is the same body without
+// the rebind, which must stay diagnosed at every depth -- otherwise the shallow
+// cases pass because the read stopped resolving rather than because the fact
+// survived, and the deep ones would mean nothing.
+func TestMutatorPreservationTracksFactsBelowTheKeyDepth(t *testing.T) {
+	for _, write := range []string{
+		`  h[:pad] = "v#{rebind.call}"`,
+		`  h.store(:pad, "v#{rebind.call}")`,
+	} {
+		for _, depth := range []int{2, 7, 8, 9, 10, 14} {
+			t.Run(fmt.Sprintf("%s depth %d", strings.TrimSpace(write), depth), func(t *testing.T) {
+				source := mutatorReceiverRebindSource(depth, write)
+				if warnings := checkWarningMessages(compileScript(t, source).CheckWarnings()); len(warnings) != 0 {
+					t.Fatalf("a %d-level rebind was read as leaving the receiver alone, so the"+
+						" mutator put back the shape the local stopped holding: %v", depth, warnings)
+				}
+
+				control := mutatorReceiverRebindSource(depth, `  h[:pad] = "v"`)
+				warnings := checkWarningMessages(compileScript(t, control).CheckWarnings())
+				if len(warnings) != 1 || !strings.Contains(warnings[0], "expected string, got int") {
+					t.Fatalf("the un-rebound control must still be diagnosed at depth %d, or the"+
+						" assertion above passes for the wrong reason: %v", depth, warnings)
+				}
+			})
+		}
+	}
+}
+
 // checkWarningMessagesWithSplitShapeBudget checks one script with the exact and
 // widening budgets set independently, so a fact can cross the first without
 // crossing the second and take the widening route rather than being given up.

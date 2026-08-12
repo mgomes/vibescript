@@ -14264,12 +14264,17 @@ func (c *scriptChecker) mutatorCallArgumentFact(arg Expression, argumentFacts ma
 // follow, and an argument walk that poisoned or rebound the local already
 // invalidated the captured fact. Only a statement-level call whose local
 // still carries the captured fact can keep the declared bound.
+//
+// "Still carries" has to be decided, not grouped, so it walks. The write the
+// call applies lands on the captured fact and is bound back to the local, so
+// answering yes about a local an argument rebound puts a fact the script
+// stopped holding back in place.
 func (c *scriptChecker) mutatorCallPreservable(call *CallExpr, name string, receiverFact *TypeExpr) bool {
 	if Expression(call) != c.expressionStatementRoot {
 		return false
 	}
 	current := c.localTypeFor(name)
-	return current != nil && typeFactKey(current) == typeFactKey(receiverFact)
+	return current != nil && typeFactsIdentical(current, receiverFact)
 }
 
 func cloneArrayMutatorExpansionChoices(choices map[int]int) map[int]int {
@@ -14869,14 +14874,18 @@ func (c *scriptChecker) applyHashMutatorCallFacts(
 // still about the same fact the writes were checked against.
 //
 // A walk that left the fact alone leaves the same node in place, so identity
-// settles the case that matters without serializing a wide fact twice to
-// discover it: doing that on every field write of a growing shape allocated
-// 185MB across 2,000 writes (#14).
+// settles the case that matters without comparing a wide fact node for node to
+// discover it. Serializing both sides to compare them was what made that
+// expensive -- doing it on every field write of a growing shape allocated 185MB
+// across 2,000 writes (#14) -- and typeFactsIdentical keeps the identity
+// shortcut at every level rather than only at the root, allocates nothing, and
+// stops at the first difference, so it is cheaper than the key it replaces as
+// well as exact.
 func mutatorReceiverFactIntact(current, captured *TypeExpr) bool {
 	if current == captured {
 		return current != nil
 	}
-	return current != nil && typeFactKey(current) == typeFactKey(captured)
+	return current != nil && typeFactsIdentical(current, captured)
 }
 
 func (c *scriptChecker) invalidateElementWriteAliases(name string, written *TypeExpr) {
@@ -17222,16 +17231,29 @@ func typeExprFactSizeRemaining(ty *TypeExpr, depth int, remaining *int) bool {
 // typeExprArms returns ok=false when it hits the limit and every caller refuses
 // to conclude, and typeExprFactSizeRemaining answers with a bool the same way.
 // This one hands back a string that looks like a complete answer and carries no
-// sign it stopped early, so a caller has to already know. Two defects came from
+// sign it stopped early, so a caller has to already know. Four defects came from
 // callers that did not: a field write took a matching key for proof that the
-// write restated the field and left the receiver bound to the fact it had, and
-// the union join took one for proof that an arm was a duplicate and dropped the
-// written shape. Both are in the shape-write path and both now walk.
+// write restated the field, the union join took one for proof that an arm was a
+// duplicate, and the two mutator predicates took one for proof that an argument
+// walk had left the receiver's local alone and put a fact the script had
+// stopped holding back in place. All four now walk.
 //
-// The rule that generalizes: an approximate answer has to carry its own
-// exactness. If a third caller needs proof from this, the fix is to make it
-// report whether it truncated rather than to keep auditing callers -- the
-// remaining ones want the grouping and are correct with it.
+// The rule that generalizes is that an approximate answer has to carry its own
+// exactness, and there were two ways to give this one that: report whether it
+// truncated, or stop asking it the question it cannot answer. The second is
+// what happened, at every caller that decides, and the reason is that all four
+// compare one pair. typeFactsIdentical is not a fallback for those -- it is
+// cheaper than the key outright, since it allocates nothing, stops at the first
+// difference instead of rendering both sides in full, and treats the same node
+// as the same fact at every level rather than only at the root. A truncation
+// flag would have bought them nothing but a refusal to conclude on deep facts,
+// which is a wrong answer where the walk has a right one.
+//
+// Every caller left groups: four cache keys and the union join's bucket, all of
+// which want facts that render alike in one bucket and are correct with it. A
+// new caller that needs to decide should call typeFactsIdentical rather than
+// reach for this, and one that needs to decide across many pairs should use
+// this as a bucket and confirm with that, which is what the join does.
 func typeFactKey(ty *TypeExpr) string {
 	var b strings.Builder
 	appendTypeFactKey(&b, ty, 0)
