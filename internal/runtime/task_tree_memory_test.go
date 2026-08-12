@@ -1168,3 +1168,73 @@ func TestDescendantCeilingBindsAnAncestorsGrowth(t *testing.T) {
 		t.Fatalf("caller still bound at %d after its callee finished, want its own %d", got, outer)
 	}
 }
+
+// bindingContextProbe re-enters the script through the context handed to
+// adapters at bind time, which is the public door an adapter actually holds.
+type bindingContextProbe struct {
+	script **Script
+	fn     string
+}
+
+func (p bindingContextProbe) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	// Captured at bind time and used later, the way an adapter that keeps a
+	// client around does. Deliberately not *Execution.Context(): that is a
+	// different door, and testing it proved nothing about this one.
+	captured := binding.Context
+	return map[string]Value{"probe": NewObject(map[string]Value{
+		"reenter": NewBuiltin("probe.reenter", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			if _, err := (*p.script).Call(captured, p.fn, nil, CallOptions{}); err != nil {
+				return NewNil(), err
+			}
+			return NewNil(), nil
+		}),
+	})}, nil
+}
+
+// TestBindingContextReentryJoinsTheCallersChain pins that the context adapters
+// are handed at bind time carries the chain.
+//
+// bindCapabilitiesForCall built the binding from the raw exec.ctx, which has no
+// chain node on it, so an adapter that captured CapabilityBinding.Context and
+// re-entered a script with it gave the callee the grandparent's node or none --
+// a fresh allowance, through the public door.
+//
+// The companion test that re-enters through the builtin's *Execution.Context()
+// passed throughout: it exercises a real path, but not this one. Two doors lead
+// into the same room and only one of them was closed.
+func TestBindingContextReentryJoinsTheCallersChain(t *testing.T) {
+	t.Parallel()
+
+	const (
+		quota  = 4 << 20
+		chunks = 500 // ~2.5 MiB each
+	)
+
+	chunk := strings.Repeat("q", 5000)
+	source := fmt.Sprintf(chunkPayloadFn, chunk) + fmt.Sprintf(`
+def inner()
+  mine = payload(%d)
+  mine.size
+end
+
+def run()
+  held = payload(%d)
+  probe.reenter()
+  held.size
+end`, chunks, chunks)
+
+	script := compileScriptWithConfig(t,
+		Config{MemoryQuotaBytes: quota, StepQuota: Unlimited}, source)
+
+	holder := script
+	_, err := script.Call(context.Background(), "run", nil,
+		callOptionsWithCapabilities(bindingContextProbe{script: &holder, fn: "inner"}))
+
+	if err == nil {
+		t.Fatalf("an outer call holding ~2.5 MiB re-entered the script through the context handed to the adapter at bind time, which allocated ~2.5 MiB more, and the %d MiB ceiling refused neither: the binding carries no chain node, so re-entry through it hands out the whole allowance again",
+			quota>>20)
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("re-entry stopped for an unrelated reason: %v", err)
+	}
+}
