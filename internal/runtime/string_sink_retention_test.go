@@ -454,3 +454,122 @@ end`)
 		})
 	}
 }
+
+// TestScanWeighsItsIndexTableWithItsOutput pins that the scan preflight counts
+// everything the array form holds at once.
+//
+// The engine's index table stays live the whole time the elements are built from
+// it, so the peak is roots + table + slots + every element's payload. The
+// preflight weighed the output without the table while the accumulator's seed
+// weighed the table without the output, and only the per-element check combined
+// them -- after a match had been copied. A subject of 5,000 one-byte matches
+// followed by one 700 KB match allocated 2.346 MiB under a 1.8 MB quota before
+// being rejected, against 0.619 MiB now -- the 1.73 MiB difference is the
+// matches themselves. What remains is the regex engine's own index table, which
+// master allocates identically for this script.
+//
+// Not parallel: it measures process-wide allocation.
+func TestScanWeighsItsIndexTableWithItsOutput(t *testing.T) {
+	subject := strings.Repeat("b", 5_000) + strings.Repeat("a", 700_000)
+	const source = `def run(s)
+  s.scan("b|a+")
+end`
+	// Rejected either way; the question is how much was copied getting there.
+	allocated := allocatedByRejectedCall(t, 1_800_000, source, subject)
+	if limit := int64(1536 << 10); allocated > limit {
+		t.Fatalf("a rejected scan allocated %.2f MiB, want under %.2f MiB: the matches were copied before the table and the output were weighed together",
+			float64(allocated)/(1<<20), float64(limit)/(1<<20))
+	}
+
+	// Counting the table in the preflight must not double-charge against the
+	// accumulator seed that also holds it: a quota this scan fit before must
+	// still admit it. 1,865,814 was the measured minimum both before and after.
+	script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: 1_900_000}, source)
+	if _, err := script.Call(context.Background(), "run", []Value{NewString(subject)}, CallOptions{}); err != nil {
+		t.Fatalf("the scan must still fit a quota that admitted it before: %v", err)
+	}
+}
+
+// TestYieldedCopyIsChargedOnce pins that a block iterator's copy is not counted
+// both as a reservation and as the value the block can reach.
+//
+// each_line and scan's block form held the reservation across runner.call, so
+// while the block ran the quota saw the receiver, the actual copy, and a
+// reservation for that same copy. A quota that genuinely fits the receiver and
+// one yielded value rejected as though two were live: each_line needed
+// 3,003,984 bytes for a receiver holding one 1 MB line and scan's block form
+// 1,804,021 for one 600 KB match, against 2,003,967 and 1,204,005 now -- one
+// copy less apiece.
+func TestYieldedCopyIsChargedOnce(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		quota  int
+		source string
+		arg    string
+	}{
+		{"each_line", 2_400_000, `def run(s)
+  n = 0
+  s.each_line { |l| n = n + l.length }
+  n
+end`, strings.Repeat("a", 1_000_000) + "\nb"},
+		{"scan with a block", 1_500_000, `def run(s)
+  n = 0
+  s.scan("a+") { |m| n = n + m.length }
+  n
+end`, "b" + strings.Repeat("a", 600_000)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: tc.quota}, tc.source)
+			if _, err := script.Call(context.Background(), "run", []Value{NewString(tc.arg)}, CallOptions{}); err != nil {
+				t.Fatalf("a receiver plus one yielded copy fits %d bytes, so this must not be rejected: %v", tc.quota, err)
+			}
+		})
+	}
+}
+
+// TestEachLineCostsWhatLinesCosts pins that walking a string line by line prices
+// the same peak as materializing its lines.
+//
+// Both hold the receiver and one line's copy at their most expensive moment --
+// each_line because it yields one at a time, lines because a two-line receiver's
+// array holds one short line beside one long one. Their minimum quotas differed
+// by 1,000,194 bytes while each_line double-charged its copy, which is that copy
+// exactly; they now agree to within a few hundred.
+//
+// Not parallel: it binary-searches quotas, which is slow enough to keep off the
+// parallel set.
+func TestEachLineCostsWhatLinesCosts(t *testing.T) {
+	arg := strings.Repeat("a", 1_000_000) + "\nb"
+	minimumQuota := func(source string) int {
+		lo, hi := 1, 32<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: mid}, source)
+			if _, err := script.Call(context.Background(), "run", []Value{NewString(arg)}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	walked := minimumQuota(`def run(s)
+  n = 0
+  s.each_line { |l| n = n + l.length }
+  n
+end`)
+	built := minimumQuota(`def run(s)
+  s.lines.length
+end`)
+
+	// A generous margin: the gap this catches is a whole line copy, three orders
+	// of magnitude above the structural difference between the two calls.
+	if gap := walked - built; gap > 64<<10 {
+		t.Fatalf("each_line needs %d bytes where lines needs %d, a gap of %d: the yielded copy is being charged twice",
+			walked, built, gap)
+	}
+}
