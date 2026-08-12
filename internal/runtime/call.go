@@ -1455,6 +1455,61 @@ func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctio
 	return callEnv, nil
 }
 
+type recursionBudgetKey struct{}
+
+// contextWithRecursionBudget publishes the call depth a nested Execution may
+// still use, for a call that continues its caller's Go stack instead of
+// starting one of its own.
+//
+// Zero means the callee starts fresh, and a call that does get its own
+// goroutine has to publish that rather than say nothing: the context it derives
+// from can carry a budget belonging to a stack it is not running on.
+func contextWithRecursionBudget(ctx context.Context, remaining int) context.Context {
+	if remaining == recursionBudgetFromContext(ctx) {
+		return ctx
+	}
+	return context.WithValue(ctx, recursionBudgetKey{}, remaining)
+}
+
+func recursionBudgetFromContext(ctx context.Context) int {
+	if ctx == nil {
+		return 0
+	}
+	remaining, _ := ctx.Value(recursionBudgetKey{}).(int)
+	return remaining
+}
+
+// recursionCapForCall reports the call-depth ceiling one execution runs under.
+//
+// The limit exists to bound one host stack, so a call tree that spreads itself
+// over nested Executions on that same stack has to share it. A task job run
+// inline continues its submitter's goroutine, and took a fresh cap: the limit
+// then bounded each level rather than the stack, which is the same defect as a
+// per-execution sleep total resetting for every task worker (#29).
+//
+// What this buys is that the cap carries rather than resets: a level that
+// descended deeply hands on what is left of it, so the usual shape -- a scope
+// opened and awaited at one depth, as Tasks.map does -- costs one limit across
+// the whole chain. It is a snapshot taken where the scope opens, not a pool the
+// levels debit, so it is not a bound on its own: a Tasks.run block that
+// descends after opening its scope is measured before that descent, and a level
+// holding one frame hands on a budget that has barely shrunk. maxInlineTaskDepth
+// is what bounds the number of levels; this bounds what each of them may spend.
+//
+// The engine's own limit still applies when it is tighter, so an adapter
+// re-entering a script on a stricter engine cannot be lent an allowance that
+// engine's configuration refuses.
+func recursionCapForCall(ctx context.Context, limit int) int {
+	inherited := recursionBudgetFromContext(ctx)
+	if inherited < 1 {
+		return limit
+	}
+	if limit > 0 && limit < inherited {
+		return limit
+	}
+	return inherited
+}
+
 func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts CallOptions) *Execution {
 	// The sleeping budget is established here rather than at the first sleep,
 	// so that every task group formed later inherits it through the context it
@@ -1473,7 +1528,7 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 		ctx:           ctx,
 		quota:         script.engine.config.StepQuota,
 		memoryQuota:   script.engine.config.MemoryQuotaBytes,
-		recursionCap:  script.engine.config.RecursionLimit,
+		recursionCap:  recursionCapForCall(ctx, script.engine.config.RecursionLimit),
 		root:          root,
 		strictEffects: script.engine.config.StrictEffects,
 		allowRequire:  opts.AllowRequire,
