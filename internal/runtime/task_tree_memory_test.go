@@ -1243,3 +1243,68 @@ end`, chunks, chunks)
 	}
 }
 
+// TestRetirementKeepsAccountingForDescendantsThatOutliveIt pins what it means
+// for a level to retire while something it started is still running.
+//
+// A capability adapter can begin a nested call with the published binding
+// context and let it run on after the call that made it has returned. Retirement
+// used to assume the opposite -- that every descendant is awaited before its
+// parent returns -- and cleared descendant accounting unconditionally. That
+// erased a live callee's figure, and if the callee then blocked without another
+// memory check, an ancestor was admitted against a total that omitted it for as
+// long as it stayed blocked.
+//
+// The decision is that retirement hands the accounting on rather than dropping
+// it: a level's own bytes go, because its own memory is gone, and what its
+// descendants hold stays until they retire in their turn. That is why what is
+// counted is live *descendants* rather than live children -- retirement is not
+// ordered by depth, so a grandparent must not call itself idle while a
+// great-grandchild is still allocating.
+//
+// This drives the ordering directly rather than racing it, and it names the
+// new accounting, so it pins the invariant rather than running against the
+// commit before it.
+func TestRetirementKeepsAccountingForDescendantsThatOutliveIt(t *testing.T) {
+	t.Parallel()
+
+	const (
+		outer = 8 << 20
+		inner = 4 << 20
+	)
+
+	root := newMemoryChain(nil, outer)
+	mid := newMemoryChain(root, outer)
+	mid.register()
+	// The asynchronous callee, under a tighter ceiling of its own.
+	callee := newMemoryChain(mid, inner)
+	callee.register()
+
+	// It publishes and then blocks, holding 3 MiB.
+	if callee.publishAndExceeds(3 << 20) {
+		t.Fatalf("3 MiB under a 4 MiB ceiling must be admitted")
+	}
+
+	// The level that started it returns while it is still running.
+	mid.release()
+
+	if got := mid.liveDescendants.Load(); got != 1 {
+		t.Fatalf("the retired level counts %d live descendants, want 1: its callee is still running", got)
+	}
+	if mid.marginal.Load() != 0 {
+		t.Fatalf("a retired level must stop contributing its own bytes; its memory is gone")
+	}
+
+	// The root now grows. The path through the still-live callee is 2 + 3 MiB
+	// against the callee's 4 MiB ceiling, so it must be refused even though the
+	// level between them has retired.
+	if !root.publishAndExceeds(2 << 20) {
+		t.Fatalf("the root grew the shared path to 5 MiB while a callee bounded at %d MiB still held 3 MiB of it, and was admitted: retiring the level in between discarded the callee's accounting, so an ancestor stopped seeing a descendant that was still allocating",
+			inner>>20)
+	}
+
+	// Once the callee retires too, nothing below binds the root any more.
+	callee.release()
+	if got := root.headroom(); got != outer {
+		t.Fatalf("root still bound at %d after every descendant finished, want its own %d", got, outer)
+	}
+}
