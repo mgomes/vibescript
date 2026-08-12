@@ -674,7 +674,23 @@ func (exec *Execution) memoryExceeded(used int) bool {
 	}
 	contribution := used
 	if chain.parent != nil {
-		contribution = used - exec.memBaseline
+		// Before the baseline is established this level is still binding what
+		// it inherited and holds nothing of its own, so it contributes nothing.
+		// The chain's existing total is still checked: an ancestor that is
+		// already over its ceiling must refuse here too.
+		//
+		// No check reaches here with a graph worth charging today -- binding
+		// runs no metered allocation between newExecutionForCall and the
+		// baseline seam, verified by panicking on the path across the whole
+		// suite. The guard is for the next check site added before that seam,
+		// because the failure it prevents is silent and permanent: the level
+		// would publish its whole inherited graph as its own marginal, and a
+		// memory refusal is latched, so the transient would never heal.
+		if !exec.memBaselineSet {
+			contribution = 0
+		} else {
+			contribution = used - exec.memBaseline
+		}
 	}
 	return chain.publishAndExceeds(contribution)
 }
@@ -700,6 +716,7 @@ func (exec *Execution) checkMemoryEstablishingBaseline() error {
 	}
 	used := exec.estimateMemoryUsage()
 	exec.memBaseline = used
+	exec.memBaselineSet = true
 	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}

@@ -113,6 +113,13 @@ type Execution struct {
 	// modules it inherited. Subtracting it is what keeps structure shared with
 	// an ancestor from being counted once per level.
 	memBaseline int
+	// memBaselineSet marks the baseline as established. Until it is, this
+	// execution has nothing of its own by definition -- it is still binding the
+	// structure it inherited -- so it contributes nothing to the chain. Without
+	// the guard, a memory check firing during binding published the whole
+	// inherited graph as this level's marginal, and since a quota refusal is
+	// latched, that transient over-charge became permanent.
+	memBaselineSet bool
 	// exhausted latches the first genuine budget-exhaustion error (step
 	// quota, memory quota, or output limit) raised on this execution. Once
 	// set, step() fails immediately with it and no rescue clause matches any

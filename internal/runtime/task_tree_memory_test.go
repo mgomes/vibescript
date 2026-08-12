@@ -476,3 +476,38 @@ func TestMemoryChainNeverRunsBackwards(t *testing.T) {
 		t.Fatalf("900 already held plus 200 published exceeds the limit of 1000, but the chain allowed it")
 	}
 }
+
+// TestNestedTasksShareOneInheritedGlobalWithinTheQuota is an over-correction
+// guard, and like the other guards here it passes on both sides of this change.
+//
+// It pins the case where the constant extra copy of the inherited globals has
+// to fit: eight levels sharing one 3 MiB global under an 8 MiB quota, with no
+// level allocating anything of its own. Anything that charges a level more than
+// once for what it inherited fails here.
+//
+// It does not pin the pre-baseline guard in memoryExceeded. Nothing reaches
+// that path today -- binding runs no metered allocation before the baseline
+// seam -- so no test can drive it, and it is documented there as insurance for
+// the next check site rather than as a fixed defect.
+func TestNestedTasksShareOneInheritedGlobalWithinTheQuota(t *testing.T) {
+	t.Parallel()
+
+	const (
+		levels     = 8
+		quota      = 8 << 20
+		sharedSize = 3 << 20
+	)
+
+	script := compileScriptWithConfig(t,
+		Config{MaxTaskConcurrency: levels + 4, MemoryQuotaBytes: quota, StepQuota: Unlimited},
+		fmt.Sprintf(sharedGlobalNestScript, levels))
+
+	opts := CallOptions{Globals: map[string]Value{
+		"shared_blob": NewString(strings.Repeat("s", sharedSize)),
+	}}
+
+	if _, err := script.Call(context.Background(), "run", nil, opts); err != nil {
+		t.Fatalf("%d nested levels sharing one %d MiB global under a %d MiB quota were refused, though no level allocates anything of its own: a level is being charged more than once for what it inherited: %v",
+			levels, sharedSize>>20, quota>>20, err)
+	}
+}
