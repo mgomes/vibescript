@@ -3168,13 +3168,32 @@ func hashMemberTransforms(property string) (Value, error) {
 			return NewArray(out), nil
 		}), nil
 	case "map_with_index":
-		return NewAutoBuiltin("hash.map_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("hash.map_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (mapped Value, err error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.map_with_index does not take arguments")
 			}
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.map_with_index does not take keyword arguments")
 			}
+			// Built before the root is registered below, so its baseline walks the
+			// receiver exactly once. A Value's inline header is counted per
+			// occurrence and only its payload deduplicates, so an accumulator
+			// snapshotted after the registration would count that header twice --
+			// once through the root, once through its own call-root walk. Both
+			// branches share the snapshot; only the scratch each reserves differs.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			// Every result stays in a Go-local slice until the array below exists,
+			// so the checks inside later block calls could not reach it: a block
+			// allocating a large temporary was measured against a graph missing
+			// everything the loop had already kept, and the two passed separately
+			// though they coexist. Registering the filled prefix as a walk root
+			// puts the retained output in each of those checks, re-derived as the
+			// block leaves it (see memory_output.go).
+			var produced []Value
+			exec.pushOutputWalkRoot(retainedValuesWithReceiver(receiver, &produced))
+			// Settled on the way out rather than only after a successful block
+			// call, so a block that raises pays what one that returns pays.
+			defer func() { err = exec.endOutputWalkRoot(err) }()
 			runner, err := newBlockCallRunner(exec, block, "hash.map_with_index", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
@@ -3182,7 +3201,6 @@ func hashMemberTransforms(property string) (Value, error) {
 			defer exec.beginBlockIterationRegion().end()
 			if hashHasTypedEntries(receiver) {
 				count := receiver.HashLen()
-				acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 				if err := acc.reserveScratch(sortedHashEntryBufferBytes(count)); err != nil {
 					return NewNil(), err
 				}
@@ -3210,6 +3228,8 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					out = append(out, val)
+					produced = out
+					exec.addRetainedOutput(val)
 					if err := acc.addConservative(val, cap(out)); err != nil {
 						return NewNil(), err
 					}
@@ -3224,7 +3244,6 @@ func hashMemberTransforms(property string) (Value, error) {
 			// baseline includes the live receiver and block (held on the Go stack during
 			// the call), and reserveScratch folds in the sorted key list that stays live
 			// for the whole build so it is charged alongside the accumulating result.
-			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 			if err := acc.reserveScratch(sortedKeyBufferBytes(len(entries))); err != nil {
 				return NewNil(), err
 			}
@@ -3273,6 +3292,8 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out = append(out, val)
+				produced = out
+				exec.addRetainedOutput(val)
 				if err := acc.addConservative(val, cap(out)); err != nil {
 					return NewNil(), err
 				}
