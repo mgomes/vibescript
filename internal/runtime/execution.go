@@ -99,6 +99,20 @@ type Execution struct {
 	// Lazily created by the first sleep and inherited through the call
 	// context, the way the task concurrency pool is.
 	sleepBudget *sleepBudget
+	// memChain bounds live memory across this chain of nested calls. Each
+	// nested task level runs on its own Execution and read memoryQuota fresh,
+	// so the host's quota was handed out again in full per level and live
+	// memory multiplied with depth. See memoryChain.
+	memChain *memoryChain
+	// memChainNode is this execution's own node, stored inline so that linking
+	// into the chain costs no allocation on the task spawn path. memChain
+	// points at it when the chain is active and is nil otherwise.
+	memChainNode memoryChain
+	// memBaseline is what this execution's graph cost before any of the
+	// script's own code ran: the root env, the globals bound into it and the
+	// modules it inherited. Subtracting it is what keeps structure shared with
+	// an ancestor from being counted once per level.
+	memBaseline int
 	// exhausted latches the first genuine budget-exhaustion error (step
 	// quota, memory quota, or output limit) raised on this execution. Once
 	// set, step() fails immediately with it and no rescue clause matches any
