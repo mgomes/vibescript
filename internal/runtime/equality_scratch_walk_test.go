@@ -130,45 +130,76 @@ func TestEachComparisonPricesItsOwnScratch(t *testing.T) {
 	}
 }
 
-// Walk scratch is Go-local and never reserved, so whatever the validator
-// declines to price is invisible to the periodic check as well. A granule
-// fixed in bytes therefore stops meaning anything the moment the quota it was
-// sized against is not the quota in force: a host configuring well under the
-// default profile, or an execution that has nearly exhausted a large quota,
-// both leave less headroom than the granule allows to go unpriced. The granule
-// has to track the budget actually remaining, while staying coarse enough at
-// full headroom that small comparisons are still free.
-func TestScratchPricingTracksQuotaAndHeadroom(t *testing.T) {
+// Walk scratch used to be Go-local and never reserved, so whatever the
+// validator declined to price was invisible to every other check as well: an
+// execution could sit arbitrarily far over its quota with nothing able to
+// notice. Deciding when to look cannot fix that on its own, because most
+// estimator entry points never refresh the figure such a decision would read.
+// The scratch is therefore counted for as long as the walk holds it, which the
+// periodic check and every call-root and admission estimator pick up through
+// estimateScalarBase without knowing it exists.
+func TestScratchIsCountedWhileTheWalkHoldsIt(t *testing.T) {
+	big := legacyHash("x_", 4000)
+	exec := &Execution{root: newEnv(nil), memoryQuota: 16 << 20}
+	exec.envStack = exec.envStackArr[:0]
+
+	// A quota with room for the graph but not for the scratch on top of it,
+	// and a scratch small enough that the granule asks for no check of its own.
+	used := exec.estimateMemoryUsage()
+	exec.memoryQuota = used + (16 << 10)
+	const scratch = 48 << 10
+	if scratch < exec.equalityScratchGranule() {
+		t.Fatalf("test premise: %d bytes of scratch must sit below the %d-byte granule",
+			scratch, exec.equalityScratchGranule())
+	}
+
+	validate := exec.equalityScratchValidatorFunc()
+	_ = validate(0, big, big)
+	_ = validate(scratch, big, big)
+
+	if err := exec.checkMemory(); err == nil {
+		t.Errorf("quota %d with %d used: after admitting %d bytes of scratch the "+
+			"execution is over its quota, but checkMemory reports it fits — the "+
+			"scratch a walk holds must be counted, not merely priced",
+			exec.memoryQuota, used, scratch)
+	}
+
+	// And it is released with the walk rather than charged to later work.
+	exec.equalityScratchReleaseFunc()()
+	if err := exec.checkMemory(); err != nil {
+		t.Errorf("the walk's scratch outlived the comparison: %v", err)
+	}
+}
+
+// The granule is a fraction of the configured quota, not a fixed byte count, so
+// a host configuring well below the default profile is not left with a granule
+// sized for a quota it never asked for.
+func TestScratchPricingScalesWithQuota(t *testing.T) {
 	const scratch = 48 << 10
 	big := legacyHash("x_", 4000)
 
 	for _, tc := range []struct {
-		name        string
-		quota, used int
-		wantPriced  bool
+		name       string
+		quota      int
+		wantPriced bool
 	}{
-		{"host configures a quota below the granule", 128 << 10, 0, true},
-		{"default quota nearly exhausted", 16 << 20, (16 << 20) - (8 << 10), true},
-		{"default quota with ample headroom", 16 << 20, 0, false},
+		{"host configures a quota below the old fixed granule", 128 << 10, true},
+		{"default profile leaves the small-composite path free", 16 << 20, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			exec := &Execution{root: newEnv(nil), memoryQuota: tc.quota}
 			exec.envStack = exec.envStackArr[:0]
 			validate := exec.equalityScratchValidatorFunc()
-
-			// Open the comparison, then state the headroom the last estimate saw.
 			_ = validate(0, big, big)
-			exec.lastMemoryUsage = tc.used
 
 			estimatorVisits.Store(0)
 			estimatorVisitCounting.Store(true)
 			_ = validate(scratch, big, big)
 			estimatorVisitCounting.Store(false)
 
-			priced := estimatorVisits.Load() > 0
-			if priced != tc.wantPriced {
-				t.Errorf("%d KiB of scratch under a %d-byte quota with %d bytes used: priced=%v, want %v",
-					scratch>>10, tc.quota, tc.used, priced, tc.wantPriced)
+			if priced := estimatorVisits.Load() > 0; priced != tc.wantPriced {
+				t.Errorf("%d KiB of scratch under a %d-byte quota: priced=%v, want %v",
+					scratch>>10, tc.quota, priced, tc.wantPriced)
 			}
 		})
 	}

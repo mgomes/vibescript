@@ -2644,11 +2644,6 @@ func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	}
 
 	s.close()
-	// Both the periodic quota check and the equality scratch validator reach
-	// the estimator here, so recording the total keeps the headroom figure the
-	// scratch validator batches against as fresh as the last check of either
-	// kind (see equalityScratchGranule).
-	exec.lastMemoryUsage = total
 	return total
 }
 
