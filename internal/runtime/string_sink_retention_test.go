@@ -455,6 +455,31 @@ end`)
 	}
 }
 
+// lowestAllocOverRuns reports the smallest number of bytes any of several
+// identical calls allocated, and asserts each one was accepted or rejected as
+// expected. The minimum discards sporadic background allocation from other
+// goroutines, which only ever adds.
+//
+// Callers are not parallel: TotalAlloc is process-wide.
+func lowestAllocOverRuns(t *testing.T, quota int, source, arg string, wantAccepted bool) int64 {
+	t.Helper()
+
+	lowest := int64(1) << 62
+	for range 5 {
+		script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: quota}, source)
+		var before, after goruntime.MemStats
+		goruntime.GC()
+		goruntime.ReadMemStats(&before)
+		_, err := script.Call(context.Background(), "run", []Value{NewString(arg)}, CallOptions{})
+		goruntime.ReadMemStats(&after)
+		if accepted := err == nil; accepted != wantAccepted {
+			t.Fatalf("quota %d: accepted = %v, want %v (err=%v)", quota, accepted, wantAccepted, err)
+		}
+		lowest = min(lowest, int64(after.TotalAlloc-before.TotalAlloc))
+	}
+	return lowest
+}
+
 // TestScanWeighsItsIndexTableWithItsOutput pins that the scan preflight counts
 // everything the array form holds at once.
 //
@@ -462,11 +487,17 @@ end`)
 // it, so the peak is roots + table + slots + every element's payload. The
 // preflight weighed the output without the table while the accumulator's seed
 // weighed the table without the output, and only the per-element check combined
-// them -- after a match had been copied. A subject of 5,000 one-byte matches
-// followed by one 700 KB match allocated 2.346 MiB under a 1.8 MB quota before
-// being rejected, against 0.619 MiB now -- the 1.73 MiB difference is the
-// matches themselves. What remains is the regex engine's own index table, which
-// master allocates identically for this script.
+// them -- after a match had been copied.
+//
+// The assertion is how much a rejected scan saves against an accepted one over
+// the same subject, not how much it allocates. An absolute figure is not
+// portable: the race detector adds about 7.3 MiB of its own bookkeeping to both,
+// which swamped a threshold calibrated on an uninstrumented allocator and turned
+// this test red in CI while the behavior was unchanged. The saving is the same
+// quantity either way -- an accepted scan copies 5,000 small matches and one
+// 700 KB match, a correctly rejected one copies none of them -- so it survives
+// the instrument: 1.74 MiB against 1.51 MiB under -race, where copying before
+// rejecting leaves only 0.43 MiB and 0.83 MiB.
 //
 // Not parallel: it measures process-wide allocation.
 func TestScanWeighsItsIndexTableWithItsOutput(t *testing.T) {
@@ -474,19 +505,17 @@ func TestScanWeighsItsIndexTableWithItsOutput(t *testing.T) {
 	const source = `def run(s)
   s.scan("b|a+")
 end`
-	// Rejected either way; the question is how much was copied getting there.
-	allocated := allocatedByRejectedCall(t, 1_800_000, source, subject)
-	if limit := int64(1536 << 10); allocated > limit {
-		t.Fatalf("a rejected scan allocated %.2f MiB, want under %.2f MiB: the matches were copied before the table and the output were weighed together",
-			float64(allocated)/(1<<20), float64(limit)/(1<<20))
-	}
 
-	// Counting the table in the preflight must not double-charge against the
-	// accumulator seed that also holds it: a quota this scan fit before must
-	// still admit it. 1,865,814 was the measured minimum both before and after.
-	script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: 1_900_000}, source)
-	if _, err := script.Call(context.Background(), "run", []Value{NewString(subject)}, CallOptions{}); err != nil {
-		t.Fatalf("the scan must still fit a quota that admitted it before: %v", err)
+	rejected := lowestAllocOverRuns(t, 1_800_000, source, subject, false)
+	// The same scan under a quota that admits it, which necessarily copies every
+	// match. Counting the table in the preflight must not double-charge against
+	// the accumulator seed that also holds it, so this doubles as proof that a
+	// quota this scan fit before still admits it.
+	accepted := lowestAllocOverRuns(t, 1_900_000, source, subject, true)
+
+	if saved := accepted - rejected; saved < 1100<<10 {
+		t.Fatalf("a rejected scan saved only %.2f MiB against an accepted one (%.2f vs %.2f), want at least %.2f MiB: the matches were copied before the table and the output were weighed together",
+			float64(saved)/(1<<20), float64(rejected)/(1<<20), float64(accepted)/(1<<20), float64(1100<<10)/(1<<20))
 	}
 }
 
@@ -571,5 +600,50 @@ end`)
 	if gap := walked - built; gap > 64<<10 {
 		t.Fatalf("each_line needs %d bytes where lines needs %d, a gap of %d: the yielded copy is being charged twice",
 			walked, built, gap)
+	}
+}
+
+// TestScanResultBackingCostsWhatItCharges pins that a scan's result array costs
+// what the preflight charged for it, across the size where the build used to
+// switch from allocating to growing.
+//
+// The result was built at a capped capacity and grown by append, which
+// overshoots: 257 matches reached a backing of 575 slots while the preflight
+// charged the 257 it would use, leaving 10,176 bytes unpriced for acc.add to
+// discover only after the last and largest match had been copied. Allocating the
+// approved count instead makes the projection exact and lowers the peak.
+//
+// The assertion is the marginal cost of a match rather than a fixed quota, so it
+// survives retuning of what a match costs: growing the backing made 50 extra
+// matches cost 269 bytes each across this boundary against 93 when the same 50
+// are added below it.
+//
+// Not parallel: it binary-searches quotas.
+func TestScanResultBackingCostsWhatItCharges(t *testing.T) {
+	minimumQuota := func(matches int) int {
+		subject := strings.Repeat("ab ", matches)
+		lo, hi := 1, 8<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: 500_000_000, MemoryQuotaBytes: mid},
+				`def run(s)
+  s.scan("[a-z]+")
+end`)
+			if _, err := script.Call(context.Background(), "run", []Value{NewString(subject)}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	// 250 sits below the capacity the build used to start from and 300 above it,
+	// so a strategy that grows charges the second for slots it will not fill.
+	below := minimumQuota(250)
+	above := minimumQuota(300)
+	if perMatch := (above - below) / 50; perMatch > 150 {
+		t.Fatalf("50 matches past the 256-match boundary cost %d bytes each (%d to %d), want at most 150: the result backing grows past what the preflight charges",
+			perMatch, below, above)
 	}
 }

@@ -4244,12 +4244,25 @@ func stringRIndexResult(exec *Execution, receiver, needle Value, offset int) (Va
 	return NewInt(int64(index)), nil
 }
 
-// stringScanInitialCap bounds the result slice's initial capacity so a subject
-// that yields few matches under a tight step or memory quota does not reserve a
-// large backing array before the per-match checks can reject the call. append
-// grows the backing as matches accumulate, keeping the live allocation
-// proportional to the matches the quotas actually permit.
-const stringScanInitialCap = 256
+// projectedScanResultSlots reports how many slots String#scan's result backing
+// will hold, which is exactly one per match.
+//
+// The build used to start at a capped capacity and let append grow it, so that
+// a subject yielding few matches did not reserve a large backing before the
+// per-match checks could reject the call. checkProjectedScanOutputBytes now
+// weighs the whole backing, every element and the index table against the quota
+// before the first match is copied, which subsumes that guard and is stricter
+// than it was: nothing is allocated until the complete result has been approved.
+//
+// Growing instead of preallocating also made the projection wrong in the unsafe
+// direction. append overshoots -- 257 matches reached a capacity of 575, leaving
+// 318 slots and 10,176 bytes unpriced -- while the preflight charged the logical
+// match count, so the last and largest match could be copied before acc.add saw
+// the real backing. Allocating the count that was approved makes the projection
+// exact and lowers the peak rather than raising it.
+func projectedScanResultSlots(allMatches [][]int) int {
+	return len(allMatches)
+}
 
 // stringScan implements String#scan with Ruby's capture-aware result shape while
 // keeping its memory bounded by the sandbox quotas. With no capture groups each
@@ -4351,7 +4364,7 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 		return NewNil(), err
 	}
 
-	out := make([]Value, 0, min(len(allMatches), stringScanInitialCap))
+	out := make([]Value, 0, projectedScanResultSlots(allMatches))
 	for _, loc := range allMatches {
 		// Charge a step per match so a pattern that produces a flood of matches
 		// cannot starve the step quota or cancellation checks while the result is
@@ -4698,7 +4711,7 @@ func (exec *Execution) checkProjectedScanOutputBytes(text string, allMatches [][
 	for _, loc := range allMatches {
 		payload = saturatingAdd(payload, projectedRegexElementPayloadBytes(text, loc, groups))
 	}
-	return exec.checkProjectedArrayBytesWithCallRoots(len(allMatches), payload, receiver, args, kwargs, block)
+	return exec.checkProjectedArrayBytesWithCallRoots(projectedScanResultSlots(allMatches), payload, receiver, args, kwargs, block)
 }
 
 // reserveYieldedCopy reserves payload for a copy a block iterator is about to
@@ -4721,6 +4734,24 @@ func (exec *Execution) checkProjectedScanOutputBytes(text string, allMatches [][
 // detachedSubstring implements this same contract for members that return one
 // value; this exists for scan, whose element may be a capture array of several
 // copies rather than a single string.
+//
+// Known residual: the previous yield is still reachable when the next copy is
+// made. The loop's block-argument slot holds it until it is overwritten, and a
+// block whose body cannot capture its scope reuses one environment whose
+// bindings are cleared at the start of the next call rather than at the end of
+// the last, so the copy before it survives across this reservation. The
+// transient peak is therefore the receiver and two copies where this charges the
+// receiver and one: an each_line over two 1 MB lines that retains neither runs
+// under 3,003,966 bytes, while the same receiver with a block that does retain
+// both -- which the walk can see -- is charged 4,004,313. The gap is bounded by
+// one yielded value, so by the receiver's own length, and scan's block form has
+// the same lifetime.
+//
+// Closing it needs the runner to drop its argument binding when a call ends
+// instead of when the next begins, which every iterator built on blockCallRunner
+// shares. Charging the previous copy here instead would double-count the case
+// where the block kept it, because the walk already reaches it there -- the
+// false rejection this reservation's extent exists to avoid.
 func (exec *Execution) reserveYieldedCopy(payload int, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, error) {
 	delta := exec.reserveLoopScratch(payload)
 	if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
