@@ -732,25 +732,37 @@ func (exec *Execution) checkMemory() error {
 	return exec.checkMemoryMetered()
 }
 
-// checkMemoryEstablishingBaseline runs a call's entry memory check and records
-// what it measured as this execution's inherited baseline.
+// captureMemoryInheritedBaseline records what this call inherited, which is
+// what its later contributions to the chain are measured from.
 //
-// It runs once, after globals and capabilities have bound and before any of the
-// script's own code has, which is exactly the moment the graph holds only what
-// the call inherited. Reusing that check's walk is what keeps the baseline free:
-// a separate walk would cost one full graph traversal per spawned execution, on
-// the flat-map path that must not regress.
-func (exec *Execution) checkMemoryEstablishingBaseline() error {
-	if exec.memoryQuota <= 0 {
-		return nil
+// The baseline is the graph tail: the task globals this level was handed and
+// the modules it arrived with. That -- and only that -- is structure an
+// ancestor already charges, so subtracting it is what keeps one shared global
+// from being counted once per level.
+//
+// Everything else the entry graph holds is this level's own: a root env of its
+// own, its own clones of the call's classes and enums, its own capability
+// bindings. Those are fresh per call and must be charged. Taking the baseline
+// from the whole entry estimate instead subtracted them too, giving every level
+// a free allowance the size of its own definitions -- 17,398 bytes per level
+// for a hundred-class script, 1.06 MiB across a 64-deep chain -- which is a
+// smaller copy of the defect the chain exists to close.
+//
+// Subtracting a separately measured "setup" walk does not work either, and the
+// reason is worth recording: at this point the tail is already charged, so a
+// full walk here contains the inherited globals too, and subtracting it
+// canceled them out and put the chain straight back to charging one global per
+// level. The tail is the quantity to name, not a difference between two walks.
+//
+// Only a level with an ancestor pays for this. A chain root publishes its
+// estimate whole, so its baseline is never consulted.
+func (exec *Execution) captureMemoryInheritedBaseline() {
+	if exec.memoryQuota <= 0 || exec.memChain == nil || exec.memChain.parent == nil {
+		return
 	}
-	used := exec.estimateMemoryUsage()
-	exec.memBaseline = used
+	est := newMemoryEstimator()
+	exec.memBaseline = exec.estimateGraphTail(est, taskLazyGlobalsFromContext(exec.Context()))
 	exec.memBaselineSet = true
-	if exec.memoryExceeded(used) {
-		return exec.memoryQuotaExceededError()
-	}
-	return nil
 }
 
 // checkMemoryValue charges a single just-produced value against the memory
@@ -774,8 +786,19 @@ func (exec *Execution) checkMemoryMetered() error {
 	return nil
 }
 
+// checkMemoryWith charges current usage plus extras, and is the hard check the
+// per-value sites reach.
+//
+// It measures and consults memoryExceeded directly rather than delegating to
+// memoryFitsWith. Delegating meant every checkMemoryValue site compared only
+// this execution's own quota and never published to the chain, so a parent that
+// allocated while a spawned worker was blocked left its marginal stale and its
+// descendants admitted memory against a total that predated the allocation.
 func (exec *Execution) checkMemoryWith(extras ...Value) error {
-	if !exec.memoryFitsWith(extras...) {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	if exec.memoryExceeded(exec.estimateMemoryUsage(extras...)) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
