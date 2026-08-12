@@ -3623,7 +3623,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			return out, nil
 		}), nil
 	case "transform_values":
-		return NewAutoBuiltin("hash.transform_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("hash.transform_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (transformed Value, err error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.transform_values does not take arguments")
 			}
@@ -3638,12 +3638,28 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
 				}
+				// Built before the root is registered below, so its baseline walks
+				// the receiver exactly once. A Value's inline header is counted per
+				// occurrence and only its payload deduplicates, so an accumulator
+				// snapshotted after the registration would count that header twice.
+				acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
+				// Every transformed value stays in Go locals until this builtin
+				// returns, so the checks inside later block calls could not reach
+				// it: a block allocating a large temporary was measured against a
+				// graph missing everything the loop had already transformed, and
+				// the two passed separately though they coexist. Registering the
+				// transformed prefix as a walk root puts the retained output in
+				// each of those checks (see memory_output.go).
+				var produced []HashEntry
+				exec.pushOutputWalkRoot(retainedEntryValues(&produced))
+				// Settled on the way out rather than only after a successful block
+				// call, so a block that raises pays what one that returns pays.
+				defer func() { err = exec.endOutputWalkRoot(err) }()
 				runner, err := newBlockCallRunner(exec, block, "hash.transform_values", receiver, nil, kwargs)
 				if err != nil {
 					return NewNil(), err
 				}
 				defer exec.beginBlockIterationRegion().end()
-				acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 				out := newTypedResultHash(count)
 				var blockArg [1]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
@@ -3676,6 +3692,10 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					ordered[i].Value = nextValue
+					// Published before the commit below so the memoized total and a
+					// reference walk of the root see the same set of values.
+					produced = ordered[:i+1]
+					exec.addRetainedOutput(nextValue)
 					if !deferBuild {
 						// Copying the entry canonicalizes its key; bill the
 						// payload before the walk.
@@ -3719,17 +3739,6 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.transform_values", receiver, nil, kwargs)
-			if err != nil {
-				return NewNil(), err
-			}
-			// The loop below writes only builtin-local state (the out map), which is
-			// unreachable from any root until this builtin returns, so the region's
-			// vouch holds: everything reachable it touches goes through the block, whose
-			// own writes bump or are re-walked fresh. Without it a host-built (untyped)
-			// receiver falls to the builtin bypass and re-walks the whole hash on every
-			// check, which is quadratic in the entry count.
-			defer exec.beginBlockIterationRegion().end()
 			// The block can return a fresh heap value per entry, and those results live
 			// only in the Go-local out map until the builtin returns, so the structural
 			// reservation above cannot bound them. Charge each result incrementally
@@ -3743,8 +3752,37 @@ func hashMemberTransforms(property string) (Value, error) {
 			// are already held against the quota by the reserveLoopScratch above (which
 			// the accumulator's baseline reads through estimateMemoryUsageBase), so the
 			// accumulator charges only the per-entry payloads beyond those slots.
+			//
+			// It is built before the root is registered below so its baseline walks the
+			// receiver exactly once. A Value's inline header is counted per occurrence
+			// and only its payload deduplicates, so an accumulator snapshotted after
+			// the registration would count that header twice.
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
+			// Built before the runner so it can be registered before the runner
+			// snapshots its bind baseline; the reservation above already holds its
+			// bytes against the quota.
 			out := make(map[string]Value, len(entries))
+			// Every result stays in this Go-local map until the hash below exists,
+			// so the checks inside later block calls could not reach it: a block
+			// allocating a large temporary was measured against a graph missing
+			// everything the loop had already kept, and the two passed separately
+			// though they coexist. Registering the map as a walk root puts the
+			// retained output in each of those checks (see memory_output.go).
+			exec.pushOutputWalkRoot(retainedHashValues(out))
+			// Settled on the way out rather than only after a successful block
+			// call, so a block that raises pays what one that returns pays.
+			defer func() { err = exec.endOutputWalkRoot(err) }()
+			runner, err := newBlockCallRunner(exec, block, "hash.transform_values", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
+			// The loop below writes only builtin-local state (the out map), which is
+			// unreachable from any root until this builtin returns, so the region's
+			// vouch holds: everything reachable it touches goes through the block, whose
+			// own writes bump or are re-walked fresh. Without it a host-built (untyped)
+			// receiver falls to the builtin bypass and re-walks the whole hash on every
+			// check, which is quadratic in the entry count.
+			defer exec.beginBlockIterationRegion().end()
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
@@ -3763,6 +3801,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out[key] = nextValue
+				exec.addRetainedOutput(nextValue)
 				if err := acc.add(nextValue); err != nil {
 					return NewNil(), err
 				}

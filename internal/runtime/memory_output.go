@@ -95,6 +95,43 @@ func retainedValuesWithReceiver(receiver Value, out *[]Value) outputWalkRoot {
 	}
 }
 
+// retainedEntryValues walks the transformed values a driver has written back
+// into its entry buffer, which is how a hash transform keeps its results
+// without a second slice.
+//
+// It walks the published prefix rather than the whole buffer, and that is what
+// keeps each iteration an append of exactly one value rather than a
+// replacement: the slots past the prefix still hold the receiver's own values,
+// so walking them would price the input as though the driver had produced it,
+// and overwriting one in place would break the delta model addRetainedOutput
+// commits on.
+func retainedEntryValues(entries *[]HashEntry) outputWalkRoot {
+	return func(est *memoryEstimator) int {
+		total := 0
+		for _, entry := range *entries {
+			total = saturatingAdd(total, est.valuePayload(entry.Value))
+		}
+		return total
+	}
+}
+
+// retainedHashValues walks the values a driver has inserted into a Go-local
+// output map. Only the payloads are re-derived; the map's own structural bytes
+// are a fixed allocation the driver reserves before its first callback, exactly
+// as a slice output's slot backing is.
+//
+// The map is taken by value rather than by pointer because, unlike a slice that
+// append can move, a map header stays put as it grows.
+func retainedHashValues(out map[string]Value) outputWalkRoot {
+	return func(est *memoryEstimator) int {
+		total := 0
+		for _, val := range out {
+			total = saturatingAdd(total, est.valuePayload(val))
+		}
+		return total
+	}
+}
+
 // pushOutputWalkRoot registers a driver's Go-local output for the duration of
 // its loop; the driver pairs it with a deferred endOutputWalkRoot. It is a
 // no-op without an enforced memory quota, where no estimator walk runs at all.
