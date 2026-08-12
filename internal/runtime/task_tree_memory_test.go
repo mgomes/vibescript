@@ -587,3 +587,50 @@ func (p quotaObserverProbe) Bind(binding CapabilityBinding) (map[string]Value, e
 		}),
 	}, nil
 }
+
+// TestHardValueCheckPublishesToTheChain pins that the per-value check consults
+// the chain, and that the soft probe beside it deliberately does not.
+//
+// checkMemoryWith delegated to memoryFitsWith, which compares only this
+// execution's own quota. Every checkMemoryValue site therefore neither enforced
+// the chain nor refreshed this level's published marginal, so a parent that
+// allocated while a spawned worker was blocked left a stale total behind and
+// its descendants were admitted against the figure from before the allocation.
+//
+// The ancestor here already holds nearly all of the ceiling, and this level's
+// own quota is enormous, so only a check that consults the chain can refuse.
+func TestHardValueCheckPublishesToTheChain(t *testing.T) {
+	t.Parallel()
+
+	const limit = 4096
+
+	ancestor := &memoryChain{limit: limit}
+	ancestor.publishAndExceeds(limit - 512)
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	exec.memChainNode.parent = ancestor
+	exec.memChainNode.limit = limit
+	exec.memChain = &exec.memChainNode
+	exec.memBaselineSet = true
+
+	// Comfortably larger than the 512 bytes the ancestor has left, and far
+	// under this execution's own quota.
+	big := NewString(strings.Repeat("x", 8192))
+
+	if err := exec.checkMemoryWith(big); err == nil {
+		t.Fatalf("a hard value check allocated 8 KiB with only %d bytes left on the chain and was not refused: the check consults only this execution's own quota, so the shared ceiling is unenforced on every checkMemoryValue site", 512)
+	}
+
+	// The other half of the rule: the soft probe stays per-execution. It asks
+	// about a value that may never be built, so publishing it would let a
+	// hypothetical allocation refuse a concurrent sibling's real one.
+	soft := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	soft.memChainNode.parent = ancestor
+	soft.memChainNode.limit = limit
+	soft.memChain = &soft.memChainNode
+	soft.memBaselineSet = true
+
+	if !soft.memoryFitsWith(big) {
+		t.Fatalf("the soft probe consulted the chain; it must answer for this execution alone, or a speculative value that is never built can refuse a sibling's real allocation")
+	}
+}
