@@ -1360,8 +1360,23 @@ func (p retentionProbe) Bind(binding CapabilityBinding) (map[string]Value, error
 }
 
 // executionStillReachable reports whether the execution survives collection.
-// A weak pointer answers this directly, where a finalizer only says when one
-// ran and is therefore inconclusive against a live reference.
+//
+// A weak pointer, not a finalizer, and the distinction matters enough to record
+// because a finalizer is the obvious first reach for retention evidence.
+//
+// A finalizer reports when one *ran*. It does not report whether a reference
+// exists, so a negative reading is ambiguous: the object may be retained, or it
+// may simply be unfinalized because GC has not got to it, because the finalizer
+// goroutine has not been scheduled, or because the object survives an extra
+// cycle merely for having a finalizer attached. Only a positive reading carries
+// information. Written that way this test read "not collected" both while the
+// context was held and after it was dropped -- which is the shape of a
+// cannot-reproduce filed against a real bug.
+//
+// weak.Pointer answers the question the finalizer only appears to answer: after
+// a collection, either the referent is still reachable or it is not, and both
+// readings are meaningful. That is what let the control -- drop the context and
+// watch the execution go -- prove the context was the sole retainer.
 func executionStillReachable(wp *weak.Pointer[Execution]) bool {
 	for range 5 {
 		goruntime.GC()
