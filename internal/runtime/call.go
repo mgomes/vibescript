@@ -1017,7 +1017,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			if !defaultProc.IsNil() {
 				clonedDefaultProc = r.rebindValue(defaultProc)
 			}
-			cloned.SetHashDefaults(clonedDefaultValue, clonedDefaultProc)
+			cloned.SetHashDefaultsUnpublished(clonedDefaultValue, clonedDefaultProc)
 		}
 		if !sharedSeen {
 			if typedEntries {

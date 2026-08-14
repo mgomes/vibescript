@@ -343,13 +343,15 @@ func arrayIdentity(v Value) uintptr { return value.ArrayIdentity(v) }
 // memo in the process, because no other execution can reach the array (see
 // memory_epoch.go). A nil exec has no memo to name and falls back to the
 // process-wide counter, which over-invalidates rather than under-invalidates.
+// The bump precedes the write, as it does in every scoped mutator here; see
+// hashSet for why the order is load-bearing rather than stylistic.
 func setArrayElems(exec *Execution, v Value, elems []Value) {
 	if exec == nil {
 		v.SetArrayElems(elems)
 		return
 	}
-	v.SetArrayElemsNoEpoch(elems)
 	exec.bumpMutationEpoch()
+	v.SetArrayElemsNoEpoch(elems)
 }
 
 // setArrayWindow narrows an array onto a window of the allocation its elements
@@ -996,7 +998,7 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 		if !defaultProc.IsNil() {
 			clonedDefaultProc = cloneValueForHostWithState(defaultProc, state)
 		}
-		cloned.SetHashDefaults(clonedDefaultValue, clonedDefaultProc)
+		cloned.SetHashDefaultsUnpublished(clonedDefaultValue, clonedDefaultProc)
 	}
 	if !sharedSeen {
 		if typedEntries {

@@ -10,10 +10,12 @@
   intervened. The memo key is now a pair: a counter private to each execution and
   the process-wide one, with writes attributed to an execution advancing only its
   own. Measured as estimator nodes per receiver element under a competing
-  execution, across the six categories of script-visible write, amplification over
-  running alone falls from between 19x and 513x to 1x-2x. Scripts running alone
-  are unaffected, and a write that cannot be attributed still advances the
-  process-wide counter, which over-invalidates rather than under-invalidates.
+  execution, across twelve categories of script-visible write, amplification over
+  running alone falls from between 19x and 513x to single digits. Scripts running
+  alone are unaffected. Two shapes still advance the process-wide counter because
+  they have no execution in scope (the legacy string-map materialization behind
+  `Hash#keys`, and the bound-receiver cell); both measure in the same single-digit
+  band, so neither is an amplification vector.
   `VIBES_ESTIMATOR_VERIFY` checks every memoized total against a from-scratch
   reference walk.
 - **Known: a block whose body calls any builtin is still quadratic in its

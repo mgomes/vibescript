@@ -133,7 +133,7 @@ func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 		cloned := NewHash(clonedEntries)
 		state.rememberHash(id, cloned)
 		if hasDefault {
-			cloned.SetHashDefaults(deepCloneValueWithState(defaultValue, state), defaultProc)
+			cloned.SetHashDefaultsUnpublished(deepCloneValueWithState(defaultValue, state), defaultProc)
 		}
 		if hashHasTypedEntries(val) {
 			var entryBuf [smallHashKeyBufferSize]HashEntry
@@ -518,7 +518,7 @@ func (s *capabilityDataCloneScanner) cloneHash(val Value) (Value, error) {
 		// one from clonedEntries would discard everything a typed clone wrote —
 		// those entries live in the wrapper's typed table, not in that map — and
 		// would also swap out the wrapper already registered for cycle reuse.
-		cloned.SetHashDefaults(defaultValue, defaultProc)
+		cloned.SetHashDefaultsUnpublished(defaultValue, defaultProc)
 	}
 	if ptr != 0 {
 		delete(s.visitingMaps, ptr)
