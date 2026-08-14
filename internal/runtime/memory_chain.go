@@ -210,24 +210,28 @@ func (c *memoryChain) tightenHeadroom(value int64) {
 
 // register records this node as live beneath every one of its ancestors, so
 // that none of them can forget what is below it while it runs.
+//
+// It writes nothing but the count. An earlier version also dropped whatever a
+// finished generation had left, so a stale constraint could not carry into the
+// next one -- and that reset was the fourth spelling of the same race: one
+// registrant could observe the count go from none to one, pause while a second
+// registrant published something tighter, and then clear that fresh value as
+// though it were stale.
+//
+// It is gone rather than synchronized, on the argument that retired the three
+// before it. A stale constraint is *tighter* than the new generation needs, so
+// carrying it refuses work that would have fit; the reset wiping a live
+// constraint is under-constraint, which is how a ceiling gets exceeded. The
+// reset was therefore an optimization defending against the safe error at the
+// price of creating the unsafe one.
+//
+// The residual is that a long-lived node's constraint can ratchet down across
+// generations of children, bounded by the tightest path any of them needed, and
+// ignored entirely whenever nothing below is live. Conservative, and the fourth
+// time on this branch that deleting an optimization beat guarding it.
 func (c *memoryChain) register() {
 	for node := c.parent; node != nil; node = node.parent {
-		if node.liveDescendants.Add(1) != 1 {
-			continue
-		}
-		// The first live descendant of a new generation. Whatever a finished
-		// chain left behind is dropped here so the constraint cannot ratchet
-		// down across a sequence of children, each inheriting the tightest
-		// moment of the last.
-		//
-		// Conditional on the exact value observed. A sibling registering
-		// alongside us may already have published something tighter, and losing
-		// that race must not discard it -- an overstated allowance is the
-		// direction in which a ceiling gets exceeded, so the swap failing and
-		// leaving the tighter value is the outcome to prefer.
-		if stale := node.descendantHeadroom.Load(); stale != noDescendantConstraint {
-			node.descendantHeadroom.CompareAndSwap(stale, noDescendantConstraint)
-		}
+		node.liveDescendants.Add(1)
 	}
 }
 

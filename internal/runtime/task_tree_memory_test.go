@@ -1000,15 +1000,26 @@ func TestConstraintAppliesOnlyWhileSomethingBelowIsLive(t *testing.T) {
 		t.Fatalf("release wrote to the descendant constraint; retiring must not write, or it races with a replacement registering")
 	}
 
-	// A new generation drops what the last one left, so the constraint cannot
-	// ratchet down across a sequence of children.
+	// A new generation inherits what the last one left, and that is deliberate.
+	// Dropping it on registration was the fourth spelling of the clearing race:
+	// one registrant could observe the count rise from none, pause while a
+	// second published something tighter, and clear that fresh value as stale.
+	//
+	// Carrying it is the conservative error. The inherited constraint is tighter
+	// than the new generation needs, so it can refuse work that would have fit;
+	// clearing a live one is under-constraint, which is how a ceiling gets
+	// exceeded. The ratchet is bounded by the tightest path any generation
+	// needed, and it applies only while something below is live.
 	replacement := newMemoryChain(parent, ceiling)
 	replacement.register()
-	if got := parent.descendantHeadroom.Load(); got != noDescendantConstraint {
-		t.Fatalf("a new generation inherited %d from a finished one; the constraint would only ever tighten across children", got)
+	if got := parent.headroom(); got != 4000 {
+		t.Fatalf("headroom %d for a new generation under a node a previous one constrained to 4000: carrying the tighter value is the safe direction, and dropping it on registration races with a sibling publishing", got)
 	}
-	if got := parent.headroom(); got != ceiling {
-		t.Fatalf("headroom %d for a fresh child that has published nothing, want %d", got, ceiling)
+
+	// And a fresh child tightening further still binds.
+	parent.tightenHeadroom(2500)
+	if got := parent.headroom(); got != 2500 {
+		t.Fatalf("headroom %d after a live child constrained it to 2500", got)
 	}
 }
 
