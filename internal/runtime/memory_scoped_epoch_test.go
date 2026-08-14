@@ -59,6 +59,23 @@ func TestScopedEpochSurvivesForeignMutation(t *testing.T) {
 // region's prefix memo from inside.
 const scopedEpochVictimSource = "def run(a)\n  a.map { |x| x }\nend"
 
+// skipIfEstimatorVerify skips a measurement the differential oracle invalidates.
+// Under VIBES_ESTIMATOR_VERIFY the region base walk recomputes a whole-stack
+// reference on every check, hit or miss (see memory_blockregion.go), so
+// per-element estimator work grows with the receiver whether or not the memo is
+// being served: the control below reads 2209.7 visits/element at n=1000 against
+// 8772.6 at n=4000 with the memo working perfectly. The scaling assertion still
+// passes in that mode, because the oracle inflates both sides and leaves the
+// ratio bounded, which is exactly the wrong-reason pass the control exists to
+// catch. The oracle's own job is byte-for-byte agreement with a reference walk,
+// and it does that across the rest of the corpus.
+func skipIfEstimatorVerify(t *testing.T) {
+	t.Helper()
+	if estimatorVerify {
+		t.Skip("the estimator oracle re-walks a full reference on every check, so per-element walk counts no longer isolate memo misses")
+	}
+}
+
 // scopedEpochVictimVisitsPerElement measures the estimator nodes the victim
 // walks per receiver element, which is the quantity a memo miss inflates.
 // Per-element rather than total deliberately: the base walk's own cost grows
@@ -90,6 +107,7 @@ func scopedEpochVictimVisitsPerElement(t *testing.T, n int) float64 {
 // equally be the base walk getting more expensive as the receiver grows, which
 // would be true with or without a memo and would make the assertion meaningless.
 func TestScopedEpochControlIsFlat(t *testing.T) {
+	skipIfEstimatorVerify(t)
 	small := scopedEpochVictimVisitsPerElement(t, 1000)
 	large := scopedEpochVictimVisitsPerElement(t, 4000)
 	if large > small*2 {
@@ -111,6 +129,7 @@ func TestScopedEpochControlIsFlat(t *testing.T) {
 // them (array append and hash store, at 526x and 468x) still routing through
 // the value package's process-wide bump.
 func TestConcurrentExecutionCannotDestroyMemo(t *testing.T) {
+	skipIfEstimatorVerify(t)
 	attackers := []struct{ name, src string }{
 		{"builtin_dispatch", "def run(n)\n  i = 0\n  while i < n\n    1.to_s\n    i = i + 1\n  end\n  i\nend"},
 		// A composite rebind, not `i = i + 1`: a scalar-to-scalar rebind takes
