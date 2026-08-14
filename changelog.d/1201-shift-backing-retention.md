@@ -23,5 +23,10 @@
   adds a field to it, which would have left 8 bytes per array unmetered -- an
   under-count introduced by a fix for an under-count -- so the charge is now
   derived from the struct and the next field is priced by the commit that adds
-  it. The projections that reserve a new array were moved with it, so a build
-  and the walk that supersedes it still agree to the byte.
+  it. Every projection that reserves a new array was moved with it, so a build
+  and the walk that supersedes it still agree to the byte -- including the
+  destructured-rest and range/string materialization preflights, which promise
+  the allocation will fit before making it and could otherwise allocate an array
+  wrapper with 8 bytes fewer than it needs. Adding the two constants together to
+  price an array is now a build failure rather than a convention, since the
+  helper alone does not stop the next projection from restating the old formula.

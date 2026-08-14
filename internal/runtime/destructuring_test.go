@@ -817,10 +817,17 @@ func TestAssignDestructureChargesSnapshotAgainstMemoryQuota(t *testing.T) {
 	// root. Measure its footprint exactly as the projection's estimator would.
 	sourceProbe := newMemoryEstimator()
 	rhsBytes := sourceProbe.value(newIntArray(size))
-	snapshotBytes := estimatedValueBytes + estimatedSliceBaseBytes + size*estimatedValueBytes
+	// Both figures come from the projection's own helpers rather than being
+	// restated here. The bracket below is that the assignment rejects one byte
+	// short and accepts at exactly this total, which is a claim about the
+	// preflight agreeing with the allocation -- not a claim about what an array
+	// happens to cost today. Spelled out, it would go stale against the
+	// projection the moment either changes, and agree with it for the wrong
+	// reason in the meantime.
+	snapshotBytes := liveValueSliceBytes(size)
 	// "values[1], *rest" leaves restStart=1 and restEnd=size, so the captured
 	// window is size-1 slots. It is charged on top of the still-live snapshot.
-	restBytes := estimatedValueBytes + estimatedSliceBaseBytes + (size-1)*estimatedValueBytes
+	restBytes := arraySlotBackingBytes(size - 1)
 	peakBytes := snapshotBytes + restBytes
 
 	// One byte short of the live right-hand side alone: even before the snapshot is
@@ -887,8 +894,10 @@ func TestAssignDestructureChargesRestWindowWithoutSnapshot(t *testing.T) {
 	// fresh estimator exactly as the projection does.
 	rhsBytes := newMemoryEstimator().value(newIntArray(size))
 	// "a, *rest" leaves restStart=1 and restEnd=size, so the window is size-1
-	// slots, charged on top of the still-live source.
-	restBytes := estimatedValueBytes + estimatedSliceBaseBytes + (size-1)*estimatedValueBytes
+	// slots, charged on top of the still-live source. Taken from the
+	// projection's own helper, so the reject/accept bracket below stays a claim
+	// about the preflight rather than about a byte count.
+	restBytes := arraySlotBackingBytes(size - 1)
 
 	// One byte short of the live source alone: charging it as a root already
 	// overflows before any rest window is built.

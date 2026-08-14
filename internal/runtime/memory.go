@@ -971,11 +971,9 @@ func (exec *Execution) checkProjectedIntArrayBytesWithLive(count, liveSlots int,
 	s.close()
 
 	if liveSlots > 0 {
-		used = saturatingAdd(used, estimatedValueBytes+estimatedSliceBaseBytes)
-		used = saturatingAdd(used, saturatingMul(liveSlots, estimatedValueBytes))
+		used = saturatingAdd(used, liveValueSliceBytes(liveSlots))
 	}
-	used = saturatingAdd(used, estimatedValueBytes+estimatedSliceBaseBytes)
-	used = saturatingAdd(used, saturatingMul(count, estimatedValueBytes))
+	used = saturatingAdd(used, arraySlotBackingBytes(count))
 	if used > exec.memoryQuota {
 		return exec.memoryQuotaExceededError()
 	}
@@ -1630,6 +1628,18 @@ func (acc *arrayBuildAccumulator) projected(slotCount int) int {
 func arraySlotBackingBytes(slotCount int) int {
 	return saturatingAdd(estimatedValueBytes+estimatedArrayWrapperExtraBytes,
 		valueSliceBackingBytes(slotCount))
+}
+
+// liveValueSliceBytes is what a slot array held only on a Go stack costs a
+// projection: the backing, plus one Value beyond it.
+//
+// It is deliberately not arraySlotBackingBytes. Nothing wrapped this slice --
+// a destructure's defensive snapshot is a bare append([]Value(nil), ...) that
+// no array value ever boxes -- so there is no arrayData to charge, and adding
+// one would reserve for a wrapper that is never allocated. The Value beyond the
+// backing is the conservative margin this projection has always carried.
+func liveValueSliceBytes(slotCount int) int {
+	return saturatingAdd(estimatedValueBytes, valueSliceBackingBytes(slotCount))
 }
 
 func valueSliceBackingBytes(slotCount int) int {
@@ -2549,7 +2559,7 @@ func (c *blockBindCharge) projectRestWindow(count int) error {
 	if c == nil {
 		return nil
 	}
-	window := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(count, estimatedValueBytes))
+	window := arraySlotBackingBytes(count)
 	if saturatingAdd(saturatingAdd(c.liveBaseline(), c.built), window) > c.exec.memoryQuota {
 		return c.exec.memoryQuotaExceededError()
 	}

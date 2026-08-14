@@ -4587,7 +4587,7 @@ func arrayValueScratchBytes(count int) int {
 	if count <= 0 {
 		return 0
 	}
-	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(count, estimatedValueBytes))
+	return valueSliceBackingBytes(count)
 }
 
 func arrayShuffle(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

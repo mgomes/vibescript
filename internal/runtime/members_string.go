@@ -4660,7 +4660,7 @@ func actualRegexSubmatchIndexBytes(allMatches [][]int, groups int) int {
 }
 
 func (exec *Execution) guardStringScanOutputFootprint(allMatches [][]int, groups int) error {
-	outputBytes := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(len(allMatches), estimatedValueBytes))
+	outputBytes := arraySlotBackingBytes(len(allMatches))
 	for _, loc := range allMatches {
 		outputBytes = saturatingAdd(outputBytes, projectedRegexElementPayloadBytes("", loc, groups))
 		if outputBytes > maxRegexInputBytes {
