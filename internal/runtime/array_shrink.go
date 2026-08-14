@@ -581,6 +581,19 @@ func shrinkArray(exec *Execution, receiver Value, arr []Value, start, end int,
 	if !named && wildcard == nil {
 		clear(arr[:start])
 		clear(arr[end:])
+		if start == end {
+			// An empty window still addresses the storage, and Go keeps an
+			// allocation live as a whole for any pointer into it, so the
+			// receiver would go on holding every slot it just gave up. shift
+			// leaves that unaccounted as well as held: the estimator charges a
+			// header by capacity, and advancing the head shrinks capacity, so a
+			// drained array was charged for the slots between its new head and
+			// the end of the allocation and for none of the ones in front of
+			// it -- 313 bytes against 131,072 held where the capacity had been
+			// exactly the length. Fresh empty storage lets go of all of it.
+			setArrayElems(receiver, []Value{})
+			return nil
+		}
 		setArrayElems(receiver, window)
 		return nil
 	}

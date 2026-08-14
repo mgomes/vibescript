@@ -6,6 +6,7 @@ import (
 	goruntime "runtime"
 	"strings"
 	"testing"
+	"weak"
 )
 
 // TestArrayShrinkDropsRemovedPayloads pins that an element removed from an
@@ -298,3 +299,180 @@ end`)
 			float64(held)/(1<<20), float64(limit)/(1<<20))
 	}
 }
+
+// TestDrainedArrayReleasesItsSlotBacking pins that an array a script drains to
+// empty stops addressing the slot allocation it was drained out of.
+//
+// A shrink that narrows the receiver to an empty window still hands it a header
+// into the original allocation, and Go keeps an allocation live as a whole
+// while any pointer into it is live -- a slice showing nothing included. shift
+// makes that unaccounted as well as real: sliceStructuralBytes charges by
+// capacity and a forward reslice shrinks capacity, so a 2048 element array
+// built by push and drained through shift was left showing 256 of the 2304
+// slots it still pinned, and a 4096 element array whose capacity was exactly
+// its length was charged 313 bytes while holding all 131,072. A script draining
+// arrays in a loop accrues that against a quota that sees none of it.
+//
+// Every path a shrink can take is exercised, because the check that fixes this
+// was already on one of them: leaving the storage alone beneath a host driver
+// has it, narrowing in place with nothing claiming the backing did not, and
+// copying the survivors out reaches it through storage a copy made rather than
+// the one the drain started on.
+//
+// Reachability is read with a weak pointer rather than a finalizer, because a
+// finalizer reports only that one ran and so cannot produce a negative. The
+// instrument is checked in both directions here: an array nothing drained must
+// read reachable, and one Array#clear moved onto fresh storage must read
+// released. A probe that cannot report released proves nothing when it reports
+// reachable.
+//
+// The reading is taken after the call returns, with the array held from Go, so
+// no interpreter frame is left on the stack to keep the old header alive by
+// itself.
+//
+// Not parallel: it forces process-wide GC.
+func TestDrainedArrayReleasesItsSlotBacking(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		driven    bool
+		wantSize  int64
+		wantAlive bool
+	}{
+		{
+			name:      "untouched (control: must stay reachable)",
+			body:      "keep(a)",
+			wantSize:  drainedArrayProbeSize,
+			wantAlive: true,
+		},
+		{
+			name: "clear (control: must be released)",
+			body: `keep(a)
+  a.clear`,
+		},
+		{
+			name: "shift to empty",
+			body: `keep(a)
+  while a.size > 0
+    a.shift
+  end`,
+		},
+		{
+			name: "shift(n) whole",
+			body: `keep(a)
+  a.shift(a.size)`,
+		},
+		{
+			name: "pop to empty",
+			body: `keep(a)
+  while a.size > 0
+    a.pop
+  end`,
+		},
+		{
+			name: "pop(n) whole",
+			body: `keep(a)
+  a.pop(a.size)`,
+		},
+		{
+			// The first pop beneath a first-party iterator copies the survivors
+			// onto fresh storage, because the iterator is walking the header
+			// the drain would otherwise write into. keep takes its reference
+			// after that, so what is measured here is the copy the drain
+			// finishes on rather than the storage it started on.
+			name: "drain that copied out from under a first-party iterator",
+			body: `a.each do |x|
+    a.pop
+    if a.size == n - 1
+      keep(a)
+    end
+  end`,
+		},
+		{
+			// Beneath a host-driven frame the shrink writes nothing at all: it
+			// narrows the array over storage the frame may be walking and
+			// clears what was vacated when the claim drops. An empty window
+			// would still address that storage, which is the case this path
+			// already handled.
+			name: `drain beneath a host driver`,
+			body: `keep(a)
+  driver.walk(a) do |x|
+    a.pop(a.size)
+  end`,
+			driven: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const n = drainedArrayProbeSize
+
+			var kept Value
+			var backing weak.Pointer[Value]
+			engine := MustNewEngine(Config{StepQuota: 50_000_000, MemoryQuotaBytes: Unlimited})
+			// keep holds the array from Go the way a host handed one does, and
+			// takes a weak reference to the slot allocation it is showing at
+			// that moment.
+			engine.RegisterBuiltin("keep", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+				kept = args[0]
+				elems := kept.Array()
+				if len(elems) == 0 {
+					return NewNil(), fmt.Errorf("keep needs a non-empty array")
+				}
+				backing = weak.Make(&elems[0])
+				return NewNil(), nil
+			})
+
+			script, err := engine.Compile(fmt.Sprintf(`def run(n)
+  a = []
+  i = 0
+  while i < n
+    a.push(i)
+    i = i + 1
+  end
+  %s
+  a.size
+end`, tc.body))
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+
+			opts := CallOptions{}
+			if tc.driven {
+				opts.Capabilities = []CapabilityAdapter{arrayArgDriver{}}
+			}
+			got, err := script.Call(context.Background(), "run", []Value{NewInt(n)}, opts)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if got.Int() != tc.wantSize {
+				t.Fatalf("array holds %d elements after the drain, want %d", got.Int(), tc.wantSize)
+			}
+			if backing == (weak.Pointer[Value]{}) {
+				t.Fatalf("keep never ran, so nothing was measured")
+			}
+
+			goruntime.GC()
+			goruntime.GC()
+			alive := backing.Value() != nil
+			goruntime.KeepAlive(kept)
+
+			if alive == tc.wantAlive {
+				return
+			}
+			if tc.wantAlive {
+				t.Fatalf("the slot allocation was released while the array is still showing every " +
+					"element of it, so this probe cannot tell pinned from released and its released " +
+					"readings mean nothing")
+			}
+			t.Fatalf("the drained array still addresses the %d slot allocation it was drained out of, "+
+				"holding every byte of it alive under a charge that has stopped counting them", n)
+		})
+	}
+}
+
+// drainedArrayProbeSize is how many elements the drain probes build. Large
+// enough that the slots are a real allocation rather than a size class the
+// runtime hands out from a shared span, small enough to drain element by
+// element without a long loop.
+const drainedArrayProbeSize = 2048
