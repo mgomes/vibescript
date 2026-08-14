@@ -192,11 +192,26 @@ func NewHashWithDefault(h map[string]Value, defaultValue, defaultProc Value) Val
 // it, and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
 func (v Value) SetHashDefaults(defaultValue, defaultProc Value) {
+	v.setHashDefaultsInternal(defaultValue, defaultProc, true)
+}
+
+// SetHashDefaultsUnpublished is SetHashDefaults without the process-wide
+// mutation-epoch bump, for a hash still reachable from no execution root. See
+// HashSetUnpublished for the invariant the caller owes. It is intended for the
+// interpreter's internal use; hosts should not call it, and it carries no
+// compatibility promise (see docs/embedding-api-stability.md).
+func (v Value) SetHashDefaultsUnpublished(defaultValue, defaultProc Value) {
+	v.setHashDefaultsInternal(defaultValue, defaultProc, false)
+}
+
+func (v Value) setHashDefaultsInternal(defaultValue, defaultProc Value, bump bool) {
 	if v.kind != KindHash {
 		return
 	}
 	if hd, ok := v.data.(*hashData); ok {
-		BumpMutationEpoch()
+		if bump {
+			BumpMutationEpoch()
+		}
 		hd.defaultValue = defaultValue
 		hd.defaultProc = defaultProc
 	}

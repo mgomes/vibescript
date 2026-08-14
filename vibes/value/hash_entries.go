@@ -546,6 +546,21 @@ func promotedLegacyHashKey(displayKey string, incoming Value) Value {
 // materialized legacy map when one exists. A missing key leaves the hash
 // untouched. An error is returned only for an unsupported key.
 func (v Value) HashDeleteKey(key Value) (Value, bool, error) {
+	return v.hashDeleteKeyInternal(key, true)
+}
+
+// HashDeleteKeyNoEpoch is HashDeleteKey without the process-wide
+// mutation-epoch bump, for a caller that invalidates the memoized
+// reachable-graph walk itself. The interpreter uses it to charge the deletion
+// to the one execution that can reach the hash rather than to every execution
+// in the process. It is intended for the interpreter's internal use; hosts
+// should not call it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func (v Value) HashDeleteKeyNoEpoch(key Value) (Value, bool, error) {
+	return v.hashDeleteKeyInternal(key, false)
+}
+
+func (v Value) hashDeleteKeyInternal(key Value, bump bool) (Value, bool, error) {
 	switch v.kind {
 	case KindHash:
 		hd := v.data.(*hashData)
@@ -558,7 +573,9 @@ func (v Value) HashDeleteKey(key Value) (Value, bool, error) {
 			if !ok {
 				return NewNil(), false, nil
 			}
-			BumpMutationEpoch()
+			if bump {
+				BumpMutationEpoch()
+			}
 			delete(hd.typedEntries, canonical)
 			for i, lookupKey := range hd.order {
 				if lookupKey == canonical {
@@ -580,7 +597,9 @@ func (v Value) HashDeleteKey(key Value) (Value, bool, error) {
 		if !ok {
 			return NewNil(), false, nil
 		}
-		BumpMutationEpoch()
+		if bump {
+			BumpMutationEpoch()
+		}
 		delete(hd.entries, key.String())
 		return val, true, nil
 	case KindObject:
@@ -592,7 +611,9 @@ func (v Value) HashDeleteKey(key Value) (Value, bool, error) {
 		if !ok {
 			return NewNil(), false, nil
 		}
-		BumpMutationEpoch()
+		if bump {
+			BumpMutationEpoch()
+		}
 		delete(entries, key.String())
 		return val, true, nil
 	default:
@@ -604,11 +625,22 @@ func (v Value) HashDeleteKey(key Value) (Value, bool, error) {
 // preserving a hash's Ruby-style default metadata (Ruby's Hash#clear keeps the
 // default). The typed-entry map, insertion order, and any materialized legacy
 // map are replaced with fresh empty storage so the old backings are released.
-func (v Value) HashClearEntries() {
+func (v Value) HashClearEntries() { v.hashClearEntriesInternal(true) }
+
+// HashClearEntriesNoEpoch is HashClearEntries without the process-wide
+// mutation-epoch bump; see HashDeleteKeyNoEpoch for the invariant the caller
+// owes. It is intended for the interpreter's internal use; hosts should not
+// call it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func (v Value) HashClearEntriesNoEpoch() { v.hashClearEntriesInternal(false) }
+
+func (v Value) hashClearEntriesInternal(bump bool) {
 	switch v.kind {
 	case KindHash:
 		hd := v.data.(*hashData)
-		BumpMutationEpoch()
+		if bump {
+			BumpMutationEpoch()
+		}
 		if hd.typedEntries != nil {
 			hd.typedEntries = make(map[HashLookupKey]HashEntry)
 		}
@@ -618,7 +650,9 @@ func (v Value) HashClearEntries() {
 			hd.entries = map[string]Value{}
 		}
 	case KindObject:
-		BumpMutationEpoch()
+		if bump {
+			BumpMutationEpoch()
+		}
 		clear(v.data.(*objectData).entries)
 	}
 }
@@ -729,7 +763,16 @@ func (v Value) reserveHashOrderInternal(n int, bump bool) {
 // It is intended for the interpreter's internal use; hosts should not call
 // it, and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
-func (v Value) ReserveTypedHashOrder(n int) {
+func (v Value) ReserveTypedHashOrder(n int) { v.reserveTypedHashOrderInternal(n, true) }
+
+// ReserveTypedHashOrderNoEpoch is ReserveTypedHashOrder without the
+// process-wide mutation-epoch bump; see HashDeleteKeyNoEpoch for the invariant
+// the caller owes. It is intended for the interpreter's internal use; hosts
+// should not call it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func (v Value) ReserveTypedHashOrderNoEpoch(n int) { v.reserveTypedHashOrderInternal(n, false) }
+
+func (v Value) reserveTypedHashOrderInternal(n int, bump bool) {
 	if v.kind != KindHash || n < 0 {
 		return
 	}
@@ -741,18 +784,22 @@ func (v Value) ReserveTypedHashOrder(n int) {
 		if len(hd.entries) != 0 {
 			return
 		}
-		BumpMutationEpoch()
+		if bump {
+			BumpMutationEpoch()
+		}
 		hd.typedEntries = make(map[HashLookupKey]HashEntry, n)
 		hd.typedEntryCapacity = n
-		v.ReserveHashOrder(n)
+		v.reserveHashOrderInternal(n, bump)
 		return
 	}
 	if n > hd.typedEntryCapacity {
-		BumpMutationEpoch()
+		if bump {
+			BumpMutationEpoch()
+		}
 		grown := make(map[HashLookupKey]HashEntry, n)
 		maps.Copy(grown, hd.typedEntries)
 		hd.typedEntries = grown
 		hd.typedEntryCapacity = n
 	}
-	v.ReserveHashOrder(n)
+	v.reserveHashOrderInternal(n, bump)
 }

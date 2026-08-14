@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -51,6 +52,44 @@ func TestScopedEpochSurvivesForeignMutation(t *testing.T) {
 	victim.bumpMutationEpoch()
 	if got := victim.estimateMemoryUsage(); got != fresh {
 		t.Fatalf("victim's own bump did not discard its memo: got %d, want fresh %d", got, fresh)
+	}
+}
+
+// TestScopedMutatorInvalidatesEvenWhenItFails covers the failure mode the
+// scoping's safety argument does NOT cover on its own. Omitting a site is
+// fail-safe, because an unconverted site keeps bumping the process-wide
+// counter. A converted site is only fail-safe if no path can mutate and then
+// leave without bumping, and hash storing has exactly that shape: writing into
+// a legacy string-keyed hash promotes it to typed storage first, allocating the
+// typed-entry map and the insertion-order backing, and the key normalization
+// that can fail runs after the promotion. Bumping after a successful store left
+// the graph grown with no counter advanced, so a later check reused a memo that
+// omitted the promotion -- an under-count, which is the one direction this
+// design exists to exclude.
+//
+// The scoped mutators therefore bump before they write, which makes the bug
+// unwritable rather than merely absent. This asserts the property through the
+// failing path.
+func TestScopedMutatorInvalidatesEvenWhenItFails(t *testing.T) {
+	exec, env := newEstimatorCacheExec()
+	estimatorCacheShapes(env)
+	legacy := NewHash(map[string]Value{"a": NewInt(1)})
+	env.Define("legacy", legacy)
+
+	fresh := freshUncachedEstimate(exec)
+	if cold := exec.estimateMemoryUsage(); cold != fresh {
+		t.Fatalf("cold estimate %d != fresh %d", cold, fresh)
+	}
+	const poison = 1 << 20
+	exec.baseWalkCache.graphBytes += poison
+
+	// NaN is rejected as a hash key, but only after the promotion above it has
+	// already grown the wrapper.
+	if err := hashSet(exec, legacy, NewFloat(math.NaN()), NewInt(2)); err == nil {
+		t.Fatalf("expected a NaN key to be rejected, so the failing path is exercised")
+	}
+	if got := exec.estimateMemoryUsage(); got == fresh+poison {
+		t.Fatalf("a failed store left the memo valid after it had already grown the graph: got %d", got)
 	}
 }
 
@@ -141,6 +180,17 @@ func TestConcurrentExecutionCannotDestroyMemo(t *testing.T) {
 		{"hash_store", "def run(n)\n  h = {}\n  i = 0\n  while i < n\n    h[\"k\"] = i\n    i = i + 1\n  end\n  i\nend"},
 		{"ivar_store", "class C\n  def bump(n)\n    i = 0\n    while i < n\n      @v = i\n      i = i + 1\n    end\n    i\n  end\nend\ndef run(n)\n  C.new.bump(n)\nend"},
 		{"index_assign", "def run(n)\n  a = [1, 2, 3]\n  i = 0\n  while i < n\n    a[0] = i\n    i = i + 1\n  end\n  i\nend"},
+		// The wrapper mutators below reach the epoch through the value package
+		// rather than the runtime. They were left on the process-wide counter in
+		// the first pass and measured afterwards rather than assumed harmless,
+		// which is how three of them turned out to be live vectors: hash delete
+		// at 365x, hash merge at 334x and hash clear at 65x.
+		{"hash_delete", "def run(n)\n  h = {}\n  i = 0\n  while i < n\n    h[\"k\"] = i\n    h.delete(\"k\")\n    i = i + 1\n  end\n  i\nend"},
+		{"hash_clear", "def run(n)\n  h = {}\n  i = 0\n  while i < n\n    h[\"k\"] = i\n    h.clear\n    i = i + 1\n  end\n  i\nend"},
+		{"hash_merge", "def run(n)\n  i = 0\n  while i < n\n    h = {a: 1}\n    h.merge({b: 2})\n    i = i + 1\n  end\n  i\nend"},
+		{"hash_default", "def run(n)\n  i = 0\n  while i < n\n    h = Hash.new(0)\n    h[\"k\"] = i\n    i = i + 1\n  end\n  i\nend"},
+		{"hash_keys", "def run(n)\n  h = {a: 1, b: 2}\n  i = 0\n  while i < n\n    h.keys\n    i = i + 1\n  end\n  i\nend"},
+		{"bound_receiver", "def run(n)\n  a = [1, 2, 3]\n  i = 0\n  while i < n\n    a.length\n    i = i + 1\n  end\n  i\nend"},
 	}
 
 	const n = 3000
@@ -149,7 +199,14 @@ func TestConcurrentExecutionCannotDestroyMemo(t *testing.T) {
 	// process-wide epoch every one of its iterations cost the victim a whole
 	// re-walk, so even a slow attacker moved this figure by two orders of
 	// magnitude.
-	const maxAmplification = 8.0
+	// The bound separates "the memo was destroyed" from "the memo held", not a
+	// tight performance target: a destroyed memo costs hundreds of times the
+	// control, while an intact one stays in single digits even with a competing
+	// execution taking CPU. Two shapes still route to the process-wide counter
+	// by design (the legacy-map materialization behind hash.keys, and the
+	// bound-receiver cell, neither of which has an execution in scope), and both
+	// measure in that single-digit band.
+	const maxAmplification = 15.0
 
 	control := scopedEpochVictimVisitsPerElement(t, n)
 	for _, attacker := range attackers {

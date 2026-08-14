@@ -44,15 +44,22 @@ func hashGet(container, key Value) (Value, bool, error) {
 // hashSet stores an entry in a hash, invalidating exec's memoized estimator
 // walk rather than every memo in the process; see setArrayElems for why that is
 // sound and why a nil exec falls back to the process-wide counter.
+//
+// The bump precedes the write, which is the rule every scoped mutator here
+// follows. Bumping after a successful write reads more precisely but is
+// unwritable-safe only if the write is all-or-nothing, and this one is not:
+// storing into a legacy hash promotes it to typed storage first, allocating the
+// typed-entry map and the order backing, and the key normalization that can
+// fail runs after that. An error return then left the graph grown and no
+// counter advanced, so a later check reused a memo that omitted the promotion.
+// Bumping first cannot skip: a failed write costs a memo refresh, which is the
+// safe direction, and no ordering mistake can reintroduce the stale read.
 func hashSet(exec *Execution, container, key, val Value) error {
 	if exec == nil {
 		return container.HashSet(key, val)
 	}
-	if err := container.HashSetUnpublished(key, val); err != nil {
-		return err
-	}
 	exec.bumpMutationEpoch()
-	return nil
+	return container.HashSetUnpublished(key, val)
 }
 
 // hashSetUnpublished writes into a hash still reachable from no execution
@@ -61,12 +68,50 @@ func hashSetUnpublished(container, key, val Value) error {
 	return container.HashSetUnpublished(key, val)
 }
 
-func hashDeleteKey(container, key Value) (Value, bool, error) {
-	return container.HashDeleteKey(key)
+// hashDeleteKey removes an entry, scoping the invalidation to exec. The bump
+// precedes the removal for the reason given on hashSet.
+func hashDeleteKey(exec *Execution, container, key Value) (Value, bool, error) {
+	if exec == nil {
+		return container.HashDeleteKey(key)
+	}
+	exec.bumpMutationEpoch()
+	return container.HashDeleteKeyNoEpoch(key)
 }
 
-func hashClearEntries(container Value) {
-	container.HashClearEntries()
+// hashClearEntries empties a hash or object, scoping the invalidation to exec.
+func hashClearEntries(exec *Execution, container Value) {
+	if exec == nil {
+		container.HashClearEntries()
+		return
+	}
+	exec.bumpMutationEpoch()
+	container.HashClearEntriesNoEpoch()
+}
+
+// setHashDefaults replaces a reachable hash's default metadata, scoping the
+// invalidation to exec. The bump precedes the write for the reason given on
+// hashSet. Callers writing defaults onto a hash they have just built and not yet
+// published use value.SetHashDefaultsUnpublished instead, which invalidates
+// nothing because nothing can reach it yet.
+func setHashDefaults(exec *Execution, container, defaultValue, defaultProc Value) {
+	if exec == nil {
+		container.SetHashDefaults(defaultValue, defaultProc)
+		return
+	}
+	exec.bumpMutationEpoch()
+	container.SetHashDefaultsUnpublished(defaultValue, defaultProc)
+}
+
+// reserveTypedHashOrder prepares a hash builder's typed storage, scoping the
+// invalidation to exec. Reserving grows the wrapper's backing, so it invalidates
+// like any other write.
+func reserveTypedHashOrder(exec *Execution, container Value, n int) {
+	if exec == nil {
+		container.ReserveTypedHashOrder(n)
+		return
+	}
+	exec.bumpMutationEpoch()
+	container.ReserveTypedHashOrderNoEpoch(n)
 }
 
 func hashHasTypedEntries(val Value) bool {

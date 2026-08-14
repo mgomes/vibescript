@@ -404,7 +404,7 @@ func newTypedResultHash(capacity int) Value {
 
 func newTypedHashPreservingDefault(receiver Value, capacity int) Value {
 	out := NewTypedHash(capacity)
-	out.SetHashDefaults(hashDefaultValue(receiver), hashDefaultProc(receiver))
+	out.SetHashDefaultsUnpublished(hashDefaultValue(receiver), hashDefaultProc(receiver))
 	return out
 }
 
@@ -1887,7 +1887,7 @@ func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 			}
 		}
 		for _, key := range dropped {
-			if _, _, err := hashDeleteKey(receiver, key); err != nil {
+			if _, _, err := hashDeleteKey(exec, receiver, key); err != nil {
 				return NewNil(), err
 			}
 		}
@@ -1924,7 +1924,7 @@ func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 		}
 	}
 	for _, key := range dropped {
-		if _, _, err := hashDeleteKey(receiver, key); err != nil {
+		if _, _, err := hashDeleteKey(exec, receiver, key); err != nil {
 			return NewNil(), err
 		}
 	}
@@ -2401,11 +2401,11 @@ func hashMemberTransforms(property string) (Value, error) {
 			// copy.
 			var entryBuf [smallHashKeyBufferSize]HashEntry
 			entries := deterministicHashEntriesInto(args[0], entryBuf[:])
-			hashClearEntries(receiver)
+			hashClearEntries(exec, receiver)
 			// Pre-size the typed storage and order backing to the adopted entry
 			// count so the rebuilt receiver holds exactly the slots the
 			// projection charged, with no append-growth overshoot.
-			receiver.ReserveTypedHashOrder(len(entries))
+			reserveTypedHashOrder(exec, receiver, len(entries))
 			for _, entry := range entries {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
@@ -2422,7 +2422,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// Adopt the replacement's default metadata, matching Ruby's
 			// Hash#replace (initialize_copy) which copies the default too. An
 			// object argument carries no defaults, so the receiver's are cleared.
-			receiver.SetHashDefaults(hashDefaultValue(args[0]), hashDefaultProc(args[0]))
+			setHashDefaults(exec, receiver, hashDefaultValue(args[0]), hashDefaultProc(args[0]))
 			return receiver, nil
 		}), nil
 	case "flatten":
@@ -2501,7 +2501,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// Ruby's Hash#delete removes the entry from the receiver in place
 			// and returns the removed value. The removal keeps the surviving
 			// entries in their recorded insertion order and allocates nothing.
-			removed, existed, err := hashDeleteKey(receiver, args[0])
+			removed, existed, err := hashDeleteKey(exec, receiver, args[0])
 			if err != nil {
 				return NewNil(), fmt.Errorf("hash.delete key is unsupported hash key: %w", err)
 			}
@@ -2529,7 +2529,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			// Ruby's Hash#clear empties the receiver in place, keeps its default
 			// metadata, and returns the receiver.
-			hashClearEntries(receiver)
+			hashClearEntries(exec, receiver)
 			return receiver, nil
 		}), nil
 	case "delete_if", "keep_if":
