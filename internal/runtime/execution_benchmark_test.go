@@ -484,7 +484,7 @@ func benchmarkTypedHash(b *testing.B, n int) Value {
 	b.Helper()
 	h := NewTypedHash(n)
 	for i := range n {
-		if err := hashSet(h, NewString(fmt.Sprintf("k%03d", i)), NewInt(int64(i))); err != nil {
+		if err := hashSet(nil, h, NewString(fmt.Sprintf("k%03d", i)), NewInt(int64(i))); err != nil {
 			b.Fatalf("build typed hash: %v", err)
 		}
 	}

@@ -4,8 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // The #1129 build-loop shapes: each appends one element per iteration with
@@ -257,7 +255,7 @@ func TestChargedAppendDeclinesAtCapacity(t *testing.T) {
 	exec.memoryEst.seenSlices = map[uintptr]struct{}{id: {}}
 	exec.baseWalkCache = &baseWalkCache{
 		valid:          true,
-		epoch:          value.MutationEpoch(),
+		epoch:          exec.walkEpoch(),
 		topo:           exec.baseTopoVersion,
 		regionBoundary: noBlockRegion,
 	}
@@ -348,7 +346,7 @@ func TestChargedAppendDeclinesOverwritingSpareSlot(t *testing.T) {
 	exec.memoryEst.seenSlices = map[uintptr]struct{}{id: {}}
 	exec.baseWalkCache = &baseWalkCache{
 		valid:          true,
-		epoch:          value.MutationEpoch(),
+		epoch:          exec.walkEpoch(),
 		topo:           exec.baseTopoVersion,
 		regionBoundary: noBlockRegion,
 	}

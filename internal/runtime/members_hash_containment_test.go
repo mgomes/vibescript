@@ -33,7 +33,7 @@ func largeHashReceiver(count int) Value {
 
 func typedSymbolHash(key string, val Value) Value {
 	hash := NewHash(make(map[string]Value, 1))
-	if err := hashSet(hash, NewSymbol(key), val); err != nil {
+	if err := hashSet(nil, hash, NewSymbol(key), val); err != nil {
 		panic(fmt.Sprintf("set typed symbol hash key: %v", err))
 	}
 	return hash
@@ -45,7 +45,7 @@ func typedSymbolHash(key string, val Value) Value {
 func largeTypedSymbolHash(count int) Value {
 	hash := NewTypedHash(0)
 	for i := range count {
-		if err := hashSet(hash, NewSymbol("k"+strconv.Itoa(i)), NewInt(int64(i))); err != nil {
+		if err := hashSet(nil, hash, NewSymbol("k"+strconv.Itoa(i)), NewInt(int64(i))); err != nil {
 			panic(fmt.Sprintf("set typed symbol hash key: %v", err))
 		}
 	}
@@ -56,7 +56,7 @@ func largeTypedSymbolHash(count int) Value {
 func typedSymbolHashFrom(pairs map[string]int) Value {
 	hash := NewTypedHash(0)
 	for k, v := range pairs {
-		if err := hashSet(hash, NewSymbol(k), NewInt(int64(v))); err != nil {
+		if err := hashSet(nil, hash, NewSymbol(k), NewInt(int64(v))); err != nil {
 			panic(fmt.Sprintf("set typed symbol hash key: %v", err))
 		}
 	}
@@ -138,8 +138,8 @@ func TestHashDeepTransformKeysTypedReceiverDoesNotMaterializeLegacyMap(t *testin
 
 	key := NewArray([]Value{NewString("account"), NewSymbol("id")})
 	receiver := NewTypedHash(0)
-	if err := hashSet(receiver, key, NewInt(42)); err != nil {
-		t.Fatalf("hashSet(%s) error = %v, want nil", key.Inspect(), err)
+	if err := hashSet(nil, receiver, key, NewInt(42)); err != nil {
+		t.Fatalf("hashSet(nil, %s) error = %v, want nil", key.Inspect(), err)
 	}
 	if entries, ok := hashStringMapIfMaterialized(receiver); ok || entries != nil {
 		t.Fatalf("typed receiver legacy map before deep_transform_keys = %v, %v; want nil, false", entries, ok)
@@ -1241,7 +1241,7 @@ func TestHashExceptTypedArrayKeyChargesCanonicalExclusionPayload(t *testing.T) {
 	}
 	key := NewArray(keyItems)
 	receiver := NewHash(map[string]Value{})
-	if err := hashSet(receiver, key, NewInt(1)); err != nil {
+	if err := hashSet(nil, receiver, key, NewInt(1)); err != nil {
 		t.Fatalf("set typed array key: %v", err)
 	}
 	args := []Value{key}

@@ -287,15 +287,15 @@ func TestTypedHashMergeDoesNotMaterializeReceiverMirror(t *testing.T) {
 	t.Parallel()
 
 	receiver := NewTypedHash(0)
-	if err := hashSet(receiver, NewString("a"), NewInt(1)); err != nil {
-		t.Fatalf("hashSet(string key) error = %v", err)
+	if err := hashSet(nil, receiver, NewString("a"), NewInt(1)); err != nil {
+		t.Fatalf("hashSet(nil, string key) error = %v", err)
 	}
-	if err := hashSet(receiver, NewSymbol("a"), NewInt(2)); err != nil {
-		t.Fatalf("hashSet(symbol key) error = %v", err)
+	if err := hashSet(nil, receiver, NewSymbol("a"), NewInt(2)); err != nil {
+		t.Fatalf("hashSet(nil, symbol key) error = %v", err)
 	}
 	arg := NewTypedHash(0)
-	if err := hashSet(arg, NewSymbol("a"), NewInt(3)); err != nil {
-		t.Fatalf("hashSet(arg symbol key) error = %v", err)
+	if err := hashSet(nil, arg, NewSymbol("a"), NewInt(3)); err != nil {
+		t.Fatalf("hashSet(nil, arg symbol key) error = %v", err)
 	}
 	if entries, ok := hashStringMapIfMaterialized(receiver); ok || entries != nil {
 		t.Fatalf("typed receiver materialized before merge = %v, %v; want nil, false", entries, ok)

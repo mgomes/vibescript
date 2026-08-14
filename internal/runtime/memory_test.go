@@ -64,8 +64,8 @@ func TestMemoryEstimatorDoesNotMaterializeTypedHashMirror(t *testing.T) {
 	t.Parallel()
 
 	hash := NewTypedHash(0)
-	if err := hashSet(hash, NewString("score"), NewInt(7)); err != nil {
-		t.Fatalf("hashSet(score) error = %v", err)
+	if err := hashSet(nil, hash, NewString("score"), NewInt(7)); err != nil {
+		t.Fatalf("hashSet(nil, score) error = %v", err)
 	}
 	if entries, ok := hashStringMapIfMaterialized(hash); ok || entries != nil {
 		t.Fatalf("typed hash legacy map before estimate = %v, %v; want nil, false", entries, ok)
@@ -103,8 +103,8 @@ func TestMemoryEstimatorChargesStoredTypedHashArrayLookupKey(t *testing.T) {
 	keyElements := []Value{NewString(payload)}
 	key := NewArray(keyElements)
 	hash := NewTypedHash(0)
-	if err := hashSet(hash, key, NewInt(1)); err != nil {
-		t.Fatalf("hashSet(array key) error = %v", err)
+	if err := hashSet(nil, hash, key, NewInt(1)); err != nil {
+		t.Fatalf("hashSet(nil, array key) error = %v", err)
 	}
 	lookupBeforeMutation, err := hashLookupKey(key)
 	if err != nil {
@@ -150,8 +150,8 @@ func TestMemoryEstimatorLargeTypedHashMatchesMaterializedSum(t *testing.T) {
 	const entryCount = smallHashKeyBufferSize + 8
 	hash := NewTypedHash(entryCount)
 	for i := range entryCount {
-		if err := hashSet(hash, NewString(fmt.Sprintf("key-%02d", i)), NewInt(int64(i))); err != nil {
-			t.Fatalf("hashSet(%d) error = %v", i, err)
+		if err := hashSet(nil, hash, NewString(fmt.Sprintf("key-%02d", i)), NewInt(int64(i))); err != nil {
+			t.Fatalf("hashSet(nil, %d) error = %v", i, err)
 		}
 	}
 
