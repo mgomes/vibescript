@@ -3090,6 +3090,9 @@ func (r *loopScratchReservation) reserveIfFits(scratchBytes int) bool {
 		// caller allocate against a path that no longer has room.
 		r.exec.releaseLoopScratch(delta)
 		r.delta = saturatingSub(nextDelta, delta)
+		// Not a claim about what was published: zero means nothing is known to
+		// be on the chain, so the next increment republishes rather than
+		// trusting a record that a refused publication may have moved.
 		r.published = 0
 		return false
 	}
@@ -3136,21 +3139,34 @@ func (r *loopScratchReservation) publishToChain(total int) bool {
 	rounded := saturatingAdd(total, granule-1)
 	rounded -= rounded % granule
 	if rounded <= r.published {
-		// Already reported a figure that covers this one. The budget check at
-		// the caller has already decided against the current chain.
+		// A figure covering this one is already on the chain. The caller's
+		// budget check has already decided against the chain as it stands.
 		return true
 	}
-	r.published = rounded
-	// The reservation is already in reservedScratchBytes, so the estimate the
-	// chain is given includes it without a second walk of the graph.
-	if !r.exec.memoryExceeded(rounded) {
-		// The padded figure fits, so the exact one does too.
-		return true
+
+	// The padded figure first, the exact total as a fallback: a refusal is
+	// decided on what this level actually holds, never on the rounding, because
+	// refusing on the padding would reject a reservation that fits.
+	//
+	// r.published is assigned only here, from the candidate that was actually
+	// accepted, and never alongside the call that publishes it. Recording the
+	// padded figure up front and then falling back to the exact one left the two
+	// disagreeing: the chain held the smaller exact value while the record
+	// claimed the larger padded one, so a later increment inside that granule
+	// took the early return above although nothing covering it had ever been
+	// published. That is the same pair-of-values shape this design removed three
+	// times over, reintroduced by having two probes and one tracking variable.
+	// Deriving the record from the publication is what makes it one fact: a
+	// branch that publishes a different figure cannot leave it stale.
+	for _, candidate := range [...]int{rounded, total} {
+		// The reservation is already in reservedScratchBytes, so the estimate
+		// the chain is given includes it without a second walk of the graph.
+		if !r.exec.memoryExceeded(candidate) {
+			r.published = candidate
+			return true
+		}
 	}
-	// The padded figure does not fit. Decide on the exact total rather than on
-	// the rounding, and leave that exact figure published: it is what this level
-	// actually holds, so ancestors are neither misled nor under-informed.
-	return !r.exec.memoryExceeded(total)
+	return false
 }
 
 func (r *loopScratchReservation) reserve(scratchBytes int) error {

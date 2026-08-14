@@ -1270,3 +1270,71 @@ func TestAcceptedReservationsReachAncestors(t *testing.T) {
 		t.Fatalf("a 16-byte increment republished (%d -> %d); publication must be bounded by granule count, not by reservation count", before, got)
 	}
 }
+
+// TestReservationRecordsTheFigureItActuallyPublished pins that the record of
+// what a reservation reported cannot disagree with what the chain holds.
+//
+// Publication tries the padded figure first and falls back to the exact total,
+// so two candidates can be published and only one lands. Recording the padded
+// one up front left the chain holding the smaller exact value while the record
+// claimed the larger padded one. A later increment inside that granule then
+// took the early return, although no figure covering it had ever reached an
+// ancestor -- so a nonblocking parent growing after the caller's budget
+// snapshot was admitted against a marginal that predated the increment.
+//
+// The numbers here put the padded figure over the ceiling and the exact total
+// under it, which is the only interleaving in which the two candidates differ
+// in outcome.
+func TestReservationRecordsTheFigureItActuallyPublished(t *testing.T) {
+	t.Parallel()
+
+	const (
+		ceiling = 8 << 20
+		// The chain's granule is ceiling>>8. A reservation of 100,000 bytes
+		// rounds up to 131,072, and the ancestor below is chosen so that the
+		// rounded figure does not fit while the exact one does.
+		granule   = ceiling >> reservationPublishShift
+		reserve   = 100_000
+		ancestor  = 8_288_000
+		increment = 500
+	)
+
+	root := newMemoryChain(nil, ceiling)
+	root.publishAndExceeds(ancestor)
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: ceiling}
+	exec.memChainNode.parent = root
+	exec.memChainNode.limit = ceiling
+	exec.memChainNode.descendantHeadroom.Store(noDescendantConstraint)
+	exec.memChain = &exec.memChainNode
+	exec.memBaselineSet = true
+	exec.memChainNode.register()
+
+	rounded := reserve + granule - 1
+	rounded -= rounded % granule
+	if ancestor+rounded <= ceiling {
+		t.Fatalf("fixture is wrong: the padded figure %d must not fit beside an ancestor holding %d under a %d ceiling", rounded, ancestor, ceiling)
+	}
+	if ancestor+reserve > ceiling {
+		t.Fatalf("fixture is wrong: the exact total %d must fit beside an ancestor holding %d", reserve, ancestor)
+	}
+
+	reservation := loopScratchReservation{exec: exec}
+	if !reservation.reserveIfFits(reserve) {
+		t.Fatalf("a reservation whose exact total fits must be accepted")
+	}
+	if reservation.published != reserve {
+		t.Fatalf("the reservation recorded having published %d when the chain was given %d: the record and the chain disagree, and the larger record suppresses the next publication",
+			reservation.published, reserve)
+	}
+
+	// A further increment inside the padded figure's granule. It must reach the
+	// chain, which it cannot do if the record still claims the padded figure.
+	if !reservation.reserveIfFits(increment) {
+		t.Fatalf("an increment whose exact total still fits must be accepted")
+	}
+	if got := exec.memChain.marginal.Load(); got != int64(reserve+increment) {
+		t.Fatalf("the chain holds %d after a reservation of %d: an increment inside the padded granule never reached an ancestor, so a parent growing concurrently is admitted against a stale figure",
+			got, reserve+increment)
+	}
+}
