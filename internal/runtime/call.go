@@ -288,7 +288,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// the execution before the bump routes this and every later write in it
 		// to the process-wide counter. See markHostAliasedCall.
 		if builtin.hostDriven {
-			exec.markHostAliasedCall(receiver, block, args, kwargs)
+			exec.revokePrivateEpochForCall(receiver, block, args, kwargs)
 		}
 		exec.bumpMutationEpoch()
 		// An accumulator-metered section only vouches for the loop that opened
@@ -342,7 +342,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			// call on another execution, which the inputs above could not
 			// reveal. Bump after marking so any raw write the body made to it
 			// is published process-wide rather than only here.
-			exec.markHostAliased(result)
+			exec.revokePrivateEpochFor(result)
 			exec.bumpMutationEpoch()
 		}
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = prevReceiver, prevArgs, prevKwargs
@@ -710,6 +710,10 @@ func consumeFunctionReturnSignal(val Value, returned bool, err error) (Value, bo
 }
 
 type callFunctionRebinder struct {
+	// exec is the execution values are rebinding into, set once it exists (the
+	// rebinder is built just before it). It is nil for the checker, which runs
+	// no memory accounting and so has no memo to protect.
+	exec          *Execution
 	script        *Script
 	root          *Env
 	callClasses   map[string]*ClassDef
@@ -798,7 +802,63 @@ func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*
 	}
 }
 
+// rebindValue rebinds an inbound value into the receiving execution and, when
+// it hands one through uncloned, retires that execution's private mutation
+// counter.
+//
+// The hook is on the DECLINE path rather than on each boundary where a
+// container could become shared, and that placement is the point. A guard per
+// boundary has to anticipate every way a container can reach two executions,
+// and that enumeration was wrong twice here: it first missed the builtin
+// boundary entirely, then, redone deliberately, missed cross-script closures,
+// MatchData capture arrays and the task-globals source. Hooking the decline
+// inverts the burden. Any future case that returns a container-bearing value
+// unchanged revokes automatically, so an unanticipated crossing costs the
+// execution its private counter -- conservative and correct -- instead of
+// silently under-counting memory.
+//
+// sameContainerPayload's unknown-kind arm answers "shared" for the same reason:
+// a container-bearing kind nobody taught it about must not be assumed distinct.
 func (r *callFunctionRebinder) rebindValue(val Value) Value {
+	out := r.rebindValueInner(val)
+	if r.exec == nil || !r.exec.privateEpochQualified {
+		return out
+	}
+	if valueMayAliasContainer(out) && sameContainerPayload(val, out) {
+		r.exec.revokePrivateEpoch()
+	}
+	return out
+}
+
+// sameContainerPayload reports whether two values carry the same underlying
+// mutable payload, i.e. whether a rebind returned its input rather than a copy.
+// An unrecognized container-bearing kind answers true, which revokes: assuming
+// two payloads distinct is the direction that under-counts.
+func sameContainerPayload(a, b Value) bool {
+	if a.Kind() != b.Kind() {
+		return false
+	}
+	switch a.Kind() {
+	case KindArray:
+		return arrayIdentity(a) == arrayIdentity(b)
+	case KindHash, KindObject:
+		return hashIdentity(a) == hashIdentity(b)
+	case KindInstance:
+		return valueInstance(a) == valueInstance(b)
+	case KindBlock:
+		return valueBlock(a) == valueBlock(b)
+	case KindFunction:
+		return valueFunction(a) == valueFunction(b)
+	case KindBuiltin:
+		return valueBuiltin(a) == valueBuiltin(b)
+	case KindClass:
+		return valueClass(a) == valueClass(b)
+	default:
+		return true
+	}
+}
+
+func (r *callFunctionRebinder) rebindValueInner(val Value) Value {
 	switch val.Kind() {
 	case KindBuiltin:
 		builtin := valueBuiltin(val)

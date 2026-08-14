@@ -52,6 +52,9 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	rebinder.inboundDataFast = scanInboundCallValues(args, opts.Keywords)
 
 	exec := newExecutionForCall(s, ctx, root, opts)
+	// The rebinder is built just above; give it the execution so a value it
+	// hands through uncloned retires the private counter.
+	rebinder.exec = exec
 	defer exec.releaseBaseWalkCache()
 
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
@@ -164,6 +167,9 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	rebinder.inboundDataFast = scanInboundCallValues(args, opts.Keywords)
 
 	exec := newExecutionForCall(s, ctx, root, opts)
+	// The rebinder is built just above; give it the execution so a value it
+	// hands through uncloned retires the private counter.
+	rebinder.exec = exec
 	if observeExhaustion != nil {
 		defer func() { *observeExhaustion = exec.observedExhaustion() }()
 	}
