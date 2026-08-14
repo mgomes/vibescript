@@ -3083,8 +3083,24 @@ func (r *loopScratchReservation) reserveIfFits(scratchBytes int) bool {
 		return false
 	}
 	r.delta = nextDelta
-	r.publishToChain(total)
+	if !r.publishToChain(total) {
+		// Publication found the chain over quota, which the budget read at the
+		// top of this call could not see: a nonblocking parent can grow between
+		// that read and this point. Give the increment back rather than let the
+		// caller allocate against a path that no longer has room.
+		r.exec.releaseLoopScratch(delta)
+		r.delta = saturatingSub(nextDelta, delta)
+		r.published = 0
+		return false
+	}
 	return true
+}
+
+func saturatingSub(a, b int) int {
+	if b > a {
+		return 0
+	}
+	return a - b
 }
 
 // publishToChain reports a growing reservation to this execution's ancestors.
@@ -3098,11 +3114,21 @@ func (r *loopScratchReservation) reserveIfFits(scratchBytes int) bool {
 // because nothing had published the accepted reservation.
 //
 // So it publishes, but on granule boundaries rather than per increment, which
-// keeps a hot loop from taking a chain walk on every accepted byte. The figure
-// is rounded *up*, so ancestors always see at least what this level holds: the
-// error is over-reporting, which refuses work that would have fit rather than
-// admitting work that should not.
-func (r *loopScratchReservation) publishToChain(total int) {
+// keeps a hot loop from taking a chain walk on every accepted byte.
+//
+// Rounding is for the reporting, never for the deciding, and the two are split
+// deliberately. The figure handed to ancestors is rounded *up*, so they always
+// see at least what this level holds and the error is over-reporting. But a
+// refusal is decided on the exact total, because refusing on the padding would
+// reject a reservation that fits.
+//
+// It reports whether the reservation may stand. Publishing and discarding the
+// answer was the defect this replaced: publication is the first thing that sees
+// the chain as it is now rather than as the budget read it a moment ago, so it
+// is also the first thing that can discover a nonblocking parent has grown in
+// between. Publishing conservatively and then ignoring what it found is not a
+// conservative design.
+func (r *loopScratchReservation) publishToChain(total int) bool {
 	granule := r.exec.effectiveMemoryLimit() >> reservationPublishShift
 	if granule <= 0 {
 		granule = 1
@@ -3110,12 +3136,21 @@ func (r *loopScratchReservation) publishToChain(total int) {
 	rounded := saturatingAdd(total, granule-1)
 	rounded -= rounded % granule
 	if rounded <= r.published {
-		return
+		// Already reported a figure that covers this one. The budget check at
+		// the caller has already decided against the current chain.
+		return true
 	}
 	r.published = rounded
 	// The reservation is already in reservedScratchBytes, so the estimate the
 	// chain is given includes it without a second walk of the graph.
-	r.exec.memoryExceeded(rounded)
+	if !r.exec.memoryExceeded(rounded) {
+		// The padded figure fits, so the exact one does too.
+		return true
+	}
+	// The padded figure does not fit. Decide on the exact total rather than on
+	// the rounding, and leave that exact figure published: it is what this level
+	// actually holds, so ancestors are neither misled nor under-informed.
+	return !r.exec.memoryExceeded(total)
 }
 
 func (r *loopScratchReservation) reserve(scratchBytes int) error {
