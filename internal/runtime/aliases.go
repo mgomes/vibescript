@@ -338,12 +338,34 @@ func arrayIdentity(v Value) uintptr { return value.ArrayIdentity(v) }
 // setArrayElems replaces an array's element slice in place through its shared
 // wrapper. It is the primitive behind the Ruby-style in-place mutators (push,
 // pop, clear, map!, ...): every Value aliasing the array observes the change.
-func setArrayElems(v Value, elems []Value) { v.SetArrayElems(elems) }
+//
+// The mutation invalidates exec's memoized estimator walk rather than every
+// memo in the process, because no other execution can reach the array (see
+// memory_epoch.go). A nil exec has no memo to name and falls back to the
+// process-wide counter, which over-invalidates rather than under-invalidates.
+func setArrayElems(exec *Execution, v Value, elems []Value) {
+	if exec == nil {
+		v.SetArrayElems(elems)
+		return
+	}
+	v.SetArrayElemsNoEpoch(elems)
+	exec.bumpMutationEpoch()
+}
 
 // setArrayWindow narrows an array onto a window of the allocation its elements
 // already sit in, recording how many slots of that allocation now sit in front
 // of the window.
-func setArrayWindow(v Value, elems []Value, head int) { v.SetArrayWindow(elems, head) }
+// setArrayWindow narrows an array onto a window of its current allocation,
+// scoping the invalidation to exec the way setArrayElems does. The bump
+// precedes the write, as it does in every scoped mutator here.
+func setArrayWindow(exec *Execution, v Value, elems []Value, head int) {
+	if exec == nil {
+		v.SetArrayWindow(elems, head)
+		return
+	}
+	exec.bumpMutationEpoch()
+	v.SetArrayWindowNoEpoch(elems, head)
+}
 
 // arrayWindowHead reports how many element slots an array's elements start past
 // the beginning of the allocation they sit in.
@@ -893,6 +915,7 @@ func cloneEnvForHost(env *Env, state hostValueCloneState) *Env {
 	clone.classBody = env.classBody
 	state.envs[env] = clone
 	clone.parent = cloneEnvForHost(env.parent, state)
+	clone.adoptEpochFrom(clone.parent)
 	env.rangeDynamicBindings(func(name string, val Value) {
 		clone.Define(name, cloneValueForHostWithState(val, state))
 	})

@@ -411,7 +411,7 @@ func normalizeTypedHashForType(val Value, ty, keyType, valueType *TypeExpr, ctx 
 			out = NewHashWithDefault(make(map[string]Value, len(entries)), normalizedDefault, NewNil())
 		}
 		for _, entry := range entries[:processed] {
-			if err := hashSet(out, entry.Key, entry.Value); err != nil {
+			if err := hashSet(ctx.exec, out, entry.Key, entry.Value); err != nil {
 				return err
 			}
 		}
@@ -445,7 +445,7 @@ func normalizeTypedHashForType(val Value, ty, keyType, valueType *TypeExpr, ctx 
 			}
 		}
 		if outInitialized {
-			if err := hashSet(out, normalizedKey, normalizedValue); err != nil {
+			if err := hashSet(ctx.exec, out, normalizedKey, normalizedValue); err != nil {
 				return NewNil(), err
 			}
 		}

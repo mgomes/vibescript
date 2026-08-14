@@ -111,11 +111,20 @@ func (v Value) SetArrayElems(elems []Value) {
 // internal use; hosts should not call it, and it carries no compatibility
 // promise (see docs/embedding-api-stability.md).
 func (v Value) SetArrayWindow(elems []Value, head int) {
+	BumpMutationEpoch()
+	v.SetArrayWindowNoEpoch(elems, head)
+}
+
+// SetArrayWindowNoEpoch is SetArrayWindow without the process-wide
+// mutation-epoch bump; see SetArrayElemsNoEpoch for the invariant the caller
+// owes. It is intended for the interpreter's internal use; hosts should not
+// call it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func (v Value) SetArrayWindowNoEpoch(elems []Value, head int) {
 	if v.kind != KindArray {
 		return
 	}
 	if ad, ok := v.data.(*arrayData); ok {
-		BumpMutationEpoch()
 		ad.elems = elems
 		ad.head = head
 	}
@@ -146,6 +155,26 @@ func sameElemStart(old, next []Value) bool {
 		return false
 	}
 	return &old[0] == &next[0]
+}
+
+// SetArrayElemsNoEpoch replaces an array wrapper's element slice in place
+// without bumping the process-wide mutation epoch, for callers that invalidate
+// the memoized reachable-graph walk themselves. The interpreter uses it to
+// charge the mutation to the one execution that can reach the array rather than
+// to every execution in the process. Callers that do not invalidate must use
+// SetArrayElems. It is intended for the interpreter's internal use; hosts
+// should not call it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func (v Value) SetArrayElemsNoEpoch(elems []Value) {
+	if v.kind != KindArray {
+		return
+	}
+	if ad, ok := v.data.(*arrayData); ok {
+		if !sameElemStart(ad.elems, elems) {
+			ad.head = 0
+		}
+		ad.elems = elems
+	}
 }
 
 // AppendArrayElemNoEpoch appends elem to an array in place without bumping

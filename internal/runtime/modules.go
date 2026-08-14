@@ -1199,7 +1199,7 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 	}
 
 	bindModuleExportsWithoutOverwrite(exec.root, exports)
-	bumpMutationEpoch()
+	exec.bumpMutationEpoch()
 	exec.modules[entry.key] = exportsVal
 	if alias != "" {
 		exec.root.Define(alias, exportsVal)

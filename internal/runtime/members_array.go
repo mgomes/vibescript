@@ -379,7 +379,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			result := NewTypedHash(len(groups))
 			result.ReserveHashOrder(len(groups))
 			for _, group := range groups {
-				if err := hashSet(result, group.key, NewArray(group.items)); err != nil {
+				if err := hashSet(exec, result, group.key, NewArray(group.items)); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -573,7 +573,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			result := NewTypedHash(len(counts))
 			result.ReserveHashOrder(len(counts))
 			for _, count := range counts {
-				if err := hashSet(result, count.key, NewInt(count.count)); err != nil {
+				if err := hashSet(exec, result, count.key, NewInt(count.count)); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -2732,7 +2732,7 @@ var reduceArithmeticOps = map[string]func(exec *Execution, left, right Value) (V
 	"/":  func(_ *Execution, l, r Value) (Value, error) { return divideValues(l, r) },
 	"%":  func(_ *Execution, l, r Value) (Value, error) { return moduloValues(l, r) },
 	"**": func(_ *Execution, l, r Value) (Value, error) { return powerValues(l, r) },
-	"<<": func(_ *Execution, l, r Value) (Value, error) { return shovelValues(l, r) },
+	"<<": func(exec *Execution, l, r Value) (Value, error) { return shovelValues(exec, l, r) },
 	"&":  intersectValues,
 }
 
@@ -3061,7 +3061,7 @@ func arrayFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs ma
 	// visited every (snapshot) element, so the block never observes a
 	// half-filtered receiver. delete_if/keep_if always return the mutated
 	// receiver; the bang forms return nil above when nothing was removed.
-	setArrayElems(receiver, out)
+	setArrayElems(exec, receiver, out)
 	return receiver, nil
 }
 
@@ -3378,7 +3378,7 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		if err != nil {
 			return NewNil(), fmt.Errorf("array.to_h pair key is unsupported hash key: %w", err)
 		}
-		if err := hashSet(out, elements[0], elements[1]); err != nil {
+		if err := hashSet(exec, out, elements[0], elements[1]); err != nil {
 			return NewNil(), err
 		}
 		if acc != nil {
@@ -3552,7 +3552,7 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	// Swap the filled elements into the receiver only after the (optional)
 	// block has produced every element, so the block never observes a
 	// half-filled receiver. Returns the receiver, matching Ruby's Array#fill.
-	setArrayElems(receiver, out)
+	setArrayElems(exec, receiver, out)
 	return receiver, nil
 }
 
@@ -3716,7 +3716,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err := arrayReserveInPlaceGrowth(exec, receiver, args, kwargs, block, len(args)); err != nil {
 				return NewNil(), err
 			}
-			setArrayElems(receiver, append(receiver.Array(), args...))
+			setArrayElems(exec, receiver, append(receiver.Array(), args...))
 			return receiver, nil
 		}), nil
 	case "prepend", "unshift":
@@ -3739,7 +3739,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 			out := make([]Value, newLen)
 			copy(out, args)
 			copy(out[len(args):], base)
-			setArrayElems(receiver, out)
+			setArrayElems(exec, receiver, out)
 			return receiver, nil
 		}), nil
 	case "pop":
@@ -3816,7 +3816,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if valueBlock(block) != nil {
 				return NewNil(), fmt.Errorf("array.clear does not accept a block")
 			}
-			setArrayElems(receiver, []Value{})
+			setArrayElems(exec, receiver, []Value{})
 			return receiver, nil
 		}), nil
 	case "delete_if", "keep_if":
@@ -3841,7 +3841,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if !changed {
 				return NewNil(), nil
 			}
-			setArrayElems(receiver, result.Array())
+			setArrayElems(exec, receiver, result.Array())
 			return receiver, nil
 		}), nil
 	case "union":
@@ -3997,7 +3997,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if !changed {
 				return NewNil(), nil
 			}
-			setArrayElems(receiver, result.Array())
+			setArrayElems(exec, receiver, result.Array())
 			return receiver, nil
 		}), nil
 	case "flatten":
@@ -4413,7 +4413,7 @@ func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		}
 	}
 	if found {
-		setArrayElems(receiver, out)
+		setArrayElems(exec, receiver, out)
 		return matched, nil
 	}
 	// On a miss the receiver is left untouched. Ruby invokes the block with the
@@ -4511,7 +4511,7 @@ func arrayInsertBuildResult(exec *Execution, receiver Value, args []Value, kwarg
 	}
 	// Splice the built elements into the receiver and return it, matching
 	// Ruby's in-place Array#insert.
-	setArrayElems(receiver, out)
+	setArrayElems(exec, receiver, out)
 	return receiver, nil
 }
 
@@ -5268,7 +5268,7 @@ func arraySortBang(exec *Execution, receiver Value, args []Value, kwargs map[str
 	// Sorting works on a copy so a comparator block never observes a
 	// half-sorted receiver; the sorted elements are swapped in afterwards and
 	// the receiver is returned, matching Ruby's Array#sort!.
-	setArrayElems(receiver, out)
+	setArrayElems(exec, receiver, out)
 	return receiver, nil
 }
 
@@ -5307,6 +5307,6 @@ func arrayMapBang(exec *Execution, receiver Value, args []Value, kwargs map[stri
 	// The mapped elements are swapped into the receiver only after the block
 	// has visited every (snapshot) element, so the block never observes a
 	// half-mapped receiver. Returns the receiver, matching Ruby's Array#map!.
-	setArrayElems(receiver, out)
+	setArrayElems(exec, receiver, out)
 	return receiver, nil
 }
