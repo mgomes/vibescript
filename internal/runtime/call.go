@@ -832,11 +832,21 @@ func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*
 // a container-bearing kind nobody taught it about must not be assumed distinct.
 func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	out := r.rebindValueInner(val)
-	if r.exec == nil || !r.exec.privateEpochQualified {
+	if r.exec == nil {
 		return out
 	}
 	if valueMayAliasContainer(out) && sameContainerPayload(val, out) {
 		r.exec.revokePrivateEpoch()
+		// A closure handed through uncloned keeps pointing at the environment
+		// chain of the execution that built it, so a binding write B performs
+		// through it would advance THAT execution's counter. B, unqualified,
+		// reads the process-wide one, which nothing advanced, and its memo would
+		// survive a mutation it should have seen. Revoking the environment's
+		// owner sends every later write through that chain process-wide instead,
+		// which is the only answer that does not require knowing who else can
+		// see it. It also retires the plain counter before any second goroutine
+		// could reach it.
+		revokeCapturedEnvOwner(out)
 	}
 	return out
 }
@@ -845,6 +855,29 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 // mutable payload, i.e. whether a rebind returned its input rather than a copy.
 // An unrecognized container-bearing kind answers true, which revokes: assuming
 // two payloads distinct is the direction that under-counts.
+// revokeCapturedEnvOwner retires the private counter of whichever execution
+// owns the environment a closure captured, so writes performed through that
+// environment by any execution go process-wide.
+func revokeCapturedEnvOwner(val Value) {
+	var env *Env
+	switch val.Kind() {
+	case KindBlock:
+		if blk := valueBlock(val); blk != nil {
+			env = blk.Env
+		}
+	case KindFunction:
+		if fn := valueFunction(val); fn != nil {
+			env = fn.Env
+		}
+	}
+	for ; env != nil; env = env.parent {
+		if env.owner != nil {
+			env.owner.revokePrivateEpoch()
+			return
+		}
+	}
+}
+
 func sameContainerPayload(a, b Value) bool {
 	if a.Kind() != b.Kind() {
 		return false
@@ -852,8 +885,10 @@ func sameContainerPayload(a, b Value) bool {
 	switch a.Kind() {
 	case KindArray:
 		return arrayIdentity(a) == arrayIdentity(b)
-	case KindHash, KindObject:
+	case KindHash:
 		return hashIdentity(a) == hashIdentity(b)
+	case KindObject:
+		return objectIdentity(a) == objectIdentity(b)
 	case KindInstance:
 		return valueInstance(a) == valueInstance(b)
 	case KindBlock:

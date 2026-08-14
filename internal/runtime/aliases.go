@@ -335,6 +335,11 @@ func hashIdentity(v Value) uintptr { return value.HashIdentity(v) }
 // distinct arrays (including independent empties) clone to distinct objects.
 func arrayIdentity(v Value) uintptr { return value.ArrayIdentity(v) }
 
+// objectIdentity returns a stable identity for an object wrapper, or 0 when v
+// is not an object. hashIdentity answers 0 for KindObject, so a comparison that
+// used it for both saw every object as identical to every other.
+func objectIdentity(v Value) uintptr { return value.ObjectIdentity(v) }
+
 // setArrayElems replaces an array's element slice in place through its shared
 // wrapper. It is the primitive behind the Ruby-style in-place mutators (push,
 // pop, clear, map!, ...): every Value aliasing the array observes the change.

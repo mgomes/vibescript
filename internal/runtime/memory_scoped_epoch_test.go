@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // TestScopedEpochSurvivesForeignMutation is the mechanism assertion, with no
@@ -288,7 +290,7 @@ func TestUnclonedCrossingRetiresThePrivateCounter(t *testing.T) {
 	})
 	var aliased bool
 	probe.RegisterBuiltin("host_check", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
-		aliased = !exec.privateEpochQualified
+		aliased = !exec.privateEpochQualified.Load()
 		return NewNil(), nil
 	})
 	checkScript := compileScriptWithEngine(t, probe, "def run\n  h = host_stash()\n  host_check()\n  1\nend")
@@ -307,7 +309,7 @@ func TestUnclonedCrossingRetiresThePrivateCounter(t *testing.T) {
 		return NewInt(7), nil
 	})
 	scalarEngine.RegisterBuiltin("host_check", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
-		scalarAliased = !exec.privateEpochQualified
+		scalarAliased = !exec.privateEpochQualified.Load()
 		return NewNil(), nil
 	})
 	scalarScript := compileScriptWithEngine(t, scalarEngine, "def run\n  n = host_scalar()\n  host_check()\n  n\nend")
@@ -341,7 +343,7 @@ func TestCrossScriptClosureRetiresThePrivateCounter(t *testing.T) {
 	consumerEngine := MustNewEngine(Config{StepQuota: Unlimited, MemoryQuotaBytes: 64 << 20})
 	var qualified bool
 	consumerEngine.RegisterBuiltin("host_check", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
-		qualified = exec.privateEpochQualified
+		qualified = exec.privateEpochQualified.Load()
 		return NewNil(), nil
 	})
 	consumer := compileScriptWithEngine(t, consumerEngine, "def run(f)\n  host_check()\n  1\nend")
@@ -351,5 +353,54 @@ func TestCrossScriptClosureRetiresThePrivateCounter(t *testing.T) {
 	if qualified {
 		t.Fatalf("an execution handed a closure from another script kept its private counter, " +
 			"so a write through that closure's captured environment would be invisible to the other execution")
+	}
+}
+
+// TestUnqualifiedExecutionWritesGoProcessWide is the write-side property, which
+// is a separate claim from the read-side one and was missing.
+//
+// "An execution uses the private counter only while nothing uncloned has
+// entered it" governs which counter an execution READS. It says nothing about
+// which counter a write ADVANCES, and the two came apart: environment binding
+// writes advanced a counter reached through the scope chain regardless of
+// qualification, so an unqualified execution advanced a private counter while
+// reading the process-wide one, and its memo survived its own mutation.
+//
+// The write-side property is: a write must advance every counter that could be
+// read by an execution able to observe the affected graph.
+func TestUnqualifiedExecutionWritesGoProcessWide(t *testing.T) {
+	exec, env := newEstimatorCacheExec()
+	estimatorCacheShapes(env)
+	if !exec.privateEpochQualified.Load() {
+		t.Fatalf("a freshly set up execution should start qualified")
+	}
+
+	// Something uncloned entered: the execution now reads the process-wide
+	// counter, so its writes have to reach that counter too.
+	exec.revokePrivateEpoch()
+	before := value.MutationEpoch()
+	env.Define("written", NewArray([]Value{NewInt(1)}))
+	if value.MutationEpoch() == before {
+		t.Fatalf("an unqualified execution's binding write did not advance the process-wide counter, " +
+			"so it advanced a counter no observer of this graph reads")
+	}
+}
+
+// TestObjectPassThroughDoesNotRevoke covers a false revocation rather than an
+// under-count. hashIdentity answers 0 for KindObject, so comparing two objects
+// with it made every object look identical to every other and revoked when
+// nothing was shared. That errs safe, but a needless revocation puts the
+// execution back on the process-wide counter and restores exactly the
+// uncharged quadratic amplification this change exists to remove, so it fails
+// the purpose while looking harmless.
+func TestObjectPassThroughDoesNotRevoke(t *testing.T) {
+	a := NewObject(map[string]Value{"x": NewInt(1)})
+	b := NewObject(map[string]Value{"x": NewInt(1)})
+	if sameContainerPayload(a, b) {
+		t.Fatalf("two independently built objects compared as the same payload, " +
+			"so every cloned object would revoke qualification and forfeit the private counter")
+	}
+	if !sameContainerPayload(a, a) {
+		t.Fatalf("an object did not compare equal to itself, so a genuine uncloned crossing would go undetected")
 	}
 }

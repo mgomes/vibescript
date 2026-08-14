@@ -115,7 +115,7 @@ type Env struct {
 	// which invalidates every memo instead of one. That direction is the safe
 	// one: it costs a memo refresh, where scoping a write too narrowly would
 	// leave a memo serving a total that omits it.
-	epoch *uint64
+	owner *Execution
 }
 
 // adoptEpochFrom points this scope's mutation counter at the one its parent
@@ -125,10 +125,10 @@ type Env struct {
 // keeps no target and falls back to the process-wide counter.
 func (e *Env) adoptEpochFrom(parent *Env) {
 	if parent == nil {
-		e.epoch = nil
+		e.owner = nil
 		return
 	}
-	e.epoch = parent.epoch
+	e.owner = parent.owner
 }
 
 // bumpEpoch invalidates the memoized estimator base walk that covers this
@@ -136,8 +136,8 @@ func (e *Env) adoptEpochFrom(parent *Env) {
 // in the process when it does not. See the epoch field for why the fallback is
 // the safe direction.
 func (e *Env) bumpEpoch() {
-	if e.epoch != nil {
-		*e.epoch++
+	if e.owner != nil {
+		e.owner.bumpMutationEpoch()
 		return
 	}
 	value.BumpMutationEpoch()
