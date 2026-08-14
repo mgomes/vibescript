@@ -20,6 +20,11 @@
   charged 68 MiB for a single 4 MiB global read at seventeen levels. The charge
   does not grow with depth: a 1 MiB global read at 32 levels needs 2.03 MiB,
   against 2.01 MiB at one level, where a naive sum would need 33 MiB.
+- **Unchanged: a capability adapter that re-enters a script still gets a fresh
+  allowance.** The ceiling spans nested tasks, which is where live memory was
+  multiplying; it does not yet reach a script re-entered through a capability.
+  That is what happens today, so nothing regresses, and the remaining path is
+  being designed separately.
 - **Fixed: an unlimited engine re-entered from a bounded caller now honors the
   caller's ceiling.** A capability adapter can re-enter a script on a different
   engine, and one configured with `MemoryQuotaBytes: Unlimited` previously ran
