@@ -263,7 +263,11 @@ func arrayMemberGrouping(property string) (Value, error) {
 					right = append(right, item)
 				}
 			}
-			if err := scratch.reserve(arraySlotBackingBytes(2)); err != nil {
+			// The pair's two slots hold the Values naming left and right, and
+			// their backings were reserved as they grew, so the wrappers boxing
+			// each side are all that is left uncharged.
+			if err := scratch.reserve(saturatingAdd(
+				arraySlotBackingBytes(2), nestedArrayWrapperBytes(2))); err != nil {
 				return NewNil(), err
 			}
 			return NewArray([]Value{NewArray(left), NewArray(right)}), nil
@@ -345,7 +349,14 @@ func arrayMemberGrouping(property string) (Value, error) {
 				groups[index].chargedCap = chargedCap
 				groups[index].items = append(groups[index].items, item)
 			}
-			if err := scratch.reserve(typedHashResultBytes(len(groups), lookupPayloadBytes)); err != nil {
+			// Each group is published as its own array. typedHashResultBytes
+			// covers the entry that names it and reserveValueSliceAppendScratch
+			// covered its backing as it grew, so the wrapper boxing the two
+			// together is what neither of them charged -- once per group, which
+			// grows with the receiver.
+			if err := scratch.reserve(saturatingAdd(
+				typedHashResultBytes(len(groups), lookupPayloadBytes),
+				nestedArrayWrapperBytes(len(groups)))); err != nil {
 				return NewNil(), err
 			}
 			// Ruby's Hash#group_by result lists groups in first-encounter order.
@@ -5044,8 +5055,13 @@ func arrayCombinatoricsWork(method string, count, length int) (int, error) {
 	return checkedArrayMaterializationAdd(method, count, rowSlots)
 }
 
+// arrayTupleRowBackingBytes prices the inner rows a tuple materializer builds --
+// zip, product, combination, permutation -- each of which is published as its
+// own array value. The enclosing projection charges the outer backing's slots,
+// so each row is priced as a nested array: its wrapper and its own backing, not
+// a second Value.
 func arrayTupleRowBackingBytes(count, length int) int {
-	return saturatingMul(count, valueSliceBackingBytes(length))
+	return saturatingMul(count, nestedArrayBackingBytes(length))
 }
 
 func combinationCount(method string, n, k int) (int, error) {

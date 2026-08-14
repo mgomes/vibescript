@@ -1628,14 +1628,28 @@ func (acc *arrayBuildAccumulator) projected(slotCount int) int {
 	return saturatingAdd(saturatingAdd(acc.base, arraySlotBackingBytes(slotCount)), acc.payload)
 }
 
-// arraySlotBackingBytes is what one new array of slotCount slots costs: the
-// Value, the arrayData wrapper it boxes its elements in, and the slot backing
-// itself. valueSliceBackingBytes covers the slice header inside that wrapper,
-// so only the wrapper's remainder is added here -- the same split the graph
-// walk makes, so a projection and the walk that supersedes it agree.
+// arraySlotBackingBytes is what one new array of slotCount slots costs a
+// projection standing on its own: the Value that names it, plus everything the
+// array itself allocates.
 func arraySlotBackingBytes(slotCount int) int {
-	return saturatingAdd(estimatedValueBytes+estimatedArrayWrapperExtraBytes,
-		valueSliceBackingBytes(slotCount))
+	return saturatingAdd(estimatedValueBytes, nestedArrayBackingBytes(slotCount))
+}
+
+// nestedArrayBackingBytes is what one new array of slotCount slots costs when
+// something else already prices the Value that names it -- an inner array in a
+// row of tuples, a capture list inside a match element, a group inside a pair.
+// Its Value occupies a slot of the enclosing backing, which that backing's own
+// projection charges, so charging it again here would bill every inner array's
+// Value twice.
+//
+// It is the wrapper remainder plus the slot backing. Pricing a wrapped array
+// with valueSliceBackingBytes alone is the mistake this exists to make hard to
+// write: the two differ by exactly what arrayData carries beyond a slice
+// header, which is invisible at a call site and multiplies by the row count.
+// Array#zip over a wide receiver allocated one such wrapper per row against a
+// quota that had admitted none of them.
+func nestedArrayBackingBytes(slotCount int) int {
+	return saturatingAdd(estimatedArrayWrapperExtraBytes, valueSliceBackingBytes(slotCount))
 }
 
 // liveValueSliceBytes is what a slot array held only on a Go stack costs a
@@ -1648,6 +1662,20 @@ func arraySlotBackingBytes(slotCount int) int {
 // backing is the conservative margin this projection has always carried.
 func liveValueSliceBytes(slotCount int) int {
 	return saturatingAdd(estimatedValueBytes, valueSliceBackingBytes(slotCount))
+}
+
+// nestedArrayWrapperBytes is the wrapper cost alone for count arrays whose Value
+// slots and slot backings some other reservation already covers -- a group whose
+// Value is a hash entry and whose backing grew through the loop scratch, a
+// partition side whose Value is a slot of the returned pair.
+//
+// It is the residue left when a projection prices an array in two pieces and
+// neither piece is the wrapper. That is not a wrong formula and not a wrong
+// value, so neither the spelling gate nor the compile-time assertion sees it;
+// it is a charge that is simply absent, and naming it is what makes its absence
+// legible at a call site.
+func nestedArrayWrapperBytes(count int) int {
+	return saturatingMul(count, estimatedArrayWrapperExtraBytes)
 }
 
 func valueSliceBackingBytes(slotCount int) int {

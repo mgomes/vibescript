@@ -37,3 +37,12 @@
   wrapper's charge from its struct is what exposed it: the two are subtracted
   from each other, and on 386 the stated 24 exceeded the whole 16-byte wrapper.
   Nothing changes on 64-bit, where the derived value is the same 24.
+- **Fixed: builtins that publish inner arrays reserve the wrapper each one
+  allocates.** `zip`, `product`, `combination` and `permutation` priced every row
+  as a bare slice, so a wide call allocated one array wrapper per row beyond what
+  the quota had admitted; `group_by` did the same once per group, and
+  `String#scan` once per match with captures. `partition` missed the two its
+  result holds. The projection helpers now name which of the three referents they
+  price -- an array that owns its Value, an inner array whose Value a surrounding
+  backing already counts, or a slice nothing ever boxes -- since the arithmetic
+  is identical and only the referent differs.
