@@ -214,10 +214,10 @@ func buildCollidingTypedHash(t *testing.T, callable Value) Value {
 	t.Helper()
 
 	h := NewTypedHash(2)
-	if err := hashSet(h, NewSymbol("x"), callable); err != nil {
+	if err := hashSet(nil, h, NewSymbol("x"), callable); err != nil {
 		t.Fatalf("HashSet symbol key: %v", err)
 	}
-	if err := hashSet(h, NewString("x"), NewInt(0)); err != nil {
+	if err := hashSet(nil, h, NewString("x"), NewInt(0)); err != nil {
 		t.Fatalf("HashSet string key: %v", err)
 	}
 	if h.HashLen() != 2 {
@@ -281,10 +281,10 @@ func TestCapabilityDataCloneKeepsCollidingTypedEntries(t *testing.T) {
 	t.Parallel()
 
 	h := NewTypedHash(2)
-	if err := hashSet(h, NewSymbol("x"), NewInt(1)); err != nil {
+	if err := hashSet(nil, h, NewSymbol("x"), NewInt(1)); err != nil {
 		t.Fatalf("HashSet symbol key: %v", err)
 	}
-	if err := hashSet(h, NewString("x"), NewInt(2)); err != nil {
+	if err := hashSet(nil, h, NewString("x"), NewInt(2)); err != nil {
 		t.Fatalf("HashSet string key: %v", err)
 	}
 
@@ -314,10 +314,10 @@ func TestCapabilityDataCloneKeepsTypedEntriesWithDefaults(t *testing.T) {
 	t.Parallel()
 
 	h := NewTypedHash(2)
-	if err := hashSet(h, NewSymbol("x"), NewInt(1)); err != nil {
+	if err := hashSet(nil, h, NewSymbol("x"), NewInt(1)); err != nil {
 		t.Fatalf("HashSet symbol key: %v", err)
 	}
-	if err := hashSet(h, NewString("x"), NewInt(2)); err != nil {
+	if err := hashSet(nil, h, NewString("x"), NewInt(2)); err != nil {
 		t.Fatalf("HashSet string key: %v", err)
 	}
 	h.SetHashDefaults(NewInt(0), NewNil())
@@ -350,7 +350,7 @@ func TestCapabilityDepthGuardCountsTypedKeys(t *testing.T) {
 		key = NewArray([]Value{key})
 	}
 	h := NewTypedHash(1)
-	if err := hashSet(h, key, NewInt(1)); err != nil {
+	if err := hashSet(nil, h, key, NewInt(1)); err != nil {
 		t.Skipf("deeply nested array keys are rejected earlier: %v", err)
 	}
 
@@ -374,10 +374,10 @@ func TestCapabilityDataCloneKeepsStoredLookupIdentity(t *testing.T) {
 	keyElems := []Value{NewInt(1)}
 	key := NewArray(keyElems)
 	h := NewTypedHash(1)
-	if err := hashSet(h, key, NewString("stored")); err != nil {
+	if err := hashSet(nil, h, key, NewString("stored")); err != nil {
 		t.Fatalf("HashSet array key: %v", err)
 	}
-	setArrayElems(key, []Value{NewInt(2)})
+	setArrayElems(nil, key, []Value{NewInt(2)})
 
 	// The source still answers to the identity captured at insertion.
 	if _, ok, err := h.HashGet(NewArray([]Value{NewInt(1)})); err != nil || !ok {
@@ -407,7 +407,7 @@ func TestBoundaryClonesPreserveTypedHashOrder(t *testing.T) {
 	build := func() Value {
 		h := NewTypedHash(8)
 		for _, name := range []string{"zeta", "alpha", "mike", "bravo", "yankee", "delta", "kilo", "echo"} {
-			if err := hashSet(h, NewSymbol(name), NewInt(1)); err != nil {
+			if err := hashSet(nil, h, NewSymbol(name), NewInt(1)); err != nil {
 				t.Fatalf("HashSet %s: %v", name, err)
 			}
 		}
@@ -436,7 +436,7 @@ func TestBoundaryClonesPreserveTypedHashOrder(t *testing.T) {
 	// The host clone only engages for a graph that needs cloning, so give the
 	// hash a value that forces it.
 	hostSource := build()
-	if err := hashSet(hostSource, NewSymbol("fn"), NewBuiltin("probe", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+	if err := hashSet(nil, hostSource, NewSymbol("fn"), NewBuiltin("probe", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
 		return NewNil(), nil
 	})); err != nil {
 		t.Fatalf("HashSet fn: %v", err)

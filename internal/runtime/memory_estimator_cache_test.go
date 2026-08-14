@@ -51,6 +51,7 @@ func freshUncachedCallRootsEstimate(exec *Execution, callee, receiver Value, arg
 func newEstimatorCacheExec() (*Execution, *Env) {
 	exec := &Execution{quota: 1 << 30, memoryQuota: 1 << 30}
 	exec.root = newEnv(nil)
+	exec.adoptRootEpoch()
 	env := newEnv(exec.root)
 	exec.pushEnv(env)
 	return exec, env
@@ -363,7 +364,7 @@ func TestBaseWalkMemoMutationMatrix(t *testing.T) {
 			if exec.modules == nil {
 				exec.modules = make(map[string]Value)
 			}
-			bumpMutationEpoch()
+			exec.bumpMutationEpoch()
 			exec.modules["late"] = NewHash(map[string]Value{"exported": bigStr()})
 		}
 	})
