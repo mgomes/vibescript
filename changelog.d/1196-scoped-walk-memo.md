@@ -15,7 +15,11 @@
   alone are unaffected. Two shapes still advance the process-wide counter because
   they have no execution in scope (the legacy string-map materialization behind
   `Hash#keys`, and the bound-receiver cell); both measure in the same single-digit
-  band, so neither is an amplification vector.
+  band, so neither is an amplification vector. An execution that exchanges a
+  container with a host-registered builtin or a capability method also keeps the
+  process-wide counter for the rest of its call: that boundary hands Values
+  across uncloned in both directions, unlike `Script.Call`, so a builtin body
+  that retains one can make it reachable from two executions at once.
   `VIBES_ESTIMATOR_VERIFY` checks every memoized total against a from-scratch
   reference walk.
 - **Known: a block whose body calls any builtin is still quadratic in its
