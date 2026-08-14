@@ -1033,95 +1033,55 @@ func TestUnlimitedCalleeRegistersAsALiveChild(t *testing.T) {
 	}
 }
 
-// TestClearingDescendantsPreservesANewChild pins that retiring a level cannot
-// discard accounting a newly started level has already published.
+// TestConstraintAppliesOnlyWhileSomethingBelowIsLive pins how a descendant
+// constraint is retired, which is by being ignored rather than cleared.
 //
-// A parent's last child exiting while a fresh child publishes is a lost update:
-// the exiting child cleared what was live below its parent, wiping what the new
-// child had just recorded, and since a level only republishes on its next memory
-// check, the under-charge could stand for as long as that level ran without
-// allocating again.
+// Clearing it was three separate races over this PR. The last was the subtlest:
+// deciding a node was idle and then writing leaves a window in which a
+// replacement child registers and publishes, and if that child's constraint is
+// looser than the stale one it leaves the stored value untouched -- so the
+// pending write still succeeds and wipes a constraint that a live child needs.
 //
-// The interleaving is driven here rather than raced, because a lost update
-// reproduced by repetition is a flaky test either way: the two halves of the
-// exiting child's release are called around the new child's arrival, which is
-// exactly the order that loses it. That means this test names
-// clearHeadroomIfIdle and so cannot be run against a commit before it existed;
-// what it pins is the invariant -- clearing must never discard the accounting of
-// a live child -- rather than the timing.
-func TestClearingDescendantsPreservesANewChild(t *testing.T) {
+// There is no such window now because nothing decides-then-writes. A constraint
+// is consulted only while something below is live, so a value left by a finished
+// chain cannot bind anyone; and the first arrival of a new generation drops it,
+// so it cannot ratchet down across a sequence of children. That drop is
+// conditional on the exact value observed, because a sibling registering
+// alongside may already have published something tighter and losing that race
+// must leave the tighter value standing.
+func TestConstraintAppliesOnlyWhileSomethingBelowIsLive(t *testing.T) {
 	t.Parallel()
 
-	parent := newMemoryChain(nil, 1<<20)
+	const ceiling = 1 << 20
+	parent := newMemoryChain(nil, ceiling)
 
-	// One live descendant, which is now exiting: the first half of its release.
-	newMemoryChain(parent, 1<<20).register()
-	if remaining := parent.liveDescendants.Add(-1); remaining != 0 {
-		t.Fatalf("expected the exiting descendant to be the last, got %d remaining", remaining)
-	}
-
-	// Before the second half runs, a new descendant starts and publishes.
-	newMemoryChain(parent, 1<<20).register()
-	parent.tightenHeadroom(4000)
-
-	// The exiting child finishes its release.
-	parent.clearHeadroomIfIdle()
-
-	if got := parent.descendantHeadroom.Load(); got != 4000 {
-		t.Fatalf("descendant headroom was %d after a child exited alongside a new one leaving 4000: the exiting child discarded a live child's figure, and nothing restores it until that child's next check", got)
-	}
-
-	// The other half of the rule: with nothing live, the constraint must go, or
-	// a finished chain would bind its parent forever.
-	parent.liveDescendants.Store(0)
-	parent.clearHeadroomIfIdle()
-	if got := parent.descendantHeadroom.Load(); got != noDescendantConstraint {
-		t.Fatalf("descendant headroom was %d with no live children, want no constraint: a finished chain must stop binding its ancestor", got)
-	}
-}
-
-// TestDescendantAccountingNeverOverstatesRoomWhileChildrenRun pins the direction
-// of the residual in descendant accounting, which is a decision rather than an
-// accident.
-//
-// A child that grows, releases most of it and keeps running holds its ancestors
-// to its tightest moment until the last of that ancestor's children exits.
-// Relaxing that exactly needs the loosest of the other children, which is not
-// knowable without walking them, and walking siblings is the width traversal
-// this design exists to avoid. Relaxing it on a "there is only one live child"
-// observation was implemented and then withdrawn: that observation races with a
-// second child registering, and losing the race overstates the room left -- the
-// direction in which a ceiling can be exceeded.
-//
-// So the figure is conservative on purpose. It can refuse work that would have
-// fit; it cannot admit work that does not. This test pins that direction. If
-// someone later finds a way to relax it safely, this is the test to change, and
-// the reasoning above is what has to be answered.
-func TestDescendantAccountingNeverOverstatesRoomWhileChildrenRun(t *testing.T) {
-	t.Parallel()
-
-	parent := newMemoryChain(nil, 1<<20)
-	child := newMemoryChain(parent, 1<<20)
+	// A live child's constraint binds.
+	child := newMemoryChain(parent, ceiling)
 	child.register()
-
-	child.publishAndExceeds(9000)
-	tight := parent.descendantHeadroom.Load()
-	if tight >= noDescendantConstraint {
-		t.Fatalf("parent recorded no constraint below it after its only child published 9000")
+	parent.tightenHeadroom(4000)
+	if got := parent.headroom(); got != 4000 {
+		t.Fatalf("headroom %d with a live child constraining it to 4000", got)
 	}
 
-	// The child shrinks. The room left does not grow back: conservative, and
-	// never more than a live child has actually justified.
-	child.publishAndExceeds(1000)
-	if got := parent.descendantHeadroom.Load(); got > tight {
-		t.Fatalf("descendant headroom relaxed from %d to %d while a child was still live: relaxing races with a sibling registering, and overstated room is how a ceiling gets exceeded", tight, got)
-	}
-
-	// And with the last child gone the constraint is dropped, or a finished
-	// chain would bind its ancestor forever.
+	// Once it retires, the stale value is ignored rather than cleared: nothing
+	// below is live, so nothing below binds.
 	child.release()
+	if got := parent.headroom(); got != ceiling {
+		t.Fatalf("headroom %d after the last child retired, want its own ceiling %d: a finished chain must stop binding its ancestor", got, ceiling)
+	}
+	if parent.descendantHeadroom.Load() != 4000 {
+		t.Fatalf("release wrote to the descendant constraint; retiring must not write, or it races with a replacement registering")
+	}
+
+	// A new generation drops what the last one left, so the constraint cannot
+	// ratchet down across a sequence of children.
+	replacement := newMemoryChain(parent, ceiling)
+	replacement.register()
 	if got := parent.descendantHeadroom.Load(); got != noDescendantConstraint {
-		t.Fatalf("descendant headroom was %d after the last child exited, want no constraint", got)
+		t.Fatalf("a new generation inherited %d from a finished one; the constraint would only ever tighten across children", got)
+	}
+	if got := parent.headroom(); got != ceiling {
+		t.Fatalf("headroom %d for a fresh child that has published nothing, want %d", got, ceiling)
 	}
 }
 
@@ -1380,3 +1340,4 @@ func TestMemoryBudgetSubtractsWhatAncestorsHold(t *testing.T) {
 		t.Fatalf("budget %d under an ancestor already past the ceiling, want 0", got)
 	}
 }
+

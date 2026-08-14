@@ -90,8 +90,8 @@ type memoryChain struct {
 	// limit is the tightest on it.
 	descendantHeadroom atomic.Int64
 	// liveDescendants counts every level still running anywhere below this node,
-	// not just its immediate children, which is what tells clearHeadroomIfIdle
-	// when the headroom no longer stands for anything.
+	// not just its immediate children, which is what tells headroom whether the
+	// constraint below it still stands for anything.
 	//
 	// Transitive because retirement is not ordered by depth. A level can return
 	// while a call it started through a capability is still running, so counting
@@ -160,6 +160,14 @@ func (c *memoryChain) ancestorMarginals() int64 {
 // left, whichever binds first.
 func (c *memoryChain) headroom() int64 {
 	limit := c.limit
+	// A constraint from below applies only while something below is live.
+	// Reading the count here rather than clearing the value on the way out is
+	// what removes an entire class of race: there is no moment at which one
+	// goroutine decides the node is idle and then writes, so nothing can
+	// register in between and have its constraint discarded.
+	if c.liveDescendants.Load() == 0 {
+		return limit
+	}
 	if below := c.descendantHeadroom.Load(); below < limit {
 		limit = below
 	}
@@ -204,61 +212,39 @@ func (c *memoryChain) tightenHeadroom(value int64) {
 // that none of them can forget what is below it while it runs.
 func (c *memoryChain) register() {
 	for node := c.parent; node != nil; node = node.parent {
-		node.liveDescendants.Add(1)
+		if node.liveDescendants.Add(1) != 1 {
+			continue
+		}
+		// The first live descendant of a new generation. Whatever a finished
+		// chain left behind is dropped here so the constraint cannot ratchet
+		// down across a sequence of children, each inheriting the tightest
+		// moment of the last.
+		//
+		// Conditional on the exact value observed. A sibling registering
+		// alongside us may already have published something tighter, and losing
+		// that race must not discard it -- an overstated allowance is the
+		// direction in which a ceiling gets exceeded, so the swap failing and
+		// leaving the tighter value is the outcome to prefer.
+		if stale := node.descendantHeadroom.Load(); stale != noDescendantConstraint {
+			node.descendantHeadroom.CompareAndSwap(stale, noDescendantConstraint)
+		}
 	}
 }
 
-// release retires a finished level: it stops contributing, and when the last
-// child of its parent goes the parent forgets what was below it.
+// release retires a finished level: it stops contributing its own bytes, and
+// stops counting as live beneath its ancestors.
 //
-// What it does NOT do is discard what is live below itself. A descendant can
-// outlive this level: a capability adapter can start a nested call with the
-// published binding context and let it run on after the call that made it has
-// returned. Clearing unconditionally erased such a callee's accounting while it
-// was still allocating, and if it then blocked without another memory check, an
-// ancestor was admitted against a total that omitted it indefinitely.
-//
-// So retirement hands the accounting on rather than dropping it. This node's own
-// bytes go, because its own memory is gone; what its descendants hold stays
-// until they retire in their turn, and the last of them clears it through the
-// same idle check. The node itself stays reachable for exactly as long as a
-// child still points at it.
+// It clears no descendant accounting, its own or anyone's. A level can return
+// while a call it started through a capability is still running, so clearing
+// on the way out erased a live callee's constraint; and clearing on behalf of
+// an ancestor meant deciding the ancestor was idle and then writing, which
+// races with a replacement child registering in between. Neither is needed:
+// a constraint is ignored while nothing below is live, and dropped by the next
+// generation's first arrival.
 func (c *memoryChain) release() {
 	c.marginal.Store(0)
-	// This level's own accounting goes only when nothing below it is left.
-	c.clearHeadroomIfIdle()
 	for node := c.parent; node != nil; node = node.parent {
-		if node.liveDescendants.Add(-1) <= 0 {
-			node.clearHeadroomIfIdle()
-		}
-	}
-}
-
-// clearHeadroomIfIdle forgets what was live below this node, but only while
-// nothing below it is live.
-//
-// Storing the empty value unconditionally lost a new child's accounting: a
-// parent's last child exiting concurrently with a fresh child publishing would
-// clear what the new child had just recorded, and since a level only republishes
-// on its next check, that under-charge could stand indefinitely.
-//
-// The compare-and-swap is what closes it. Replacing only the exact value that
-// was observed means a concurrent tightening makes the swap fail, and the retry
-// then sees the live child and leaves its figure alone. A child that registers
-// after the liveChildren check but has not published yet loses nothing, because
-// it has recorded nothing to lose.
-func (c *memoryChain) clearHeadroomIfIdle() {
-	for {
-		current := c.descendantHeadroom.Load()
-		if current == noDescendantConstraint {
-			return
-		}
-		if c.liveDescendants.Load() != 0 {
-			return
-		}
-		if c.descendantHeadroom.CompareAndSwap(current, noDescendantConstraint) {
-			return
-		}
+		node.liveDescendants.Add(-1)
 	}
 }
 
