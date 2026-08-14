@@ -1308,3 +1308,75 @@ func TestRetirementKeepsAccountingForDescendantsThatOutliveIt(t *testing.T) {
 		t.Fatalf("root still bound at %d after every descendant finished, want its own %d", got, outer)
 	}
 }
+
+// TestMemoryBudgetSubtractsWhatAncestorsHold pins the number every sizing and
+// reservation site now asks for.
+//
+// Those sites size an allocation before any check can refuse it -- a scratch
+// reservation, a projected entry cap, a regex match table -- so the number they
+// divide has to be what is actually left. Reading the execution's own quota was
+// wrong twice over: it ignores a tighter ceiling inherited from a caller, and it
+// ignores the part of that ceiling the caller is already using. A parent local
+// held across a task call is not in the child's graph, so subtracting only the
+// child's usage leaves the ancestor's share unaccounted and the buffer is sized
+// against room the chain does not have.
+//
+// This names memoryBudgetBytes and so pins the invariant rather than running
+// against the commit before it. The harm the category causes is a spike rather
+// than a breach -- the allocation is met by a chain-aware check immediately
+// afterwards -- which is exactly why it is not distinguishable by whether an
+// error is raised, and why it is pinned on the number instead.
+func TestMemoryBudgetSubtractsWhatAncestorsHold(t *testing.T) {
+	t.Parallel()
+
+	const (
+		ceiling = 8 << 20
+		held    = 3 << 20
+	)
+
+	root := newMemoryChain(nil, ceiling)
+	root.publishAndExceeds(held)
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: ceiling}
+	exec.memChainNode.parent = root
+	exec.memChainNode.limit = ceiling
+	exec.memChainNode.descendantHeadroom.Store(noDescendantConstraint)
+	exec.memChain = &exec.memChainNode
+	exec.memBaselineSet = true
+
+	if got, want := exec.memoryBudgetBytes(), ceiling-held; got != want {
+		t.Fatalf("budget %d with an ancestor holding %d of a %d ceiling, want %d: sizing against the ceiling lets a nested call build a buffer out of room its caller is already using",
+			got, held, ceiling, want)
+	}
+
+	// A tighter local quota still binds when it is the smaller of the two.
+	tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 20}
+	tight.memChainNode.parent = root
+	tight.memChainNode.limit = ceiling
+	tight.memChainNode.descendantHeadroom.Store(noDescendantConstraint)
+	tight.memChain = &tight.memChainNode
+	tight.memBaselineSet = true
+	if got := tight.memoryBudgetBytes(); got != 1<<20 {
+		t.Fatalf("budget %d for an execution whose own quota is the tighter bound, want %d", got, 1<<20)
+	}
+
+	// With no chain at all there is nothing above to subtract.
+	alone := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: ceiling}
+	if got := alone.memoryBudgetBytes(); got != ceiling {
+		t.Fatalf("budget %d for an execution with no chain, want its own quota %d", got, ceiling)
+	}
+
+	// An ancestor already over its ceiling leaves nothing, and the floor keeps
+	// that from reading as a negative budget a caller would treat as huge.
+	over := newMemoryChain(nil, ceiling)
+	over.publishAndExceeds(ceiling + (1 << 20))
+	starved := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: ceiling}
+	starved.memChainNode.parent = over
+	starved.memChainNode.limit = ceiling
+	starved.memChainNode.descendantHeadroom.Store(noDescendantConstraint)
+	starved.memChain = &starved.memChainNode
+	starved.memBaselineSet = true
+	if got := starved.memoryBudgetBytes(); got != 0 {
+		t.Fatalf("budget %d under an ancestor already past the ceiling, want 0", got)
+	}
+}

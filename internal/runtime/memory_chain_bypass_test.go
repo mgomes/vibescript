@@ -4,34 +4,59 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// quotaComparison matches a direct comparison against an execution's own memory
-// quota.
-var quotaComparison = regexp.MustCompile(`[><]=?\s*(?:\w+\.)*exec\.memoryQuota\b`)
+// quotaRead matches any read of an execution's own memory quota.
+var quotaRead = regexp.MustCompile(`(?:\w+\.)*exec\.memoryQuota\b`)
 
-// TestNoHardRefusalBypassesTheMemoryChain pins that the chain-aware check is the
-// only way to refuse an allocation.
+// quotaMeteringGuard matches the one form every read may safely take: the guard
+// that asks whether metering is on at all.
+var quotaMeteringGuard = regexp.MustCompile(`exec\.memoryQuota\s*(?:<=|>)\s*0`)
+
+// enclosingFunc reports the name of the function a line sits in.
+var funcHeader = regexp.MustCompile(`^func (?:\([^)]*\) )?(\w+)`)
+
+// quotaReaders are the only functions permitted to read the local quota, and
+// each is here for a stated reason.
+var quotaReaders = map[string]string{
+	// The two that turn the local quota into the number everything else should
+	// be using.
+	"effectiveMemoryLimit": "resolves the local quota against the inherited ceiling",
+	"memoryBudgetBytes":    "resolves what is left of that ceiling after ancestors",
+	// The single choke point every hard refusal goes through.
+	"memoryExceeded": "applies both bounds",
+	// Probes that choose between two paths, both of which are hard-checked
+	// afterwards. Answering for this execution alone can only make them fall
+	// back more often, never admit more.
+	"memoryFitsWith":                  "soft probe with a cheaper fallback",
+	"projectedHashTransformFits":      "soft probe with an exact fallback",
+	"projectedTypedHashTransformFits": "soft probe with an exact fallback",
+	// Where an inheriting execution adopts the ceiling as its own.
+	"newExecutionForCall": "adopts the inherited ceiling",
+}
+
+// TestOnlyResolvedLimitsAreReadFromTheQuota pins that the local memory quota is
+// read only where it is turned into the bound actually in force.
 //
-// Every memory check guards on exec.memoryQuota, and for a long time comparing
-// against it directly was how a refusal was written. Once a chain ceiling exists
-// alongside the local quota, such a comparison is a bypass: it can refuse on the
-// local quota while never consulting -- or publishing to -- the chain, so a level
-// grows and blocks without its ancestors ever seeing the growth. Twenty such
-// sites existed, of which a review found two; the rest were the same defect
-// waiting to be reported one at a time.
+// Two categories of defect came out of this field being read directly. Hard
+// refusals compared against it and so never consulted or published to the chain:
+// two were reported and twenty existed. Then budgets -- a scratch reservation, a
+// projected entry cap, a match table -- sized allocations from it, which is
+// worse, because the buffer is built before any check can refuse it; two of
+// those were reported and six existed.
 //
-// So this is enforced structurally rather than site by site. A refusal is
-// recognized by memoryQuotaExceededError appearing just below the comparison,
-// which is exactly the shape of a hard check. Soft probes that answer a capacity
-// question and return a number or a bool are untouched, deliberately: they have
-// a cheaper fallback and admit nothing.
+// Both times the reported sites were a fraction of the category, so the category
+// is what is enforced. A read of exec.memoryQuota outside the functions that
+// resolve it is a bypass of one kind or the other, and the fix is to ask for
+// effectiveMemoryLimit (a share of the bound in force) or memoryBudgetBytes
+// (how much may still be allocated) rather than to add a name here.
 //
-// If this fails, the fix is to call exec.memoryExceeded(used) rather than to add
-// the file to an exemption.
-func TestNoHardRefusalBypassesTheMemoryChain(t *testing.T) {
+// The metering guard is exempt everywhere: asking whether a quota is set at all
+// is not a bound to compare against.
+func TestOnlyResolvedLimitsAreReadFromTheQuota(t *testing.T) {
 	t.Parallel()
 
 	entries, err := os.ReadDir(".")
@@ -49,39 +74,32 @@ func TestNoHardRefusalBypassesTheMemoryChain(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		lines := strings.Split(string(data), "\n")
-		for i, line := range lines {
+
+		fn := ""
+		for i, line := range strings.Split(string(data), "\n") {
+			if m := funcHeader.FindStringSubmatch(line); m != nil {
+				fn = m[1]
+			}
 			code := line
 			if idx := strings.Index(code, "//"); idx >= 0 {
 				code = code[:idx]
 			}
-			if !quotaComparison.MatchString(code) {
+			if !quotaRead.MatchString(code) {
 				continue
 			}
-			// A refusal names the error within the lines it guards.
-			window := strings.Join(lines[i:min(i+4, len(lines))], "\n")
-			if strings.Contains(window, "memoryQuotaExceededError") {
-				offenders = append(offenders, name+":"+itoa(i+1)+": "+strings.TrimSpace(line))
+			// Strip the permitted guard form and see if a read survives it.
+			if !quotaRead.MatchString(quotaMeteringGuard.ReplaceAllString(code, "")) {
+				continue
 			}
+			if _, ok := quotaReaders[fn]; ok {
+				continue
+			}
+			offenders = append(offenders, name+":"+strconv.Itoa(i+1)+" in "+fn+"(): "+strings.TrimSpace(line))
 		}
 	}
 
 	if len(offenders) > 0 {
-		t.Fatalf("these refusals compare against the execution's own quota instead of exec.memoryExceeded, so they neither enforce nor publish to the chain shared with the call's ancestors:\n%s",
+		t.Fatalf("these read the execution's own memory quota instead of the bound in force, so they ignore a tighter ceiling inherited from a caller and the part of it that caller already holds:\n%s",
 			strings.Join(offenders, "\n"))
 	}
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
 }
