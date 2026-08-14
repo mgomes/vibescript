@@ -69,9 +69,9 @@ type walkEpoch struct {
 	shared uint64
 }
 
-// walkEpoch reads the current memo key for this execution. The shared half is
-// read after the local half so that a bump landing between the two reads is
-// observed as a change on the next comparison rather than being missed.
+// walkEpoch reads the current memo key for this execution. Callers snapshot it
+// before walking, so a bump that lands mid-walk fails the comparison on the next
+// session and forces a conservative re-walk.
 func (exec *Execution) walkEpoch() walkEpoch {
 	return walkEpoch{local: exec.mutationEpoch, shared: value.MutationEpoch()}
 }
