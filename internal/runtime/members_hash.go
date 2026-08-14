@@ -3164,6 +3164,15 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.map_with_index does not take keyword arguments")
 			}
+			// The results accumulate in a Go-local slice the checks inside later
+			// block calls cannot reach, so a block allocating a large temporary was
+			// measured against a graph missing everything the loop had already kept,
+			// and the two passed separately though they coexist. Reserving the
+			// running total as releasable scratch puts it in front of those checks.
+			// Each reservation is O(1): the accumulator already tracks the total, so
+			// nothing is re-walked.
+			retained := newRetainedOutputScratch(exec)
+			defer retained.release()
 			runner, err := newBlockCallRunner(exec, block, "hash.map_with_index", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
@@ -3179,6 +3188,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out := make([]Value, 0, count)
+				// Reserve the preallocated backing before the first block call, not
+				// after it returns: it is live from the make above, so a block
+				// allocating a large temporary on the very first entry would
+				// otherwise be measured without it.
+				retained.reserve(acc.accumulatedBytes(cap(out)))
 				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
 				for i, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
@@ -3202,6 +3216,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := acc.addConservative(val, cap(out)); err != nil {
 						return NewNil(), err
 					}
+					retained.reserve(acc.accumulatedBytes(cap(out)))
 				}
 				return NewArray(out), nil
 			}
@@ -3229,6 +3244,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			out := make([]Value, 0, len(entries))
+			// Reserve the preallocated backing before the first block call; see the
+			// typed branch above.
+			retained.reserve(acc.accumulatedBytes(cap(out)))
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for i, key := range sortedHashKeysInto(entries, keyBuf[:]) {
@@ -3265,6 +3283,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := acc.addConservative(val, cap(out)); err != nil {
 					return NewNil(), err
 				}
+				retained.reserve(acc.accumulatedBytes(cap(out)))
 			}
 			return NewArray(out), nil
 		}), nil
@@ -3595,6 +3614,15 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.transform_values does not take arguments")
 			}
+			// The transformed values accumulate in Go locals the checks inside later
+			// block calls cannot reach, so a block allocating a large temporary was
+			// measured against a graph missing everything the loop had already
+			// transformed, and the two passed separately though they coexist.
+			// Reserving the running total as releasable scratch puts it in front of
+			// those checks. Only the payloads are reserved here; the output map and
+			// its scratch are already held by the reserveLoopScratch in each branch.
+			retained := newRetainedOutputScratch(exec)
+			defer retained.release()
 			if err := ensureBlock(block, "hash.transform_values"); err != nil {
 				return NewNil(), err
 			}
@@ -3657,6 +3685,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := acc.add(nextValue); err != nil {
 						return NewNil(), err
 					}
+					retained.reserve(acc.retainedPayloadBytes())
 				}
 				if deferBuild {
 					for _, entry := range ordered {
@@ -3734,6 +3763,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := acc.add(nextValue); err != nil {
 					return NewNil(), err
 				}
+				retained.reserve(acc.retainedPayloadBytes())
 			}
 			return NewHash(out), nil
 		}), nil
