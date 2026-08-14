@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"weak"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // TestArrayShrinkDropsRemovedPayloads pins that an element removed from an
@@ -693,5 +695,26 @@ func TestFailedCompactingShrinkLeavesTheArrayWhole(t *testing.T) {
 			t.Fatalf("element %d reads %s after the rejected shift, want %s",
 				i, after[i].Inspect(), want.Inspect())
 		}
+	}
+}
+
+// TestEmptyArrayIsChargedItsWholeWrapper pins that the memory estimate for an
+// array with no elements equals the one allocation such an array actually
+// makes: the arrayData wrapper the runtime boxes its elements in.
+//
+// It is the drift check for the field this file's shrink added. The wrapper was
+// exactly a slice header until then, so estimatedSliceBaseBytes priced it by
+// accident, and the field took it to 32 bytes while the estimate stayed at 24 --
+// an under-count introduced by a fix for an under-count, 8 unmetered bytes for
+// every array a program holds. The charge is derived from the struct now, so
+// the next field is priced by the commit that adds it, and this pins the
+// derivation against the struct rather than against a number.
+func TestEmptyArrayIsChargedItsWholeWrapper(t *testing.T) {
+	t.Parallel()
+
+	est := newMemoryEstimator()
+	if got, want := est.valuePayload(NewArray(nil)), value.ArrayDataBytes; got != want {
+		t.Fatalf("an empty array is charged %d bytes beyond its Value, want the %d byte arrayData "+
+			"wrapper it allocates", got, want)
 	}
 }

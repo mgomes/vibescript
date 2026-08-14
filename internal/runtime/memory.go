@@ -39,6 +39,27 @@ const estimatedHashDataBytes = value.HashDataBytes
 // every KindObject value allocates around its entry map.
 const estimatedObjectDataBytes = value.ObjectDataBytes
 
+// estimatedArrayWrapperExtraBytes is the part of the arrayData wrapper every
+// KindArray value allocates that the array's own slice accounting does not
+// already cover. sliceStructuralBytes charges estimatedSliceBaseBytes for the
+// element slice header, and for an array that header is a field of the wrapper
+// rather than an allocation of its own, so what is missing is only what the
+// wrapper carries beyond it. Charging value.ArrayDataBytes whole on top would
+// bill the header twice.
+//
+// It is derived from both sides so that neither can drift: a field added to
+// arrayData is charged by the commit that adds it, and a change to what the
+// slice base models is subtracted from it. head was added without either, which
+// took the wrapper from 24 bytes to 32 and left 8 unmetered per array -- an
+// under-count introduced by a fix for an under-count.
+const estimatedArrayWrapperExtraBytes = value.ArrayDataBytes - estimatedSliceBaseBytes
+
+// A wrapper smaller than the slice header the estimator already bills would
+// make the remainder negative and quietly subtract from every array's charge,
+// which is the direction that escapes a quota. An array length may not be
+// negative, so this stops compiling before it can.
+var _ [estimatedArrayWrapperExtraBytes]struct{}
+
 const (
 	estimatedHashLookupKeyBytes = int(unsafe.Sizeof(value.HashLookupKey{}))
 	estimatedHashEntryBytes     = int(unsafe.Sizeof(HashEntry{}))
@@ -1601,8 +1622,14 @@ func (acc *arrayBuildAccumulator) projected(slotCount int) int {
 	return saturatingAdd(saturatingAdd(acc.base, arraySlotBackingBytes(slotCount)), acc.payload)
 }
 
+// arraySlotBackingBytes is what one new array of slotCount slots costs: the
+// Value, the arrayData wrapper it boxes its elements in, and the slot backing
+// itself. valueSliceBackingBytes covers the slice header inside that wrapper,
+// so only the wrapper's remainder is added here -- the same split the graph
+// walk makes, so a projection and the walk that supersedes it agree.
 func arraySlotBackingBytes(slotCount int) int {
-	return saturatingAdd(estimatedValueBytes, valueSliceBackingBytes(slotCount))
+	return saturatingAdd(estimatedValueBytes+estimatedArrayWrapperExtraBytes,
+		valueSliceBackingBytes(slotCount))
 }
 
 func valueSliceBackingBytes(slotCount int) int {
@@ -3194,6 +3221,17 @@ func (est *memoryEstimator) value(val Value) int {
 		size += len(regex.Source)
 	case KindArray:
 		size += est.slice(val.Array())
+		// Charged per occurrence, not per distinct wrapper, so that it behaves
+		// exactly like the slice base it completes: sliceStructuralBytes bills
+		// estimatedSliceBaseBytes every time it is reached and deduplicates only
+		// the element backing, and a zero-capacity backing has no identity to
+		// deduplicate on at all. A charge that deduplicated where its other half
+		// does not made the memoized total drift 8 bytes from the reference walk
+		// it must equal, because a probe that rolls its seen-set back charges
+		// what it inserted and a later walk charges it again. Two aliases of one
+		// array are billed the wrapper twice, which is the same conservative
+		// over-count the slice base already makes for them.
+		size += estimatedArrayWrapperExtraBytes
 	case KindHash:
 		if entries, ok := hashStringMapIfMaterialized(val); ok {
 			size += est.hash(entries)

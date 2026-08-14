@@ -52,6 +52,20 @@ type arrayData struct {
 	head  int
 }
 
+// ArrayDataBytes is the heap footprint of the arrayData wrapper every KindArray
+// value allocates, excluding the element backing it points at. Memory-quota
+// accounting charges it once per distinct array so a workload retaining many
+// small arrays cannot hold the per-array wrapper cost uncharged.
+//
+// It is derived from the struct rather than restated as a number so that a
+// field added to arrayData is charged by the same commit that adds it. head was
+// added without one, which took the wrapper from 24 bytes to 32 and left 8 of
+// them unmetered per array -- an under-count introduced by a fix for an
+// under-count. It is intended for the interpreter's internal use; hosts should
+// not rely on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+const ArrayDataBytes = int(unsafe.Sizeof(arrayData{}))
+
 // NewArray returns an array Value backed by a, which it takes ownership of.
 //
 // The slice must not be one another array Value is already built over. An

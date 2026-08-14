@@ -17,3 +17,11 @@
   9.00 steps per element where it cost 8.00, and stays linear: a copy of m
   elements happens only after more than m have been removed, so a drain of any
   size copies fewer elements than it removes.
+- **Fixed: an array's wrapper is charged the memory it actually occupies.** The
+  struct the runtime boxes every array's elements in was exactly a slice header,
+  so the estimator's slice-base charge priced it by accident. The shrink above
+  adds a field to it, which would have left 8 bytes per array unmetered -- an
+  under-count introduced by a fix for an under-count -- so the charge is now
+  derived from the struct and the next field is priced by the commit that adds
+  it. The projections that reserve a new array were moved with it, so a build
+  and the walk that supersedes it still agree to the byte.
