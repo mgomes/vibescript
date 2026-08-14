@@ -113,7 +113,11 @@ func TestScopedEpochControlIsFlat(t *testing.T) {
 func TestConcurrentExecutionCannotDestroyMemo(t *testing.T) {
 	attackers := []struct{ name, src string }{
 		{"builtin_dispatch", "def run(n)\n  i = 0\n  while i < n\n    1.to_s\n    i = i + 1\n  end\n  i\nend"},
-		{"env_write", "def run(n)\n  i = 0\n  while i < n\n    i = i + 1\n  end\n  i\nend"},
+		// A composite rebind, not `i = i + 1`: a scalar-to-scalar rebind takes
+		// bumpEpochUnlessScalarRebind's early return and never touches the epoch
+		// at all, so it passed this assertion on master too and was covering
+		// nothing.
+		{"env_rebind", "def run(n)\n  i = 0\n  v = 0\n  while i < n\n    v = [i]\n    i = i + 1\n  end\n  i\nend"},
 		{"array_append", "def run(n)\n  a = []\n  i = 0\n  while i < n\n    a << 1\n    a = []\n    i = i + 1\n  end\n  i\nend"},
 		{"hash_store", "def run(n)\n  h = {}\n  i = 0\n  while i < n\n    h[\"k\"] = i\n    i = i + 1\n  end\n  i\nend"},
 		{"ivar_store", "class C\n  def bump(n)\n    i = 0\n    while i < n\n      @v = i\n      i = i + 1\n    end\n    i\n  end\nend\ndef run(n)\n  C.new.bump(n)\nend"},
