@@ -1207,3 +1207,66 @@ func TestMemoryBudgetSubtractsWhatAncestorsHold(t *testing.T) {
 		t.Fatalf("budget %d under an ancestor already past the ceiling, want 0", got)
 	}
 }
+
+// TestAcceptedReservationsReachAncestors pins that a scratch reservation is
+// reported to the chain and not merely compared against it.
+//
+// Comparing an accepted reservation against a budget is sufficient only while
+// nobody can act during that reservation's life. A parent blocked on its child
+// cannot, which is what makes "the right number, not a report" sound like a
+// complete answer. A Tasks.run parent that has spawned a worker and carries on
+// allocating can: it would see the child's pre-reservation figure, because
+// nothing published the accepted reservation, and admit memory the combined
+// path does not have room for.
+//
+// Publication is on granule boundaries rather than per increment, so a hot loop
+// does not take a chain walk per accepted byte, and the figure is rounded up so
+// ancestors always see at least what the level holds.
+func TestAcceptedReservationsReachAncestors(t *testing.T) {
+	t.Parallel()
+
+	const ceiling = 8 << 20
+
+	root := newMemoryChain(nil, ceiling)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: ceiling}
+	exec.memChainNode.parent = root
+	exec.memChainNode.limit = ceiling
+	exec.memChainNode.descendantHeadroom.Store(noDescendantConstraint)
+	exec.memChain = &exec.memChainNode
+	exec.memBaselineSet = true
+	exec.memChainNode.register()
+
+	if got := root.headroom(); got != ceiling {
+		t.Fatalf("root headroom %d before any reservation, want %d", got, ceiling)
+	}
+
+	// Deliberately not a round 2 MiB: that lands exactly on a granule boundary,
+	// so any increment at all would cross into the next one and the boundary
+	// check below would pass for the wrong reason.
+	reservation := loopScratchReservation{exec: exec}
+	if !reservation.reserveIfFits((2 << 20) + 1000) {
+		t.Fatalf("a 2 MiB reservation must fit under an %d MiB ceiling", ceiling>>20)
+	}
+
+	// The parent is nonblocking here: it can allocate while this reservation is
+	// live, so what it sees has to include it.
+	room := root.headroom()
+	if room >= ceiling {
+		t.Fatalf("root still sees its whole %d byte ceiling while a child holds a 2 MiB accepted reservation: the reservation was compared against the chain but never reported to it, so a parent allocating concurrently is admitted against the figure from before it",
+			ceiling)
+	}
+	if room < ceiling-(3<<20) {
+		t.Fatalf("root headroom %d understates the room left after a 2 MiB reservation; the published figure must round up, not overshoot wildly", room)
+	}
+
+	// A second reservation inside the same granule must not walk the chain
+	// again: the published figure is unchanged. The granule here is 32 KiB, so
+	// sixteen more bytes stays inside it.
+	before := root.descendantHeadroom.Load()
+	if !reservation.reserveIfFits(16) {
+		t.Fatalf("a 16-byte increment must fit")
+	}
+	if got := root.descendantHeadroom.Load(); got != before {
+		t.Fatalf("a 16-byte increment republished (%d -> %d); publication must be bounded by granule count, not by reservation count", before, got)
+	}
+}

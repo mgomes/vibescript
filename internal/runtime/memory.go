@@ -3040,7 +3040,23 @@ type loopScratchReservation struct {
 	exec     *Execution
 	baseline int
 	delta    int
+	// published is the reservation total most recently reported to the chain,
+	// rounded up. Kept so that a growing reservation reports on granule
+	// boundaries rather than on every accepted increment.
+	published int
 }
+
+// reservationPublishShift sets the publication granule as a fraction of the
+// bound in force: the chain hears about a growing reservation once per
+// 1/256th of that bound.
+//
+// A share of the bound rather than of what is left of it, deliberately. A
+// budget scales with what ancestors hold; a granule must not, or its
+// resolution would wobble as a caller filled up, for reasons having nothing to
+// do with the granule's purpose. That distinction cost a review round to
+// separate and is easy to lose here, because both quantities are in bytes and
+// both are about the chain.
+const reservationPublishShift = 8
 
 func newLoopScratchReservation(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (loopScratchReservation, error) {
 	reservation := loopScratchReservation{exec: exec}
@@ -3061,16 +3077,45 @@ func (r *loopScratchReservation) reserveIfFits(scratchBytes int) bool {
 
 	delta := r.exec.reserveLoopScratch(scratchBytes)
 	nextDelta := saturatingAdd(r.delta, delta)
-	// Against the budget rather than the local quota. Publishing each accepted
-	// reservation through the chain instead would put a chain walk on every
-	// incremental reserve in a hot loop; what this site needs is the right
-	// number to compare against, not a report to the chain.
-	if saturatingAdd(r.baseline, nextDelta) > r.exec.memoryBudgetBytes() {
+	total := saturatingAdd(r.baseline, nextDelta)
+	if total > r.exec.memoryBudgetBytes() {
 		r.exec.releaseLoopScratch(delta)
 		return false
 	}
 	r.delta = nextDelta
+	r.publishToChain(total)
 	return true
+}
+
+// publishToChain reports a growing reservation to this execution's ancestors.
+//
+// Comparing against a budget is not sufficient on its own, and the reason is
+// worth recording because it is easy to miss: a snapshot comparison is only
+// enough when nobody can act during the reservation's life. A blocking parent
+// cannot, which is the case that makes "the right number, not a report" sound
+// complete. A `Tasks.run` parent that has spawned a worker and carries on
+// allocating *can*, and it would see the child's pre-reservation figure,
+// because nothing had published the accepted reservation.
+//
+// So it publishes, but on granule boundaries rather than per increment, which
+// keeps a hot loop from taking a chain walk on every accepted byte. The figure
+// is rounded *up*, so ancestors always see at least what this level holds: the
+// error is over-reporting, which refuses work that would have fit rather than
+// admitting work that should not.
+func (r *loopScratchReservation) publishToChain(total int) {
+	granule := r.exec.effectiveMemoryLimit() >> reservationPublishShift
+	if granule <= 0 {
+		granule = 1
+	}
+	rounded := saturatingAdd(total, granule-1)
+	rounded -= rounded % granule
+	if rounded <= r.published {
+		return
+	}
+	r.published = rounded
+	// The reservation is already in reservedScratchBytes, so the estimate the
+	// chain is given includes it without a second walk of the graph.
+	r.exec.memoryExceeded(rounded)
 }
 
 func (r *loopScratchReservation) reserve(scratchBytes int) error {
