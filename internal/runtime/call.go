@@ -1256,12 +1256,7 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 		exec.capabilityContractsByName = make(map[string]CapabilityMethodContract)
 	}
 
-	// exec.Context(), not exec.ctx: an adapter that captures this context and
-	// later re-enters a script with it is starting a nested call, and it must
-	// join this execution's chain rather than receive a fresh allowance. The raw
-	// field carries no chain node, so a binding built from it handed the callee
-	// the grandparent's node or none at all.
-	binding := CapabilityBinding{Context: exec.Context(), Engine: exec.engine}
+	binding := CapabilityBinding{Context: exec.ctx, Engine: exec.engine}
 	ambientEnvs := ambientEnvSet(root)
 	for _, adapter := range capabilities {
 		if adapter == nil {

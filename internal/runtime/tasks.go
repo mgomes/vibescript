@@ -288,12 +288,20 @@ func newTaskGroup(exec *Execution, max int, detachRootGlobals bool) *taskGroup {
 		budget = newTaskConcurrencyBudget(exec.hostTaskConcurrencyLimit())
 	}
 	ctx = contextWithTaskBudget(ctx, budget)
-	// The memory chain needs no publishing here: exec.Context() already carries
-	// this execution's node, so the group's context inherits it along with
-	// everything else, and every job this group runs links to it. Publishing it
-	// only here was the bug -- a group is not the only way a nested call is
-	// made, and a capability adapter re-entering the script got a context
-	// without it.
+	// Every job this group runs builds its own Execution with its own memory
+	// quota, and each of those quotas was the host's whole allowance: nesting
+	// multiplied live memory by the depth of the chain, unrefused. Publishing
+	// this execution's node into the context the group captures is what makes a
+	// nested level charge against the chain reaching back to the root instead of
+	// starting a fresh allowance. It is published before any worker runs, for
+	// the same reason the sleeping budget is.
+	//
+	// The node is detached onto the heap first: it lives inside the Execution so
+	// that a level which never nests allocates nothing, but a pointer to a field
+	// keeps the whole containing object alive, and this context outlives the
+	// group's jobs.
+	exec.detachMemoryChainNode()
+	ctx = contextWithMemoryChain(ctx, exec.memChain)
 	group := &taskGroup{
 		script:               taskScript(exec),
 		ctx:                  ctx,

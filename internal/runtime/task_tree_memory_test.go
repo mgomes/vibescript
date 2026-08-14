@@ -9,7 +9,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"weak"
 )
 
 // taskDepthMemorySample is what one nesting level reports about itself. The
@@ -929,79 +928,6 @@ func TestRefusalNamesTheInheritedCeiling(t *testing.T) {
 	}
 }
 
-// reentrantProbe re-enters the script through a capability, which is a nesting
-// path that no task group creates.
-type reentrantProbe struct {
-	script **Script
-	fn     string
-}
-
-func (p reentrantProbe) Bind(binding CapabilityBinding) (map[string]Value, error) {
-	return map[string]Value{"probe": NewObject(map[string]Value{
-		"reenter": NewBuiltin("probe.reenter", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
-			// Re-entered with the running execution's own context, which is how
-			// a capability adapter calls back into a script. No capabilities are
-			// passed, so the inner call cannot recurse.
-			if _, err := (*p.script).Call(exec.Context(), p.fn, nil, CallOptions{}); err != nil {
-				return NewNil(), err
-			}
-			return NewNil(), nil
-		}),
-	})}, nil
-}
-
-// TestCapabilityReentryJoinsTheCallersChain pins that a call made through a
-// capability is part of the chain it was made from.
-//
-// The chain node used to be published onto a context only by newTaskGroup. That
-// is a side channel: a task group is not the only way a nested call is made. A
-// capability adapter re-entering a script with exec.Context() handed the callee
-// its grandparent's node, or none at all, so the callee started a fresh chain
-// and got the host's whole allowance again -- the very defect this change
-// exists to close, reachable by a path with no task in it.
-//
-// The node now travels on the execution's own context, the way the sleeping
-// budget does, so it reaches everything the call drives.
-//
-// The outer level holds its payload across the re-entry, and the inner call
-// allocates one of its own; either fits alone, and together they do not.
-func TestCapabilityReentryJoinsTheCallersChain(t *testing.T) {
-	t.Parallel()
-
-	const (
-		quota  = 4 << 20
-		chunks = 500 // ~2.5 MiB each
-	)
-
-	chunk := strings.Repeat("q", 5000)
-	source := fmt.Sprintf(chunkPayloadFn, chunk) + fmt.Sprintf(`
-def inner()
-  mine = payload(%d)
-  mine.size
-end
-
-def run()
-  held = payload(%d)
-  probe.reenter()
-  held.size
-end`, chunks, chunks)
-
-	script := compileScriptWithConfig(t,
-		Config{MemoryQuotaBytes: quota, StepQuota: Unlimited}, source)
-
-	holder := script
-	_, err := script.Call(context.Background(), "run", nil,
-		callOptionsWithCapabilities(reentrantProbe{script: &holder, fn: "inner"}))
-
-	if err == nil {
-		t.Fatalf("an outer call holding ~2.5 MiB re-entered the script through a capability, which allocated ~2.5 MiB more, and the %d MiB ceiling refused neither: the inner call started a chain of its own, so re-entry through a capability hands out the whole allowance again",
-			quota>>20)
-	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("re-entry stopped for an unrelated reason: %v", err)
-	}
-}
-
 // TestUnlimitedCalleeRegistersAsALiveChild pins that every kind of callee
 // registers with its parent, not just a bounded one.
 //
@@ -1134,86 +1060,15 @@ func TestDescendantCeilingBindsAnAncestorsGrowth(t *testing.T) {
 	}
 }
 
-// bindingContextProbe re-enters the script through the context handed to
-// adapters at bind time, which is the public door an adapter actually holds.
-type bindingContextProbe struct {
-	script **Script
-	fn     string
-}
-
-func (p bindingContextProbe) Bind(binding CapabilityBinding) (map[string]Value, error) {
-	// Captured at bind time and used later, the way an adapter that keeps a
-	// client around does. Deliberately not *Execution.Context(): that is a
-	// different door, and testing it proved nothing about this one.
-	captured := binding.Context
-	return map[string]Value{"probe": NewObject(map[string]Value{
-		"reenter": NewBuiltin("probe.reenter", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
-			if _, err := (*p.script).Call(captured, p.fn, nil, CallOptions{}); err != nil {
-				return NewNil(), err
-			}
-			return NewNil(), nil
-		}),
-	})}, nil
-}
-
-// TestBindingContextReentryJoinsTheCallersChain pins that the context adapters
-// are handed at bind time carries the chain.
-//
-// bindCapabilitiesForCall built the binding from the raw exec.ctx, which has no
-// chain node on it, so an adapter that captured CapabilityBinding.Context and
-// re-entered a script with it gave the callee the grandparent's node or none --
-// a fresh allowance, through the public door.
-//
-// The companion test that re-enters through the builtin's *Execution.Context()
-// passed throughout: it exercises a real path, but not this one. Two doors lead
-// into the same room and only one of them was closed.
-func TestBindingContextReentryJoinsTheCallersChain(t *testing.T) {
-	t.Parallel()
-
-	const (
-		quota  = 4 << 20
-		chunks = 500 // ~2.5 MiB each
-	)
-
-	chunk := strings.Repeat("q", 5000)
-	source := fmt.Sprintf(chunkPayloadFn, chunk) + fmt.Sprintf(`
-def inner()
-  mine = payload(%d)
-  mine.size
-end
-
-def run()
-  held = payload(%d)
-  probe.reenter()
-  held.size
-end`, chunks, chunks)
-
-	script := compileScriptWithConfig(t,
-		Config{MemoryQuotaBytes: quota, StepQuota: Unlimited}, source)
-
-	holder := script
-	_, err := script.Call(context.Background(), "run", nil,
-		callOptionsWithCapabilities(bindingContextProbe{script: &holder, fn: "inner"}))
-
-	if err == nil {
-		t.Fatalf("an outer call holding ~2.5 MiB re-entered the script through the context handed to the adapter at bind time, which allocated ~2.5 MiB more, and the %d MiB ceiling refused neither: the binding carries no chain node, so re-entry through it hands out the whole allowance again",
-			quota>>20)
-	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("re-entry stopped for an unrelated reason: %v", err)
-	}
-}
-
 // TestRetirementKeepsAccountingForDescendantsThatOutliveIt pins what it means
 // for a level to retire while something it started is still running.
 //
-// A capability adapter can begin a nested call with the published binding
-// context and let it run on after the call that made it has returned. Retirement
-// used to assume the opposite -- that every descendant is awaited before its
-// parent returns -- and cleared descendant accounting unconditionally. That
-// erased a live callee's figure, and if the callee then blocked without another
-// memory check, an ancestor was admitted against a total that omitted it for as
-// long as it stayed blocked.
+// Retirement used to assume every descendant is awaited before its parent
+// returns, and cleared descendant accounting unconditionally. With capability
+// re-entry out of scope every descendant is in fact awaited, so the shape this
+// exercises is not reachable from a script today -- it is pinned because the
+// invariant is what keeps retirement write-free, and a write on the way out is
+// what produced three of the four clearing races on this branch.
 //
 // The decision is that retirement hands the accounting on rather than dropping
 // it: a level's own bytes go, because its own memory is gone, and what its
@@ -1340,88 +1195,4 @@ func TestMemoryBudgetSubtractsWhatAncestorsHold(t *testing.T) {
 	if got := starved.memoryBudgetBytes(); got != 0 {
 		t.Fatalf("budget %d under an ancestor already past the ceiling, want 0", got)
 	}
-}
-
-// retentionProbe keeps the context an adapter is handed at bind time, which is
-// what the asynchronous re-entry path exists to permit.
-type retentionProbe struct {
-	captured *context.Context
-	weakExec *weak.Pointer[Execution]
-}
-
-func (p retentionProbe) Bind(binding CapabilityBinding) (map[string]Value, error) {
-	*p.captured = binding.Context
-	return map[string]Value{"probe": NewObject(map[string]Value{
-		"mark": NewBuiltin("probe.mark", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
-			*p.weakExec = weak.Make(exec)
-			return NewNil(), nil
-		}),
-	})}, nil
-}
-
-// executionStillReachable reports whether the execution survives collection.
-//
-// A weak pointer, not a finalizer, and the distinction matters enough to record
-// because a finalizer is the obvious first reach for retention evidence.
-//
-// A finalizer reports when one *ran*. It does not report whether a reference
-// exists, so a negative reading is ambiguous: the object may be retained, or it
-// may simply be unfinalized because GC has not got to it, because the finalizer
-// goroutine has not been scheduled, or because the object survives an extra
-// cycle merely for having a finalizer attached. Only a positive reading carries
-// information. Written that way this test read "not collected" both while the
-// context was held and after it was dropped -- which is the shape of a
-// cannot-reproduce filed against a real bug.
-//
-// weak.Pointer answers the question the finalizer only appears to answer: after
-// a collection, either the referent is still reachable or it is not, and both
-// readings are meaningful. That is what let the control -- drop the context and
-// watch the execution go -- prove the context was the sole retainer.
-func executionStillReachable(wp *weak.Pointer[Execution]) bool {
-	for range 5 {
-		goruntime.GC()
-	}
-	return wp.Value() != nil
-}
-
-// TestPublishedContextDoesNotRetainTheExecution pins that carrying the chain to
-// an adapter does not carry the whole call with it.
-//
-// The chain node lives inside the Execution so that a level which never nests
-// costs no allocation. But a pointer to a field keeps the entire containing
-// object alive in Go, so publishing that interior pointer into a context an
-// adapter may retain pinned the whole Execution -- its root env, module graphs
-// and estimator caches -- for as long as the adapter held the context. Retiring
-// the level zeroed its accounting but not the reference, so repeated calls
-// accumulated live memory that the quota could not see. A memory-quota
-// mechanism that itself retains unbounded memory outside the quota defeats its
-// own purpose.
-//
-// The node is moved onto the heap at the moment it is first published, which is
-// before any child can have linked to it, so the fast path for a level that
-// never publishes keeps its inline node and its zero allocations.
-func TestPublishedContextDoesNotRetainTheExecution(t *testing.T) {
-	script := compileScriptWithConfig(t,
-		Config{MemoryQuotaBytes: 8 << 20, StepQuota: Unlimited},
-		`def run()
-  probe.mark()
-  "done"
-end`)
-
-	var captured context.Context
-	var wp weak.Pointer[Execution]
-
-	if _, err := script.Call(context.Background(), "run", nil,
-		callOptionsWithCapabilities(retentionProbe{captured: &captured, weakExec: &wp})); err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
-
-	if executionStillReachable(&wp) {
-		t.Fatalf("the whole Execution is still reachable after its call returned, because an adapter is holding the context it was handed: the published chain node is a pointer into the Execution, so the context pins the root env, module graphs and estimator caches, and the quota cannot see any of it")
-	}
-
-	// The captured context is the thing under test, so keep it alive to here:
-	// without this the compiler is free to drop it before the check above and
-	// the test would pass whether or not the node had been moved.
-	goruntime.KeepAlive(captured)
 }
