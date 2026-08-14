@@ -55,12 +55,36 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	defer exec.releaseBaseWalkCache()
 	defer exec.releaseMemoryChain()
 
+	// Taken before anything binds, and in particular before capabilities do.
+	// A binder is allowed to block -- the sleeping binder in this repository's
+	// own tests does -- and until the baseline exists this level contributes
+	// nothing to the chain, so its fresh root and cloned definitions were
+	// invisible to an ancestor for as long as a binder chose to wait. Nothing
+	// bound between here and the old position changes what this measures: the
+	// baseline is the graph tail, which is the modules and task globals the call
+	// arrived with, and binding writes to the root env rather than to those.
+	exec.captureMemoryInheritedBaseline()
+
+	// Publish this level's own setup before binding, not just measure it. A
+	// binder is allowed to block -- the sleeping binder in this repository's own
+	// tests does -- and a level is invisible to its ancestors until it has
+	// published, not merely until it has a baseline. Nothing else on the bind
+	// path meters memory, so without this the fresh root and cloned definitions
+	// stayed off the chain for as long as a binder chose to wait, and an
+	// ancestor allocating meanwhile was admitted against a total missing them.
+	//
+	// Only when there is something to bind: a binder is the only thing here that
+	// can block, so a call without capabilities pays no extra walk for a window
+	// it does not have.
+	if len(opts.Capabilities) > 0 {
+		if err := exec.checkMemory(); err != nil {
+			return NewNil(), exec.wrapError(err, fn.Pos)
+		}
+	}
+
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
 		return NewNil(), err
 	}
-	// Taken before any global binds, so it names what this call inherited and
-	// nothing it built for itself. See captureMemoryInheritedBaseline.
-	exec.captureMemoryInheritedBaseline()
 
 	if err := bindGlobalsForCall(exec, root, rebinder, opts.Globals); err != nil {
 		return NewNil(), err
@@ -181,12 +205,36 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	defer exec.releaseBaseWalkCache()
 	defer exec.releaseMemoryChain()
 
+	// Taken before anything binds, and in particular before capabilities do.
+	// A binder is allowed to block -- the sleeping binder in this repository's
+	// own tests does -- and until the baseline exists this level contributes
+	// nothing to the chain, so its fresh root and cloned definitions were
+	// invisible to an ancestor for as long as a binder chose to wait. Nothing
+	// bound between here and the old position changes what this measures: the
+	// baseline is the graph tail, which is the modules and task globals the call
+	// arrived with, and binding writes to the root env rather than to those.
+	exec.captureMemoryInheritedBaseline()
+
+	// Publish this level's own setup before binding, not just measure it. A
+	// binder is allowed to block -- the sleeping binder in this repository's own
+	// tests does -- and a level is invisible to its ancestors until it has
+	// published, not merely until it has a baseline. Nothing else on the bind
+	// path meters memory, so without this the fresh root and cloned definitions
+	// stayed off the chain for as long as a binder chose to wait, and an
+	// ancestor allocating meanwhile was admitted against a total missing them.
+	//
+	// Only when there is something to bind: a binder is the only thing here that
+	// can block, so a call without capabilities pays no extra walk for a window
+	// it does not have.
+	if len(opts.Capabilities) > 0 {
+		if err := exec.checkMemory(); err != nil {
+			return NewNil(), exec.wrapError(err, fn.Pos)
+		}
+	}
+
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
 		return NewNil(), err
 	}
-	// Taken before any global binds, so it names what this call inherited and
-	// nothing it built for itself. See captureMemoryInheritedBaseline.
-	exec.captureMemoryInheritedBaseline()
 
 	if err := bindGlobalsForCallLazy(exec, root, rebinder, opts.Globals); err != nil {
 		return NewNil(), err
