@@ -16,7 +16,7 @@ const (
 	estimatedIntBytes          = int(unsafe.Sizeof(int(0)))
 	estimatedRuneBytes         = int(unsafe.Sizeof(rune(0)))
 	estimatedStringHeaderBytes = 16
-	estimatedSliceBaseBytes    = 24
+	estimatedSliceBaseBytes    = int(unsafe.Sizeof([]Value{}))
 	estimatedMapBaseBytes      = 48
 	estimatedMapEntryBytes     = 32
 	estimatedEnvBytes          = int(unsafe.Sizeof(Env{}))
@@ -52,12 +52,20 @@ const estimatedObjectDataBytes = value.ObjectDataBytes
 // slice base models is subtracted from it. head was added without either, which
 // took the wrapper from 24 bytes to 32 and left 8 unmetered per array -- an
 // under-count introduced by a fix for an under-count.
+//
+// Drift is not only over time. Both sides are word-sized, so this is 8 bytes on
+// a 64-bit target and 4 on a 32-bit one, and the assertion below found that out:
+// while the slice base was the hand-written 24 it stayed 24 on 386, where a
+// slice header is 12 and the wrapper is 16, and the remainder went negative. A
+// stated size is not merely stale-prone, it is blind to the target it is
+// compiled for.
 const estimatedArrayWrapperExtraBytes = value.ArrayDataBytes - estimatedSliceBaseBytes
 
 // A wrapper smaller than the slice header the estimator already bills would
 // make the remainder negative and quietly subtract from every array's charge,
 // which is the direction that escapes a quota. An array length may not be
-// negative, so this stops compiling before it can.
+// negative, so this stops compiling before it can -- on every architecture the
+// release matrix builds, which is what caught the hand-written slice base.
 var _ [estimatedArrayWrapperExtraBytes]struct{}
 
 const (

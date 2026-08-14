@@ -188,6 +188,19 @@ jobs:
       - name: Gate known-issues bug bar
         run: ./scripts/check_known_issues.sh
 
+      # The release matrix in .goreleaser.yaml builds 386 alongside amd64 and
+      # arm64, and nothing else here compiles for a 32-bit target. Sizes the
+      # accounting derives from structs change with the word size, so an
+      # architecture-dependent mistake in them was reachable only by the release
+      # build until this step existed. Building is enough: it is the compile-time
+      # assertions that catch this class, and the tests pin byte figures that are
+      # 64-bit by construction.
+      - name: Gate 32-bit and big-endian builds
+        run: |
+          for pair in linux/386 windows/386 linux/arm linux/mips; do
+            GOOS="${pair%/*}" GOARCH="${pair#*/}" go build ./... || exit 1
+          done
+
       - name: Gate embedding templates compile
         run: ./scripts/check_embedding_templates.sh
 

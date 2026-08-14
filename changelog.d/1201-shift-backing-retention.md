@@ -30,3 +30,10 @@
   wrapper with 8 bytes fewer than it needs. Adding the two constants together to
   price an array is now a build failure rather than a convention, since the
   helper alone does not stop the next projection from restating the old formula.
+- **Fixed: the estimated slice header size is derived rather than stated, so
+  memory accounting is correct on 32-bit targets.** It was hard-coded to the
+  64-bit value of 24 bytes, which over-charged every slice, string table and
+  array by 12 bytes on the 386 builds in the release matrix. Deriving the array
+  wrapper's charge from its struct is what exposed it: the two are subtracted
+  from each other, and on 386 the stated 24 exceeded the whole 16-byte wrapper.
+  Nothing changes on 64-bit, where the derived value is the same 24.
