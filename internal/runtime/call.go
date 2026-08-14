@@ -278,7 +278,15 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// behavior.
 		//
 		// The bump is scoped to this execution (see memory_epoch.go).
+		// A host-registered builtin, and a capability method, are handed the
+		// runtime's own Values uncloned in both directions, so a body that
+		// stashes a container on one call and returns it on another makes it
+		// reachable from two executions. Marking the execution before the bump
+		// routes this and every later write in it to the process-wide counter.
 		declaredPure := builtin.declaredNonMutating()
+		if builtin.hostDriven {
+			exec.revokePrivateEpochForCall(receiver, block, args, kwargs)
+		}
 		if !declaredPure {
 			exec.bumpMutationEpoch()
 		}
@@ -337,6 +345,14 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		contractCheck := exec.beginContractVerification(builtin)
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		contractCheck.check(exec, builtin)
+		if builtin.hostDriven {
+			// The result can be a container the body retained from an earlier
+			// call on another execution, which the inputs above could not
+			// reveal. Bump after marking so any raw write the body made to it
+			// is published process-wide rather than only here.
+			exec.revokePrivateEpochFor(result)
+			exec.bumpMutationEpoch()
+		}
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = prevReceiver, prevArgs, prevKwargs
 		exec.builtinFrameRootsReserved = prevReserved
 		// Dropping the claims moves any array a shrink narrowed off the storage

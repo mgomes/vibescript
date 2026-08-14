@@ -241,3 +241,80 @@ func TestConcurrentExecutionCannotDestroyMemo(t *testing.T) {
 		})
 	}
 }
+
+// TestHostBuiltinSharingRetiresThePrivateCounter covers the hole the
+// disjointness argument does not close on its own.
+//
+// A host builtin registered through the embedding API receives and returns the
+// interpreter's own Values uncloned: only the Script.Call boundary copies, and
+// this is not that boundary. So a body that stashes a container on one call and
+// returns it on another makes it reachable from two executions at once, and
+// ordinary script code in the second can then grow it. A write attributed to
+// that execution alone would leave the first serving a memo that omits the
+// growth, under its quota.
+//
+// That is not covered by the value package's contract, which forbids the host
+// mutating a Value while a call given it is running: here the host only shares,
+// and script code does the mutating, sequentially.
+func TestHostBuiltinSharingRetiresThePrivateCounter(t *testing.T) {
+	stash := NewTypedHash(4)
+	if err := stash.HashSet(NewString("k"), NewInt(1)); err != nil {
+		t.Fatalf("seed stash: %v", err)
+	}
+
+	engine := MustNewEngine(Config{StepQuota: Unlimited, MemoryQuotaBytes: 64 << 20})
+	engine.RegisterBuiltin("host_stash", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		return stash, nil
+	})
+
+	// First: the container really does cross uncloned. If this ever starts
+	// failing because the builtin boundary began copying, the sharing hazard is
+	// gone and the marking below is merely redundant rather than wrong.
+	script := compileScriptWithEngine(t, engine, "def run\n  h = host_stash()\n  h[\"grown\"] = 2\n  h.length\nend")
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got := stash.HashLen(); got != 2 {
+		t.Fatalf("expected the script to have grown the host's own container, got length %d; "+
+			"if the builtin boundary now clones, this test's premise has changed", got)
+	}
+
+	// Second: an execution that took a container from a host builtin must have
+	// retired its private counter, so its later writes are visible to every
+	// other execution's memo rather than only its own.
+	probe := MustNewEngine(Config{StepQuota: Unlimited, MemoryQuotaBytes: 64 << 20})
+	probe.RegisterBuiltin("host_stash", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		return stash, nil
+	})
+	var aliased bool
+	probe.RegisterBuiltin("host_check", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		aliased = exec.hostAliased
+		return NewNil(), nil
+	})
+	checkScript := compileScriptWithEngine(t, probe, "def run\n  h = host_stash()\n  host_check()\n  1\nend")
+	if _, err := checkScript.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("probe call: %v", err)
+	}
+	if !aliased {
+		t.Fatalf("an execution that received a container from a host builtin kept its private mutation counter, " +
+			"so a write here would be invisible to another execution holding the same container")
+	}
+
+	// A scalar-only host builtin shares nothing and must not retire it.
+	var scalarAliased bool
+	scalarEngine := MustNewEngine(Config{StepQuota: Unlimited, MemoryQuotaBytes: 64 << 20})
+	scalarEngine.RegisterBuiltin("host_scalar", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewInt(7), nil
+	})
+	scalarEngine.RegisterBuiltin("host_check", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		scalarAliased = exec.hostAliased
+		return NewNil(), nil
+	})
+	scalarScript := compileScriptWithEngine(t, scalarEngine, "def run\n  n = host_scalar()\n  host_check()\n  n\nend")
+	if _, err := scalarScript.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("scalar call: %v", err)
+	}
+	if scalarAliased {
+		t.Fatalf("a scalar-only host builtin retired the private counter; a scalar cannot alias a container")
+	}
+}
