@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"weak"
 )
 
 // taskDepthMemorySample is what one nesting level reports about itself. The
@@ -1341,3 +1342,71 @@ func TestMemoryBudgetSubtractsWhatAncestorsHold(t *testing.T) {
 	}
 }
 
+// retentionProbe keeps the context an adapter is handed at bind time, which is
+// what the asynchronous re-entry path exists to permit.
+type retentionProbe struct {
+	captured *context.Context
+	weakExec *weak.Pointer[Execution]
+}
+
+func (p retentionProbe) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	*p.captured = binding.Context
+	return map[string]Value{"probe": NewObject(map[string]Value{
+		"mark": NewBuiltin("probe.mark", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			*p.weakExec = weak.Make(exec)
+			return NewNil(), nil
+		}),
+	})}, nil
+}
+
+// executionStillReachable reports whether the execution survives collection.
+// A weak pointer answers this directly, where a finalizer only says when one
+// ran and is therefore inconclusive against a live reference.
+func executionStillReachable(wp *weak.Pointer[Execution]) bool {
+	for range 5 {
+		goruntime.GC()
+	}
+	return wp.Value() != nil
+}
+
+// TestPublishedContextDoesNotRetainTheExecution pins that carrying the chain to
+// an adapter does not carry the whole call with it.
+//
+// The chain node lives inside the Execution so that a level which never nests
+// costs no allocation. But a pointer to a field keeps the entire containing
+// object alive in Go, so publishing that interior pointer into a context an
+// adapter may retain pinned the whole Execution -- its root env, module graphs
+// and estimator caches -- for as long as the adapter held the context. Retiring
+// the level zeroed its accounting but not the reference, so repeated calls
+// accumulated live memory that the quota could not see. A memory-quota
+// mechanism that itself retains unbounded memory outside the quota defeats its
+// own purpose.
+//
+// The node is moved onto the heap at the moment it is first published, which is
+// before any child can have linked to it, so the fast path for a level that
+// never publishes keeps its inline node and its zero allocations.
+func TestPublishedContextDoesNotRetainTheExecution(t *testing.T) {
+	script := compileScriptWithConfig(t,
+		Config{MemoryQuotaBytes: 8 << 20, StepQuota: Unlimited},
+		`def run()
+  probe.mark()
+  "done"
+end`)
+
+	var captured context.Context
+	var wp weak.Pointer[Execution]
+
+	if _, err := script.Call(context.Background(), "run", nil,
+		callOptionsWithCapabilities(retentionProbe{captured: &captured, weakExec: &wp})); err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+
+	if executionStillReachable(&wp) {
+		t.Fatalf("the whole Execution is still reachable after its call returned, because an adapter is holding the context it was handed: the published chain node is a pointer into the Execution, so the context pins the root env, module graphs and estimator caches, and the quota cannot see any of it")
+	}
+
+	// The captured context is the thing under test, so keep it alive to here:
+	// without this the compiler is free to drop it before the check above and
+	// the test would pass whether or not the node had been moved.
+	goruntime.KeepAlive(captured)
+}

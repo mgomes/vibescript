@@ -772,9 +772,35 @@ func (exec *Execution) Context() context.Context {
 		return exec.ctx
 	}
 	if exec.publishedCtx == nil {
+		exec.detachMemoryChainNode()
 		exec.publishedCtx = exec.contextWithChainPublished()
 	}
 	return exec.publishedCtx
+}
+
+// detachMemoryChainNode moves this execution's chain node onto the heap before
+// the node can escape into a context.
+//
+// The node lives inside the Execution so that a level which never nests costs no
+// allocation. But a pointer to a field keeps the whole containing object alive
+// in Go, so publishing &exec.memChainNode into a context that an adapter may
+// retain pinned the entire Execution -- root env, module graphs, estimator
+// caches -- for as long as the adapter held that context. A memory-quota
+// mechanism retaining unbounded memory outside the quota defeats its own
+// purpose, and repeated calls accumulated it.
+//
+// Moving it is safe precisely here: a child links to this node by reading it out
+// of a published context, so at the moment of first publication no child exists
+// to hold the old address. Nothing else takes the node's address.
+func (exec *Execution) detachMemoryChainNode() {
+	if exec.memChain != &exec.memChainNode {
+		return
+	}
+	escaped := &memoryChain{parent: exec.memChainNode.parent, limit: exec.memChainNode.limit}
+	escaped.marginal.Store(exec.memChainNode.marginal.Load())
+	escaped.descendantHeadroom.Store(exec.memChainNode.descendantHeadroom.Load())
+	escaped.liveDescendants.Store(exec.memChainNode.liveDescendants.Load())
+	exec.memChain = escaped
 }
 
 // contextWithChainPublished attaches this execution's chain node, keeping the
