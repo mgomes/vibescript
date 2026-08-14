@@ -518,8 +518,10 @@ func checkTypeRootWithParentAndGlobals(script *Script, globals map[string]Value,
 		if parent.parent == nil {
 			parent = cloneCheckRoot(parent)
 			parent.parent = root.parent
+			parent.adoptEpochFrom(parent.parent)
 		}
 		root.parent = parent
+		root.adoptEpochFrom(parent)
 	}
 	callFunctions := cloneFunctionsForCall(script.functions, root)
 	for name, fn := range callFunctions {

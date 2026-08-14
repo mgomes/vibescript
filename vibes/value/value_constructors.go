@@ -62,6 +62,23 @@ func (v Value) SetArrayElems(elems []Value) {
 	}
 }
 
+// SetArrayElemsNoEpoch replaces an array wrapper's element slice in place
+// without bumping the process-wide mutation epoch, for callers that invalidate
+// the memoized reachable-graph walk themselves. The interpreter uses it to
+// charge the mutation to the one execution that can reach the array rather than
+// to every execution in the process. Callers that do not invalidate must use
+// SetArrayElems. It is intended for the interpreter's internal use; hosts
+// should not call it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func (v Value) SetArrayElemsNoEpoch(elems []Value) {
+	if v.kind != KindArray {
+		return
+	}
+	if ad, ok := v.data.(*arrayData); ok {
+		ad.elems = elems
+	}
+}
+
 // AppendArrayElemNoEpoch appends elem to an array in place without bumping
 // the mutation epoch. The epoch exists to invalidate memoized reachable-graph
 // walks; the interpreter's charged-append path commits the element's bytes

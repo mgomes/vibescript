@@ -2,8 +2,6 @@ package runtime
 
 import (
 	"fmt"
-
-	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // Block-iteration region accounting makes the memory-quota estimator's per-check
@@ -144,7 +142,7 @@ func (exec *Execution) beginRegionBaseWalk(est *memoryEstimator, scalars int) ba
 	}
 
 	boundary := exec.blockRegionBoundary
-	epoch := value.MutationEpoch()
+	epoch := exec.walkEpoch()
 	if !c.valid || c.epoch != epoch || c.topo != exec.baseTopoVersion || c.regionBoundary != boundary {
 		est.journal = nil
 		est.reset()

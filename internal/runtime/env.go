@@ -100,6 +100,47 @@ type Env struct {
 	// reset only per frame lifetime, at acquisition (markRegionNeutral) — never at
 	// pop — so a body push cannot re-neutralize an escaped frame.
 	neutralityRevoked bool
+
+	// epoch points at the mutation counter of the execution this scope belongs
+	// to, so a binding write invalidates that execution's memoized estimator
+	// walk and no other (see memory_epoch.go). It is inherited from the parent
+	// wherever a parent is assigned, which keeps it correct through recycling
+	// and through the clone paths that re-root an escaped closure onto a live
+	// call: the pointer always comes from the chain the scope currently hangs
+	// on, whose root is the running execution's.
+	//
+	// It is nil for a scope with no execution behind it -- the engine's frozen
+	// builtin proto, and the call root's own scaffolding, built before its
+	// Execution exists. A nil target falls back to the process-wide counter,
+	// which invalidates every memo instead of one. That direction is the safe
+	// one: it costs a memo refresh, where scoping a write too narrowly would
+	// leave a memo serving a total that omits it.
+	epoch *uint64
+}
+
+// adoptEpochFrom points this scope's mutation counter at the one its parent
+// uses, so a scope always invalidates the memo of whichever execution's chain
+// it currently hangs on. Every assignment to parent must be followed by this;
+// a scope whose parent is nil (the engine's frozen proto, a detached scope)
+// keeps no target and falls back to the process-wide counter.
+func (e *Env) adoptEpochFrom(parent *Env) {
+	if parent == nil {
+		e.epoch = nil
+		return
+	}
+	e.epoch = parent.epoch
+}
+
+// bumpEpoch invalidates the memoized estimator base walk that covers this
+// scope: the owning execution's when the scope belongs to one, and every memo
+// in the process when it does not. See the epoch field for why the fallback is
+// the safe direction.
+func (e *Env) bumpEpoch() {
+	if e.epoch != nil {
+		*e.epoch++
+		return
+	}
+	value.BumpMutationEpoch()
 }
 
 // bumpEpochUnlessNeutral advances the process-wide mutation epoch for a binding
@@ -111,7 +152,7 @@ type Env struct {
 // to an outer scope bump unconditionally.
 func (e *Env) bumpEpochUnlessNeutral() {
 	if !e.epochNeutral {
-		value.BumpMutationEpoch()
+		e.bumpEpoch()
 	}
 }
 
@@ -161,6 +202,7 @@ func newEnvWithCapacity(parent *Env, capacity int) *Env {
 		capacity = 0
 	}
 	env := &Env{parent: parent}
+	env.adoptEpochFrom(parent)
 	if capacity > inlineEnvBindingCapacity {
 		env.values = make(map[string]Value, capacity)
 	}
@@ -196,6 +238,7 @@ func (e *Env) resetForReuse(parent *Env) {
 	// re-walks it fresh regardless.
 	e.bumpEpochUnlessNeutral()
 	e.parent = parent
+	e.adoptEpochFrom(parent)
 	for i := range int(e.inlineLen) {
 		e.inline[i] = envBinding{}
 	}
@@ -287,7 +330,7 @@ func (e *Env) getBoundValue(name string, lastMutable *Env) (Value, bool) {
 	if idx, ok := e.inlineIndex(name); ok {
 		val := e.inline[idx].value
 		if lazy, ok := lazyValue(val); ok {
-			value.BumpMutationEpoch()
+			e.bumpEpoch()
 			val = lazy.materialize()
 			e.inline[idx].value = val
 			e.dropArrayAppendBuffer(name)
@@ -296,7 +339,7 @@ func (e *Env) getBoundValue(name string, lastMutable *Env) (Value, bool) {
 	}
 	if val, ok := e.values[name]; ok {
 		if lazy, ok := lazyValue(val); ok {
-			value.BumpMutationEpoch()
+			e.bumpEpoch()
 			val = lazy.materialize()
 			e.values[name] = val
 			e.dropArrayAppendBuffer(name)
@@ -327,7 +370,7 @@ func (e *Env) getSkipping(name string, skip map[*Env]struct{}) (Value, bool) {
 		if idx, ok := scope.inlineIndex(name); ok {
 			val := scope.inline[idx].value
 			if lazy, ok := lazyValue(val); ok {
-				value.BumpMutationEpoch()
+				scope.bumpEpoch()
 				val = lazy.materialize()
 				scope.inline[idx].value = val
 				scope.dropArrayAppendBuffer(name)
@@ -336,7 +379,7 @@ func (e *Env) getSkipping(name string, skip map[*Env]struct{}) (Value, bool) {
 		}
 		if val, ok := scope.values[name]; ok {
 			if lazy, ok := lazyValue(val); ok {
-				value.BumpMutationEpoch()
+				scope.bumpEpoch()
 				val = lazy.materialize()
 				scope.values[name] = val
 				scope.dropArrayAppendBuffer(name)
@@ -783,7 +826,7 @@ func (e *Env) bumpEpochUnlessScalarRebind(old, val Value) {
 	if committableScalar(old) && committableScalar(val) {
 		return
 	}
-	value.BumpMutationEpoch()
+	e.bumpEpoch()
 }
 
 func (e *Env) setDynamic(name string, val Value) {
@@ -892,7 +935,7 @@ func (e *Env) materializeStatic(name string, val Value) Value {
 	if !ok {
 		return val
 	}
-	value.BumpMutationEpoch()
+	e.bumpEpoch()
 	materialized := lazy.materialize()
 	e.statics[name] = materialized
 	return materialized

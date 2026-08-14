@@ -507,6 +507,7 @@ func (e *Engine) attachBuiltins(root *Env, extraStatics int) {
 // bindBuiltinsLocked wires root to the current proto. Callers must hold builtinsMu.
 func (e *Engine) bindBuiltinsLocked(root *Env, extraStatics int) {
 	root.parent = e.builtinProto
+	root.adoptEpochFrom(root.parent)
 	root.growStatics(extraStatics)
 }
 

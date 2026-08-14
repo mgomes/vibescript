@@ -545,7 +545,7 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 				if err != nil {
 					return NewNil(), err
 				}
-				if err := hashSet(out, nextKeyValue, nextValue); err != nil {
+				if err := hashSet(exec, out, nextKeyValue, nextValue); err != nil {
 					return NewNil(), fmt.Errorf("hash.deep_transform_keys block returned unsupported hash key: %w", err)
 				}
 				if err := acc.addTypedSynthesizedKey(nextKeyValue, nextKey, lookupKey); err != nil {
@@ -614,7 +614,7 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := hashSet(out, nextKeyValue, nextValue); err != nil {
+			if err := hashSet(exec, out, nextKeyValue, nextValue); err != nil {
 				return NewNil(), fmt.Errorf("hash.deep_transform_keys block returned unsupported hash key: %w", err)
 			}
 			if err := acc.addSynthesizedKey(nextKey); err != nil {
@@ -2007,7 +2007,7 @@ func hashMergeInPlace(exec *Execution, receiver Value, args []Value, kwargs map[
 					val = merged
 				}
 			}
-			if err := hashSet(receiver, entry.Key, val); err != nil {
+			if err := hashSet(exec, receiver, entry.Key, val); err != nil {
 				return NewNil(), err
 			}
 		}
@@ -2122,7 +2122,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 						return NewNil(), err
 					}
-					if err := hashSet(out, entry.Key, entry.Value); err != nil {
+					if err := hashSet(exec, out, entry.Key, entry.Value); err != nil {
 						return NewNil(), err
 					}
 				}
@@ -2146,7 +2146,7 @@ func hashMemberTransforms(property string) (Value, error) {
 							return NewNil(), err
 						}
 						if !conflict || !useBlock {
-							if err := hashSet(out, entry.Key, entry.Value); err != nil {
+							if err := hashSet(exec, out, entry.Key, entry.Value); err != nil {
 								return NewNil(), err
 							}
 							continue
@@ -2161,7 +2161,7 @@ func hashMemberTransforms(property string) (Value, error) {
 						if err := exec.checkContext(); err != nil {
 							return NewNil(), err
 						}
-						if err := hashSet(out, entry.Key, resolved); err != nil {
+						if err := hashSet(exec, out, entry.Key, resolved); err != nil {
 							return NewNil(), err
 						}
 						if err := acc.add(resolved); err != nil {
@@ -2415,7 +2415,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 					return NewNil(), err
 				}
-				if err := hashSet(receiver, entry.Key, entry.Value); err != nil {
+				if err := hashSet(exec, receiver, entry.Key, entry.Value); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -2479,7 +2479,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err := exec.checkProjectedTypedHashBytes(projected, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
-			if err := hashSet(receiver, args[0], args[1]); err != nil {
+			if err := hashSet(exec, receiver, args[0], args[1]); err != nil {
 				return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
 			}
 			return args[1], nil
@@ -2561,7 +2561,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err != nil || !ok {
 						continue
 					}
-					if err := hashSet(out, arg, value); err != nil {
+					if err := hashSet(exec, out, arg, value); err != nil {
 						return NewNil(), err
 					}
 				}
@@ -2672,7 +2672,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if _, skip := excluded[key]; skip {
 						continue
 					}
-					if err := hashSet(out, entry.Key, entry.Value); err != nil {
+					if err := hashSet(exec, out, entry.Key, entry.Value); err != nil {
 						return NewNil(), err
 					}
 				}
@@ -2790,7 +2790,7 @@ func hashMemberTransforms(property string) (Value, error) {
 							if err := exec.chargeValueKeySteps(ordered[i].Key); err != nil {
 								return NewNil(), err
 							}
-							if err := hashSet(out, ordered[i].Key, ordered[i].Value); err != nil {
+							if err := hashSet(exec, out, ordered[i].Key, ordered[i].Value); err != nil {
 								return NewNil(), err
 							}
 							continue
@@ -2804,7 +2804,7 @@ func hashMemberTransforms(property string) (Value, error) {
 						if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 							return NewNil(), err
 						}
-						if err := hashSet(out, entry.Key, entry.Value); err != nil {
+						if err := hashSet(exec, out, entry.Key, entry.Value); err != nil {
 							return NewNil(), err
 						}
 					}
@@ -2912,7 +2912,7 @@ func hashMemberTransforms(property string) (Value, error) {
 							if err := exec.chargeValueKeySteps(ordered[i].Key); err != nil {
 								return NewNil(), err
 							}
-							if err := hashSet(out, ordered[i].Key, ordered[i].Value); err != nil {
+							if err := hashSet(exec, out, ordered[i].Key, ordered[i].Value); err != nil {
 								return NewNil(), err
 							}
 							continue
@@ -2926,7 +2926,7 @@ func hashMemberTransforms(property string) (Value, error) {
 						if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 							return NewNil(), err
 						}
-						if err := hashSet(out, entry.Key, entry.Value); err != nil {
+						if err := hashSet(exec, out, entry.Key, entry.Value); err != nil {
 							return NewNil(), err
 						}
 					}
@@ -3349,7 +3349,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					resolved := hashDisplayKey(nextKey)
 					if deferBuild && nextKey.Kind() == KindArray {
 						for _, entry := range ordered[:buffered] {
-							if err := hashSet(out, entry.Key, entry.Value); err != nil {
+							if err := hashSet(exec, out, entry.Key, entry.Value); err != nil {
 								return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 							}
 						}
@@ -3360,7 +3360,7 @@ func hashMemberTransforms(property string) (Value, error) {
 						// reserved entry buffer without disturbing an unread entry.
 						ordered[buffered] = HashEntry{Key: nextKey, Value: ordered[i].Value}
 						buffered++
-					} else if err := hashSet(out, nextKey, ordered[i].Value); err != nil {
+					} else if err := hashSet(exec, out, nextKey, ordered[i].Value); err != nil {
 						return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 					}
 					if err := acc.addTypedSynthesizedKey(nextKey, resolved, lookupKey); err != nil {
@@ -3369,7 +3369,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				if deferBuild {
 					for _, entry := range ordered[:buffered] {
-						if err := hashSet(out, entry.Key, entry.Value); err != nil {
+						if err := hashSet(exec, out, entry.Key, entry.Value); err != nil {
 							return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 						}
 					}
@@ -3460,7 +3460,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			flush := func() error {
 				for _, entry := range produced {
-					if err := hashSet(out, entry.Key, entry.Value); err != nil {
+					if err := hashSet(exec, out, entry.Key, entry.Value); err != nil {
 						return fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 					}
 				}
@@ -3511,7 +3511,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					// inserting inline gave and what the typed branch gets from its
 					// snapshotted entries.
 					produced = append(produced, HashEntry{Key: nextKey, Value: entries[key]})
-				} else if err := hashSet(out, nextKey, entries[key]); err != nil {
+				} else if err := hashSet(exec, out, nextKey, entries[key]); err != nil {
 					return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 				}
 				if err := acc.addTypedSynthesizedKey(nextKey, resolved, lookupKey); err != nil {
@@ -3565,12 +3565,12 @@ func hashMemberTransforms(property string) (Value, error) {
 						if _, err := valueToHashKey(mapped); err != nil {
 							return NewNil(), fmt.Errorf("hash.remap_keys mapping value is unsupported hash key: %w", err)
 						}
-						if err := hashSet(out, mapped, entry.Value); err != nil {
+						if err := hashSet(exec, out, mapped, entry.Value); err != nil {
 							return NewNil(), fmt.Errorf("hash.remap_keys mapping value is unsupported hash key: %w", err)
 						}
 						continue
 					}
-					if err := hashSet(out, entry.Key, entry.Value); err != nil {
+					if err := hashSet(exec, out, entry.Key, entry.Value); err != nil {
 						return NewNil(), err
 					}
 				}
@@ -3600,7 +3600,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if _, err := valueToHashKey(mapped); err != nil {
 						return NewNil(), fmt.Errorf("hash.remap_keys mapping value is unsupported hash key: %w", err)
 					}
-					if err := hashSet(out, mapped, value); err != nil {
+					if err := hashSet(exec, out, mapped, value); err != nil {
 						return NewNil(), fmt.Errorf("hash.remap_keys mapping value is unsupported hash key: %w", err)
 					}
 					continue
@@ -3678,7 +3678,7 @@ func hashMemberTransforms(property string) (Value, error) {
 						if err := exec.chargeValueKeySteps(ordered[i].Key); err != nil {
 							return NewNil(), err
 						}
-						if err := hashSet(out, ordered[i].Key, nextValue); err != nil {
+						if err := hashSet(exec, out, ordered[i].Key, nextValue); err != nil {
 							return NewNil(), err
 						}
 					}
@@ -3692,7 +3692,7 @@ func hashMemberTransforms(property string) (Value, error) {
 						if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 							return NewNil(), err
 						}
-						if err := hashSet(out, entry.Key, entry.Value); err != nil {
+						if err := hashSet(exec, out, entry.Key, entry.Value); err != nil {
 							return NewNil(), err
 						}
 					}
@@ -3788,7 +3788,7 @@ func hashMemberTransforms(property string) (Value, error) {
 						if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 							return NewNil(), err
 						}
-						if err := hashSet(out, entry.Key, entry.Value); err != nil {
+						if err := hashSet(exec, out, entry.Key, entry.Value); err != nil {
 							return NewNil(), err
 						}
 					}

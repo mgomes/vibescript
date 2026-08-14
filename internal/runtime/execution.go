@@ -141,7 +141,13 @@ type Execution struct {
 	validatedCapabilityArgs   []string
 	capabilityReturnProof     capabilityReturnProof
 	memoryEst                 memoryEstimator
-	reservedScratchBytes      int
+	// mutationEpoch is this execution's private half of the estimator's memo
+	// key, advanced by every write the runtime can attribute to this execution
+	// (see memory_epoch.go). It is plain rather than atomic because an
+	// Execution is driven by a single goroutine; a task job runs on its own
+	// Execution with its own counter, and bypasses the memo entirely.
+	mutationEpoch        uint64
+	reservedScratchBytes int
 	// adoptedConstantBytes sums the class-constant map entries mixin adoption
 	// has inserted since its last memory check (see chargeAdoptedConstant). It
 	// carries across includes so that many small adoptions are measured as

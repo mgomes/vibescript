@@ -277,7 +277,7 @@ func (exec *Execution) releaseArrayBackings(mark int) error {
 			}
 		}
 		if !bumped && (len(held.detached) > 0 || len(held.retained) > 0 || held.overflow > 0) {
-			bumpMutationEpoch()
+			exec.bumpMutationEpoch()
 			bumped = true
 		}
 	}
@@ -363,7 +363,7 @@ func (retained retainedArrayBacking) reclaim(exec *Execution) error {
 		// and one through shift leaves it addressing the far end. A fresh
 		// empty slice lets go of both.
 		if cap(current) != 0 {
-			setArrayElems(retained.receiver, []Value{})
+			setArrayElems(exec, retained.receiver, []Value{})
 		}
 		return nil
 	}
@@ -379,7 +379,7 @@ func (retained retainedArrayBacking) reclaim(exec *Execution) error {
 	}
 	moved := make([]Value, len(current))
 	copy(moved, current)
-	setArrayElems(retained.receiver, moved)
+	setArrayElems(exec, retained.receiver, moved)
 	return nil
 }
 
@@ -581,7 +581,7 @@ func shrinkArray(exec *Execution, receiver Value, arr []Value, start, end int,
 	if !named && wildcard == nil {
 		clear(arr[:start])
 		clear(arr[end:])
-		setArrayElems(receiver, window)
+		setArrayElems(exec, receiver, window)
 		return nil
 	}
 	if !named && wildcard.canRetain(arr, receiver) {
@@ -598,14 +598,14 @@ func shrinkArray(exec *Execution, receiver Value, arr []Value, start, end int,
 			// that shows nothing keeps the whole allocation alive for as long
 			// as the array holds it. Fresh empty storage lets go now; the
 			// claim goes on charging what the frame is still walking.
-			setArrayElems(receiver, []Value{})
+			setArrayElems(exec, receiver, []Value{})
 			return nil
 		}
 		// The window's capacity stops at its length, so a later push cannot
 		// reuse a slot inside what the frame is walking and rewrite an element
 		// it has yet to reach. That costs the push a reallocation and leaves
 		// the drain itself untouched, since narrowing never copies.
-		setArrayElems(receiver, arr[start:end:end])
+		setArrayElems(exec, receiver, arr[start:end:end])
 		return nil
 	}
 	// A frame the runtime wrote is walking this header, or a wildcard claim is
@@ -622,6 +622,6 @@ func shrinkArray(exec *Execution, receiver Value, arr []Value, start, end int,
 	exec.detachArrayBackingClaims(arr)
 	fresh := make([]Value, len(window))
 	copy(fresh, window)
-	setArrayElems(receiver, fresh)
+	setArrayElems(exec, receiver, fresh)
 	return nil
 }

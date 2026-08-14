@@ -268,7 +268,22 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// the stack. Together they make a stale memo unreachable: no memo from
 		// before the call survives the bump, and no memo can be recorded while
 		// the builtin's unobserved writes may still be in progress.
-		bumpMutationEpoch()
+		//
+		// The bump is scoped to this execution, which rests on a boundary any
+		// new builtin has to stay inside: a builtin may mutate what the
+		// execution calling it can reach, and nothing else. That holds for every
+		// builtin here because an execution's reachable graph is rebuilt per
+		// call and host values are deep-copied across the boundary in both
+		// directions (see memory_epoch.go), so there is nothing of another live
+		// execution's for a builtin to reach. A builtin that broke it -- one
+		// that stashed Values from an earlier call in a Go global and mutated
+		// them from a later one, on another execution -- would leave that
+		// execution's memo serving a total that omits the change. Such a builtin
+		// is already outside the value package's documented contract, which
+		// forbids mutating a Value while a call that was given it is running.
+		// If one is ever needed, it must bump the process-wide counter through
+		// bumpSharedMutationEpoch rather than this.
+		exec.bumpMutationEpoch()
 		// An accumulator-metered section only vouches for the loop that opened
 		// it, never for a nested builtin's allocations, so dispatch suspends
 		// any active sections for the duration of the call: the callee runs
@@ -1092,6 +1107,7 @@ func (r *callFunctionRebinder) rebindCapturedEnv(env *Env) *Env {
 	}
 	r.seenEnvs[env] = clone
 	clone.parent = r.rebindCapturedEnv(env.parent)
+	clone.adoptEpochFrom(clone.parent)
 	env.rangeDynamicBindings(func(name string, val Value) {
 		clone.Define(name, r.rebindValue(val))
 	})
@@ -1406,7 +1422,7 @@ func (exec *Execution) adoptIncludedModuleConstants(classDef *ClassDef, env *Env
 // epoch, and the deferred bump here covers whatever the last batch left
 // unmeasured.
 func (exec *Execution) adoptModuleConstants(into, from map[string]Value) error {
-	defer bumpMutationEpoch()
+	defer exec.bumpMutationEpoch()
 	for name, val := range from {
 		_, present := into[name]
 		into[name] = val
@@ -1535,6 +1551,7 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 		callOptions:   childCallOptions,
 		sleepBudget:   sleeping,
 	}
+	exec.adoptRootEpoch()
 	// The module stacks stay nil: most calls never require a module,
 	// and append allocates them on first use.
 	exec.callStack = exec.callStackArr[:0]
@@ -3726,7 +3743,7 @@ func (exec *Execution) executeGeneratedSetter(fn *ScriptFunction, callEnv *Env) 
 	if !ok {
 		return NewNil(), exec.errorAt(fn.Pos, "missing property setter value")
 	}
-	bumpMutationEpoch()
+	exec.bumpMutationEpoch()
 	valueInstance(self).Ivars[fn.AccessorName] = val
 	val = callEnv.settleArrayAppendResult(val)
 	if err := exec.checkContext(); err != nil {
@@ -3939,7 +3956,7 @@ func (exec *Execution) bindFunctionParamValue(fn *ScriptFunction, env *Env, para
 				if err != nil {
 					return err
 				}
-				bumpMutationEpoch()
+				exec.bumpMutationEpoch()
 				inst.Ivars[param.Name] = normalized
 			}
 		}

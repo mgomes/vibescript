@@ -330,16 +330,6 @@ func (exec *Execution) memoryEstimatorForCheck() *memoryEstimator {
 	return est
 }
 
-// bumpMutationEpoch advances the process-wide mutation epoch that invalidates
-// every memoized estimator base walk. Runtime code must call it before any
-// write that changes state reachable from an execution's roots outside the
-// value package's own wrapper mutators: environment container writes go through
-// Env's setters (which bump), and array/hash wrapper mutations go through the
-// value package (which bumps), so the direct call sites are the raw
-// slice/map writes (index assignment, ivar and class-var stores) plus builtin
-// dispatch, which wholesale covers every Go builtin's internal writes.
-func bumpMutationEpoch() { value.BumpMutationEpoch() }
-
 // baseWalkCacheDisabled turns off base-walk memoization so tests can assert
 // that memoized and unmemoized estimates are byte-identical. Never set outside
 // tests: disabling costs a full graph re-walk per check but changes no result.
@@ -394,8 +384,11 @@ type baseWalkCache struct {
 	// committed walk's identity count (see sessionJournalBudget), refreshed
 	// whenever the graph walk is re-memoized.
 	journalBudget int
-	epoch         uint64
-	topo          uint64
+	// epoch is the pair of mutation counters this memo depends on: the
+	// execution's private counter and the process-wide one (see
+	// memory_epoch.go). Both must still match for the memo to be served.
+	epoch walkEpoch
+	topo  uint64
 	// regionBoundary records which walk shape the memoized graphBytes holds: a
 	// block-iteration region's prefix boundary (see memory_blockregion.go), or
 	// noBlockRegion for the ordinary whole-stack walk. A check whose boundary
@@ -583,7 +576,7 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 	}
 	// Snapshot the epoch before walking: a bump that lands mid-walk then fails
 	// the equality check on the next session, forcing a conservative re-walk.
-	epoch := value.MutationEpoch()
+	epoch := exec.walkEpoch()
 	if !c.valid || c.epoch != epoch || c.topo != exec.baseTopoVersion || c.regionBoundary != noBlockRegion {
 		est.reset()
 		c.epoch = epoch
@@ -2786,7 +2779,7 @@ func (exec *Execution) chargeAdoptedConstant(name string) error {
 	// The insertions this batch counted are raw map writes, so nothing has
 	// invalidated a memoized base walk for them yet; the check below has to see
 	// them rather than resume a memo taken before they landed.
-	bumpMutationEpoch()
+	exec.bumpMutationEpoch()
 	return exec.checkMemory()
 }
 

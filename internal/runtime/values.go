@@ -41,8 +41,18 @@ func hashGet(container, key Value) (Value, bool, error) {
 	return container.HashGet(key)
 }
 
-func hashSet(container, key, val Value) error {
-	return container.HashSet(key, val)
+// hashSet stores an entry in a hash, invalidating exec's memoized estimator
+// walk rather than every memo in the process; see setArrayElems for why that is
+// sound and why a nil exec falls back to the process-wide counter.
+func hashSet(exec *Execution, container, key, val Value) error {
+	if exec == nil {
+		return container.HashSet(key, val)
+	}
+	if err := container.HashSetUnpublished(key, val); err != nil {
+		return err
+	}
+	exec.bumpMutationEpoch()
+	return nil
 }
 
 // hashSetUnpublished writes into a hash still reachable from no execution
@@ -127,7 +137,10 @@ func anyHashValue(val Value, pred func(Value) bool) bool {
 }
 
 func setClonedHashEntry(hash, key, val Value) {
-	if err := hashSet(hash, key, val); err != nil {
+	// The clone is reachable from no execution root while it is being filled,
+	// so there is no execution whose memo this could stale; the process-wide
+	// bump it already performed is kept rather than attributed.
+	if err := hashSet(nil, hash, key, val); err != nil {
 		panic(fmt.Sprintf("clone valid hash entry: %v", err))
 	}
 }
@@ -912,11 +925,11 @@ func addValues(left, right Value) (Value, error) {
 // array observes the growth, so `values << x` as a bare statement accumulates;
 // reassignment is no longer required. Callers with an Execution charge the
 // potential backing reallocation first via arrayReserveInPlaceGrowth.
-func shovelValues(left, right Value) (Value, error) {
+func shovelValues(exec *Execution, left, right Value) (Value, error) {
 	if left.Kind() != KindArray {
 		return NewNil(), fmt.Errorf("unsupported shovel operands")
 	}
-	left.SetArrayElems(append(left.Array(), right))
+	setArrayElems(exec, left, append(left.Array(), right))
 	return left, nil
 }
 

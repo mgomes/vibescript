@@ -1329,7 +1329,7 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 				return NewNil(), exec.wrapError(err, pos)
 			}
 		}
-		result, err = shovelValues(left, right)
+		result, err = shovelValues(exec, left, right)
 	case tokenAmpersand:
 		result, err = intersectValues(exec, left, right)
 	case tokenEQ:
@@ -1655,7 +1655,7 @@ type blockCallRunner struct {
 	// an earlier callback grew. A driver whose callbacks can mutate opts in with
 	// refreshChargeOnMutation and these carry what a rebuild needs.
 	refreshCharge  bool
-	chargeEpoch    uint64
+	chargeEpoch    walkEpoch
 	chargeReceiver Value
 	chargeArgs     []Value
 	chargeKwargs   map[string]Value
@@ -1681,7 +1681,7 @@ func (runner *blockCallRunner) refreshChargeOnMutation() {
 		return
 	}
 	runner.refreshCharge = true
-	runner.chargeEpoch = value.MutationEpoch()
+	runner.chargeEpoch = runner.exec.walkEpoch()
 }
 
 // refreshChargeIfGraphMoved rebuilds the bind charge when the mutation epoch has
@@ -1692,7 +1692,7 @@ func (runner *blockCallRunner) refreshChargeIfGraphMoved() {
 	if !runner.refreshCharge {
 		return
 	}
-	epoch := value.MutationEpoch()
+	epoch := runner.exec.walkEpoch()
 	if epoch == runner.chargeEpoch {
 		return
 	}
@@ -2537,7 +2537,7 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 		return exec.errorAt(pos, "cannot assign to read-only property %s", property)
 	}
 
-	bumpMutationEpoch()
+	exec.bumpMutationEpoch()
 	vars[property] = value
 	return nil
 }
@@ -2546,7 +2546,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 	switch t := target.(type) {
 	case *Identifier:
 		if self, ok := classConstantAssignmentSelf(t.Name, env); ok && !env.hasCallLocalBinding(t.Name) {
-			bumpMutationEpoch()
+			exec.bumpMutationEpoch()
 			valueClass(self).ClassVars[t.Name] = value
 			return nil
 		}
@@ -2575,7 +2575,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err != nil {
 			return err
 		}
-		bumpMutationEpoch()
+		exec.bumpMutationEpoch()
 		inst.Ivars[t.Name] = normalized
 		return nil
 	case *ClassVarExpr:
@@ -2585,11 +2585,11 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		}
 		switch self.Kind() {
 		case KindInstance:
-			bumpMutationEpoch()
+			exec.bumpMutationEpoch()
 			valueInstance(self).Class.ClassVars[t.Name] = value
 			return nil
 		case KindClass:
-			bumpMutationEpoch()
+			exec.bumpMutationEpoch()
 			valueClass(self).ClassVars[t.Name] = value
 			return nil
 		default:
@@ -2664,7 +2664,7 @@ func (exec *Execution) assignToEvaluatedMember(target *MemberExpr, obj, value Va
 		if obj.Kind() == KindHash {
 			key = hashMemberAssignmentKey(obj, target.Property)
 		}
-		return hashSet(obj, key, value)
+		return hashSet(exec, obj, key, value)
 	case KindInstance, KindClass:
 		return exec.assignToMember(obj, target.Property, value, target.Pos())
 	default:
@@ -2695,7 +2695,7 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		if pos < 0 || pos >= len(arr) {
 			return exec.errorAt(target.IndexPos(0), "array index out of bounds")
 		}
-		bumpMutationEpoch()
+		exec.bumpMutationEpoch()
 		arr[pos] = value
 		return nil
 	case KindHash, KindObject:
@@ -2720,7 +2720,7 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 			}
 			return nil
 		}
-		if err := hashSet(obj, indices[0], value); err != nil {
+		if err := hashSet(exec, obj, indices[0], value); err != nil {
 			return exec.errorAt(target.IndexPos(0), "%s", err.Error())
 		}
 		return nil
