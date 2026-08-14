@@ -242,7 +242,7 @@ func TestConcurrentExecutionCannotDestroyMemo(t *testing.T) {
 	}
 }
 
-// TestHostBuiltinSharingRetiresThePrivateCounter covers the hole the
+// TestUnclonedCrossingRetiresThePrivateCounter covers the hole the
 // disjointness argument does not close on its own.
 //
 // A host builtin registered through the embedding API receives and returns the
@@ -256,7 +256,7 @@ func TestConcurrentExecutionCannotDestroyMemo(t *testing.T) {
 // That is not covered by the value package's contract, which forbids the host
 // mutating a Value while a call given it is running: here the host only shares,
 // and script code does the mutating, sequentially.
-func TestHostBuiltinSharingRetiresThePrivateCounter(t *testing.T) {
+func TestUnclonedCrossingRetiresThePrivateCounter(t *testing.T) {
 	stash := NewTypedHash(4)
 	if err := stash.HashSet(NewString("k"), NewInt(1)); err != nil {
 		t.Fatalf("seed stash: %v", err)
@@ -288,7 +288,7 @@ func TestHostBuiltinSharingRetiresThePrivateCounter(t *testing.T) {
 	})
 	var aliased bool
 	probe.RegisterBuiltin("host_check", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
-		aliased = exec.hostAliased
+		aliased = !exec.privateEpochQualified
 		return NewNil(), nil
 	})
 	checkScript := compileScriptWithEngine(t, probe, "def run\n  h = host_stash()\n  host_check()\n  1\nend")
@@ -307,7 +307,7 @@ func TestHostBuiltinSharingRetiresThePrivateCounter(t *testing.T) {
 		return NewInt(7), nil
 	})
 	scalarEngine.RegisterBuiltin("host_check", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
-		scalarAliased = exec.hostAliased
+		scalarAliased = !exec.privateEpochQualified
 		return NewNil(), nil
 	})
 	scalarScript := compileScriptWithEngine(t, scalarEngine, "def run\n  n = host_scalar()\n  host_check()\n  n\nend")
@@ -316,5 +316,40 @@ func TestHostBuiltinSharingRetiresThePrivateCounter(t *testing.T) {
 	}
 	if scalarAliased {
 		t.Fatalf("a scalar-only host builtin retired the private counter; a scalar cannot alias a container")
+	}
+}
+
+// TestCrossScriptClosureRetiresThePrivateCounter covers a path the marking
+// design missed and the inverted default catches without having been told about
+// it. A block belonging to a different Script is passed through the inbound
+// rebinder unchanged, because re-rooting a foreign closure would change which
+// script's environment it reads. It therefore arrives carrying its own captured
+// env chain, and every container in that chain is reachable from both
+// executions. Nothing in this file taught the hook about closures: the rebind
+// returned its input, so qualification was revoked.
+func TestCrossScriptClosureRetiresThePrivateCounter(t *testing.T) {
+	source := MustNewEngine(Config{StepQuota: Unlimited, MemoryQuotaBytes: 64 << 20})
+	producer := compileScriptWithEngine(t, source, "def run\n  captured = [1, 2, 3]\n  proc { captured }\nend")
+	closure, err := producer.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("producing the closure: %v", err)
+	}
+	if closure.Kind() != KindBlock {
+		t.Skipf("producer returned %s, not a block; this path needs a closure to exercise", closure.Kind())
+	}
+
+	consumerEngine := MustNewEngine(Config{StepQuota: Unlimited, MemoryQuotaBytes: 64 << 20})
+	var qualified bool
+	consumerEngine.RegisterBuiltin("host_check", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		qualified = exec.privateEpochQualified
+		return NewNil(), nil
+	})
+	consumer := compileScriptWithEngine(t, consumerEngine, "def run(f)\n  host_check()\n  1\nend")
+	if _, err := consumer.Call(context.Background(), "run", []Value{closure}, CallOptions{}); err != nil {
+		t.Fatalf("consuming the closure: %v", err)
+	}
+	if qualified {
+		t.Fatalf("an execution handed a closure from another script kept its private counter, " +
+			"so a write through that closure's captured environment would be invisible to the other execution")
 	}
 }

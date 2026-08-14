@@ -88,7 +88,7 @@ func (exec *Execution) walkEpoch() walkEpoch {
 // graph; see the disjointness argument at the top of this file. A write that
 // does not have an execution in scope must use value.BumpMutationEpoch instead.
 func (exec *Execution) bumpMutationEpoch() {
-	if exec.hostAliased {
+	if !exec.privateEpochQualified {
 		value.BumpMutationEpoch()
 		return
 	}
@@ -136,30 +136,34 @@ func valueMayAliasContainer(val Value) bool {
 // Inputs are marked before dispatch and the result after, because the host can
 // capture an argument on one call and return it on another, so either direction
 // can be the one that shares.
-func (exec *Execution) markHostAliasedCall(receiver, block Value, args []Value, kwargs map[string]Value) {
-	if exec.hostAliased {
+func (exec *Execution) revokePrivateEpochForCall(receiver, block Value, args []Value, kwargs map[string]Value) {
+	if !exec.privateEpochQualified {
 		return
 	}
-	exec.markHostAliased(receiver, block)
-	exec.markHostAliased(args...)
+	exec.revokePrivateEpochFor(receiver, block)
+	exec.revokePrivateEpochFor(args...)
 	for _, val := range kwargs {
-		if exec.markHostAliased(val); exec.hostAliased {
+		if exec.revokePrivateEpochFor(val); !exec.privateEpochQualified {
 			return
 		}
 	}
 }
 
-func (exec *Execution) markHostAliased(vals ...Value) {
-	if exec.hostAliased {
+func (exec *Execution) revokePrivateEpochFor(vals ...Value) {
+	if !exec.privateEpochQualified {
 		return
 	}
 	for _, val := range vals {
 		if valueMayAliasContainer(val) {
-			exec.hostAliased = true
+			exec.privateEpochQualified = false
 			return
 		}
 	}
 }
+
+// revokePrivateEpoch retires the private counter unconditionally, for a caller
+// that has already established a container crossed uncloned.
+func (exec *Execution) revokePrivateEpoch() { exec.privateEpochQualified = false }
 
 // adoptRootEpoch binds this execution's root scope to its private mutation
 // counter. Every scope pushed beneath the root inherits the pointer down the
@@ -172,6 +176,9 @@ func (exec *Execution) adoptRootEpoch() {
 	if exec.root != nil {
 		exec.root.epoch = &exec.mutationEpoch
 	}
+	// Nothing has entered the execution at setup, so this is where it earns the
+	// private counter. Every uncloned crossing after this revokes it.
+	exec.privateEpochQualified = true
 }
 
 // bumpSharedMutationEpoch invalidates every memoized estimator base walk in the

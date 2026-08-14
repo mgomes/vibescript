@@ -147,11 +147,14 @@ type Execution struct {
 	// Execution is driven by a single goroutine; a task job runs on its own
 	// Execution with its own counter, and bypasses the memo entirely.
 	mutationEpoch uint64
-	// hostAliased records that a container this execution can reach may also be
-	// reachable from another execution, which retires the private counter for
-	// the rest of the call (see memory_epoch.go).
-	hostAliased          bool
-	reservedScratchBytes int
+	// privateEpochQualified records that nothing uncloned has entered this
+	// execution, which is what entitles it to the private mutation counter (see
+	// memory_epoch.go). It is a positive claim an execution earns at setup and
+	// any uncloned crossing revokes for the rest of the call. The zero value is
+	// the conservative one on purpose: an Execution built without qualifying
+	// uses the process-wide counter.
+	privateEpochQualified bool
+	reservedScratchBytes  int
 	// adoptedConstantBytes sums the class-constant map entries mixin adoption
 	// has inserted since its last memory check (see chargeAdoptedConstant). It
 	// carries across includes so that many small adoptions are measured as
