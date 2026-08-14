@@ -281,8 +281,15 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// execution's memo serving a total that omits the change. Such a builtin
 		// is already outside the value package's documented contract, which
 		// forbids mutating a Value while a call that was given it is running.
-		// If one is ever needed, it must bump the process-wide counter through
-		// bumpSharedMutationEpoch rather than this.
+		// A host-registered builtin, and a capability method, break that
+		// boundary: the runtime hands them its own Values uncloned in both
+		// directions, so a body that stashes a container on one call and
+		// returns it on another makes it reachable from two executions. Marking
+		// the execution before the bump routes this and every later write in it
+		// to the process-wide counter. See markHostAliasedCall.
+		if builtin.hostDriven {
+			exec.markHostAliasedCall(receiver, block, args, kwargs)
+		}
 		exec.bumpMutationEpoch()
 		// An accumulator-metered section only vouches for the loop that opened
 		// it, never for a nested builtin's allocations, so dispatch suspends
@@ -330,6 +337,14 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// A new frame holds new values, so it reserves its own.
 		exec.builtinFrameRootsReserved = false
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
+		if builtin.hostDriven {
+			// The result can be a container the body retained from an earlier
+			// call on another execution, which the inputs above could not
+			// reveal. Bump after marking so any raw write the body made to it
+			// is published process-wide rather than only here.
+			exec.markHostAliased(result)
+			exec.bumpMutationEpoch()
+		}
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = prevReceiver, prevArgs, prevKwargs
 		exec.builtinFrameRootsReserved = prevReserved
 		// Dropping the claims moves any array a shrink narrowed off the storage

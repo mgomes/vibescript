@@ -146,7 +146,11 @@ type Execution struct {
 	// (see memory_epoch.go). It is plain rather than atomic because an
 	// Execution is driven by a single goroutine; a task job runs on its own
 	// Execution with its own counter, and bypasses the memo entirely.
-	mutationEpoch        uint64
+	mutationEpoch uint64
+	// hostAliased records that a container this execution can reach may also be
+	// reachable from another execution, which retires the private counter for
+	// the rest of the call (see memory_epoch.go).
+	hostAliased          bool
 	reservedScratchBytes int
 	// adoptedConstantBytes sums the class-constant map entries mixin adoption
 	// has inserted since its last memory check (see chargeAdoptedConstant). It

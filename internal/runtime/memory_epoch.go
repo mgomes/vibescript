@@ -87,7 +87,79 @@ func (exec *Execution) walkEpoch() walkEpoch {
 // memo intact. That is sound because no other execution can reach this one's
 // graph; see the disjointness argument at the top of this file. A write that
 // does not have an execution in scope must use value.BumpMutationEpoch instead.
-func (exec *Execution) bumpMutationEpoch() { exec.mutationEpoch++ }
+func (exec *Execution) bumpMutationEpoch() {
+	if exec.hostAliased {
+		value.BumpMutationEpoch()
+		return
+	}
+	exec.mutationEpoch++
+}
+
+// valueMayAliasContainer reports whether val could carry a mutable container
+// that a host builtin can retain and hand to a second execution. Only payloads
+// with no interior mutable state are excluded: a string is immutable, a big
+// integer is immutable by contract, and the remaining scalars own their bytes.
+// Anything else, including a block or an instance that merely holds a container,
+// counts. Being wrong in the inclusive direction retires one execution's private
+// counter; being wrong the other way would leave a memo stale.
+func valueMayAliasContainer(val Value) bool {
+	switch val.Kind() {
+	case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol,
+		KindMoney, KindDuration, KindTime, KindRange, KindRegex:
+		return false
+	default:
+		return true
+	}
+}
+
+// markHostAliased retires this execution's private mutation counter once a
+// container has crossed the host-builtin boundary in either direction.
+//
+// A host builtin registered through the embedding API receives and returns the
+// interpreter's own Values, uncloned: a builtin that stashes a hash on one call
+// and returns it on another makes that hash reachable from two executions at
+// once. Script code in the second execution can then grow it, and a write
+// attributed to that execution alone would leave the first execution's memo
+// serving a total that omits the growth -- an under-count, under its quota.
+//
+// The value package's contract forbids a host mutating a Value while a call
+// given that Value is running, which does not cover this: the host only shares
+// here, and ordinary script code does the mutating. So sharing has to be
+// observed rather than assumed away.
+//
+// The mark is set at the moment a container can first become shared, which is
+// strictly before any write that could exploit it, and never cleared, so there
+// is no window. It is deliberately per-execution rather than per-value: marking
+// the execution needs no bookkeeping on the container and cannot be defeated by
+// a container reached later through one already exchanged.
+// markHostAliasedCall marks from everything crossing into a host builtin.
+// Inputs are marked before dispatch and the result after, because the host can
+// capture an argument on one call and return it on another, so either direction
+// can be the one that shares.
+func (exec *Execution) markHostAliasedCall(receiver, block Value, args []Value, kwargs map[string]Value) {
+	if exec.hostAliased {
+		return
+	}
+	exec.markHostAliased(receiver, block)
+	exec.markHostAliased(args...)
+	for _, val := range kwargs {
+		if exec.markHostAliased(val); exec.hostAliased {
+			return
+		}
+	}
+}
+
+func (exec *Execution) markHostAliased(vals ...Value) {
+	if exec.hostAliased {
+		return
+	}
+	for _, val := range vals {
+		if valueMayAliasContainer(val) {
+			exec.hostAliased = true
+			return
+		}
+	}
+}
 
 // adoptRootEpoch binds this execution's root scope to its private mutation
 // counter. Every scope pushed beneath the root inherits the pointer down the
