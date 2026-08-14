@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 
 	"github.com/mgomes/vibescript/vibes/source"
 )
@@ -153,7 +154,7 @@ type Execution struct {
 	// any uncloned crossing revokes for the rest of the call. The zero value is
 	// the conservative one on purpose: an Execution built without qualifying
 	// uses the process-wide counter.
-	privateEpochQualified bool
+	privateEpochQualified atomic.Bool
 	reservedScratchBytes  int
 	// adoptedConstantBytes sums the class-constant map entries mixin adoption
 	// has inserted since its last memory check (see chargeAdoptedConstant). It

@@ -88,7 +88,7 @@ func (exec *Execution) walkEpoch() walkEpoch {
 // graph; see the disjointness argument at the top of this file. A write that
 // does not have an execution in scope must use value.BumpMutationEpoch instead.
 func (exec *Execution) bumpMutationEpoch() {
-	if !exec.privateEpochQualified {
+	if !exec.privateEpochQualified.Load() {
 		value.BumpMutationEpoch()
 		return
 	}
@@ -137,25 +137,25 @@ func valueMayAliasContainer(val Value) bool {
 // capture an argument on one call and return it on another, so either direction
 // can be the one that shares.
 func (exec *Execution) revokePrivateEpochForCall(receiver, block Value, args []Value, kwargs map[string]Value) {
-	if !exec.privateEpochQualified {
+	if !exec.privateEpochQualified.Load() {
 		return
 	}
 	exec.revokePrivateEpochFor(receiver, block)
 	exec.revokePrivateEpochFor(args...)
 	for _, val := range kwargs {
-		if exec.revokePrivateEpochFor(val); !exec.privateEpochQualified {
+		if exec.revokePrivateEpochFor(val); !exec.privateEpochQualified.Load() {
 			return
 		}
 	}
 }
 
 func (exec *Execution) revokePrivateEpochFor(vals ...Value) {
-	if !exec.privateEpochQualified {
+	if !exec.privateEpochQualified.Load() {
 		return
 	}
 	for _, val := range vals {
 		if valueMayAliasContainer(val) {
-			exec.privateEpochQualified = false
+			exec.privateEpochQualified.Store(false)
 			return
 		}
 	}
@@ -163,7 +163,7 @@ func (exec *Execution) revokePrivateEpochFor(vals ...Value) {
 
 // revokePrivateEpoch retires the private counter unconditionally, for a caller
 // that has already established a container crossed uncloned.
-func (exec *Execution) revokePrivateEpoch() { exec.privateEpochQualified = false }
+func (exec *Execution) revokePrivateEpoch() { exec.privateEpochQualified.Store(false) }
 
 // adoptRootEpoch binds this execution's root scope to its private mutation
 // counter. Every scope pushed beneath the root inherits the pointer down the
@@ -174,11 +174,11 @@ func (exec *Execution) revokePrivateEpoch() { exec.privateEpochQualified = false
 // binding write, which is the cost this scoping exists to remove.
 func (exec *Execution) adoptRootEpoch() {
 	if exec.root != nil {
-		exec.root.epoch = &exec.mutationEpoch
+		exec.root.owner = exec
 	}
 	// Nothing has entered the execution at setup, so this is where it earns the
 	// private counter. Every uncloned crossing after this revokes it.
-	exec.privateEpochQualified = true
+	exec.privateEpochQualified.Store(true)
 }
 
 // bumpSharedMutationEpoch invalidates every memoized estimator base walk in the
