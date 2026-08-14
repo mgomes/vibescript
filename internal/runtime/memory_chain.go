@@ -142,6 +142,19 @@ func (c *memoryChain) publishAndExceeds(marginal int) bool {
 	return acc > headroom
 }
 
+// ancestorMarginals sums what every level above this one is currently holding.
+//
+// A budget is not the ceiling: what an ancestor already holds is room this level
+// cannot have. Sizing against the ceiling alone let a nested call allocate
+// nearly the whole allowance while an ancestor was already consuming most of it.
+func (c *memoryChain) ancestorMarginals() int64 {
+	total := int64(0)
+	for node := c.parent; node != nil; node = node.parent {
+		total += node.marginal.Load()
+	}
+	return total
+}
+
 // headroom reports the most this node's prefix -- itself and its ancestors --
 // may hold: its own ceiling, or whatever tighter room a live chain below it has
 // left, whichever binds first.

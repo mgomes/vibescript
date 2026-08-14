@@ -4505,11 +4505,13 @@ func scanMatchBudget(exec *Execution, groups int, receiver Value, args []Value, 
 	// let an execution already holding most of it request nearly another
 	// quota's worth of rows, which is the pre-accounting spike this bound
 	// exists to stop -- the table coexists with everything already live.
-	// The bound in force, not just this execution's own quota: under a tighter
-	// ceiling inherited from a caller, budgeting the local quota would size the
-	// table against room the chain does not have, which is the pre-accounting
-	// spike this bound exists to stop.
-	remaining := exec.effectiveMemoryLimit() - exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
+	// The chain's remaining room, not the ceiling and not the local quota. The
+	// ceiling alone still oversizes the table when an ancestor is already using
+	// most of it -- a parent local held across a task call is not part of this
+	// execution's graph, so subtracting only that graph leaves the ancestor's
+	// share unaccounted. The table is built before any check can see it, so the
+	// number this divides has to be what is actually left.
+	remaining := exec.memoryBudgetBytes() - exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
 	if remaining <= 0 {
 		// Nothing left to spend: a single match is still requested so an
 		// empty result stays legal, and any match at all reports the quota.

@@ -388,10 +388,10 @@ func (exec *Execution) maxProjectedTypedHashEntries(scratchBytes int, receiver V
 	used := exec.hashCallRootBytes(receiver, args, kwargs, block)
 	used = saturatingAdd(used, scratchBytes)
 	used = saturatingAdd(used, estimatedValueBytes+estimatedHashDataBytes+estimatedMapBaseBytes)
-	// The bound in force, not just this execution's own quota: a tighter ceiling
-	// inherited from a caller would otherwise be budgeted against room the chain
-	// does not have.
-	limit := exec.effectiveMemoryLimit()
+	// The chain's remaining room, not the ceiling and not the local quota: what
+	// an ancestor already holds is room these entries cannot have, and they are
+	// counted out before any check sees them.
+	limit := exec.memoryBudgetBytes()
 	if used >= limit {
 		return 0
 	}

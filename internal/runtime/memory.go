@@ -666,6 +666,58 @@ func (exec *Execution) effectiveMemoryLimit() int {
 	return limit
 }
 
+// memoryBudgetBytes reports the largest total graph this execution may hold
+// before a check would refuse it, given what its ancestors already hold.
+//
+// This is what a caller needs when it is about to *size* an allocation rather
+// than admit one already made: a scratch reservation, a projected entry cap, a
+// match table built before any check can see it. Those sites compared against
+// the execution's own quota, which is the wrong number twice over -- it ignores
+// a tighter ceiling inherited from a caller, and it ignores the part of that
+// ceiling the caller is already using. Either way the buffer is allocated first
+// and refused afterwards, which is exactly the spike the bound exists to stop.
+//
+// It mirrors memoryExceeded rather than approximating it: the same contribution
+// rule, the same headroom, solved for the largest `used` that would still pass.
+func (exec *Execution) memoryBudgetBytes() int {
+	budget := int64(exec.memoryQuota)
+	if budget <= 0 {
+		budget = math.MaxInt
+	}
+	chain := exec.memChain
+	if chain == nil {
+		return int(budget)
+	}
+	// A level that has not established its baseline contributes nothing, so the
+	// chain cannot refuse it yet and only its own quota applies.
+	if chain.parent != nil && !exec.memBaselineSet {
+		return int(budget)
+	}
+	room := chain.headroom() - chain.ancestorMarginals()
+	if chain.parent != nil {
+		// Contributions are measured from the baseline, so convert the room back
+		// into the graph-size the caller is asking about.
+		room = saturatingAddInt64(room, int64(exec.memBaseline))
+	}
+	if room < 0 {
+		room = 0
+	}
+	if room < budget {
+		budget = room
+	}
+	if budget > math.MaxInt {
+		budget = math.MaxInt
+	}
+	return int(budget)
+}
+
+func saturatingAddInt64(a, b int64) int64 {
+	if b > 0 && a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
+}
+
 // memoryExceeded reports whether a just-measured graph estimate breaches either
 // this execution's own quota or the ceiling it shares with its ancestors.
 //
@@ -2759,11 +2811,14 @@ func (exec *Execution) maxProjectedHashEntries(scratchBytes int, receiver Value,
 	if exec.memoryQuota <= 0 {
 		return math.MaxInt
 	}
+	// The budget, not the quota: what an ancestor already holds is room this
+	// merge cannot have, and the dedup set is grown before any check sees it.
+	budget := exec.memoryBudgetBytes()
 	used := saturatingAdd(exec.projectedHashBaseBytes(receiver, args, kwargs, block), scratchBytes)
-	if used >= exec.memoryQuota {
+	if used >= budget {
 		return 0
 	}
-	return (exec.memoryQuota - used) / estimatedMapEntryStructuralBytes
+	return (budget - used) / estimatedMapEntryStructuralBytes
 }
 
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
@@ -2894,7 +2949,9 @@ func (exec *Execution) chargeAdoptedConstant(name string) error {
 	}
 	exec.adoptedConstantBytes = saturatingAdd(exec.adoptedConstantBytes,
 		estimatedMapEntryBytes+estimatedValueBytes+estimatedStringHeaderBytes+len(name))
-	if exec.adoptedConstantBytes < exec.memoryQuota/adoptedConstantCheckShare {
+	// A share of the bound actually in force, so the unchecked overshoot this
+	// deferral allows stays proportionate under an inherited ceiling too.
+	if exec.adoptedConstantBytes < exec.effectiveMemoryLimit()/adoptedConstantCheckShare {
 		return nil
 	}
 	exec.adoptedConstantBytes = 0
@@ -2930,7 +2987,11 @@ func (r *loopScratchReservation) reserveIfFits(scratchBytes int) bool {
 
 	delta := r.exec.reserveLoopScratch(scratchBytes)
 	nextDelta := saturatingAdd(r.delta, delta)
-	if saturatingAdd(r.baseline, nextDelta) > r.exec.memoryQuota {
+	// Against the budget rather than the local quota. Publishing each accepted
+	// reservation through the chain instead would put a chain walk on every
+	// incremental reserve in a hot loop; what this site needs is the right
+	// number to compare against, not a report to the chain.
+	if saturatingAdd(r.baseline, nextDelta) > r.exec.memoryBudgetBytes() {
 		r.exec.releaseLoopScratch(delta)
 		return false
 	}
