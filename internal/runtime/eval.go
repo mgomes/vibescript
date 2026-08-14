@@ -1733,6 +1733,17 @@ func newBlockCallRunner(exec *Execution, block Value, name string, receiver Valu
 		chargeKwargs:   kwargs,
 		chargeBlock:    block,
 	}
+	// Pay for the construction walk the charge above may have recorded, before
+	// this runner is handed back. Waiting for callBlock is not enough: a driver
+	// can build a runner and never invoke its block -- array.each constructs one
+	// before it discovers its receiver is empty -- and then no callback ever
+	// arrives to settle the charge, leaving it pending while the enclosing loop
+	// runs on. Measured on a lookup whose first miss ran an empty nested each, the
+	// enclosing fetch_values went on to process 50,000 present keys against an
+	// exhausted quota, because present keys invoke nothing and can cost no steps.
+	if err := exec.chargeRetainedOutputWalk(); err != nil {
+		return nil, err
+	}
 	if blockCanReuseEnv(blk) {
 		runner.env = newBlockAssignmentEnv(blk.Env)
 	}

@@ -179,19 +179,26 @@ func (exec *Execution) outputWalkBytes(est *memoryEstimator) int {
 // chargeRetainedOutputWalk bills the step quota for the estimator work recorded
 // since it was last called.
 //
-// Drivers do not call this. It is settled at two structural points instead:
-// callBlock settles before running any callback, so a loop cannot spend a quota
-// the walk preceding it had already exhausted, and endOutputWalkRoot settles on
-// the way out, so a walk whose block was never invoked is still billed and
-// nothing is left on the execution for a later driver to be charged for.
+// Drivers do not call this. It is settled at three structural points instead,
+// each of which is where a charge is created or abandoned rather than somewhere
+// a driver has to remember:
 //
-// Making these the only two settlement points is deliberate. As a per-driver
-// convention it could not be right: the counter is filled once, when the bind
-// charge is built, which is before the driver's first callback, so settling
-// after each callback still let that first one run on a quota the walk had
-// already spent. A driver that omitted the call entirely ran its whole loop, and
-// the omission is invisible until a script pairs a large reachable graph with a
-// low step quota.
+//   - newBlockCallRunner, immediately after building the charge that records the
+//     walk. This is the one that covers a driver which never invokes its block --
+//     array.each builds a runner before it discovers its receiver is empty -- so
+//     no callback ever arrives to settle it.
+//   - callBlock, before running any callback, for a charge built without a runner
+//     (a host-driven block call).
+//   - endOutputWalkRoot, on the way out, so nothing is left on the execution for
+//     a later driver to be charged for.
+//
+// As a per-driver convention this could not be right, in two separate ways. The
+// counter is filled once, when the charge is built, which is before the driver's
+// first callback, so settling after each callback still let that first one run
+// on a quota the walk had already spent. And a charge recorded by a nested
+// driver that never invokes its block has no callback to settle it at all: a
+// lookup went on to process 50,000 present keys, which invoke nothing and can
+// cost no steps, against a quota that charge had already exhausted.
 //
 // Despite the name, what is recorded is NOT the retained-output walk. That walk is
 // unbilled (see outputWalkBytes for why). What reaches this counter is the bind
