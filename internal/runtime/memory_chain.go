@@ -53,8 +53,7 @@ import (
 // descendant is the ordinary slotted shape -- so a node carries a figure derived
 // from its descendants, and that figure has to be dropped when they finish or a
 // completed chain would bind its ancestors forever. Retirement is therefore real
-// work, and it is ordered by what is still running rather than by depth: a level
-// can return while a call it started through a capability is still going.
+// work, and it is ordered by what is still running rather than by depth.
 //
 // noDescendantConstraint is the headroom of a node with nothing live below it:
 // no descendant restricts what it and its ancestors may hold, so only its own
@@ -93,12 +92,13 @@ type memoryChain struct {
 	// not just its immediate children, which is what tells headroom whether the
 	// constraint below it still stands for anything.
 	//
-	// Transitive because retirement is not ordered by depth. A level can return
-	// while a call it started through a capability is still running, so counting
-	// only immediate children let a grandparent see itself as idle and drop a
-	// constraint that a live great-grandchild still justified. "Nothing below me
-	// is live" is the predicate the clearing actually needs, so it is the one
-	// that is counted.
+	// Transitive because "nothing below me is live" is the predicate that
+	// matters, and counting only immediate children answers a different
+	// question: a grandparent could see itself as idle while a live
+	// great-grandchild still justified the constraint below it. Every nested
+	// level a task group drives is awaited today, so the two coincide in
+	// practice; counting the predicate directly is what keeps that an
+	// observation rather than a dependency.
 	liveDescendants atomic.Int32
 	// limit is the tightest ceiling in the chain, resolved once at
 	// construction. Like sleepBudget it is decided on the chain's fixed
@@ -238,13 +238,12 @@ func (c *memoryChain) register() {
 // release retires a finished level: it stops contributing its own bytes, and
 // stops counting as live beneath its ancestors.
 //
-// It clears no descendant accounting, its own or anyone's. A level can return
-// while a call it started through a capability is still running, so clearing
-// on the way out erased a live callee's constraint; and clearing on behalf of
-// an ancestor meant deciding the ancestor was idle and then writing, which
-// races with a replacement child registering in between. Neither is needed:
-// a constraint is ignored while nothing below is live, and dropped by the next
-// generation's first arrival.
+// It clears no descendant accounting, its own or anyone's. Clearing on the way
+// out erased the constraint of a descendant that outlived the level retiring,
+// and clearing on behalf of an ancestor meant deciding the ancestor was idle
+// and then writing, which races with a replacement child registering in
+// between. Neither is needed: a constraint is only consulted while something
+// below is live, so a value a finished chain left cannot bind anyone.
 func (c *memoryChain) release() {
 	c.marginal.Store(0)
 	for node := c.parent; node != nil; node = node.parent {
@@ -273,9 +272,11 @@ func (c *memoryChain) initForCall(ctx context.Context, quota int) bool {
 	limit := int64(quota)
 	if quota <= 0 {
 		// An engine with no quota of its own still belongs to a bounded
-		// caller's chain. Dropping the inherited node here would make
-		// re-entering an unlimited engine the way out of the caller's sandbox,
-		// exactly as it would for the sleeping budget.
+		// caller's chain, so it adopts that ceiling rather than running
+		// unbounded inside a bounded caller. Reaching this needs a callee on a
+		// different engine, which today means a host passing a context that
+		// already carries a chain; capability re-entry, the other way there, is
+		// out of scope and has its own follow-up.
 		if parent == nil {
 			return false
 		}

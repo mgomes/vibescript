@@ -764,20 +764,14 @@ func (exec *Execution) currentRescuedError() error {
 // that have been carved into sibling packages (vibes/capability/...)
 // rely on it to forward cancellation and request-scoped values to host
 // callbacks without reaching into unexported runtime fields.
-// Context returns the context this execution runs under.
 //
-// It does not carry the memory-chain node. Publishing the node here reached
-// everything the call drives, including a context an adapter can retain and
-// re-enter with -- and that surface produced four defects across as many review
-// rounds: a binding context that handed the callee its grandparent's node, a
-// retirement that erased a callee outliving its level, an interior pointer that
-// pinned the whole Execution outside the quota, and a synchronous re-entry from
-// Bind that ran before this execution had a baseline. Capability re-entry is
-// left to its own design; see the follow-up item. A callee re-entered that way
-// gets a fresh allowance, which is what it gets on master today.
-//
-// The node reaches nested tasks through the context a task group captures; see
-// newTaskGroup.
+// It deliberately does not carry the memory-chain node. Publishing the node
+// here reached everything the call drives, including a context an adapter can
+// retain and re-enter with, and that surface produced four defects in as many
+// review rounds. Capability re-entry is left to its own design; a callee
+// re-entered that way gets a fresh allowance, which is what it gets without
+// this change at all. The node reaches nested tasks through the context a task
+// group captures; see newTaskGroup.
 func (exec *Execution) Context() context.Context {
 	return exec.ctx
 }
@@ -787,15 +781,16 @@ func (exec *Execution) Context() context.Context {
 //
 // The node lives inside the Execution so that a level which never nests costs no
 // allocation. But a pointer to a field keeps the whole containing object alive
-// in Go, so publishing &exec.memChainNode into a context that an adapter may
-// retain pinned the entire Execution -- root env, module graphs, estimator
-// caches -- for as long as the adapter held that context. A memory-quota
-// mechanism retaining unbounded memory outside the quota defeats its own
-// purpose, and repeated calls accumulated it.
+// in Go, so publishing &exec.memChainNode into a context pins the entire
+// Execution -- root env, module graphs, estimator caches -- for as long as
+// anything holds that context. A memory-quota mechanism retaining memory
+// outside the quota defeats its own purpose.
 //
-// Moving it is safe precisely here: a child links to this node by reading it out
-// of a published context, so at the moment of first publication no child exists
-// to hold the old address. Nothing else takes the node's address.
+// The context a task group captures outlives the jobs it drives, so this runs
+// before the group publishes. Moving the node is safe precisely there: a child
+// links to it by reading it out of the published context, so at the moment of
+// first publication no child exists to hold the old address, and nothing else
+// takes the node's address.
 func (exec *Execution) detachMemoryChainNode() {
 	if exec.memChain != &exec.memChainNode {
 		return

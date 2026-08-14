@@ -20,18 +20,14 @@
   charged 68 MiB for a single 4 MiB global read at seventeen levels. The charge
   does not grow with depth: a 1 MiB global read at 32 levels needs 2.03 MiB,
   against 2.01 MiB at one level, where a naive sum would need 33 MiB.
-- **Unchanged: a capability adapter that re-enters a script still gets a fresh
-  allowance.** The ceiling spans nested tasks, which is where live memory was
-  multiplying; it does not yet reach a script re-entered through a capability.
-  That is what happens today, so nothing regresses, and the remaining path is
-  being designed separately.
-- **Fixed: an unlimited engine re-entered from a bounded caller now honors the
-  caller's ceiling.** A capability adapter can re-enter a script on a different
-  engine, and one configured with `MemoryQuotaBytes: Unlimited` previously ran
-  with no memory bound at all even when the caller had one — so re-entering an
-  unbounded engine was a way out of a bounded caller's sandbox. Such a call now
-  adopts the ceiling it inherited, the same rule the sleeping budget already
-  applies. A call with no bounded caller is unaffected.
+- **Unchanged: a script re-entered through a capability adapter still gets a
+  fresh allowance, including on an unlimited engine.** The ceiling spans nested
+  tasks, which is where live memory was multiplying. It does not reach a script
+  a capability adapter calls back into, so that path is bounded exactly as it is
+  today and no more: an adapter re-entering an engine configured with
+  `MemoryQuotaBytes: Unlimited` still runs unbounded even when its caller is
+  bounded. Nothing regresses, but nothing is closed there either, and the
+  remaining path is being designed separately.
 - **Unchanged: the width of a flat `Tasks.map`.** Only the ancestor chain
   aggregates; siblings are not charged for one another. Bounding width too would
   make the quota literally true for the whole call, but it would refuse a
