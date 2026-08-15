@@ -409,7 +409,7 @@ func newTypedHashPreservingDefault(receiver Value, capacity int) Value {
 }
 
 func deepTransformArrayBufferBytes(count int) int {
-	return saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(count, estimatedValueBytes))
+	return saturatingAdd(arraySlotBackingBytes(0), saturatingMul(count, estimatedValueBytes))
 }
 
 func deepTransformKeys(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

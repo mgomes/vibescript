@@ -32,9 +32,39 @@ func NewString(s string) Value { return Value{kind: KindString, data: s} }
 // copy that aliases the same wrapper observes the mutation, matching Ruby's
 // reference semantics for collections. (KindHash gets the same sharing from its
 // *hashData wrapper.)
+//
+// head is how many element slots sit between the start of the slice the wrapper
+// was first built over and the start of elems. A shrink that takes elements off
+// the front hands the wrapper a window further into the same allocation, and Go
+// keeps an allocation live as a whole for any pointer into it, so those slots
+// are still held while nothing addresses them any more -- and a slice header
+// says nothing about what is in front of it.
+//
+// Only the runtime's shrink maintains it, and only to decide when the vacated
+// prefix has grown large enough to be worth copying the survivors out of.
+// Nothing reads it as an accounting figure, so it is a cost heuristic rather
+// than a fact: too large means one copy that was not needed, and too small --
+// which is what a wrapper built over a slice that was already a window of
+// something larger starts out with -- means a prefix the host put there stays
+// held, exactly as it would have without any of this.
 type arrayData struct {
 	elems []Value
+	head  int
 }
+
+// ArrayDataBytes is the heap footprint of the arrayData wrapper every KindArray
+// value allocates, excluding the element backing it points at. Memory-quota
+// accounting charges it once per distinct array so a workload retaining many
+// small arrays cannot hold the per-array wrapper cost uncharged.
+//
+// It is derived from the struct rather than restated as a number so that a
+// field added to arrayData is charged by the same commit that adds it. head was
+// added without one, which took the wrapper from 24 bytes to 32 and left 8 of
+// them unmetered per array -- an under-count introduced by a fix for an
+// under-count. It is intended for the interpreter's internal use; hosts should
+// not rely on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+const ArrayDataBytes = int(unsafe.Sizeof(arrayData{}))
 
 // NewArray returns an array Value backed by a, which it takes ownership of.
 //
@@ -58,8 +88,64 @@ func (v Value) SetArrayElems(elems []Value) {
 	}
 	if ad, ok := v.data.(*arrayData); ok {
 		BumpMutationEpoch()
+		if !sameElemStart(ad.elems, elems) {
+			// Elements that start somewhere else are a different allocation --
+			// a mutator's freshly built slice, or an append that outgrew its
+			// backing -- so whatever prefix the old one had is not in front of
+			// this one. A window further into the same allocation must go
+			// through SetArrayWindow, which says how far in it now starts.
+			ad.head = 0
+		}
 		ad.elems = elems
 	}
+}
+
+// SetArrayWindow narrows an array onto a window of the allocation its elements
+// already sit in, recording how many slots of that allocation now sit in front
+// of the window. head is counted from the start of the allocation, not from the
+// elements the array showed before.
+//
+// It exists because a narrowed array goes on holding the whole allocation while
+// the slice header it keeps describes less and less of it, and nothing about
+// that header says how much is in front. It is intended for the interpreter's
+// internal use; hosts should not call it, and it carries no compatibility
+// promise (see docs/embedding-api-stability.md).
+func (v Value) SetArrayWindow(elems []Value, head int) {
+	if v.kind != KindArray {
+		return
+	}
+	if ad, ok := v.data.(*arrayData); ok {
+		BumpMutationEpoch()
+		ad.elems = elems
+		ad.head = head
+	}
+}
+
+// ArrayWindowHead returns how many element slots an array's elements start
+// past the beginning of the allocation they sit in, or 0 when v is not an
+// array. It is intended for the interpreter's internal use; hosts should not
+// call it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func ArrayWindowHead(v Value) int {
+	if v.kind != KindArray {
+		return 0
+	}
+	if ad, ok := v.data.(*arrayData); ok {
+		return ad.head
+	}
+	return 0
+}
+
+// sameElemStart reports whether two element slices begin at the same address,
+// which is what tells an in-place append from one that moved the elements to a
+// new allocation. Two empty slices are not the same start: an empty one has no
+// address to speak of, and a wrapper handed one is holding nothing whatever it
+// held before.
+func sameElemStart(old, next []Value) bool {
+	if len(old) == 0 || len(next) == 0 {
+		return false
+	}
+	return &old[0] == &next[0]
 }
 
 // AppendArrayElemNoEpoch appends elem to an array in place without bumping
@@ -75,7 +161,11 @@ func (v Value) AppendArrayElemNoEpoch(elem Value) {
 		return
 	}
 	if ad, ok := v.data.(*arrayData); ok {
-		ad.elems = append(ad.elems, elem)
+		grown := append(ad.elems, elem)
+		if !sameElemStart(ad.elems, grown) {
+			ad.head = 0
+		}
+		ad.elems = grown
 	}
 }
 

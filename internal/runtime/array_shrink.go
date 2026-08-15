@@ -62,6 +62,27 @@ import "unsafe"
 // vacated slots then, when the frame that might have been walking them is done.
 // That is the cheapest of the three as well as the safest, since a drain
 // narrows the same storage over and over and never copies.
+//
+// Zeroing in place answers what the receiver still reaches, but not what it
+// still holds. Removing from the front narrows the receiver onto a window
+// further into the same allocation, and Go keeps an allocation live as a whole
+// for any pointer into it, so the slots in front of the window are held by an
+// array that cannot reach them. The estimator does not see them either: it
+// prices a header at its capacity plus its elements, and a forward reslice
+// shrinks both, so a 4096 element array drained through shift to one element
+// was charged 377 bytes while holding 131,072, and a loop that built and
+// drained arrays accrued 8 MiB against a charge that rose by 10 KB.
+//
+// A slice header says nothing about what precedes it, so the wrapper carries
+// the count instead (arrayData.head, maintained through SetArrayWindow) and the
+// shrink copies the survivors out once the vacated prefix has grown larger than
+// what the array still shows. That is the same copy as above and pays for
+// itself the same way: a copy of m elements happens only after more than m have
+// been removed, so a drain of n copies fewer than n in total and stays linear,
+// where copying on every shrink would make it O(n^2). Until then the array is
+// left where it is, because the charge covers what it holds: a window is
+// charged for its slots once as capacity and again as elements, which pays for
+// a prefix up to its own size.
 
 // A note for whoever changes this accounting next. The tests around it bracket
 // its arithmetic -- charging too little, too much, twice, or negatively -- while
@@ -576,15 +597,49 @@ func shrinkArray(exec *Execution, receiver Value, arr []Value, start, end int,
 	args []Value, kwargs map[string]Value, block Value, pendingSlots int,
 ) error {
 	window := arr[start:end]
+	head := arrayWindowHead(receiver) + start
 	named := exec.namedArrayBackingHeld(arr)
 	wildcard := exec.wildcardArrayClaim(arr)
-	if !named && wildcard == nil {
+	switch {
+	case !named && wildcard == nil && head <= len(window):
 		clear(arr[:start])
 		clear(arr[end:])
-		setArrayElems(receiver, window)
+		if start == end {
+			// An empty window still addresses the storage, and Go keeps an
+			// allocation live as a whole for any pointer into it, so the
+			// receiver would go on holding every slot it just gave up. Fresh
+			// empty storage lets go of all of it.
+			setArrayElems(receiver, []Value{})
+			return nil
+		}
+		// The array is left where it is while the charge still covers what it
+		// holds: a window is charged for its slots once as capacity and again
+		// as elements, which pays for a prefix up to its own size.
+		setArrayWindow(receiver, window, head)
 		return nil
-	}
-	if !named && wildcard.canRetain(arr, receiver) {
+	case !named && wildcard == nil:
+		// The prefix this array has vacated has outgrown what it still shows,
+		// so it is holding more than twice the slots anything can reach through
+		// it and the charge has stopped covering them: the estimator prices a
+		// header at its capacity plus its elements, both of which a forward
+		// reslice shrinks, while the allocation behind it does not move.
+		// Draining a 4096 element array down to one left 131,072 bytes held
+		// against a charge of 377.
+		//
+		// Copying the survivors out is what releases it, and copying only once
+		// the prefix has outgrown them is what keeps a drain linear: a copy of
+		// m elements is paid for by more than m elements already removed, so
+		// draining n elements copies fewer than n in total no matter how the
+		// removals are spread. Copying on every shrink would be O(n^2) for the
+		// same drain.
+		//
+		// Nothing is cleared here, and nothing is written before the copy has
+		// been paid for. The receiver moves off the allocation entirely, and no
+		// frame is holding it -- that is what this branch means -- so the
+		// vacated slots go with it; and a reservation that cannot be met leaves
+		// an array that still holds every element it did, rather than one whose
+		// removed slots were blanked before the shrink failed.
+	case !named && wildcard.canRetain(arr, receiver):
 		// A frame the runtime did not write may be walking this header, and
 		// may also be handed whatever the shrink moves the array onto, so the
 		// storage is left exactly as it is and the array just shows less of
@@ -604,14 +659,17 @@ func shrinkArray(exec *Execution, receiver Value, arr []Value, start, end int,
 		// The window's capacity stops at its length, so a later push cannot
 		// reuse a slot inside what the frame is walking and rewrite an element
 		// it has yet to reach. That costs the push a reallocation and leaves
-		// the drain itself untouched, since narrowing never copies.
-		setArrayElems(receiver, arr[start:end:end])
+		// the drain itself untouched, since narrowing never copies. The prefix
+		// is recorded even though nothing may be copied out of it here: the
+		// claim charges the storage whole while it is live, and once it drops
+		// the next shrink is the one that can act on it.
+		setArrayWindow(receiver, arr[start:end:end], head)
 		return nil
 	}
-	// A frame the runtime wrote is walking this header, or a wildcard claim is
-	// already holding as many as it accounts for. Copying the survivors out is
-	// what leaves the header alone, and the header the frame is left holding
-	// goes on the quota.
+	// A frame the runtime wrote is walking this header, a wildcard claim is
+	// already holding as many as it accounts for, or the vacated prefix has
+	// outgrown the window. Copying the survivors out is what leaves the header
+	// alone, and the header a frame is left holding goes on the quota.
 	if err := exec.chargeScanSteps(len(window)); err != nil {
 		return err
 	}

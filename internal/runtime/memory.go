@@ -16,7 +16,7 @@ const (
 	estimatedIntBytes          = int(unsafe.Sizeof(int(0)))
 	estimatedRuneBytes         = int(unsafe.Sizeof(rune(0)))
 	estimatedStringHeaderBytes = 16
-	estimatedSliceBaseBytes    = 24
+	estimatedSliceBaseBytes    = int(unsafe.Sizeof([]Value{}))
 	estimatedMapBaseBytes      = 48
 	estimatedMapEntryBytes     = 32
 	estimatedEnvBytes          = int(unsafe.Sizeof(Env{}))
@@ -38,6 +38,35 @@ const estimatedHashDataBytes = value.HashDataBytes
 // estimatedObjectDataBytes is the heap footprint of the objectData wrapper
 // every KindObject value allocates around its entry map.
 const estimatedObjectDataBytes = value.ObjectDataBytes
+
+// estimatedArrayWrapperExtraBytes is the part of the arrayData wrapper every
+// KindArray value allocates that the array's own slice accounting does not
+// already cover. sliceStructuralBytes charges estimatedSliceBaseBytes for the
+// element slice header, and for an array that header is a field of the wrapper
+// rather than an allocation of its own, so what is missing is only what the
+// wrapper carries beyond it. Charging value.ArrayDataBytes whole on top would
+// bill the header twice.
+//
+// It is derived from both sides so that neither can drift: a field added to
+// arrayData is charged by the commit that adds it, and a change to what the
+// slice base models is subtracted from it. head was added without either, which
+// took the wrapper from 24 bytes to 32 and left 8 unmetered per array -- an
+// under-count introduced by a fix for an under-count.
+//
+// Drift is not only over time. Both sides are word-sized, so this is 8 bytes on
+// a 64-bit target and 4 on a 32-bit one, and the assertion below found that out:
+// while the slice base was the hand-written 24 it stayed 24 on 386, where a
+// slice header is 12 and the wrapper is 16, and the remainder went negative. A
+// stated size is not merely stale-prone, it is blind to the target it is
+// compiled for.
+const estimatedArrayWrapperExtraBytes = value.ArrayDataBytes - estimatedSliceBaseBytes
+
+// A wrapper smaller than the slice header the estimator already bills would
+// make the remainder negative and quietly subtract from every array's charge,
+// which is the direction that escapes a quota. An array length may not be
+// negative, so this stops compiling before it can -- on every architecture the
+// release matrix builds, which is what caught the hand-written slice base.
+var _ [estimatedArrayWrapperExtraBytes]struct{}
 
 const (
 	estimatedHashLookupKeyBytes = int(unsafe.Sizeof(value.HashLookupKey{}))
@@ -950,11 +979,9 @@ func (exec *Execution) checkProjectedIntArrayBytesWithLive(count, liveSlots int,
 	s.close()
 
 	if liveSlots > 0 {
-		used = saturatingAdd(used, estimatedValueBytes+estimatedSliceBaseBytes)
-		used = saturatingAdd(used, saturatingMul(liveSlots, estimatedValueBytes))
+		used = saturatingAdd(used, liveValueSliceBytes(liveSlots))
 	}
-	used = saturatingAdd(used, estimatedValueBytes+estimatedSliceBaseBytes)
-	used = saturatingAdd(used, saturatingMul(count, estimatedValueBytes))
+	used = saturatingAdd(used, arraySlotBackingBytes(count))
 	if used > exec.memoryQuota {
 		return exec.memoryQuotaExceededError()
 	}
@@ -1601,8 +1628,54 @@ func (acc *arrayBuildAccumulator) projected(slotCount int) int {
 	return saturatingAdd(saturatingAdd(acc.base, arraySlotBackingBytes(slotCount)), acc.payload)
 }
 
+// arraySlotBackingBytes is what one new array of slotCount slots costs a
+// projection standing on its own: the Value that names it, plus everything the
+// array itself allocates.
 func arraySlotBackingBytes(slotCount int) int {
+	return saturatingAdd(estimatedValueBytes, nestedArrayBackingBytes(slotCount))
+}
+
+// nestedArrayBackingBytes is what one new array of slotCount slots costs when
+// something else already prices the Value that names it -- an inner array in a
+// row of tuples, a capture list inside a match element, a group inside a pair.
+// Its Value occupies a slot of the enclosing backing, which that backing's own
+// projection charges, so charging it again here would bill every inner array's
+// Value twice.
+//
+// It is the wrapper remainder plus the slot backing. Pricing a wrapped array
+// with valueSliceBackingBytes alone is the mistake this exists to make hard to
+// write: the two differ by exactly what arrayData carries beyond a slice
+// header, which is invisible at a call site and multiplies by the row count.
+// Array#zip over a wide receiver allocated one such wrapper per row against a
+// quota that had admitted none of them.
+func nestedArrayBackingBytes(slotCount int) int {
+	return saturatingAdd(estimatedArrayWrapperExtraBytes, valueSliceBackingBytes(slotCount))
+}
+
+// liveValueSliceBytes is what a slot array held only on a Go stack costs a
+// projection: the backing, plus one Value beyond it.
+//
+// It is deliberately not arraySlotBackingBytes. Nothing wrapped this slice --
+// a destructure's defensive snapshot is a bare append([]Value(nil), ...) that
+// no array value ever boxes -- so there is no arrayData to charge, and adding
+// one would reserve for a wrapper that is never allocated. The Value beyond the
+// backing is the conservative margin this projection has always carried.
+func liveValueSliceBytes(slotCount int) int {
 	return saturatingAdd(estimatedValueBytes, valueSliceBackingBytes(slotCount))
+}
+
+// nestedArrayWrapperBytes is the wrapper cost alone for count arrays whose Value
+// slots and slot backings some other reservation already covers -- a group whose
+// Value is a hash entry and whose backing grew through the loop scratch, a
+// partition side whose Value is a slot of the returned pair.
+//
+// It is the residue left when a projection prices an array in two pieces and
+// neither piece is the wrapper. That is not a wrong formula and not a wrong
+// value, so neither the spelling gate nor the compile-time assertion sees it;
+// it is a charge that is simply absent, and naming it is what makes its absence
+// legible at a call site.
+func nestedArrayWrapperBytes(count int) int {
+	return saturatingMul(count, estimatedArrayWrapperExtraBytes)
 }
 
 func valueSliceBackingBytes(slotCount int) int {
@@ -2522,7 +2595,7 @@ func (c *blockBindCharge) projectRestWindow(count int) error {
 	if c == nil {
 		return nil
 	}
-	window := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(count, estimatedValueBytes))
+	window := arraySlotBackingBytes(count)
 	if saturatingAdd(saturatingAdd(c.liveBaseline(), c.built), window) > c.exec.memoryQuota {
 		return c.exec.memoryQuotaExceededError()
 	}
@@ -3194,6 +3267,17 @@ func (est *memoryEstimator) value(val Value) int {
 		size += len(regex.Source)
 	case KindArray:
 		size += est.slice(val.Array())
+		// Charged per occurrence, not per distinct wrapper, so that it behaves
+		// exactly like the slice base it completes: sliceStructuralBytes bills
+		// estimatedSliceBaseBytes every time it is reached and deduplicates only
+		// the element backing, and a zero-capacity backing has no identity to
+		// deduplicate on at all. A charge that deduplicated where its other half
+		// does not made the memoized total drift 8 bytes from the reference walk
+		// it must equal, because a probe that rolls its seen-set back charges
+		// what it inserted and a later walk charges it again. Two aliases of one
+		// array are billed the wrapper twice, which is the same conservative
+		// over-count the slice base already makes for them.
+		size += estimatedArrayWrapperExtraBytes
 	case KindHash:
 		if entries, ok := hashStringMapIfMaterialized(val); ok {
 			size += est.hash(entries)

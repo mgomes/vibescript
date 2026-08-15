@@ -4660,7 +4660,7 @@ func actualRegexSubmatchIndexBytes(allMatches [][]int, groups int) int {
 }
 
 func (exec *Execution) guardStringScanOutputFootprint(allMatches [][]int, groups int) error {
-	outputBytes := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(len(allMatches), estimatedValueBytes))
+	outputBytes := arraySlotBackingBytes(len(allMatches))
 	for _, loc := range allMatches {
 		outputBytes = saturatingAdd(outputBytes, projectedRegexElementPayloadBytes("", loc, groups))
 		if outputBytes > maxRegexInputBytes {
@@ -4685,7 +4685,10 @@ func projectedRegexElementPayloadBytes(text string, loc []int, groups int) int {
 	if groups == 0 {
 		return projectedRegexWindowBytes(text, loc[0], loc[1])
 	}
-	payload := saturatingAdd(estimatedSliceBaseBytes, saturatingMul(groups, estimatedValueBytes))
+	// stringScanElement publishes the captures as an array value, so the
+	// wrapper it boxes them in is part of what one element costs. The Value
+	// naming it is the result slot the caller already prices.
+	payload := nestedArrayBackingBytes(groups)
 	for g := range groups {
 		start := loc[(g+1)*2]
 		end := loc[(g+1)*2+1]

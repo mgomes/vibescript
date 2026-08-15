@@ -340,6 +340,15 @@ func arrayIdentity(v Value) uintptr { return value.ArrayIdentity(v) }
 // pop, clear, map!, ...): every Value aliasing the array observes the change.
 func setArrayElems(v Value, elems []Value) { v.SetArrayElems(elems) }
 
+// setArrayWindow narrows an array onto a window of the allocation its elements
+// already sit in, recording how many slots of that allocation now sit in front
+// of the window.
+func setArrayWindow(v Value, elems []Value, head int) { v.SetArrayWindow(elems, head) }
+
+// arrayWindowHead reports how many element slots an array's elements start past
+// the beginning of the allocation they sit in.
+func arrayWindowHead(v Value) int { return value.ArrayWindowHead(v) }
+
 func hashStringMapIfMaterialized(v Value) (map[string]Value, bool) {
 	return v.HashStringMapIfMaterialized()
 }

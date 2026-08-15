@@ -6,6 +6,9 @@ import (
 	goruntime "runtime"
 	"strings"
 	"testing"
+	"weak"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // TestArrayShrinkDropsRemovedPayloads pins that an element removed from an
@@ -296,5 +299,422 @@ end`)
 	if limit := int64(4 << 20); held > limit {
 		t.Fatalf("the aliased arrays still hold %.2f MiB, want under %.2f MiB",
 			float64(held)/(1<<20), float64(limit)/(1<<20))
+	}
+}
+
+// TestDrainedArrayReleasesItsSlotBacking pins that an array a script drains to
+// empty stops addressing the slot allocation it was drained out of.
+//
+// A shrink that narrows the receiver to an empty window still hands it a header
+// into the original allocation, and Go keeps an allocation live as a whole
+// while any pointer into it is live -- a slice showing nothing included. shift
+// makes that unaccounted as well as real: sliceStructuralBytes charges by
+// capacity and a forward reslice shrinks capacity, so a 2048 element array
+// built by push and drained through shift was left showing 256 of the 2304
+// slots it still pinned, and a 4096 element array whose capacity was exactly
+// its length was charged 313 bytes while holding all 131,072. A script draining
+// arrays in a loop accrues that against a quota that sees none of it.
+//
+// Every path a shrink can take is exercised, because the check that fixes this
+// was already on one of them: leaving the storage alone beneath a host driver
+// has it, narrowing in place with nothing claiming the backing did not, and
+// copying the survivors out reaches it through storage a copy made rather than
+// the one the drain started on.
+//
+// Reachability is read with a weak pointer rather than a finalizer, because a
+// finalizer reports only that one ran and so cannot produce a negative. The
+// instrument is checked in both directions here: an array nothing drained must
+// read reachable, and one Array#clear moved onto fresh storage must read
+// released. A probe that cannot report released proves nothing when it reports
+// reachable.
+//
+// The reading is taken after the call returns, with the array held from Go, so
+// no interpreter frame is left on the stack to keep the old header alive by
+// itself.
+//
+// Not parallel: it forces process-wide GC.
+func TestDrainedArrayReleasesItsSlotBacking(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		driven    bool
+		wantSize  int64
+		wantAlive bool
+	}{
+		{
+			name:      "untouched (control: must stay reachable)",
+			body:      "keep(a)",
+			wantSize:  drainedArrayProbeSize,
+			wantAlive: true,
+		},
+		{
+			name: "clear (control: must be released)",
+			body: `keep(a)
+  a.clear`,
+		},
+		{
+			name: "shift to empty",
+			body: `keep(a)
+  while a.size > 0
+    a.shift
+  end`,
+		},
+		{
+			name: "shift(n) whole",
+			body: `keep(a)
+  a.shift(a.size)`,
+		},
+		{
+			// The prefix a drain vacates is not visible in what it leaves
+			// behind: a forward reslice moves the start of the header and
+			// shrinks its capacity by exactly as much, so nothing about the
+			// slice says how much of the allocation is now in front of it.
+			// Draining to one element rather than none held the whole thing.
+			name: "shift to one, one element at a time",
+			body: `keep(a)
+  while a.size > 1
+    a.shift
+  end`,
+			wantSize: 1,
+		},
+		{
+			name: "shift(n - 1) in one call",
+			body: `keep(a)
+  a.shift(n - 1)`,
+			wantSize: 1,
+		},
+		{
+			// The documented residual. An array still showing half of its
+			// allocation is charged for the half it shows twice over, once as
+			// slots and once as elements, which covers the half it does not.
+			// Copying here would buy nothing and cost a copy, so the array is
+			// left where it is and goes on holding the storage.
+			name: "shift half (residual: the window still covers the allocation)",
+			body: `keep(a)
+  a.shift(n / 2)`,
+			wantSize:  drainedArrayProbeSize / 2,
+			wantAlive: true,
+		},
+		{
+			name: "pop to empty",
+			body: `keep(a)
+  while a.size > 0
+    a.pop
+  end`,
+		},
+		{
+			name: "pop(n) whole",
+			body: `keep(a)
+  a.pop(a.size)`,
+		},
+		{
+			// The first pop beneath a first-party iterator copies the survivors
+			// onto fresh storage, because the iterator is walking the header
+			// the drain would otherwise write into. keep takes its reference
+			// after that, so what is measured here is the copy the drain
+			// finishes on rather than the storage it started on.
+			name: "drain that copied out from under a first-party iterator",
+			body: `a.each do |x|
+    a.pop
+    if a.size == n - 1
+      keep(a)
+    end
+  end`,
+		},
+		{
+			// Beneath a host-driven frame the shrink writes nothing at all: it
+			// narrows the array over storage the frame may be walking and
+			// clears what was vacated when the claim drops. An empty window
+			// would still address that storage, which is the case this path
+			// already handled.
+			name: `drain beneath a host driver`,
+			body: `keep(a)
+  driver.walk(a) do |x|
+    a.pop(a.size)
+  end`,
+			driven: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const n = drainedArrayProbeSize
+
+			var kept Value
+			var backing weak.Pointer[Value]
+			engine := MustNewEngine(Config{StepQuota: 50_000_000, MemoryQuotaBytes: Unlimited})
+			// keep holds the array from Go the way a host handed one does, and
+			// takes a weak reference to the slot allocation it is showing at
+			// that moment.
+			engine.RegisterBuiltin("keep", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+				kept = args[0]
+				elems := kept.Array()
+				if len(elems) == 0 {
+					return NewNil(), fmt.Errorf("keep needs a non-empty array")
+				}
+				backing = weak.Make(&elems[0])
+				return NewNil(), nil
+			})
+
+			script, err := engine.Compile(fmt.Sprintf(`def run(n)
+  a = []
+  i = 0
+  while i < n
+    a.push(i)
+    i = i + 1
+  end
+  %s
+  a.size
+end`, tc.body))
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+
+			opts := CallOptions{}
+			if tc.driven {
+				opts.Capabilities = []CapabilityAdapter{arrayArgDriver{}}
+			}
+			got, err := script.Call(context.Background(), "run", []Value{NewInt(n)}, opts)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if got.Int() != tc.wantSize {
+				t.Fatalf("array holds %d elements after the drain, want %d", got.Int(), tc.wantSize)
+			}
+			if backing == (weak.Pointer[Value]{}) {
+				t.Fatalf("keep never ran, so nothing was measured")
+			}
+
+			goruntime.GC()
+			goruntime.GC()
+			alive := backing.Value() != nil
+			goruntime.KeepAlive(kept)
+
+			if alive == tc.wantAlive {
+				return
+			}
+			if tc.wantAlive {
+				t.Fatalf("the slot allocation was released while the array is still showing every " +
+					"element of it, so this probe cannot tell pinned from released and its released " +
+					"readings mean nothing")
+			}
+			t.Fatalf("the drained array still addresses the %d slot allocation it was drained out of, "+
+				"holding every byte of it alive under a charge that has stopped counting them", n)
+		})
+	}
+}
+
+// drainedArrayProbeSize is how many elements the drain probes build. Large
+// enough that the slots are a real allocation rather than a size class the
+// runtime hands out from a shared span, small enough to drain element by
+// element without a long loop.
+const drainedArrayProbeSize = 2048
+
+// TestPartialDrainDoesNotAccrueUnchargedSlots pins that arrays drained to a
+// remainder stop accruing slot memory the quota cannot see.
+//
+// The full-drain release above is bypassed by stopping one element short. A
+// forward reslice moves the start of the header and shrinks its capacity by
+// exactly as much, so nothing about what a drain leaves says how much of the
+// allocation is now in front of it, and the estimator -- which prices a header
+// at its capacity plus its elements -- charges for neither. Sixteen rounds of
+// building a 4096 element array and shifting it down to one held 2 MiB of
+// slots while the charge rose by 3 KB, and the ratio grows with the array.
+//
+// The heap is sampled from inside the call, while the drained arrays are still
+// script-reachable, for the same reason as the test at the top of this file.
+//
+// Not parallel: it measures process-wide heap.
+func TestPartialDrainDoesNotAccrueUnchargedSlots(t *testing.T) {
+	const (
+		rounds = 64
+		n      = 4096
+	)
+
+	var samples []uint64
+	var charges []int
+	engine := MustNewEngine(Config{StepQuota: 500_000_000, MemoryQuotaBytes: Unlimited})
+	engine.RegisterBuiltin("probe_heap", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		var stats goruntime.MemStats
+		goruntime.GC()
+		goruntime.ReadMemStats(&stats)
+		samples = append(samples, stats.HeapAlloc)
+		charges = append(charges, exec.estimateMemoryUsage())
+		return NewNil(), nil
+	})
+	script, err := engine.Compile(`def run(rounds, n)
+  kept = []
+  probe_heap()
+  r = 0
+  while r < rounds
+    a = []
+    i = 0
+    while i < n
+      a.push(i)
+      i = i + 1
+    end
+    while a.size > 1
+      a.shift
+    end
+    kept.push(a)
+    r = r + 1
+  end
+  probe_heap()
+  kept.size
+end`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	got, err := script.Call(context.Background(), "run", []Value{NewInt(rounds), NewInt(n)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got.Int() != rounds {
+		t.Fatalf("kept %d arrays, want %d", got.Int(), rounds)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("probe_heap ran %d times, want 2", len(samples))
+	}
+
+	held := int64(samples[1]) - int64(samples[0])
+	charged := int64(charges[1] - charges[0])
+	// Every round vacated a whole array's worth of slots, which is 8 MiB over
+	// the run and was all still held.
+	if limit := int64(2 << 20); held > limit {
+		t.Fatalf("%d arrays drained to one element hold %.2f MiB against a charge that rose by %d "+
+			"bytes, want under %.2f MiB", rounds, float64(held)/(1<<20), charged,
+			float64(limit)/(1<<20))
+	}
+}
+
+// TestDrainStaysLinear pins the cost side of the compaction rule: a drain must
+// not become quadratic in the array it drains.
+//
+// Copying the survivors out on every shrink would also release the vacated
+// prefix, and would cost O(len) per removal -- O(n^2) to drain n elements.
+// Copying only once the prefix has outgrown what the array still shows pays for
+// each copy with more removals than it copies, which keeps the whole drain
+// linear. The steps a drain charges are exact and deterministic, and a copy
+// charges one per element it moves, so doubling the array must roughly double
+// them rather than quadruple them.
+func TestDrainStaysLinear(t *testing.T) {
+	t.Parallel()
+
+	drainSteps := func(t *testing.T, n int) int {
+		t.Helper()
+		var marks []int
+		engine := MustNewEngine(Config{StepQuota: 500_000_000, MemoryQuotaBytes: Unlimited})
+		engine.RegisterBuiltin("mark_steps", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			marks = append(marks, exec.steps)
+			return NewNil(), nil
+		})
+		script, err := engine.Compile(`def run(n)
+  a = []
+  i = 0
+  while i < n
+    a.push(i)
+    i = i + 1
+  end
+  mark_steps()
+  while a.size > 0
+    a.shift
+  end
+  mark_steps()
+  a.size
+end`)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		if _, err := script.Call(context.Background(), "run", []Value{NewInt(int64(n))}, CallOptions{}); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if len(marks) != 2 {
+			t.Fatalf("mark_steps ran %d times, want 2", len(marks))
+		}
+		return marks[1] - marks[0]
+	}
+
+	const n = 4096
+	small := drainSteps(t, n)
+	large := drainSteps(t, 2*n)
+	// Linear leaves the ratio at 2. Copying on every shrink puts it at 4; the
+	// gate is set between the two so it reads the shape rather than the noise,
+	// and the numbers are exact, so it cannot drift.
+	if limit := small * 5 / 2; large > limit {
+		t.Fatalf("draining %d elements charged %d steps against %d for %d, a ratio of %.2f: the drain "+
+			"is growing faster than the array", 2*n, large, small, n, float64(large)/float64(small))
+	}
+}
+
+// TestFailedCompactingShrinkLeavesTheArrayWhole pins that a shrink which cannot
+// pay for its copy leaves the receiver showing every element it showed before.
+//
+// The compaction is the one shrink that both writes to the storage it is
+// leaving and can fail: it is reached from the path that blanks the slots it
+// vacates, and the copy it then wants has to be charged and reserved first.
+// Blanking first and charging after left a rejected `shift` with a nil in front
+// of the elements it had not removed, which a host holding the array still
+// reads after the call it was rejected in has returned.
+func TestFailedCompactingShrinkLeavesTheArrayWhole(t *testing.T) {
+	t.Parallel()
+
+	const n = 64
+	elems := make([]Value, n)
+	for i := range n {
+		elems[i] = NewInt(int64(i))
+	}
+	arr := NewArray(elems)
+
+	// A prefix as long as what is left is the last shrink that narrows in
+	// place; the one after it has to copy.
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	for range n / 2 {
+		if _, err := arrayShift(exec, arr, nil, nil, NewNil()); err != nil {
+			t.Fatalf("shift: %v", err)
+		}
+	}
+	before := append([]Value(nil), arr.Array()...)
+	if len(before) != n/2 {
+		t.Fatalf("array holds %d elements before the failing shift, want %d", len(before), n/2)
+	}
+
+	// A step budget already spent, so the copy is refused at its first charge.
+	broke := &Execution{ctx: context.Background(), quota: 1, memoryQuota: 1 << 30}
+	broke.steps = 1
+	if _, err := arrayShift(broke, arr, nil, nil, NewNil()); err == nil {
+		t.Fatalf("the shift was admitted on an exhausted step budget, so nothing was tested")
+	}
+
+	after := arr.Array()
+	if len(after) != len(before) {
+		t.Fatalf("the rejected shift left %d elements, want the %d it started with", len(after), len(before))
+	}
+	for i, want := range before {
+		if after[i].Inspect() != want.Inspect() {
+			t.Fatalf("element %d reads %s after the rejected shift, want %s",
+				i, after[i].Inspect(), want.Inspect())
+		}
+	}
+}
+
+// TestEmptyArrayIsChargedItsWholeWrapper pins that the memory estimate for an
+// array with no elements equals the one allocation such an array actually
+// makes: the arrayData wrapper the runtime boxes its elements in.
+//
+// It is the drift check for the field this file's shrink added. The wrapper was
+// exactly a slice header until then, so estimatedSliceBaseBytes priced it by
+// accident, and the field took it to 32 bytes while the estimate stayed at 24 --
+// an under-count introduced by a fix for an under-count, 8 unmetered bytes for
+// every array a program holds. The charge is derived from the struct now, so
+// the next field is priced by the commit that adds it, and this pins the
+// derivation against the struct rather than against a number.
+func TestEmptyArrayIsChargedItsWholeWrapper(t *testing.T) {
+	t.Parallel()
+
+	est := newMemoryEstimator()
+	if got, want := est.valuePayload(NewArray(nil)), value.ArrayDataBytes; got != want {
+		t.Fatalf("an empty array is charged %d bytes beyond its Value, want the %d byte arrayData "+
+			"wrapper it allocates", got, want)
 	}
 }
