@@ -1561,24 +1561,24 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 		callOptions:   childCallOptions,
 		sleepBudget:   sleeping,
 	}
-	// Linked to the caller's node and then published onto this execution's own
-	// context, the way the sleeping budget is, so that it reaches everything
-	// this call drives rather than only what a task group captures. Published
-	// by newTaskGroup alone it traveled a side channel: a capability adapter
-	// re-entering a script with exec.Context() handed the callee its
-	// grandparent's node, or none, so that callee started a chain of its own
-	// and its footprint never reached this level.
+	// Linked here to whatever node the incoming context carries. This call does
+	// NOT publish its own node: only newTaskGroup does, onto the context a task
+	// group captures. So the ceiling reaches nested tasks and does not reach a
+	// script re-entered through a capability adapter, which gets a fresh
+	// allowance -- what it gets without this mechanism at all. That surface is
+	// deliberately out of scope and has its own follow-up; a comment here
+	// implying otherwise would claim a known-open path is covered.
 	if exec.memChainNode.initForCall(ctx, script.engine.config.MemoryQuotaBytes) {
 		exec.memChain = &exec.memChainNode
 		// An engine with no quota of its own adopts the ceiling it inherited as
 		// its own. Every memory check guards on memoryQuota before doing
-		// anything -- there are some sixty such guards -- so without this an
-		// unlimited script re-entered from a bounded task context returned
-		// early from all of them and never published to or enforced the chain
-		// its node was deliberately linked into. Re-entering an unbounded
-		// engine was then the way out of a bounded caller's sandbox, which is
-		// the hole sleepBudgetForCall closes by keeping an inherited budget
-		// whatever the callee's own setting says.
+		// anything -- there are some sixty such guards -- so without this a
+		// callee that inherited a bounded chain returned early from all of them
+		// and never published to or enforced the node it was linked into.
+		//
+		// Reaching this needs a callee whose engine differs from its caller's,
+		// which today means a host passing a context that already carries a
+		// chain; the other route, capability re-entry, is out of scope.
 		if exec.memoryQuota <= 0 {
 			exec.memoryQuota = int(exec.memChainNode.limit)
 		}
