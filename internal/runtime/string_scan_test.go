@@ -1213,7 +1213,7 @@ func TestScanBudgetsRemainingQuotaNotWholeQuota(t *testing.T) {
 	const quotaBytes = 8 << 20
 	exec := &Execution{ctx: context.Background(), memoryQuota: quotaBytes}
 
-	empty, bounded := scanMatchBudget(exec, 0, NewNil(), nil, nil, NewNil())
+	empty, bounded := scanMatchBudget(exec, 0, scanRoots{receiver: NewNil(), block: NewNil()})
 	if !bounded {
 		t.Fatal("a finite quota must bound the match request")
 	}
@@ -1223,7 +1223,7 @@ func TestScanBudgetsRemainingQuotaNotWholeQuota(t *testing.T) {
 	for i := range held {
 		held[i] = NewString(strings.Repeat("x", 96))
 	}
-	loaded, bounded := scanMatchBudget(exec, 0, NewNil(), []Value{NewArray(held)}, nil, NewNil())
+	loaded, bounded := scanMatchBudget(exec, 0, scanRoots{receiver: NewNil(), args: []Value{NewArray(held)}, block: NewNil()})
 	if !bounded {
 		t.Fatal("a finite quota must bound the match request")
 	}

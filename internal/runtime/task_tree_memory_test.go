@@ -1377,3 +1377,68 @@ func TestBaselineDoesNotSubtractArguments(t *testing.T) {
 		}
 	}
 }
+
+// TestScanPublishesTheRootsItsBudgetSubtracted pins that a scan's sizing and its
+// publication agree about what is live.
+//
+// The budget sizes the index table by subtracting the call roots -- receiver,
+// arguments, block -- which live on the builtin's Go frame where the execution's
+// own graph walk cannot see them. The reservation check then published the base
+// graph and the reservation without those roots, so an ancestor saw the larger
+// of two figures rather than their coexisting sum, and a nested scan was
+// admitted against room the chain did not have.
+//
+// Both now read one scanRoots value. This asserts the property that value
+// exists to guarantee: what the check publishes is not less than what the budget
+// treated as already spent.
+func TestScanPublishesTheRootsItsBudgetSubtracted(t *testing.T) {
+	t.Parallel()
+
+	const ceiling = 8 << 20
+
+	held := make([]Value, 4096)
+	for i := range held {
+		held[i] = NewString(strings.Repeat("r", 256))
+	}
+	roots := scanRoots{receiver: NewString("subject"), args: []Value{NewArray(held)}, block: NewNil()}
+
+	newExec := func() *Execution {
+		parent := newMemoryChain(nil, ceiling)
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: ceiling}
+		exec.memChainNode.parent = parent
+		exec.memChainNode.limit = ceiling
+		exec.memChainNode.descendantHeadroom.Store(noDescendantConstraint)
+		exec.memChain = &exec.memChainNode
+		exec.memBaselineSet = true
+		return exec
+	}
+
+	// What the budget treats as already spent.
+	sizing := newExec()
+	spent := roots.liveBytes(sizing)
+
+	// What the check publishes to the chain.
+	publishing := newExec()
+	if err := roots.check(publishing); err != nil {
+		t.Fatalf("roots did not fit under an %d MiB ceiling: %v", ceiling>>20, err)
+	}
+	published := int(publishing.memChain.marginal.Load())
+
+	if published < spent {
+		t.Fatalf("the budget subtracted %d bytes as live but the check published only %d: the roots the sizing accounted for are invisible to the chain, so an ancestor sees the larger of two figures instead of their coexisting sum",
+			spent, published)
+	}
+
+	// checkMemory is what this site published before, so the gap between the two
+	// is the defect's size and the reason the assertion above has teeth.
+	bare := newExec()
+	if err := bare.checkMemory(); err != nil {
+		t.Fatalf("bare check failed: %v", err)
+	}
+	bareBytes := int(bare.memChain.marginal.Load())
+	if published <= bareBytes {
+		t.Fatalf("publishing with roots (%d) is no larger than without (%d); this test is not exercising the difference it exists for", published, bareBytes)
+	}
+	t.Logf("budget treats %d bytes as spent; publishing with roots reports %d; the previous rootless publication reported %d, understating by %d",
+		spent, published, bareBytes, published-bareBytes)
+}

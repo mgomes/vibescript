@@ -4342,7 +4342,8 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 	// Ask for at most one match beyond what the quota can hold, so the table
 	// the engine allocates is bounded by the quota rather than by the subject.
 	limit := -1
-	budget, bounded := scanMatchBudget(exec, groups, receiver, args, kwargs, block)
+	roots := scanRoots{receiver: receiver, args: args, kwargs: kwargs, block: block}
+	budget, bounded := scanMatchBudget(exec, groups, roots)
 	if bounded {
 		limit = budget + 1
 	}
@@ -4362,7 +4363,10 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 		// limit here is guaranteed to exceed that room and reject every scan.
 		// The overshoot the probe can build is one match's worth, and bounded.
 		projected = exec.reserveLoopScratch(worstCaseRegexSubmatchIndexBytes(budget, groups))
-		if err := exec.checkMemory(); err != nil {
+		// Through the roots, not checkMemory: the budget above subtracted the
+		// call roots, so publishing without them lets the chain see the larger
+		// of two figures instead of their coexisting sum.
+		if err := roots.check(exec); err != nil {
 			exec.releaseLoopScratch(projected)
 			return NewNil(), err
 		}
@@ -4451,7 +4455,7 @@ func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]in
 	// the live receiver/pattern/block roots -- before the first yield runs, mirroring
 	// how the non-block path's reserveScratch fails fast instead of waiting for a
 	// slow-path step check several matches into the loop.
-	if err := exec.checkMemoryWithCallRoots(NewNil(), receiver, args, kwargs, block); err != nil {
+	if err := (scanRoots{receiver: receiver, args: args, kwargs: kwargs, block: block}).check(exec); err != nil {
 		return NewNil(), err
 	}
 
@@ -4526,7 +4530,36 @@ func guardRegexScanIndexFootprint(exec *Execution, pattern, text string, groups 
 // limit, so asking for one more than the budget makes the table cost at most
 // one row beyond what the quota allows, and a result that comes back over the
 // budget is exactly the case that could not have fit (#37).
-func scanMatchBudget(exec *Execution, groups int, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, bool) {
+// scanRoots is what a string scan already holds before its index table exists:
+// the receiver, arguments and block live on this builtin's Go frame, which the
+// execution's own graph walk cannot see.
+//
+// It is one value rather than four parameters because the budget that *sizes*
+// the table and the check that *publishes* the reservation have to agree about
+// what is live, and all three findings on this table were that disagreement --
+// the nonblocking-parent race, the append's capacity slack, and these call roots
+// -- each one side accounting for something the other did not. Sizing and
+// publication now read the same value through the same two methods, so a
+// discrepancy is not expressible rather than merely corrected.
+type scanRoots struct {
+	receiver Value
+	args     []Value
+	kwargs   map[string]Value
+	block    Value
+}
+
+// liveBytes is the quantity the budget subtracts and the check publishes.
+func (r scanRoots) liveBytes(exec *Execution) int {
+	return exec.estimateMemoryUsageForCallRoots(NewNil(), r.receiver, r.args, r.kwargs, r.block)
+}
+
+// check publishes that quantity, the current reservation included, and refuses
+// when the chain has no room for it.
+func (r scanRoots) check(exec *Execution) error {
+	return exec.checkMemoryWithCallRoots(NewNil(), r.receiver, r.args, r.kwargs, r.block)
+}
+
+func scanMatchBudget(exec *Execution, groups int, roots scanRoots) (int, bool) {
 	if exec == nil || exec.memoryQuota <= 0 {
 		return 0, false
 	}
@@ -4549,7 +4582,7 @@ func scanMatchBudget(exec *Execution, groups int, receiver Value, args []Value, 
 	// execution's graph, so subtracting only that graph leaves the ancestor's
 	// share unaccounted. The table is built before any check can see it, so the
 	// number this divides has to be what is actually left.
-	remaining := exec.memoryBudgetBytes() - exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
+	remaining := exec.memoryBudgetBytes() - roots.liveBytes(exec)
 	if remaining <= 0 {
 		// Nothing left to spend: a single match is still requested so an
 		// empty result stays legal, and any match at all reports the quota.
