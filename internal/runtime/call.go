@@ -1242,6 +1242,51 @@ func (r *callFunctionRebinder) rebindKeywords(kwargs map[string]Value) map[strin
 	return out
 }
 
+// hostCapabilityContracts publishes what this level holds and then asks the
+// adapter what contracts it declares.
+//
+// The publication is in here rather than at the call site, and that placement is
+// the point. A publication at a call site can have code inserted after it, and
+// the rule is not "publish somewhere above the call" -- it is that nothing the
+// level has allocated may be unpublished when host code runs. Publishing once
+// per adapter left the contracts this call returns retained and unpublished
+// while the bind after it blocked.
+//
+// Those contracts are host data, not program text. CapabilityContractProvider
+// bounds neither how many entries the map has nor how long its keys are, and the
+// estimator walks both -- capabilityContractsByName is charged per entry and per
+// key length. A host that builds the map when asked is charged whatever it built.
+//
+// An adapter that declares no contracts costs no walk: no host code runs, so
+// there is nothing to publish ahead of.
+func hostCapabilityContracts(exec *Execution, adapter CapabilityAdapter) (map[string]CapabilityMethodContract, error) {
+	provider, ok := adapter.(CapabilityContractProvider)
+	if !ok {
+		return nil, nil
+	}
+	if err := exec.publishBeforeHostCode(); err != nil {
+		return nil, err
+	}
+	return provider.CapabilityContracts(), nil
+}
+
+// bindHostCapability publishes what this level holds -- including whatever the
+// contract collection before it retained -- and then hands control to the
+// adapter.
+//
+// Two errors, because a caller has to treat them differently and conflating them
+// misreports the cause. refused is this level being refused before the adapter
+// ran, and travels as it stands: labeling it a capability failure would send a
+// host to debug an adapter that never executed. bound is the adapter's own
+// failure, which the caller labels in its own terms.
+func bindHostCapability(exec *Execution, adapter CapabilityAdapter, binding CapabilityBinding) (globals map[string]Value, bound, refused error) {
+	if err := exec.publishBeforeHostCode(); err != nil {
+		return nil, nil, err
+	}
+	globals, bound = adapter.Bind(binding)
+	return globals, bound, nil
+}
+
 func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionRebinder, capabilities []CapabilityAdapter) error {
 	if len(capabilities) == 0 {
 		return nil
@@ -1262,48 +1307,45 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 		if adapter == nil {
 			continue
 		}
-		// Everything bound so far is published before this adapter runs any code
-		// of its own. The adapter before it had its globals rebound into root a
-		// few lines below, and this one may wait as long as it likes; without a
-		// publication in between, an ancestor spends that wait allocating against
-		// a total that omits the entire graph the previous adapter returned.
+		// Both host calls below go through a helper that publishes immediately
+		// before invoking, and neither is invoked here directly. That pairing is
+		// the fix rather than the placement of any one publication.
 		//
-		// This one is not a residual the way the pre-registration window is. That
-		// window holds the level's root env and cloned definitions, which are
-		// fixed by the script's own text; an adapter's globals are host-supplied
-		// data, so nothing about the program bounds them.
-		//
-		// At the top of the iteration rather than immediately before Bind:
-		// CapabilityContracts is host code too and runs first. What is left
-		// unpublished between here and the adapter's own code is this scope and
-		// a copy of the adapter's declared contract map, which is bounded by how
-		// many methods the adapter declares in its Go source.
-		if err := exec.publishBeforeHostCode(); err != nil {
-			return err
-		}
+		// Publishing once at the top of this loop body was the previous shape,
+		// and it was wrong for a reason that generalises: a publication merely
+		// sitting somewhere above a host call says nothing about what was
+		// allocated in between. Collecting an adapter's contracts retains
+		// host-supplied data on the execution -- capabilityContractsByName and
+		// this scope, both of which the estimator walks -- and the bind that
+		// follows can then block with none of it published.
 		scope := &capabilityContractScope{
 			contracts:     map[string]CapabilityMethodContract{},
 			knownBuiltins: make(map[*Builtin]struct{}),
 		}
-		if provider, ok := adapter.(CapabilityContractProvider); ok {
-			for methodName, contract := range provider.CapabilityContracts() {
-				name := strings.TrimSpace(methodName)
-				if name == "" {
-					return fmt.Errorf("capability contract method name must be non-empty")
-				}
-				if _, exists := exec.capabilityContractsByName[name]; exists {
-					return fmt.Errorf("duplicate capability contract for %s", name)
-				}
-				exec.capabilityContractsByName[name] = contract
-				scope.contracts[name] = contract
-			}
-		}
-		globals, err := adapter.Bind(binding)
+		contracts, err := hostCapabilityContracts(exec, adapter)
 		if err != nil {
+			return err
+		}
+		for methodName, contract := range contracts {
+			name := strings.TrimSpace(methodName)
+			if name == "" {
+				return fmt.Errorf("capability contract method name must be non-empty")
+			}
+			if _, exists := exec.capabilityContractsByName[name]; exists {
+				return fmt.Errorf("duplicate capability contract for %s", name)
+			}
+			exec.capabilityContractsByName[name] = contract
+			scope.contracts[name] = contract
+		}
+		globals, bindErr, refused := bindHostCapability(exec, adapter, binding)
+		if refused != nil {
+			return refused
+		}
+		if bindErr != nil {
 			if ctxErr := exec.checkContext(); ctxErr != nil {
 				return ctxErr
 			}
-			return fmt.Errorf("bind capability: %w", err)
+			return fmt.Errorf("bind capability: %w", bindErr)
 		}
 		if err := exec.checkContext(); err != nil {
 			return err

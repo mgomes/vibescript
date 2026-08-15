@@ -1484,26 +1484,7 @@ func (c blockingBinderCapability) Bind(binding CapabilityBinding) (map[string]Va
 		case <-time.After(30 * time.Second):
 		}
 	}
-	return map[string]Value{"probe": NewObject(map[string]Value{
-		"wait_for_binder": NewBuiltin("probe.wait_for_binder", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
-			select {
-			case <-c.entered:
-			case <-exec.Context().Done():
-			case <-time.After(30 * time.Second):
-			}
-			return NewNil(), nil
-		}),
-		"both_held": NewBuiltin("probe.both_held", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
-			c.mu.Lock()
-			*c.bothHeld = true
-			c.mu.Unlock()
-			// Free the blocked binder here rather than at the end of the test, so
-			// that the run this assertion is about finishes in its own time
-			// instead of parking on the timeout above.
-			c.freed.Do(func() { close(c.release) })
-			return NewNil(), nil
-		}),
-	})}, nil
+	return binderProbeGlobals(c.entered, c.release, c.freed, c.bothHeld, c.mu), nil
 }
 
 // TestOneAdaptersBindingsArePublishedBeforeTheNextCanBlock pins the fourth and
@@ -1607,6 +1588,186 @@ end`, chunks)
 			if held {
 				t.Fatalf("a parent finished allocating ~%d MiB against a %d MiB ceiling while its child held a %d MiB capability global and waited in the adapter bound after it: the level publishes once for the whole binding routine, so one adapter's bindings are invisible to the chain for as long as the next adapter blocks",
 					(chunks*5000)>>20, quota>>20, tc.bulk>>20)
+			}
+			if err == nil {
+				t.Fatalf("the parent was never admitted, but nothing was reported either; a refused allocation must surface as an error")
+			}
+			if !strings.Contains(err.Error(), "memory quota exceeded") {
+				t.Fatalf("stopped for an unrelated reason: %v", err)
+			}
+		})
+	}
+}
+
+// binderProbeGlobals is the probe both blocking binders below expose: the parent
+// waits for the nested binder to be entered, allocates, and records that it got
+// to the far side of its own allocation while the child was still holding.
+func binderProbeGlobals(entered, release chan struct{}, freed *sync.Once, bothHeld *bool, mu *sync.Mutex) map[string]Value {
+	return map[string]Value{"probe": NewObject(map[string]Value{
+		"wait_for_binder": NewBuiltin("probe.wait_for_binder", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			select {
+			case <-entered:
+			case <-exec.Context().Done():
+			case <-time.After(30 * time.Second):
+			}
+			return NewNil(), nil
+		}),
+		"both_held": NewBuiltin("probe.both_held", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			mu.Lock()
+			*bothHeld = true
+			mu.Unlock()
+			// Free the blocked binder here rather than at the end of the test, so
+			// the run this assertion is about finishes in its own time instead of
+			// parking on the timeout above.
+			freed.Do(func() { close(release) })
+			return NewNil(), nil
+		}),
+	})}
+}
+
+// bulkContractCapability builds its contract map at the moment it is asked, and
+// then blocks in Bind from the second bind onwards.
+//
+// It exists because a bound was asserted about this quantity and was wrong. The
+// window between collecting an adapter's contracts and binding it was documented
+// as bounded by how many methods the adapter declares in its Go source.
+// CapabilityContractProvider bounds neither the cardinality of the map nor the
+// length of its keys, so a host that generates it on demand -- as this does -- is
+// not bounded by the program at all. The estimator charges
+// capabilityContractsByName per entry and per key length, so what this retains is
+// measured, and the chain has to see it before the bind that follows blocks.
+type bulkContractCapability struct {
+	count    int
+	nameLen  int
+	binds    *atomic.Int32
+	entered  chan struct{}
+	release  chan struct{}
+	enter    *sync.Once
+	freed    *sync.Once
+	bothHeld *bool
+	mu       *sync.Mutex
+}
+
+func (c bulkContractCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	out := make(map[string]CapabilityMethodContract, c.count)
+	filler := strings.Repeat("n", c.nameLen)
+	for i := range c.count {
+		out["m"+strconv.Itoa(i)+filler] = CapabilityMethodContract{}
+	}
+	return out
+}
+
+func (c bulkContractCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	if c.binds.Add(1) > 1 {
+		c.enter.Do(func() { close(c.entered) })
+		select {
+		case <-c.release:
+		case <-binding.Context.Done():
+		case <-time.After(30 * time.Second):
+		}
+	}
+	return binderProbeGlobals(c.entered, c.release, c.freed, c.bothHeld, c.mu), nil
+}
+
+// TestAnAdaptersContractsArePublishedBeforeItsBindCanBlock pins the fifth
+// instance of the publication rule, and the one that was a guard defect rather
+// than a missing site.
+//
+// The publication had been moved to the top of the adapter loop, which satisfies
+// "a publication above the call" for every host call in the body. But collecting
+// an adapter's contracts happens after that publication and retains
+// host-supplied data on the execution, and the adapter's own Bind then blocks
+// with none of it published -- so a nonblocking ancestor allocates against a
+// total omitting every byte of it. One adapter is enough; the previous finding
+// needed two.
+//
+// The fix pairs each host call with its own publication inside a choke, so there
+// is nowhere for retention to be inserted. This test is what says the pairing is
+// doing work rather than merely existing.
+//
+// Measured by difference, like the finding before it. The same script, ceiling,
+// nesting shape and blocking adapter run twice, and only the number of contracts
+// the adapter declares changes: 2,000 keys of 1,000 characters must be refused,
+// one key must still be admitted.
+func TestAnAdaptersContractsArePublishedBeforeItsBindCanBlock(t *testing.T) {
+	t.Parallel()
+
+	const (
+		quota   = 8 << 20
+		chunks  = 900 // ~4.3 MiB held by the parent
+		nameLen = 1000
+	)
+
+	for _, tc := range []struct {
+		name      string
+		contracts int
+		refused   bool
+	}{
+		// 48 + n*(32 + 16 + 1000) as the estimator charges it: about 2 MiB, and
+		// none of it fixed by the script's text or the adapter's.
+		{name: "declares_2000_contracts", contracts: 2000, refused: true},
+		// Nothing to hide, so the same parent allocation must still be admitted.
+		{name: "declares_1_contract", contracts: 1, refused: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			chunk := strings.Repeat("q", 5000)
+			source := fmt.Sprintf(chunkPayloadFn, chunk) + fmt.Sprintf(`
+def child(n)
+  n
+end
+
+def run()
+  Tasks.run(max: 4) do |tasks|
+    tasks.spawn(:child, 1)
+    probe.wait_for_binder()
+    mine = payload(%d)
+    probe.both_held()
+    mine.size
+  end
+end`, chunks)
+
+			script := compileScriptWithConfig(t,
+				Config{MaxTaskConcurrency: 8, MemoryQuotaBytes: quota, StepQuota: Unlimited}, source)
+
+			var (
+				mu       sync.Mutex
+				bothHeld bool
+				binds    atomic.Int32
+			)
+			adapter := bulkContractCapability{
+				count:    tc.contracts,
+				nameLen:  nameLen,
+				binds:    &binds,
+				entered:  make(chan struct{}),
+				release:  make(chan struct{}),
+				enter:    &sync.Once{},
+				freed:    &sync.Once{},
+				bothHeld: &bothHeld,
+				mu:       &mu,
+			}
+			// Whatever happens, never leave the nested binder parked.
+			defer adapter.freed.Do(func() { close(adapter.release) })
+
+			_, err := script.Call(context.Background(), "run", nil, callOptionsWithCapabilities(adapter))
+
+			mu.Lock()
+			held := bothHeld
+			mu.Unlock()
+
+			if !tc.refused {
+				if !held {
+					t.Fatalf("the parent was refused with only %d contract declared, so the refusal in the other row is not evidence that the collected contracts reached the chain: %v", tc.contracts, err)
+				}
+				if err != nil {
+					t.Fatalf("a run that must fit was stopped: %v", err)
+				}
+				return
+			}
+			if held {
+				t.Fatalf("a parent finished allocating ~%d MiB against a %d MiB ceiling while its child held %d collected contracts (%d KiB by the estimator's own accounting) and waited in that same adapter's Bind: the contracts are retained after the level's publication, so they are invisible to the chain for as long as the bind blocks",
+					(chunks*5000)>>20, quota>>20, tc.contracts, (estimatedMapBaseBytes+tc.contracts*(estimatedMapEntryBytes+estimatedStringHeaderBytes+nameLen))>>10)
 			}
 			if err == nil {
 				t.Fatalf("the parent was never admitted, but nothing was reported either; a refused allocation must surface as an error")

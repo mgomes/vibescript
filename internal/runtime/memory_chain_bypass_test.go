@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -142,6 +143,29 @@ var hostBindWithoutALevel = map[string]string{
 	"checkOptionGlobals": "the static gate binds adapters before any execution exists",
 }
 
+// hostCallChokes are the only functions permitted to invoke host capability
+// code, and each exists to do nothing but publish and then invoke.
+//
+// This is the difference between the rule and the previous guard. The rule is
+// that nothing a level has allocated may be unpublished when host code runs.
+// The previous guard asked whether a publication appeared *above* the call,
+// which a publication at the top of a loop body satisfies for every call in it
+// while data accumulates in between -- and that gap was the fifth finding on
+// this property. "Is anything retained between the publication and the call" is
+// not decidable at an arbitrary call site, so the call sites are removed
+// instead: host code is reachable only through these two, and inside them the
+// publication must be adjacent to the call, which is decidable by reading lines.
+var hostCallChokes = map[string]string{
+	"hostCapabilityContracts": "publishes, then asks the adapter for its contracts",
+	"bindHostCapability":      "publishes, then hands control to the adapter",
+}
+
+// betweenPublishAndCall matches the only lines allowed between a choke's
+// publication and its host call: the publication's own error return, closing
+// braces, blanks. Anything else -- an assignment, another call, a declaration --
+// is retention the host call would run in front of.
+var betweenPublishAndCall = regexp.MustCompile(`^(\}|return .*|)$`)
+
 // hostCapabilityMethods reads the host capability surface out of the source
 // instead of listing it here, so that a method added to either interface is
 // governed from the moment it exists rather than the next time someone
@@ -184,36 +208,43 @@ func hostCapabilityMethods(t *testing.T) []string {
 	return methods
 }
 
-// TestHostCapabilityCodeRunsOnlyAfterPublishing pins the rule that four
+// TestHostCapabilityCodeRunsOnlyAfterPublishing pins the rule that five
 // findings on this branch have each been one instance of.
 //
-// A level is invisible to its ancestors until it publishes, so nothing it has
-// allocated may be left unpublished across an operation that can block. Host
-// capability code is that operation on the setup path: an adapter's Bind is
-// free to wait, and while it waits every ancestor on the chain is allocating
-// against whatever total this level published last.
+// The rule: nothing a level has allocated may be left unpublished when host code
+// runs, because a level is invisible to its ancestors until it publishes and
+// host code is free to block for as long as it likes. While it blocks, every
+// ancestor on the chain allocates against whatever total this level published
+// last.
 //
-// The first three instances were fixed where they were reported -- publish
-// before a binder, publish for capability-free jobs too, register before the
-// setup allocations. The fourth was the adapter loop publishing once for the
-// whole loop: one adapter's globals were deep-copied into the call root and the
-// next adapter could then block with none of it published. That one differs from
-// the pre-registration residual in the way that decides whether a bound is an
-// acceptable answer -- the residual holds the level's own root env and cloned
-// definitions, fixed by the script's text at roughly 745 bytes per class, while
-// an adapter's globals are host-supplied data that nothing about the program
-// bounds.
+// The first four instances widened where the rule applies -- publish before a
+// binder, publish for capability-free jobs too, register before the setup
+// allocations, publish between adapters. The fifth was different in kind, and it
+// is the one that shaped this test: the rule was right and the *guard* checked
+// something weaker. It asked whether a publication appeared **above** each
+// invocation, which one publication at the top of a loop body satisfies for
+// every call in that body -- while an adapter's declared contracts accumulated
+// on the execution in between, and the bind after them blocked with none of it
+// published.
 //
-// So the rule is enforced rather than applied a fourth time: every invocation of
-// host capability code, from a function that has a level, must have a
-// publishBeforeHostCode above it.
+// "Is anything retained between the publication and the call" is not decidable
+// at an arbitrary call site. So the call sites are removed rather than analyzed:
+// host code is reachable only through hostCallChokes, each of which does nothing
+// but publish and invoke, and inside them the publication must be adjacent to
+// the call. Both halves are decidable by reading lines, and together they say
+// what the rule says.
+//
+// That also retires an asserted bound. The unpublished window was documented as
+// bounded by the adapter's Go source; CapabilityContractProvider bounds neither
+// the map's cardinality nor its key lengths, so it was host data all along. This
+// shape leaves nothing between publication and call to bound.
 //
 // How this fails when it stops applying, which is the question worth asking of
 // any guard: it fails if it scans nothing, if the host surface it governs stops
 // being declared where it reads it, if no invocation of host code is found at
-// all, if no invocation is actually guarded, if an exempt function gains a
-// level, or if publishBeforeHostCode itself stops publishing. Passing while
-// protecting nothing takes all six of those staying true.
+// all, if no invocation is actually guarded, if a choke stops publishing or
+// stops publishing adjacently, if a choke disappears, if an exempt function
+// gains a level, or if publishBeforeHostCode itself stops publishing.
 func TestHostCapabilityCodeRunsOnlyAfterPublishing(t *testing.T) {
 	t.Parallel()
 
@@ -236,6 +267,7 @@ func TestHostCapabilityCodeRunsOnlyAfterPublishing(t *testing.T) {
 		guarded            int
 		seenExempt         = map[string]bool{}
 		exemptHasLevel     = map[string]string{}
+		seenChoke          = map[string]bool{}
 		publisherPublishes bool
 	)
 	for _, entry := range entries {
@@ -249,32 +281,32 @@ func TestHostCapabilityCodeRunsOnlyAfterPublishing(t *testing.T) {
 		}
 		scanned++
 
+		lines := strings.Split(string(data), "\n")
 		fn := ""
-		published := false
-		for i, line := range strings.Split(string(data), "\n") {
+		publishedAt := -1
+		for i, line := range lines {
 			if m := funcHeader.FindStringSubmatch(line); m != nil {
 				fn = m[1]
-				published = false
+				publishedAt = -1
 				if _, exempt := hostBindWithoutALevel[fn]; exempt {
 					seenExempt[fn] = true
+				}
+				if _, choke := hostCallChokes[fn]; choke {
+					seenChoke[fn] = true
 				}
 			} else if line == "}" {
 				// A closing brace in column zero ends a top-level declaration.
 				// Without this, everything between one function and the next is
-				// still attributed to the previous one, and the exemption check
-				// below would read a neighbour's signature as evidence about the
-				// exempt function.
+				// still attributed to the previous one.
 				fn = ""
+				publishedAt = -1
 			}
-			code := line
-			if idx := strings.Index(code, "//"); idx >= 0 {
-				code = code[:idx]
-			}
+			code := stripComment(line)
 			if _, exempt := hostBindWithoutALevel[fn]; exempt && executionInScope.MatchString(code) {
 				exemptHasLevel[fn] = name + ":" + strconv.Itoa(i+1) + ": " + strings.TrimSpace(line)
 			}
 			if strings.Contains(code, "publishBeforeHostCode(") {
-				published = true
+				publishedAt = i
 			}
 			if fn == "publishBeforeHostCode" && strings.Contains(code, "checkMemory()") {
 				publisherPublishes = true
@@ -292,16 +324,25 @@ func TestHostCapabilityCodeRunsOnlyAfterPublishing(t *testing.T) {
 			if _, exempt := hostBindWithoutALevel[fn]; exempt {
 				continue
 			}
-			if published {
-				guarded++
+			where := name + ":" + strconv.Itoa(i+1) + " in " + fn + "(): " + strings.TrimSpace(line)
+			if _, choke := hostCallChokes[fn]; !choke {
+				offenders = append(offenders, where+"\n    -- host code invoked outside a choke; route it through one of "+chokeNames()+" so nothing can be inserted between the publication and the call")
 				continue
 			}
-			offenders = append(offenders, name+":"+strconv.Itoa(i+1)+" in "+fn+"(): "+strings.TrimSpace(line))
+			if publishedAt < 0 {
+				offenders = append(offenders, where+"\n    -- no publication before it in this function")
+				continue
+			}
+			if between := retainedBetween(lines[publishedAt+1 : i]); between != "" {
+				offenders = append(offenders, where+"\n    -- "+strconv.Itoa(i-publishedAt-1)+" line(s) between the publication and the call, including "+between+"; a choke must publish and then invoke with nothing in between")
+				continue
+			}
+			guarded++
 		}
 	}
 
 	if len(offenders) > 0 {
-		t.Fatalf("these hand control to host capability code without publishing what this level holds first, so an adapter that blocks leaves everything allocated since the last publication invisible to the chain for as long as it waits:\n%s",
+		t.Fatalf("these let host capability code run while something this level allocated is unpublished, so an adapter that blocks hides it from the chain for as long as it waits:\n%s",
 			strings.Join(offenders, "\n"))
 	}
 	if scanned == 0 {
@@ -311,8 +352,6 @@ func TestHostCapabilityCodeRunsOnlyAfterPublishing(t *testing.T) {
 		t.Fatalf("scanned %d files and found no invocation of host capability code (%s): the guard no longer recognizes the form host code is invoked in, so it governs nothing",
 			scanned, strings.Join(methods, ", "))
 	}
-	// Before the count below, so that an exemption that has stopped being true
-	// is named as that rather than as the coverage collapse it causes.
 	for fn, why := range hostBindWithoutALevel {
 		if !seenExempt[fn] {
 			t.Fatalf("%s is exempted here as %q but no longer exists: a stale exemption silently widens what this guard permits", fn, why)
@@ -322,11 +361,46 @@ func TestHostCapabilityCodeRunsOnlyAfterPublishing(t *testing.T) {
 				fn, why, where)
 		}
 	}
-	if guarded == 0 {
-		t.Fatalf("found %d invocations of host capability code and none of them is preceded by publishBeforeHostCode: every one is either exempt or unrecognized, so this guard is passing without constraining anything",
-			invoked)
+	for fn, why := range hostCallChokes {
+		if !seenChoke[fn] {
+			t.Fatalf("%s is named here as the choke that %s, but no longer exists: host code would be reachable through a site this guard is not checking", fn, why)
+		}
+	}
+	if guarded < len(hostCallChokes) {
+		t.Fatalf("found %d guarded invocations of host capability code across %d chokes: at least one choke no longer invokes the host surface, so it is not the pairing this guard thinks it is checking",
+			guarded, len(hostCallChokes))
 	}
 	if !publisherPublishes {
 		t.Fatalf("publishBeforeHostCode no longer publishes: it does not reach checkMemory, so every call site above satisfies this guard while telling the chain nothing")
 	}
+}
+
+// stripComment removes a trailing line comment so the scan reads code only.
+func stripComment(line string) string {
+	if idx := strings.Index(line, "//"); idx >= 0 {
+		return line[:idx]
+	}
+	return line
+}
+
+// retainedBetween reports the first line between a publication and a host call
+// that could have retained something, or "" when nothing could have.
+func retainedBetween(lines []string) string {
+	for _, line := range lines {
+		if betweenPublishAndCall.MatchString(strings.TrimSpace(stripComment(line))) {
+			continue
+		}
+		return strconv.Quote(strings.TrimSpace(line))
+	}
+	return ""
+}
+
+// chokeNames lists the permitted chokes for a failure message.
+func chokeNames() string {
+	names := make([]string, 0, len(hostCallChokes))
+	for fn := range hostCallChokes {
+		names = append(names, fn+"()")
+	}
+	sort.Strings(names)
+	return strings.Join(names, " or ")
 }
