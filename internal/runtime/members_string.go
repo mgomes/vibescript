@@ -31,7 +31,26 @@ var stringMemberNames = []string{
 	"to_sym", "intern", "to_s", "string", "to_i", "to_f",
 }
 
-var stringBuiltinMembers = newTypedMemberTable(stringMemberNames, KindString)
+// pureStringMemberNames are the string members that read the receiver's bytes
+// and return a fresh string or a scalar. Strings are immutable here, so a
+// transform allocates rather than writes, and allocating is not a mutation
+// under the promise.
+//
+// Absent on purpose: every bang form (the ! guard in declaringNonMutating
+// rejects those outright), the in-place non-bang mutators clear, concat,
+// prepend, insert and replace, and everything that reaches the regex machinery
+// (match, match?, scan, sub, gsub, split, index with a pattern), whose shared
+// cache is a write this promise has not been checked against.
+var pureStringMemberNames = []string{
+	"size", "length", "bytesize", "empty?",
+	"start_with?", "end_with?", "include?",
+	"upcase", "downcase", "capitalize", "swapcase", "reverse",
+	"strip", "lstrip", "rstrip", "chomp", "chop",
+	"to_s", "string", "to_i", "to_f",
+}
+
+var stringBuiltinMembers = newTypedMemberTable(stringMemberNames, KindString).
+	declaringNonMutating(pureStringMemberNames...)
 
 func stringMember(str Value, property string) (Value, error) {
 	if member, ok := stringBuiltinMembers.lookup(property, stringMemberBuiltin); ok {

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"strings"
 	"testing"
 	"unsafe"
 )
@@ -52,6 +53,91 @@ func TestBuiltinContractDefaultsAreConservative(t *testing.T) {
 	if nilBuiltin.declaredNonMutating() || nilBuiltin.declaredNonRetaining() {
 		t.Error("a nil Builtin declared a promise")
 	}
+}
+
+// The declared names must reach the builtins that dispatch actually invokes,
+// not merely sit in a list: the table wraps every member in a receiver guard
+// after building it, and a declaration applied to the wrong value would be a
+// silent no-op that reads as a working feature.
+func TestDeclaredMembersDispatchAsNonMutating(t *testing.T) {
+	t.Parallel()
+
+	tables := []struct {
+		kind    string
+		table   *memberTable
+		build   func(string) (Value, error)
+		names   []string
+		mutator []string
+	}{
+		{
+			kind:    "int",
+			table:   intBuiltinMembers,
+			build:   intMemberBuiltin,
+			names:   append(append([]string{}, pureNumericMemberNames...), "even?", "odd?"),
+			mutator: []string{"times", "upto", "step"},
+		},
+		{
+			kind:    "string",
+			table:   stringBuiltinMembers,
+			build:   stringMemberBuiltin,
+			names:   pureStringMemberNames,
+			mutator: []string{"upcase!", "strip!", "clear", "concat", "replace", "insert"},
+		},
+		{
+			kind:    "array",
+			table:   arrayBuiltinMembers,
+			build:   arrayMemberBuiltin,
+			names:   pureArrayMemberNames,
+			mutator: []string{"push", "pop", "shift", "clear", "insert", "fill", "map!", "sort!", "map", "each"},
+		},
+	}
+
+	for _, tc := range tables {
+		for _, name := range tc.names {
+			member, ok := tc.table.lookup(name, tc.build)
+			if !ok {
+				t.Errorf("%s.%s is declared non-mutating but does not resolve", tc.kind, name)
+				continue
+			}
+			if !BuiltinOf(member).declaredNonMutating() {
+				t.Errorf("%s.%s is in the declared list but dispatches undeclared; the "+
+					"declaration did not reach the builtin dispatch invokes", tc.kind, name)
+			}
+		}
+		// The other direction, which is the one that matters for soundness: a
+		// member that writes to its receiver or drives user code must not have
+		// picked the promise up.
+		for _, name := range tc.mutator {
+			member, ok := tc.table.lookup(name, tc.build)
+			if !ok {
+				continue
+			}
+			if BuiltinOf(member).declaredNonMutating() {
+				t.Errorf("%s.%s declares non-mutating; a member that writes to its "+
+					"receiver or drives user code must stay conservative", tc.kind, name)
+			}
+		}
+	}
+}
+
+// The bang guard is a gate, so it has to be shown rejecting something. Without
+// this the guard could be spelled wrong and every declaration would still look
+// fine, because nothing in the curated lists ends in "!" anyway.
+func TestDeclaringNonMutatingRejectsBangMembers(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			t.Fatal("declaring a bang member non-mutating was accepted; the guard that keeps " +
+				"in-place mutators out of the contract does not fire")
+		}
+		msg, ok := recovered.(string)
+		if !ok || !strings.Contains(msg, "in-place mutator") {
+			t.Fatalf("panicked with %v, want a message naming the in-place mutator convention", recovered)
+		}
+	}()
+	newTypedMemberTable([]string{"upcase!"}, KindString).declaringNonMutating("upcase!")
 }
 
 // Every path that rebuilds a Builtin around an existing one either copies the

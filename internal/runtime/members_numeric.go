@@ -43,8 +43,23 @@ var (
 		"to_s", "string", "to_i", "to_f",
 		"inspect",
 	}
-	intBuiltinMembers       = newTypedMemberTable(intBuiltinMemberNames, KindInt)
-	floatBuiltinMembers     = newTypedMemberTable(floatMemberNames, KindFloat)
+	// pureNumericMemberNames are the numeric members that read their scalar
+	// receiver, compute, and return a new scalar. Each body is short enough to
+	// read in one sitting and none of them holds a container at all, let alone
+	// writes to one. The block-driving members (times, upto, downto, step) are
+	// deliberately absent: they are not obviously in this class, and leaving
+	// them out costs only speed.
+	pureNumericMemberNames = []string{
+		"abs", "zero?", "positive?", "negative?", "nonzero?",
+		"next", "succ", "pred", "round", "floor", "ceil",
+		"to_s", "string", "to_i", "to_f",
+	}
+	intBuiltinMembers = newTypedMemberTable(intBuiltinMemberNames, KindInt).
+				declaringNonMutating(pureNumericMemberNames...).
+				declaringNonMutating("even?", "odd?")
+	floatBuiltinMembers = newTypedMemberTable(floatMemberNames, KindFloat).
+				declaringNonMutating(pureNumericMemberNames...).
+				declaringNonMutating("nan?", "infinite?", "finite?")
 	moneyBuiltinMemberNames = []string{"format", "between?"}
 	moneyBuiltinMembers     = newTypedMemberTable(moneyBuiltinMemberNames, KindMoney)
 )
