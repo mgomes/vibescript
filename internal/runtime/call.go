@@ -1262,6 +1262,25 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 		if adapter == nil {
 			continue
 		}
+		// Everything bound so far is published before this adapter runs any code
+		// of its own. The adapter before it had its globals rebound into root a
+		// few lines below, and this one may wait as long as it likes; without a
+		// publication in between, an ancestor spends that wait allocating against
+		// a total that omits the entire graph the previous adapter returned.
+		//
+		// This one is not a residual the way the pre-registration window is. That
+		// window holds the level's root env and cloned definitions, which are
+		// fixed by the script's own text; an adapter's globals are host-supplied
+		// data, so nothing about the program bounds them.
+		//
+		// At the top of the iteration rather than immediately before Bind:
+		// CapabilityContracts is host code too and runs first. What is left
+		// unpublished between here and the adapter's own code is this scope and
+		// a copy of the adapter's declared contract map, which is bounded by how
+		// many methods the adapter declares in its Go source.
+		if err := exec.publishBeforeHostCode(); err != nil {
+			return err
+		}
 		scope := &capabilityContractScope{
 			contracts:     map[string]CapabilityMethodContract{},
 			knownBuiltins: make(map[*Builtin]struct{}),

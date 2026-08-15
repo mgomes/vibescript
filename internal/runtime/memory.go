@@ -801,6 +801,36 @@ func (exec *Execution) checkMemory() error {
 	return exec.checkMemoryMetered()
 }
 
+// publishBeforeHostCode publishes everything this level currently holds, and is
+// what has to run before control leaves the level for code it does not control.
+//
+// The rule, stated once because four findings on this branch have now been the
+// same rule discovered at one more site:
+//
+//	A level is invisible to its ancestors until it publishes, so nothing it
+//	has allocated may be left unpublished across an operation that can block.
+//	Every point where control leaves the level needs a publication behind it
+//	covering everything allocated since the last one.
+//
+// The four sites, in the order they were reported. Publish before a capability
+// binder runs, because a binder is allowed to block -- the sleeping binder in
+// this repository's own tests does. Publish for a capability-free job too,
+// because the window is opened by allocating before registration rather than by
+// waiting, and blocking only makes it longer. Register the level before its
+// setup allocations rather than after them. And publish between adapters,
+// because one adapter's bindings are allocations and the next adapter's wait is
+// what hides them.
+//
+// The first three were fixed where they were found. This is the rule instead of
+// a fourth site: it is checkMemory under a name that says why the call is
+// there, so the guard below can find it and so the next person adding host code
+// to a setup path has something to keep above it.
+// TestHostCapabilityCodeRunsOnlyAfterPublishing fails when host code becomes
+// reachable without one of these in front of it.
+func (exec *Execution) publishBeforeHostCode() error {
+	return exec.checkMemory()
+}
+
 // captureMemoryInheritedBaseline records what this call inherited, which is
 // what its later contributions to the chain are measured from.
 //

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1441,4 +1442,178 @@ func TestScanPublishesTheRootsItsBudgetSubtracted(t *testing.T) {
 	}
 	t.Logf("budget treats %d bytes as spent; publishing with roots reports %d; the previous rootless publication reported %d, understating by %d",
 		spent, published, bareBytes, published-bareBytes)
+}
+
+// bulkGlobalCapability binds a large host-supplied global into the call root.
+//
+// This is what distinguishes the finding below from the pre-registration
+// residual next to it. That residual holds a level's own root env and cloned
+// definitions, which the script's text bounds at roughly 745 bytes per class.
+// What an adapter returns is host data, and nothing about the program bounds it.
+type bulkGlobalCapability struct{ payload Value }
+
+func (c bulkGlobalCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{"bulk": c.payload}, nil
+}
+
+// blockingBinderCapability blocks in Bind from the second bind onwards.
+//
+// The first bind is the outermost call's own, which has to finish for that call
+// to reach the point where it spawns anything. The second is the nested level's,
+// and that wait is the window: while it lasts, everything the adapter bound
+// before it is on the level's call root and, before this fix, on no chain.
+type blockingBinderCapability struct {
+	binds    *atomic.Int32
+	entered  chan struct{}
+	release  chan struct{}
+	enter    *sync.Once
+	freed    *sync.Once
+	bothHeld *bool
+	mu       *sync.Mutex
+}
+
+func (c blockingBinderCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	if c.binds.Add(1) > 1 {
+		c.enter.Do(func() { close(c.entered) })
+		// Cancellation is the ordinary exit, not the exceptional one: when the
+		// ceiling refuses the parent its group is canceled and nothing will ever
+		// reach the release.
+		select {
+		case <-c.release:
+		case <-binding.Context.Done():
+		case <-time.After(30 * time.Second):
+		}
+	}
+	return map[string]Value{"probe": NewObject(map[string]Value{
+		"wait_for_binder": NewBuiltin("probe.wait_for_binder", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			select {
+			case <-c.entered:
+			case <-exec.Context().Done():
+			case <-time.After(30 * time.Second):
+			}
+			return NewNil(), nil
+		}),
+		"both_held": NewBuiltin("probe.both_held", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			c.mu.Lock()
+			*c.bothHeld = true
+			c.mu.Unlock()
+			// Free the blocked binder here rather than at the end of the test, so
+			// that the run this assertion is about finishes in its own time
+			// instead of parking on the timeout above.
+			c.freed.Do(func() { close(c.release) })
+			return NewNil(), nil
+		}),
+	})}, nil
+}
+
+// TestOneAdaptersBindingsArePublishedBeforeTheNextCanBlock pins the fourth and
+// last instance of the rule publishBeforeHostCode states.
+//
+// The level published its own setup once, before the whole binding routine, and
+// checked again once the routine returned. With a single adapter that is
+// enough. With several, the loop deep-copies the graph one adapter returns into
+// the call root and then hands control to the next adapter, which may wait for
+// as long as it likes -- and for the length of that wait the chain has seen only
+// the setup marginal, so a nonblocking ancestor is admitted against a total
+// missing every byte the first adapter supplied.
+//
+// The nested level binds two adapters: a host global, then a binder that blocks.
+// Its parent waits until that binder is entered before allocating, so the two
+// are live together by construction.
+//
+// Measured by difference rather than asserted as one outcome. The only thing
+// that varies between the two rows is how much the first adapter returns -- the
+// ceiling, the parent's own allocation, the nesting shape and the blocking
+// adapter are identical. A test that only asserted the refusal could pass
+// because this shape is refused for some unrelated reason; the small row is
+// what makes the large row mean what it says, since the same script under the
+// same ceiling with a 64-byte global has to be admitted.
+func TestOneAdaptersBindingsArePublishedBeforeTheNextCanBlock(t *testing.T) {
+	t.Parallel()
+
+	const (
+		quota  = 8 << 20
+		chunks = 950 // ~4.5 MiB held by the parent
+	)
+
+	for _, tc := range []struct {
+		name    string
+		bulk    int
+		refused bool
+	}{
+		// Big enough that the parent's allocation fits under the ceiling only
+		// while the child's copy of it is off the chain.
+		{name: "adapter_returns_2MiB", bulk: 2 << 20, refused: true},
+		// Nothing to hide, so the same parent allocation must still be admitted.
+		{name: "adapter_returns_64B", bulk: 64, refused: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			chunk := strings.Repeat("q", 5000)
+			source := fmt.Sprintf(chunkPayloadFn, chunk) + fmt.Sprintf(`
+def child(n)
+  n
+end
+
+def run()
+  Tasks.run(max: 4) do |tasks|
+    tasks.spawn(:child, 1)
+    probe.wait_for_binder()
+    mine = payload(%d)
+    probe.both_held()
+    mine.size
+  end
+end`, chunks)
+
+			script := compileScriptWithConfig(t,
+				Config{MaxTaskConcurrency: 8, MemoryQuotaBytes: quota, StepQuota: Unlimited}, source)
+
+			var (
+				mu       sync.Mutex
+				bothHeld bool
+				binds    atomic.Int32
+			)
+			blocker := blockingBinderCapability{
+				binds:    &binds,
+				entered:  make(chan struct{}),
+				release:  make(chan struct{}),
+				enter:    &sync.Once{},
+				freed:    &sync.Once{},
+				bothHeld: &bothHeld,
+				mu:       &mu,
+			}
+			// Whatever happens, never leave the nested binder parked.
+			defer blocker.freed.Do(func() { close(blocker.release) })
+
+			_, err := script.Call(context.Background(), "run", nil,
+				callOptionsWithCapabilities(
+					bulkGlobalCapability{payload: NewString(strings.Repeat("z", tc.bulk))},
+					blocker))
+
+			mu.Lock()
+			held := bothHeld
+			mu.Unlock()
+
+			if !tc.refused {
+				if !held {
+					t.Fatalf("the parent was refused with only %d bytes bound by the adapter before the blocking one, so the refusal in the other row is not evidence that the adapter's graph reached the chain: %v", tc.bulk, err)
+				}
+				if err != nil {
+					t.Fatalf("a run that must fit was stopped: %v", err)
+				}
+				return
+			}
+			if held {
+				t.Fatalf("a parent finished allocating ~%d MiB against a %d MiB ceiling while its child held a %d MiB capability global and waited in the adapter bound after it: the level publishes once for the whole binding routine, so one adapter's bindings are invisible to the chain for as long as the next adapter blocks",
+					(chunks*5000)>>20, quota>>20, tc.bulk>>20)
+			}
+			if err == nil {
+				t.Fatalf("the parent was never admitted, but nothing was reported either; a refused allocation must surface as an error")
+			}
+			if !strings.Contains(err.Error(), "memory quota exceeded") {
+				t.Fatalf("stopped for an unrelated reason: %v", err)
+			}
+		})
+	}
 }
