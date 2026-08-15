@@ -80,6 +80,25 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	// capability-free job has the same window, because the window is opened by
 	// allocating before registration rather than by waiting. Blocking only makes
 	// it longer.
+	//
+	// A residual remains and is bounded rather than closed. Everything built
+	// before the execution exists -- the root env, the cloned classes and enums
+	// -- cannot be published, because there is no node yet to publish to, so a
+	// nonblocking parent can be admitted against a total omitting it. That
+	// quantity is fixed by the script's own text: measured flat at 19,904 bytes
+	// across task payloads from 1 KiB to 4 MiB, a four-thousand-fold range, and
+	// growing only with definitions, at roughly 745 bytes per class -- 1,040
+	// bytes for a script with none and 298,048 for one with four hundred.
+	//
+	// So the exposure is a property of the program, not of anything the running
+	// script controls, which is what makes it a residual worth documenting
+	// rather than a hole worth a reservation taken before an Execution exists.
+	// The invariant holding that bound static is that nothing on this path
+	// retains argument data: scanInboundCallValues walks the arguments but is a
+	// predicate returning a bool, and the deep copy it enables happens later,
+	// after registration. A change that made this path retain anything derived
+	// from the arguments would make the bound scale with runtime data, and the
+	// measurement above is the one to repeat.
 	if err := exec.checkMemory(); err != nil {
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
@@ -232,6 +251,25 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	// capability-free job has the same window, because the window is opened by
 	// allocating before registration rather than by waiting. Blocking only makes
 	// it longer.
+	//
+	// A residual remains and is bounded rather than closed. Everything built
+	// before the execution exists -- the root env, the cloned classes and enums
+	// -- cannot be published, because there is no node yet to publish to, so a
+	// nonblocking parent can be admitted against a total omitting it. That
+	// quantity is fixed by the script's own text: measured flat at 19,904 bytes
+	// across task payloads from 1 KiB to 4 MiB, a four-thousand-fold range, and
+	// growing only with definitions, at roughly 745 bytes per class -- 1,040
+	// bytes for a script with none and 298,048 for one with four hundred.
+	//
+	// So the exposure is a property of the program, not of anything the running
+	// script controls, which is what makes it a residual worth documenting
+	// rather than a hole worth a reservation taken before an Execution exists.
+	// The invariant holding that bound static is that nothing on this path
+	// retains argument data: scanInboundCallValues walks the arguments but is a
+	// predicate returning a bool, and the deep copy it enables happens later,
+	// after registration. A change that made this path retain anything derived
+	// from the arguments would make the bound scale with runtime data, and the
+	// measurement above is the one to repeat.
 	if err := exec.checkMemory(); err != nil {
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}

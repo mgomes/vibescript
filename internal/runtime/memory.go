@@ -890,13 +890,19 @@ func (exec *Execution) checkMemoryWith(extras ...Value) error {
 // instead of a check function: not fitting is a capacity answer for them, not
 // budget exhaustion.
 //
-// This asks only this execution's own quota, deliberately, where the check
-// functions also ask the chain shared with its ancestors. A soft probe is
-// speculative: it asks about a value that may never be built, so publishing its
-// estimate onto the chain would let a hypothetical allocation refuse a
-// concurrent sibling's real one. The fallback these callers take when the
-// answer is no allocates less, not more, so the chain cannot be escaped by
-// routing through one.
+// It consults the chain and does not write to it, and the split is between
+// those two rather than between probes and checks.
+//
+// Consulting is required. Whether an answer is advisory is a property of the
+// call site, not of this function, and two of its callers allocate on the answer
+// -- an output map, a comparison memo -- so answering against this execution's
+// own quota let them size against room the chain does not have. It reads
+// memoryBudgetBytes for that reason, which can only make it answer no more
+// often, never yes.
+//
+// Writing is not. A probe asks about a value that may never be built, so
+// publishing its estimate would let a hypothetical allocation refuse a
+// concurrent sibling's real one.
 func (exec *Execution) memoryFitsWith(extras ...Value) bool {
 	if exec.memoryQuota <= 0 {
 		return true
