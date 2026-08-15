@@ -11,7 +11,7 @@ import (
 // the given host builtin, with contract verification on, and reports whatever
 // the run panicked with. A verifier that cannot be made to fire proves nothing,
 // so every test below states which side of the check it is exercising.
-func runWithContractVerification(t *testing.T, src string, name string, builtin Value, arg Value) (recovered any) {
+func runWithContractVerification(t *testing.T, src, name string, builtin, arg Value) (recovered any) {
 	t.Helper()
 
 	prev := builtinContractVerify
@@ -94,6 +94,54 @@ func TestContractVerifierCatchesADeclaredBuiltinThatMutates(t *testing.T) {
 	}
 	if msg, ok := recovered.(string); !ok || !strings.Contains(msg, "declares non-mutating") {
 		t.Fatalf("verifier panicked with %v, want a message naming the broken declaration", recovered)
+	}
+}
+
+// The replacement a byte total cannot see, and a count of identities cannot
+// either. This builtin swaps one reachable inner array for a freshly allocated
+// one holding the same number of equally sized elements: the estimate is
+// identical, exactly one slice identity leaves and exactly one enters, so both
+// totals match on either side of the call. Only the identities themselves
+// differ.
+//
+// It is a real defect and not a technicality. The memo keeps the retired
+// backing in its seen-set, so a later value that lands on that freed address
+// deduplicates against it and is charged nothing, which is an under-count
+// escaping the memory quota -- the one direction the whole design exists to
+// exclude. A verifier comparing counts certifies it as clean.
+func TestContractVerifierCatchesASameSizeReplacement(t *testing.T) {
+	swapper := DeclareNonMutating(NewBuiltin("swapper", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+		if len(args) == 0 || args[0].Kind() != KindArray {
+			return NewNil(), nil
+		}
+		outer := args[0].Array()
+		if len(outer) == 0 || outer[0].Kind() != KindArray {
+			return NewNil(), nil
+		}
+		replacement := make([]Value, len(outer[0].Array()))
+		for i := range replacement {
+			replacement[i] = NewInt(int64(i))
+		}
+		// Same length, same element kinds, same estimated bytes, one identity
+		// out and one in.
+		outer[0] = NewArray(replacement)
+		return NewNil(), nil
+	}))
+
+	inner := make([]Value, 4)
+	for i := range inner {
+		inner[i] = NewInt(int64(i))
+	}
+	arg := NewArray([]Value{NewArray(inner)})
+
+	recovered := runWithContractVerification(t, "def run(a)\n  swapper(a)\nend", "swapper", swapper, arg)
+	if recovered == nil {
+		t.Fatal("a builtin that replaced a reachable container with an equally sized one was " +
+			"not caught; the verifier compares totals rather than identities, so it certifies " +
+			"the mutation it exists to expose")
+	}
+	if msg, ok := recovered.(string); !ok || !strings.Contains(msg, "identity digest") {
+		t.Fatalf("verifier panicked with %v, want a message reporting the identity digest", recovered)
 	}
 }
 
