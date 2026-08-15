@@ -82,7 +82,7 @@ func (exec *Execution) appendArrayCharged(left, right Value) (handled bool, err 
 	marginal := est.value(right)
 
 	used := saturatingAdd(exec.estimateScalarBase(), saturatingAdd(c.graphBytes, marginal))
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		c.valid = false
 		return true, exec.memoryQuotaExceededError()
 	}
@@ -187,7 +187,7 @@ func (exec *Execution) hashStoreCharged(target, key, val Value) (handled bool, e
 	// write below.
 	orderCapBefore := value.HashOrderCapacity(target)
 	used := saturatingAdd(exec.estimateScalarBase(), saturatingAdd(c.graphBytes, marginal))
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		c.valid = false
 		return true, exec.memoryQuotaExceededError()
 	}

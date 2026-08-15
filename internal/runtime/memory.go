@@ -547,7 +547,7 @@ func (exec *Execution) baseWalkSessionsAreCheap() bool {
 	if exec.baseWalkOpen {
 		return false
 	}
-	globals := taskLazyGlobalsFromContext(exec.Context())
+	globals := taskLazyGlobalsFromContext(exec.ctx)
 	if exec.blockRegionBaseWalkEngaged(globals) {
 		return true
 	}
@@ -563,7 +563,7 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		est := newMemoryEstimator()
 		return baseWalkSession{exec: exec, est: est, base: exec.estimateMemoryUsageBase(est)}
 	}
-	globals := taskLazyGlobalsFromContext(exec.Context())
+	globals := taskLazyGlobalsFromContext(exec.ctx)
 	scalars := exec.estimateScalarBase()
 	est := &exec.memoryEst
 	walked0 := est.walked
@@ -676,7 +676,122 @@ func (s *baseWalkSession) close() {
 // value goes out of scope, so without the latch a rescuing loop could exceed
 // the quota forever one allocation at a time.
 func (exec *Execution) memoryQuotaExceededError() error {
-	return exec.latchExhaustion(fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota))
+	return exec.latchExhaustion(fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.effectiveMemoryLimit()))
+}
+
+// effectiveMemoryLimit reports the bound that actually constrains this
+// execution: its own quota, or the tighter ceiling it inherited from a caller.
+//
+// Naming the local quota alone told a host the wrong number. A script on an
+// 8 MiB engine re-entered from a 1 MiB caller is refused at 1 MiB but reported
+// "8388608 bytes", which sends whoever reads it to tune the engine that was
+// never the constraint.
+func (exec *Execution) effectiveMemoryLimit() int {
+	limit := exec.memoryQuota
+	if chain := exec.memChain; chain != nil && chain.limit > 0 {
+		if inherited := int(chain.limit); limit <= 0 || inherited < limit {
+			limit = inherited
+		}
+	}
+	return limit
+}
+
+// memoryBudgetBytes reports the largest total graph this execution may hold
+// before a check would refuse it, given what its ancestors already hold.
+//
+// This is what a caller needs when it is about to *size* an allocation rather
+// than admit one already made: a scratch reservation, a projected entry cap, a
+// match table built before any check can see it. Those sites compared against
+// the execution's own quota, which is the wrong number twice over -- it ignores
+// a tighter ceiling inherited from a caller, and it ignores the part of that
+// ceiling the caller is already using. Either way the buffer is allocated first
+// and refused afterwards, which is exactly the spike the bound exists to stop.
+//
+// It mirrors memoryExceeded rather than approximating it: the same contribution
+// rule, the same headroom, solved for the largest `used` that would still pass.
+func (exec *Execution) memoryBudgetBytes() int {
+	budget := int64(exec.memoryQuota)
+	if budget <= 0 {
+		budget = math.MaxInt
+	}
+	chain := exec.memChain
+	if chain == nil {
+		return int(budget)
+	}
+	// A level that has not established its baseline contributes nothing, so the
+	// chain cannot refuse it yet and only its own quota applies.
+	if chain.parent != nil && !exec.memBaselineSet {
+		return int(budget)
+	}
+	room := chain.headroom() - chain.ancestorMarginals()
+	if chain.parent != nil {
+		// Contributions are measured from the baseline, so convert the room back
+		// into the graph-size the caller is asking about.
+		room = saturatingAddInt64(room, int64(exec.memBaseline))
+	}
+	if room < 0 {
+		room = 0
+	}
+	if room < budget {
+		budget = room
+	}
+	if budget > math.MaxInt {
+		budget = math.MaxInt
+	}
+	return int(budget)
+}
+
+func saturatingAddInt64(a, b int64) int64 {
+	if b > 0 && a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
+}
+
+// memoryExceeded reports whether a just-measured graph estimate breaches either
+// this execution's own quota or the ceiling it shares with its ancestors.
+//
+// It is the single place both bounds are applied, so a check site cannot honor
+// one and forget the other.
+//
+// What this level contributes to the chain is its marginal footprint, what it
+// holds beyond the structure it inherited, because levels' graphs overlap and
+// summing whole estimates counts globals and modules once per level. The chain
+// root has nothing above it to have already charged its inherited structure, so
+// it contributes its estimate whole and the shared part is counted exactly once.
+//
+// The own-quota comparison is guarded on a positive quota rather than relying on
+// callers to have guarded it. Reached with the unlimited quota of zero, a bare
+// `used > exec.memoryQuota` refuses every non-empty graph.
+func (exec *Execution) memoryExceeded(used int) bool {
+	if exec.memoryQuota > 0 && used > exec.memoryQuota {
+		return true
+	}
+	chain := exec.memChain
+	if chain == nil {
+		return false
+	}
+	contribution := used
+	if chain.parent != nil {
+		// Before the baseline is established this level is still binding what
+		// it inherited and holds nothing of its own, so it contributes nothing.
+		// The chain's existing total is still checked: an ancestor that is
+		// already over its ceiling must refuse here too.
+		//
+		// No check reaches here with a graph worth charging today -- binding
+		// runs no metered allocation between newExecutionForCall and the
+		// baseline seam, verified by panicking on the path across the whole
+		// suite. The guard is for the next check site added before that seam,
+		// because the failure it prevents is silent and permanent: the level
+		// would publish its whole inherited graph as its own marginal, and a
+		// memory refusal is latched, so the transient would never heal.
+		if !exec.memBaselineSet {
+			contribution = 0
+		} else {
+			contribution = used - exec.memBaseline
+		}
+	}
+	return chain.publishAndExceeds(contribution)
 }
 
 func (exec *Execution) checkMemory() error {
@@ -684,6 +799,89 @@ func (exec *Execution) checkMemory() error {
 		return nil
 	}
 	return exec.checkMemoryMetered()
+}
+
+// publishBeforeHostCode publishes everything this level currently holds, and is
+// what has to run before control leaves the level for code it does not control.
+//
+// The rule, stated once because four findings on this branch have now been the
+// same rule discovered at one more site:
+//
+//	A level is invisible to its ancestors until it publishes, so nothing it
+//	has allocated may be left unpublished across an operation that can block.
+//	Every point where control leaves the level needs a publication behind it
+//	covering everything allocated since the last one.
+//
+// The four sites, in the order they were reported. Publish before a capability
+// binder runs, because a binder is allowed to block -- the sleeping binder in
+// this repository's own tests does. Publish for a capability-free job too,
+// because the window is opened by allocating before registration rather than by
+// waiting, and blocking only makes it longer. Register the level before its
+// setup allocations rather than after them. And publish between adapters,
+// because one adapter's bindings are allocations and the next adapter's wait is
+// what hides them.
+//
+// The first three were fixed where they were found. This is the rule instead of
+// a fourth site: it is checkMemory under a name that says why the call is
+// there, so that a scan can find it and so that the next person adding host code
+// to a setup path has something to keep above it.
+// TestHostCapabilityCodeRunsOnlyAfterPublishing fails when host code becomes
+// reachable without one of these in front of it.
+func (exec *Execution) publishBeforeHostCode() error {
+	return exec.checkMemory()
+}
+
+// captureMemoryInheritedBaseline records what this call inherited, which is
+// what its later contributions to the chain are measured from.
+//
+// The baseline is the graph tail: the task globals this level was handed and
+// the modules it arrived with. That -- and only that -- is structure an
+// ancestor already charges, so subtracting it is what keeps one shared global
+// from being counted once per level.
+//
+// Everything else the entry graph holds is this level's own: a root env of its
+// own, its own clones of the call's classes and enums, its own capability
+// bindings. Those are fresh per call and must be charged. Taking the baseline
+// from the whole entry estimate instead subtracted them too, giving every level
+// a free allowance the size of its own definitions -- 17,398 bytes per level
+// for a hundred-class script, 1.06 MiB across a 64-deep chain -- which is a
+// smaller copy of the defect the chain exists to close.
+//
+// Subtracting a separately measured "setup" walk does not work either, and the
+// reason is worth recording: at this point the tail is already charged, so a
+// full walk here contains the inherited globals too, and subtracting it
+// canceled them out and put the chain straight back to charging one global per
+// level. The tail is the quantity to name, not a difference between two walks.
+//
+// Only a level with an ancestor pays for this. A chain root publishes its
+// estimate whole, so its baseline is never consulted.
+// The baseline is the graph tail and deliberately not the call's arguments, so
+// a task payload is charged on both sides of the boundary: once to the group
+// retaining the clone, once to the worker binding it. For a composite that is
+// the exact count, since call entry deep-copies it and two graphs really are
+// live. For a string it over-charges, because the backing is shared even though
+// the header and Value slot are not.
+//
+// Subtracting the shared part was implemented and withdrawn. Its correctness
+// needs an enumeration of which parts of a value are shared, per kind, and being
+// wrong about that admits work past the ceiling rather than refusing work that
+// fits. Three measurements of it were wrong at three granularities -- which
+// members cross, which kinds share, then which parts of a sharing kind share --
+// so the correctness condition was finer than the instrument checking it. The
+// whole benefit was 33% on string payloads: 2,105,228 bytes for a 1 MiB string
+// against 1,577,152, with composites identical at 6,371,368 either way.
+//
+// So the over-charge stands, in the direction that refuses rather than admits.
+// A host passing a large string as a task payload needs roughly twice it in
+// quota, and TestTaskPayloadCostsTwiceItsSize records that price.
+func (exec *Execution) captureMemoryInheritedBaseline() {
+	if exec.memoryQuota <= 0 || exec.memChain == nil || exec.memChain.parent == nil {
+		return
+	}
+	est := newMemoryEstimator()
+	baseline := exec.estimateGraphTail(est, taskLazyGlobalsFromContext(exec.ctx))
+	exec.memBaseline = baseline
+	exec.memBaselineSet = true
 }
 
 // checkMemoryValue charges a single just-produced value against the memory
@@ -701,14 +899,25 @@ func (exec *Execution) checkMemoryValue(val Value) error {
 // after the inlinable quota guard has confirmed metering is active.
 func (exec *Execution) checkMemoryMetered() error {
 	used := exec.estimateMemoryUsage()
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
 
+// checkMemoryWith charges current usage plus extras, and is the hard check the
+// per-value sites reach.
+//
+// It measures and consults memoryExceeded directly rather than delegating to
+// memoryFitsWith. Delegating meant every checkMemoryValue site compared only
+// this execution's own quota and never published to the chain, so a parent that
+// allocated while a spawned worker was blocked left its marginal stale and its
+// descendants admitted memory against a total that predated the allocation.
 func (exec *Execution) checkMemoryWith(extras ...Value) error {
-	if !exec.memoryFitsWith(extras...) {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	if exec.memoryExceeded(exec.estimateMemoryUsage(extras...)) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -719,11 +928,25 @@ func (exec *Execution) checkMemoryWith(extras ...Value) error {
 // cheaper fallback — the comparison memo, the merge projections — ask this
 // instead of a check function: not fitting is a capacity answer for them, not
 // budget exhaustion.
+//
+// It consults the chain and does not write to it, and the split is between
+// those two rather than between probes and checks.
+//
+// Consulting is required. Whether an answer is advisory is a property of the
+// call site, not of this function, and two of its callers allocate on the answer
+// -- an output map, a comparison memo -- so answering against this execution's
+// own quota let them size against room the chain does not have. It reads
+// memoryBudgetBytes for that reason, which can only make it answer no more
+// often, never yes.
+//
+// Writing is not. A probe asks about a value that may never be built, so
+// publishing its estimate would let a hypothetical allocation refuse a
+// concurrent sibling's real one.
 func (exec *Execution) memoryFitsWith(extras ...Value) bool {
 	if exec.memoryQuota <= 0 {
 		return true
 	}
-	return exec.estimateMemoryUsage(extras...) <= exec.memoryQuota
+	return exec.estimateMemoryUsage(extras...) <= exec.memoryBudgetBytes()
 }
 
 func (exec *Execution) checkMemoryWithCallRoots(callee, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
@@ -732,7 +955,7 @@ func (exec *Execution) checkMemoryWithCallRoots(callee, receiver Value, args []V
 	}
 
 	used := exec.estimateMemoryUsageForCallRoots(callee, receiver, args, kwargs, block)
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -744,7 +967,7 @@ func (exec *Execution) checkMemoryWithPositionalCallRoots(receiver, arg0, arg1 V
 	}
 
 	used := exec.estimateMemoryUsageForPositionalCallRoots(NewNil(), receiver, arg0, arg1, argCount, NewNil())
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -802,7 +1025,7 @@ func (exec *Execution) checkAccumulatorWithCallRoots(accumulator, receiver Value
 	}
 	s.close()
 
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -825,7 +1048,7 @@ func (exec *Execution) checkProjectedStringBytes(payloadBytes int) error {
 
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -839,7 +1062,7 @@ func (exec *Execution) checkProjectedStringBytesWithCallRoots(payloadBytes int, 
 	used := exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -853,7 +1076,7 @@ func (exec *Execution) checkProjectedStringBytesWithPositionalCallRoots(payloadB
 	used := exec.estimateMemoryUsageForPositionalCallRoots(NewNil(), receiver, arg0, arg1, argCount, NewNil())
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -868,7 +1091,7 @@ func (exec *Execution) checkProjectedStringBytesAndScratchWithCallRoots(payloadB
 	used = saturatingAdd(used, scratchBytes)
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -890,7 +1113,7 @@ func (exec *Execution) checkProjectedBigIntBytes(words int) error {
 
 	used = saturatingAdd(used, estimatedValueBytes+estimatedBigIntStructBytes)
 	used = saturatingAdd(used, saturatingMul(words, estimatedBigIntWordBytes))
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -929,7 +1152,7 @@ func (exec *Execution) checkProjectedValueRendering(val Value, payloadBytes int)
 
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -983,7 +1206,7 @@ func (exec *Execution) checkProjectedIntArrayBytesWithLive(count, liveSlots int,
 		used = saturatingAdd(used, liveValueSliceBytes(liveSlots))
 	}
 	used = saturatingAdd(used, arraySlotBackingBytes(count))
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1012,7 +1235,7 @@ func (exec *Execution) checkProjectedArrayBytesWithCallRoots(slotCount, payloadB
 	used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
 	used = saturatingAdd(used, payloadBytes)
 	used = saturatingAdd(used, liveScratchBytes)
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1029,7 +1252,7 @@ func (exec *Execution) checkProjectedArrayBytesWithPositionalCallRoots(slotCount
 	used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
 	used = saturatingAdd(used, payloadBytes)
 	used = saturatingAdd(used, liveScratchBytes)
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1080,10 +1303,24 @@ func (exec *Execution) checkProjectedHashBytes(count int, receiver Value, args [
 // the output-map projection -- could allocate past the quota on a large receiver
 // before any later check observed it.
 func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
-	if !exec.projectedHashTransformFits(outputEntries, scratchBytes, receiver, args, kwargs, block) {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	// The caller allocates the output map on the strength of this, so it is a
+	// final admission and goes through the chain-aware check rather than through
+	// the probe beside it.
+	if exec.memoryExceeded(exec.projectedHashTransformBytes(outputEntries, scratchBytes, receiver, args, kwargs, block)) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
+}
+
+// projectedHashTransformBytes is the figure both the admission above and the
+// probe below are asking about, so the two cannot answer different questions.
+func (exec *Execution) projectedHashTransformBytes(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+	used := exec.projectedHashBaseBytes(receiver, args, kwargs, block)
+	used = saturatingAdd(used, saturatingMul(outputEntries, estimatedMapEntryStructuralBytes))
+	return saturatingAdd(used, scratchBytes)
 }
 
 // projectedHashTransformFits is checkProjectedHashTransformBytes's quota test
@@ -1095,10 +1332,7 @@ func (exec *Execution) projectedHashTransformFits(outputEntries, scratchBytes in
 		return true
 	}
 
-	used := exec.projectedHashBaseBytes(receiver, args, kwargs, block)
-	used = saturatingAdd(used, saturatingMul(outputEntries, estimatedMapEntryStructuralBytes))
-	used = saturatingAdd(used, scratchBytes)
-	return used <= exec.memoryQuota
+	return exec.projectedHashTransformBytes(outputEntries, scratchBytes, receiver, args, kwargs, block) <= exec.memoryBudgetBytes()
 }
 
 // hashTransformBufferBytes returns the Go-local heap footprint a block-driven hash
@@ -1144,7 +1378,7 @@ func (exec *Execution) checkProjectedHashWalkBytes(receiver Value, args []Value,
 		return nil
 	}
 
-	if used := exec.hashCallRootBytes(receiver, args, kwargs, block); used > exec.memoryQuota {
+	if used := exec.hashCallRootBytes(receiver, args, kwargs, block); exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1159,7 +1393,7 @@ func (exec *Execution) checkReservedLoopScratch(receiver Value, args []Value, kw
 		return nil
 	}
 
-	if used := exec.hashCallRootBytes(receiver, args, kwargs, block); used > exec.memoryQuota {
+	if used := exec.hashCallRootBytes(receiver, args, kwargs, block); exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1253,7 +1487,7 @@ func (exec *Execution) checkCollapsedPairBytesWithLiveBase(receiver, block Value
 	}
 	used = saturatingAdd(used, maxCollapsedPairBytesWithEstimator(receiver, s.est))
 	s.close()
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1415,7 +1649,7 @@ func (acc *arrayBuildAccumulator) reserveScratch(scratchBytes int) error {
 		return nil
 	}
 	acc.base = saturatingAdd(acc.base, scratchBytes)
-	if acc.base > acc.exec.memoryQuota {
+	if acc.exec.memoryExceeded(acc.base) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1440,7 +1674,7 @@ func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 
 	acc.payload = saturatingAdd(acc.payload, acc.est.valuePayload(val))
 
-	if used := acc.projected(backingCap); used > acc.exec.memoryQuota {
+	if used := acc.projected(backingCap); acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1456,7 +1690,7 @@ func (acc *arrayBuildAccumulator) addToReservedBacking(val Value) error {
 	}
 
 	acc.payload = saturatingAdd(acc.payload, acc.est.valuePayload(val))
-	if used := saturatingAdd(acc.base, acc.payload); used > acc.exec.memoryQuota {
+	if used := saturatingAdd(acc.base, acc.payload); acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1476,7 +1710,7 @@ func (acc *arrayBuildAccumulator) addConservative(val Value, backingCap int) err
 	}
 	acc.payload = saturatingAdd(acc.payload, acc.result.valuePayload(val))
 
-	if used := acc.projected(backingCap); used > acc.exec.memoryQuota {
+	if used := acc.projected(backingCap); acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1491,7 +1725,7 @@ func (acc *arrayBuildAccumulator) addConservativeToReservedBacking(val Value) er
 		acc.result = newMemoryEstimator()
 	}
 	acc.payload = saturatingAdd(acc.payload, acc.result.valuePayload(val))
-	if used := saturatingAdd(acc.base, acc.payload); used > acc.exec.memoryQuota {
+	if used := saturatingAdd(acc.base, acc.payload); acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1534,7 +1768,7 @@ func (acc *arrayBuildAccumulator) checkTransient(transient Value, backingCap int
 	}
 
 	transientBytes := s.est.value(transient)
-	if used := saturatingAdd(acc.projected(backingCap), transientBytes); used > acc.exec.memoryQuota {
+	if used := saturatingAdd(acc.projected(backingCap), transientBytes); acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1557,7 +1791,7 @@ func (acc *arrayBuildAccumulator) checkRetainedPayloadBytes(slotCount, payloadBy
 		return nil
 	}
 	used := saturatingAdd(acc.projected(slotCount), payloadBytes)
-	if used > acc.exec.memoryQuota {
+	if acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1592,7 +1826,7 @@ func (exec *Execution) checkSlotReservationWithCallRoots(slotCount int, receiver
 	}
 	s.close()
 	used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
-	if used > exec.memoryQuota {
+	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1614,7 +1848,7 @@ func (acc *arrayBuildAccumulator) checkSlotArrays(slotCounts ...int) error {
 	for _, slotCount := range slotCounts {
 		used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
 	}
-	if used > acc.exec.memoryQuota {
+	if acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -1904,7 +2138,7 @@ func (acc *hashLiteralBuildAccumulator) addDistinctEntry(current map[string]hash
 			payload := saturatingAdd(hashLiteralKeyPayload(est, lookupKey, key), est.valuePayload(val))
 			return saturatingAdd(entryStructural, payload)
 		})
-		if used > acc.exec.memoryQuota {
+		if acc.exec.memoryExceeded(used) {
 			return acc.exec.memoryQuotaExceededError()
 		}
 		if err := acc.exec.chargeEstimatorWalk(nodes); err != nil {
@@ -1964,7 +2198,7 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 			payload := saturatingAdd(hashLiteralKeyPayload(est, candidate.lookupKey, candidate.key), est.valuePayload(candidate.value))
 			return saturatingAdd(entryStructural, payload)
 		})
-		if used > acc.exec.memoryQuota {
+		if acc.exec.memoryExceeded(used) {
 			return acc.exec.memoryQuotaExceededError()
 		}
 		if err := acc.exec.chargeEstimatorWalk(nodes); err != nil {
@@ -1996,7 +2230,7 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 	incoming := saturatingAdd(entryStructural, saturatingAdd(keyPayload, valuePayload))
 	base, baseNodes := acc.liveBase()
 	nodes += baseNodes
-	if used := saturatingAdd(saturatingAdd(base, acc.retained), incoming); used > acc.exec.memoryQuota {
+	if used := saturatingAdd(saturatingAdd(base, acc.retained), incoming); acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	if err := acc.exec.chargeEstimatorWalk(nodes); err != nil {
@@ -2151,7 +2385,7 @@ func (acc *hashLiteralBuildAccumulator) checkQuota(current map[string]hashLitera
 		base, nodes = acc.liveBase()
 		used = saturatingAdd(base, acc.retained)
 	}
-	if used > acc.exec.memoryQuota {
+	if acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return acc.exec.chargeEstimatorWalk(nodes)
@@ -2311,7 +2545,7 @@ func (acc *hashBuildAccumulator) checkTransient(transient Value) error {
 	}
 
 	used := saturatingAdd(saturatingAdd(acc.base, acc.built), s.est.value(transient))
-	if used > acc.exec.memoryQuota {
+	if acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -2321,7 +2555,7 @@ func (acc *hashBuildAccumulator) checkTransient(transient Value) error {
 // exceeds the quota.
 func (acc *hashBuildAccumulator) checkQuota() error {
 	used := saturatingAdd(acc.base, acc.built)
-	if used > acc.exec.memoryQuota {
+	if acc.exec.memoryExceeded(used) {
 		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -2470,7 +2704,7 @@ func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []
 	// retainedOutputMarginalBytes instead would fall back to a second graph walk
 	// here, because a nested driver has just invalidated the memo by registering.
 	base := exec.estimateScalarBase()
-	base = saturatingAdd(base, exec.estimateGraphBase(rootEst, taskLazyGlobalsFromContext(exec.Context())))
+	base = saturatingAdd(base, exec.estimateGraphBase(rootEst, taskLazyGlobalsFromContext(exec.ctx)))
 	// Metered for the same reason the retained-output fallback's basis walk is,
 	// and only while a driver output is registered: that is exactly when this
 	// construction is script-repeatable, because a lookup builds its runner inside
@@ -2547,7 +2781,7 @@ func (c *blockBindCharge) begin(args []Value, chargedRoots ...Value) error {
 	c.built = 0
 	for _, root := range chargedRoots {
 		c.built = saturatingAdd(c.built, c.rootEst.probe(root))
-		if saturatingAdd(c.liveBaseline(), c.built) > c.exec.memoryQuota {
+		if c.exec.memoryExceeded(saturatingAdd(c.liveBaseline(), c.built)) {
 			return c.exec.memoryQuotaExceededError()
 		}
 		c.est.value(root)
@@ -2569,7 +2803,7 @@ func (c *blockBindCharge) charge(value Value) error {
 		return nil
 	}
 	c.built = saturatingAdd(c.built, c.est.value(value))
-	if saturatingAdd(c.liveBaseline(), c.built) > c.exec.memoryQuota {
+	if c.exec.memoryExceeded(saturatingAdd(c.liveBaseline(), c.built)) {
 		return c.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -2597,7 +2831,7 @@ func (c *blockBindCharge) projectRestWindow(count int) error {
 		return nil
 	}
 	window := arraySlotBackingBytes(count)
-	if saturatingAdd(saturatingAdd(c.liveBaseline(), c.built), window) > c.exec.memoryQuota {
+	if c.exec.memoryExceeded(saturatingAdd(saturatingAdd(c.liveBaseline(), c.built), window)) {
 		return c.exec.memoryQuotaExceededError()
 	}
 	return nil
@@ -2718,11 +2952,14 @@ func (exec *Execution) maxProjectedHashEntries(scratchBytes int, receiver Value,
 	if exec.memoryQuota <= 0 {
 		return math.MaxInt
 	}
+	// The budget, not the quota: what an ancestor already holds is room this
+	// merge cannot have, and the dedup set is grown before any check sees it.
+	budget := exec.memoryBudgetBytes()
 	used := saturatingAdd(exec.projectedHashBaseBytes(receiver, args, kwargs, block), scratchBytes)
-	if used >= exec.memoryQuota {
+	if used >= budget {
 		return 0
 	}
-	return (exec.memoryQuota - used) / estimatedMapEntryStructuralBytes
+	return (budget - used) / estimatedMapEntryStructuralBytes
 }
 
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
@@ -2853,7 +3090,9 @@ func (exec *Execution) chargeAdoptedConstant(name string) error {
 	}
 	exec.adoptedConstantBytes = saturatingAdd(exec.adoptedConstantBytes,
 		estimatedMapEntryBytes+estimatedValueBytes+estimatedStringHeaderBytes+len(name))
-	if exec.adoptedConstantBytes < exec.memoryQuota/adoptedConstantCheckShare {
+	// A share of the bound actually in force, so the unchecked overshoot this
+	// deferral allows stays proportionate under an inherited ceiling too.
+	if exec.adoptedConstantBytes < exec.effectiveMemoryLimit()/adoptedConstantCheckShare {
 		return nil
 	}
 	exec.adoptedConstantBytes = 0
@@ -2876,12 +3115,35 @@ func newLoopScratchReservation(exec *Execution, receiver Value, args []Value, kw
 		return reservation, nil
 	}
 	reservation.baseline = exec.hashCallRootBytes(receiver, args, kwargs, block)
-	if reservation.baseline > exec.memoryQuota {
+	if exec.memoryExceeded(reservation.baseline) {
 		return loopScratchReservation{}, exec.memoryQuotaExceededError()
 	}
 	return reservation, nil
 }
 
+// reserveIfFits charges scratchBytes against this execution and reports whether
+// the reservation may stand.
+//
+// It compares against the budget -- what is left of the bound in force after
+// ancestors -- and does not report the accepted reservation to the chain.
+//
+// It did report it, for one round, to close a real race: a nonblocking parent
+// that grows after this budget is read is not visible here, so an accepted
+// reservation can coexist with an allocation the combined path has no room for.
+// Publication turned out to have no consistent configuration. It has to publish
+// to close that race; it must not leave a *rejected* figure published, or
+// ancestors stay constrained by bytes that were never held and the parent is
+// falsely refused and latched; and the escape -- relaxing the ancestors'
+// constraint afterwards -- is the thing this design established cannot be done
+// safely, because the minimum it is stored as races with a sibling tightening.
+// Publish and it latches, do not publish and the race reopens, relax and it
+// races.
+//
+// So the race is left open and bounded rather than half-closed. This level's own
+// quota still binds it, and its next ordinary memory check publishes what it
+// holds; what is lost is only the window between an accepted reservation and
+// that check. See the follow-up issue, which carries the constraint as well as
+// the findings -- the constraint is the part worth inheriting.
 func (r *loopScratchReservation) reserveIfFits(scratchBytes int) bool {
 	if r.exec.memoryQuota <= 0 || scratchBytes <= 0 {
 		return true
@@ -2889,7 +3151,7 @@ func (r *loopScratchReservation) reserveIfFits(scratchBytes int) bool {
 
 	delta := r.exec.reserveLoopScratch(scratchBytes)
 	nextDelta := saturatingAdd(r.delta, delta)
-	if saturatingAdd(r.baseline, nextDelta) > r.exec.memoryQuota {
+	if saturatingAdd(r.baseline, nextDelta) > r.exec.memoryBudgetBytes() {
 		r.exec.releaseLoopScratch(delta)
 		return false
 	}
@@ -2934,7 +3196,7 @@ func (r *loopScratchReservation) release() {
 // re-walked.
 func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	total := exec.estimateScalarBase()
-	total += exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.Context()))
+	total += exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.ctx))
 	return saturatingAdd(total, exec.outputWalkBytes(est))
 }
 
@@ -3804,4 +4066,17 @@ func (exec *Execution) reserveCallerRetainedRoots(blockArgs []Value) (int, bool)
 		return 0, true
 	}
 	return exec.reserveLoopScratch(total - base), true
+}
+
+// releaseMemoryChain retires this execution's chain node as its call returns.
+//
+// A level that has finished holds nothing, so leaving its published figure in
+// place would charge the chain for memory that is gone; and the high-water of
+// what was live below a node has to be dropped once nothing is, or a deep chain
+// that completed would go on refusing its parent's later work.
+func (exec *Execution) releaseMemoryChain() {
+	if exec.memChain == nil {
+		return
+	}
+	exec.memChain.release()
 }

@@ -4342,11 +4342,37 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 	// Ask for at most one match beyond what the quota can hold, so the table
 	// the engine allocates is bounded by the quota rather than by the subject.
 	limit := -1
-	budget, bounded := scanMatchBudget(exec, groups, receiver, args, kwargs, block)
+	roots := scanRoots{receiver: receiver, args: args, kwargs: kwargs, block: block}
+	budget, bounded := scanMatchBudget(exec, groups, roots)
 	if bounded {
 		limit = budget + 1
 	}
+	// Charge the table before the engine builds it, not after. The budget above
+	// is a snapshot, and the engine allocates against it: charging only once the
+	// table exists (below, via reserveScratch) left it built and live before
+	// anything could refuse it, so a table sized from the whole remaining
+	// headroom coexisted with whatever else had been allocated meanwhile. The
+	// reservation is released as soon as the actual footprint is charged, so the
+	// table is never counted twice.
+	projected := 0
+	if bounded {
+		// Priced for the matches this scan would admit, not for limit. limit is
+		// budget+1 -- one match beyond what the quota holds, asked for only so
+		// that overrunning is detectable -- and the budget was derived by
+		// dividing the remaining room by the same per-match price, so reserving
+		// limit here is guaranteed to exceed that room and reject every scan.
+		// The overshoot the probe can build is one match's worth, and bounded.
+		projected = exec.reserveLoopScratch(worstCaseRegexSubmatchIndexBytes(budget, groups))
+		// Through the roots, not checkMemory: the budget above subtracted the
+		// call roots, so publishing without them lets the chain see the larger
+		// of two figures instead of their coexisting sum.
+		if err := roots.check(exec); err != nil {
+			exec.releaseLoopScratch(projected)
+			return NewNil(), err
+		}
+	}
 	allMatches := re.FindAllStringSubmatchIndex(text, limit)
+	exec.releaseLoopScratch(projected)
 	if bounded && len(allMatches) > budget {
 		return NewNil(), exec.memoryQuotaExceededError()
 	}
@@ -4429,7 +4455,7 @@ func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]in
 	// the live receiver/pattern/block roots -- before the first yield runs, mirroring
 	// how the non-block path's reserveScratch fails fast instead of waiting for a
 	// slow-path step check several matches into the loop.
-	if err := exec.checkMemoryWithCallRoots(NewNil(), receiver, args, kwargs, block); err != nil {
+	if err := (scanRoots{receiver: receiver, args: args, kwargs: kwargs, block: block}).check(exec); err != nil {
 		return NewNil(), err
 	}
 
@@ -4504,7 +4530,36 @@ func guardRegexScanIndexFootprint(exec *Execution, pattern, text string, groups 
 // limit, so asking for one more than the budget makes the table cost at most
 // one row beyond what the quota allows, and a result that comes back over the
 // budget is exactly the case that could not have fit (#37).
-func scanMatchBudget(exec *Execution, groups int, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, bool) {
+// scanRoots is what a string scan already holds before its index table exists:
+// the receiver, arguments and block live on this builtin's Go frame, which the
+// execution's own graph walk cannot see.
+//
+// It is one value rather than four parameters because the budget that *sizes*
+// the table and the check that *publishes* the reservation have to agree about
+// what is live, and all three findings on this table were that disagreement --
+// the nonblocking-parent race, the append's capacity slack, and these call roots
+// -- each one side accounting for something the other did not. Sizing and
+// publication now read the same value through the same two methods, so a
+// discrepancy is not expressible rather than merely corrected.
+type scanRoots struct {
+	receiver Value
+	args     []Value
+	kwargs   map[string]Value
+	block    Value
+}
+
+// liveBytes is the quantity the budget subtracts and the check publishes.
+func (r scanRoots) liveBytes(exec *Execution) int {
+	return exec.estimateMemoryUsageForCallRoots(NewNil(), r.receiver, r.args, r.kwargs, r.block)
+}
+
+// check publishes that quantity, the current reservation included, and refuses
+// when the chain has no room for it.
+func (r scanRoots) check(exec *Execution) error {
+	return exec.checkMemoryWithCallRoots(NewNil(), r.receiver, r.args, r.kwargs, r.block)
+}
+
+func scanMatchBudget(exec *Execution, groups int, roots scanRoots) (int, bool) {
 	if exec == nil || exec.memoryQuota <= 0 {
 		return 0, false
 	}
@@ -4513,10 +4568,7 @@ func scanMatchBudget(exec *Execution, groups int, receiver Value, args []Value, 
 	// is a slice header per unused slot. Charging the logical rows alone let a
 	// scan landing on a growth boundary allocate past the budget, so the
 	// per-match price carries the overshoot the append can leave behind.
-	perMatch := saturatingAdd(
-		projectedRegexSubmatchIndexBytes(1, groups),
-		regexSubmatchIndexSlotBytes(1),
-	)
+	perMatch := worstCaseRegexSubmatchIndexBytes(1, groups)
 	if perMatch <= 0 {
 		return 0, false
 	}
@@ -4524,7 +4576,13 @@ func scanMatchBudget(exec *Execution, groups int, receiver Value, args []Value, 
 	// let an execution already holding most of it request nearly another
 	// quota's worth of rows, which is the pre-accounting spike this bound
 	// exists to stop -- the table coexists with everything already live.
-	remaining := exec.memoryQuota - exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
+	// The chain's remaining room, not the ceiling and not the local quota. The
+	// ceiling alone still oversizes the table when an ancestor is already using
+	// most of it -- a parent local held across a task call is not part of this
+	// execution's graph, so subtracting only that graph leaves the ancestor's
+	// share unaccounted. The table is built before any check can see it, so the
+	// number this divides has to be what is actually left.
+	remaining := exec.memoryBudgetBytes() - roots.liveBytes(exec)
 	if remaining <= 0 {
 		// Nothing left to spend: a single match is still requested so an
 		// empty result stays legal, and any match at all reports the quota.
@@ -4661,6 +4719,25 @@ func regexSubmatchIndexSlotBytes(n int) int {
 func projectedRegexSubmatchIndexBytes(matchCount, groups int) int {
 	return saturatingAdd(
 		saturatingMul(matchCount, regexSubmatchIndexRowBytes(groups)),
+		regexSubmatchIndexSlotBytes(matchCount),
+	)
+}
+
+// worstCaseRegexSubmatchIndexBytes bounds the table for matchCount matches
+// before it exists, including the spare capacity Go's append leaves behind: one
+// row per match, and two outer slots, the second covering the growth.
+//
+// Every figure taken before the table exists comes from here, so the bound that
+// decides how many matches to ask for and the reservation that charges them
+// cannot disagree. They did: scanMatchBudget priced two slots per match while
+// the pre-allocation reservation priced one through projectedRegexSubmatchIndexBytes,
+// so the engine could build a table larger than the bytes reserved for it and a
+// parent allocating meanwhile saw headroom that was not there. That is the same
+// two-models-of-one-quantity drift the comment above records, reintroduced by a
+// caller added later.
+func worstCaseRegexSubmatchIndexBytes(matchCount, groups int) int {
+	return saturatingAdd(
+		projectedRegexSubmatchIndexBytes(matchCount, groups),
 		regexSubmatchIndexSlotBytes(matchCount),
 	)
 }

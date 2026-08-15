@@ -361,10 +361,21 @@ func (exec *Execution) checkProjectedTypedHashBytes(count int, receiver Value, a
 }
 
 func (exec *Execution) checkProjectedTypedHashTransformBytes(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
-	if !exec.projectedTypedHashTransformFits(outputEntries, scratchBytes, receiver, args, kwargs, block) {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	// A final admission: the caller allocates the typed output on this answer.
+	if exec.memoryExceeded(exec.projectedTypedHashTransformBytes(outputEntries, scratchBytes, receiver, args, kwargs, block)) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
+}
+
+// projectedTypedHashTransformBytes is the figure the admission above and the
+// probe below share.
+func (exec *Execution) projectedTypedHashTransformBytes(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+	used := exec.hashCallRootBytes(receiver, args, kwargs, block)
+	return saturatingAdd(used, typedHashTransformBufferBytes(outputEntries, scratchBytes))
 }
 
 // projectedTypedHashTransformFits is checkProjectedTypedHashTransformBytes's
@@ -376,9 +387,7 @@ func (exec *Execution) projectedTypedHashTransformFits(outputEntries, scratchByt
 		return true
 	}
 
-	used := exec.hashCallRootBytes(receiver, args, kwargs, block)
-	used = saturatingAdd(used, typedHashTransformBufferBytes(outputEntries, scratchBytes))
-	return used <= exec.memoryQuota
+	return exec.projectedTypedHashTransformBytes(outputEntries, scratchBytes, receiver, args, kwargs, block) <= exec.memoryBudgetBytes()
 }
 
 func (exec *Execution) maxProjectedTypedHashEntries(scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) int {
@@ -388,14 +397,18 @@ func (exec *Execution) maxProjectedTypedHashEntries(scratchBytes int, receiver V
 	used := exec.hashCallRootBytes(receiver, args, kwargs, block)
 	used = saturatingAdd(used, scratchBytes)
 	used = saturatingAdd(used, estimatedValueBytes+estimatedHashDataBytes+estimatedMapBaseBytes)
-	if used >= exec.memoryQuota {
+	// The chain's remaining room, not the ceiling and not the local quota: what
+	// an ancestor already holds is room these entries cannot have, and they are
+	// counted out before any check sees them.
+	limit := exec.memoryBudgetBytes()
+	if used >= limit {
 		return 0
 	}
-	if saturatingAdd(used, estimatedSliceBaseBytes) > exec.memoryQuota {
+	if saturatingAdd(used, estimatedSliceBaseBytes) > limit {
 		return 0
 	}
 	perEntry := estimatedMapEntryBytes + 2*estimatedHashLookupKeyBytes + estimatedHashEntryBytes
-	return (exec.memoryQuota - used - estimatedSliceBaseBytes) / perEntry
+	return (limit - used - estimatedSliceBaseBytes) / perEntry
 }
 
 func newTypedResultHash(capacity int) Value {
