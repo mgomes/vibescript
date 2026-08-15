@@ -4346,7 +4346,23 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 	if bounded {
 		limit = budget + 1
 	}
+	// Charge the table before the engine builds it, not after. The budget above
+	// is a snapshot, and the engine allocates against it: charging only once the
+	// table exists (below, via reserveScratch) left it built and live before
+	// anything could refuse it, so a table sized from the whole remaining
+	// headroom coexisted with whatever else had been allocated meanwhile. The
+	// reservation is released as soon as the actual footprint is charged, so the
+	// table is never counted twice.
+	projected := 0
+	if bounded {
+		projected = exec.reserveLoopScratch(projectedRegexSubmatchIndexBytes(limit, groups))
+		if err := exec.checkMemory(); err != nil {
+			exec.releaseLoopScratch(projected)
+			return NewNil(), err
+		}
+	}
 	allMatches := re.FindAllStringSubmatchIndex(text, limit)
+	exec.releaseLoopScratch(projected)
 	if bounded && len(allMatches) > budget {
 		return NewNil(), exec.memoryQuotaExceededError()
 	}
