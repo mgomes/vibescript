@@ -30,6 +30,19 @@ func maybeEnableEstimatorVerify() {
 	}
 }
 
+// maybeEnableBuiltinContractVerify turns on the builtin-contract verifier when
+// VIBES_BUILTIN_CONTRACT_VERIFY=1 is set. Like the two above it is called from
+// TestMain before any test runs, so the flag is write-once and race-free.
+// Running `VIBES_BUILTIN_CONTRACT_VERIFY=1 go test ./...` walks the reachable
+// graph across every dispatch of a builtin declaring non-mutation and panics if
+// one changed it without advancing the epoch, which is how the whole corpus is
+// made to stand behind those declarations rather than a reading of each body.
+func maybeEnableBuiltinContractVerify() {
+	if os.Getenv("VIBES_BUILTIN_CONTRACT_VERIFY") == "1" {
+		builtinContractVerify = true
+	}
+}
+
 // TestAcquireRecycleCallEnvPooling pins the production pooling contract of
 // acquireCallEnv / recycleCallEnv directly: a reuse-eligible function's frame is
 // returned to the free list and handed back to the next acquire (same pointer,

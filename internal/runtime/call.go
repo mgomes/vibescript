@@ -314,7 +314,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = receiver, args, kwargs
 		// A new frame holds new values, so it reserves its own.
 		exec.builtinFrameRootsReserved = false
+		// Off unless a test turns it on; with it on, a builtin that declared
+		// non-mutation and then wrote to the reachable graph without advancing
+		// the epoch panics here rather than silently costing a later check its
+		// accuracy.
+		contractCheck := exec.beginContractVerification(builtin)
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
+		contractCheck.check(exec, builtin)
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = prevReceiver, prevArgs, prevKwargs
 		exec.builtinFrameRootsReserved = prevReserved
 		// Dropping the claims moves any array a shrink narrowed off the storage
