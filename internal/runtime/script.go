@@ -63,7 +63,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	// bound between here and the old position changes what this measures: the
 	// baseline is the graph tail, which is the modules and task globals the call
 	// arrived with, and binding writes to the root env rather than to those.
-	exec.captureMemoryInheritedBaseline()
+	exec.captureMemoryInheritedBaseline(args, opts.Keywords)
 
 	// Publish this level's own setup before binding, not just measure it. A
 	// binder is allowed to block -- the sleeping binder in this repository's own
@@ -213,7 +213,7 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	// bound between here and the old position changes what this measures: the
 	// baseline is the graph tail, which is the modules and task globals the call
 	// arrived with, and binding writes to the root env rather than to those.
-	exec.captureMemoryInheritedBaseline()
+	exec.captureMemoryInheritedBaseline(args, opts.Keywords)
 
 	// Publish this level's own setup before binding, not just measure it. A
 	// binder is allowed to block -- the sleeping binder in this repository's own

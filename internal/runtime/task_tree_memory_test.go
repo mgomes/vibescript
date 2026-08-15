@@ -1207,3 +1207,70 @@ func TestMemoryBudgetSubtractsWhatAncestorsHold(t *testing.T) {
 		t.Fatalf("budget %d under an ancestor already past the ceiling, want 0", got)
 	}
 }
+
+// TestTaskPayloadIsChargedOnceAcrossTheBoundary pins that a task's argument is
+// not counted on both sides of the task boundary.
+//
+// A worker's cloned arguments stay in its group's jobPayloads for as long as the
+// job runs, where the parent's own walk counts them through jobPayloadMemory.
+// The same values are then bound into the worker, and the worker's baseline
+// subtracted only the graph tail -- so the payload was charged twice and an item
+// well inside the quota was refused as though two copies were live.
+//
+// The arguments a call is handed are inherited exactly as its globals are, and
+// the baseline is what this level inherited, so they belong in it. That is a
+// local change to one execution's accounting rather than a transfer of ownership
+// between the parent and the worker: a transfer has to be atomic against a
+// concurrent parent check, and every mechanism on this branch that needed
+// cross-goroutine atomicity has cost more than it was worth.
+//
+// The boundary is bisected rather than asserted against a single quota, because
+// the boundary is exactly what moves when a value is counted twice.
+func TestTaskPayloadIsChargedOnceAcrossTheBoundary(t *testing.T) {
+	t.Parallel()
+
+	const payloadSize = 1 << 20
+
+	payload := NewString(strings.Repeat("p", payloadSize))
+	source := `def step(item)
+  item.size
+end
+
+def run(payload)
+  Tasks.map([payload], max: 1, with: :step)
+  "done"
+end`
+
+	run := func(quota int) error {
+		script := compileScriptWithConfig(t,
+			Config{MaxTaskConcurrency: 4, MemoryQuotaBytes: quota, StepQuota: Unlimited}, source)
+		_, err := script.Call(context.Background(), "run", []Value{payload}, CallOptions{})
+		return err
+	}
+
+	const upper = 64 << 20
+	if err := run(upper); err != nil {
+		t.Fatalf("a single %d byte task item failed under a %d MiB quota: %v", payloadSize, upper>>20, err)
+	}
+	lo, hi := 1, upper
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		if run(mid) == nil {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
+	}
+
+	// One copy plus the chain's own overhead. Half again the payload is far
+	// below the two copies a double charge needs and far above the few
+	// kilobytes the chain actually adds.
+	if lo > payloadSize+payloadSize/2 {
+		t.Fatalf("one %d byte task item needs a quota of %d (%.2fx the payload): the payload is charged on both sides of the task boundary, so an item well inside the quota is refused as though two copies were live",
+			payloadSize, lo, float64(lo)/float64(payloadSize))
+	}
+	// And it is still charged once: a quota below the payload must not admit it.
+	if lo < payloadSize {
+		t.Fatalf("one %d byte task item passed under a quota of only %d, so the payload is not being charged at all", payloadSize, lo)
+	}
+}

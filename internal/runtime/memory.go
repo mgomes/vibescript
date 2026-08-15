@@ -825,12 +825,25 @@ func (exec *Execution) checkMemory() error {
 //
 // Only a level with an ancestor pays for this. A chain root publishes its
 // estimate whole, so its baseline is never consulted.
-func (exec *Execution) captureMemoryInheritedBaseline() {
+func (exec *Execution) captureMemoryInheritedBaseline(args []Value, kwargs map[string]Value) {
 	if exec.memoryQuota <= 0 || exec.memChain == nil || exec.memChain.parent == nil {
 		return
 	}
 	est := newMemoryEstimator()
-	exec.memBaseline = exec.estimateGraphTail(est, taskLazyGlobalsFromContext(exec.ctx))
+	baseline := exec.estimateGraphTail(est, taskLazyGlobalsFromContext(exec.ctx))
+	// The arguments this call was handed are inherited as much as its globals
+	// are, and the caller is already charged for them: a task worker's cloned
+	// payload sits in its group's jobPayloads, counted by jobPayloadMemory,
+	// for as long as the job runs. Leaving them out of the baseline charged the
+	// same values on both sides of the task boundary, so one item was refused
+	// as though two copies were live -- measured at 2.01x the payload where the
+	// same script needs 1.00x without this chain.
+	//
+	// One estimator across the tail and the arguments, so a value reachable from
+	// both is counted once rather than subtracted twice.
+	baseline = saturatingAdd(baseline, est.slice(args))
+	baseline = saturatingAdd(baseline, est.hash(kwargs))
+	exec.memBaseline = baseline
 	exec.memBaselineSet = true
 }
 
