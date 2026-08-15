@@ -1308,3 +1308,66 @@ func TestScanTableReservationCoversAppendGrowth(t *testing.T) {
 		}
 	}
 }
+
+// TestBaselineSubtractsArgumentValuesNotTheirContainers pins which part of an
+// argument list is shared across a task boundary.
+//
+// The values are: a worker binds them into its environment while its group still
+// retains them in jobPayloads, so they are genuinely held on both sides and
+// belong in the baseline. The containers are not: the []Value and the keyword
+// map stay with the caller and the worker never sees them, so subtracting them
+// hands the chain headroom for memory that is really there.
+//
+// Subtracting whole containers through est.slice and est.hash over-subtracted by
+// 22% of the figure across argument counts from 8 to 4,096. That turned the
+// previous round's over-count into an under-count, which is the unsafe
+// direction: the earlier error refused work that fit, this one admits work that
+// does not.
+//
+// Measured as the difference two baselines make, rather than against a recomputed
+// expected total, so the assertion does not depend on reproducing the graph-tail
+// arithmetic that both sides share.
+func TestBaselineSubtractsArgumentValuesNotTheirContainers(t *testing.T) {
+	t.Parallel()
+
+	const (
+		ceiling = 8 << 20
+		count   = 256
+	)
+
+	args := make([]Value, count)
+	for i := range args {
+		args[i] = NewString(strings.Repeat("v", 64))
+	}
+
+	newChild := func() *Execution {
+		root := newMemoryChain(nil, ceiling)
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: ceiling}
+		exec.memChainNode.parent = root
+		exec.memChainNode.limit = ceiling
+		exec.memChainNode.descendantHeadroom.Store(noDescendantConstraint)
+		exec.memChain = &exec.memChainNode
+		return exec
+	}
+
+	without := newChild()
+	without.captureMemoryInheritedBaseline(nil, nil)
+
+	with := newChild()
+	with.captureMemoryInheritedBaseline(args, nil)
+
+	got := with.memBaseline - without.memBaseline
+
+	// What actually crosses: each argument's value graph, deduplicated the way
+	// one estimator would see them.
+	est := newMemoryEstimator()
+	want := 0
+	for _, arg := range args {
+		want += est.value(arg)
+	}
+
+	if got != want {
+		t.Fatalf("%d arguments moved the baseline by %d bytes, but only %d bytes of value graph cross the boundary: the extra %d is the []Value that stays with the caller, and subtracting it grants the chain headroom for memory that is really held",
+			count, got, want, got-want)
+	}
+}
