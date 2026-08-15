@@ -823,7 +823,7 @@ func (exec *Execution) checkMemory() error {
 //
 // The first three were fixed where they were found. This is the rule instead of
 // a fourth site: it is checkMemory under a name that says why the call is
-// there, so the guard below can find it and so the next person adding host code
+// there, so that a scan can find it and so that the next person adding host code
 // to a setup path has something to keep above it.
 // TestHostCapabilityCodeRunsOnlyAfterPublishing fails when host code becomes
 // reachable without one of these in front of it.
