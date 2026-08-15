@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"math"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -193,6 +194,11 @@ func TestConcurrentExecutionCannotDestroyMemo(t *testing.T) {
 		{"hash_default", "def run(n)\n  i = 0\n  while i < n\n    h = Hash.new(0)\n    h[\"k\"] = i\n    i = i + 1\n  end\n  i\nend"},
 		{"hash_keys", "def run(n)\n  h = {a: 1, b: 2}\n  i = 0\n  while i < n\n    h.keys\n    i = i + 1\n  end\n  i\nend"},
 		{"bound_receiver", "def run(n)\n  a = [1, 2, 3]\n  i = 0\n  while i < n\n    a.length\n    i = i + 1\n  end\n  i\nend"},
+		// A host-registered builtin exchanging only scalars. Nothing crosses, so
+		// the attacker keeps its private counter and the victim is unaffected.
+		// This shape was missing for two review rounds; the object-carrying one
+		// below is what it was missing.
+		{"host_builtin_scalar", "def run(n)\n  i = 0\n  while i < n\n    host_touch()\n    i = i + 1\n  end\n  i\nend"},
 	}
 
 	const n = 3000
@@ -213,10 +219,11 @@ func TestConcurrentExecutionCannotDestroyMemo(t *testing.T) {
 	control := scopedEpochVictimVisitsPerElement(t, n)
 	for _, attacker := range attackers {
 		t.Run(attacker.name, func(t *testing.T) {
-			script := compileScriptWithConfig(t, Config{
-				MemoryQuotaBytes: 64 << 20,
-				StepQuota:        Unlimited,
-			}, attacker.src)
+			engine := MustNewEngine(Config{MemoryQuotaBytes: 64 << 20, StepQuota: Unlimited})
+			engine.RegisterBuiltin("host_touch", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+				return NewInt(1), nil
+			})
+			script := compileScriptWithEngine(t, engine, attacker.src)
 			var stop atomic.Bool
 			var failed atomic.Bool
 			var wg sync.WaitGroup
@@ -402,5 +409,75 @@ func TestObjectPassThroughDoesNotRevoke(t *testing.T) {
 	}
 	if !sameContainerPayload(a, a) {
 		t.Fatalf("an object did not compare equal to itself, so a genuine uncloned crossing would go undetected")
+	}
+}
+
+// TestHostBuiltinObjectArgumentCostsEveryoneElse records the shape the twelve
+// assertions above miss, and it is a cost of the mechanism working correctly
+// rather than a defect.
+//
+// An attacker passing a container to a host-registered builtin has a container
+// cross the host boundary, which revokes its qualification, because the host
+// could stash it and let a third execution mutate it later. That revocation is
+// right for the attacker's own accounting. But an unqualified execution's writes
+// all go process-wide, so every later write in that loop discards the memo of
+// every other execution in the process, and the amplification this change
+// removes comes back for scripts that had nothing to do with it. The cost of one
+// execution's safety is paid by everyone else.
+//
+// The bound here records today's behaviour rather than endorsing it. Consuming
+// a non-retaining declaration is what should bring this shape back into the
+// single-digit band the others hold, because a host that stores no reference to
+// what it is handed cannot let a third execution reach it, which is exactly the
+// hazard the revocation exists for. Tighten this to maxAmplification when that
+// lands; if it can be tightened without that, the revocation was never needed
+// for this shape and the reasoning above is wrong.
+func TestHostBuiltinObjectArgumentCostsEveryoneElse(t *testing.T) {
+	skipIfEstimatorVerify(t)
+	const n = 3000
+	// Measured at roughly 500x. The bound leaves room for scheduling while still
+	// failing if the shape degrades by another order.
+	const recordedAmplification = 2000.0
+
+	control := scopedEpochVictimVisitsPerElement(t, n)
+	engine := MustNewEngine(Config{MemoryQuotaBytes: 64 << 20, StepQuota: Unlimited})
+	engine.RegisterBuiltin("host_obj", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+		return NewNil(), nil
+	})
+	script := compileScriptWithEngine(t, engine,
+		"def run(n)\n  o = {a: 1}\n  i = 0\n  while i < n\n    host_obj(o)\n    i = i + 1\n  end\n  i\nend")
+
+	var stop, failed atomic.Bool
+	var rounds atomic.Uint64
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for !stop.Load() {
+			if _, err := script.Call(context.Background(), "run", []Value{NewInt(50)}, CallOptions{}); err != nil {
+				failed.Store(true)
+				return
+			}
+			rounds.Add(1)
+		}
+	})
+	for rounds.Load() == 0 && !failed.Load() {
+		runtime.Gosched()
+	}
+	started := rounds.Load()
+	underAttack := scopedEpochVictimVisitsPerElement(t, n)
+	during := rounds.Load() - started
+	stop.Store(true)
+	wg.Wait()
+
+	if failed.Load() {
+		t.Fatalf("attacker script failed; the measurement would be of nothing running")
+	}
+	if during == 0 {
+		t.Fatalf("attacker completed no call during the measurement window, so the result is not evidence either way")
+	}
+	t.Logf("host builtin taking an object argument: %.1f visits/element against %.1f alone (%.0fx)",
+		underAttack, control, underAttack/control)
+	if underAttack > control*recordedAmplification {
+		t.Fatalf("this shape degraded beyond what was recorded: %.0fx against a recorded %.0fx",
+			underAttack/control, recordedAmplification)
 	}
 }
