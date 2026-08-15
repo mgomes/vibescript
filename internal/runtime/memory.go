@@ -3040,23 +3040,7 @@ type loopScratchReservation struct {
 	exec     *Execution
 	baseline int
 	delta    int
-	// published is the reservation total most recently reported to the chain,
-	// rounded up. Kept so that a growing reservation reports on granule
-	// boundaries rather than on every accepted increment.
-	published int
 }
-
-// reservationPublishShift sets the publication granule as a fraction of the
-// bound in force: the chain hears about a growing reservation once per
-// 1/256th of that bound.
-//
-// A share of the bound rather than of what is left of it, deliberately. A
-// budget scales with what ancestors hold; a granule must not, or its
-// resolution would wobble as a caller filled up, for reasons having nothing to
-// do with the granule's purpose. That distinction cost a review round to
-// separate and is easy to lose here, because both quantities are in bytes and
-// both are about the chain.
-const reservationPublishShift = 8
 
 func newLoopScratchReservation(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (loopScratchReservation, error) {
 	reservation := loopScratchReservation{exec: exec}
@@ -3070,6 +3054,29 @@ func newLoopScratchReservation(exec *Execution, receiver Value, args []Value, kw
 	return reservation, nil
 }
 
+// reserveIfFits charges scratchBytes against this execution and reports whether
+// the reservation may stand.
+//
+// It compares against the budget -- what is left of the bound in force after
+// ancestors -- and does not report the accepted reservation to the chain.
+//
+// It did report it, for one round, to close a real race: a nonblocking parent
+// that grows after this budget is read is not visible here, so an accepted
+// reservation can coexist with an allocation the combined path has no room for.
+// Publication turned out to have no consistent configuration. It has to publish
+// to close that race; it must not leave a *rejected* figure published, or
+// ancestors stay constrained by bytes that were never held and the parent is
+// falsely refused and latched; and the escape -- relaxing the ancestors'
+// constraint afterwards -- is the thing this design established cannot be done
+// safely, because the minimum it is stored as races with a sibling tightening.
+// Publish and it latches, do not publish and the race reopens, relax and it
+// races.
+//
+// So the race is left open and bounded rather than half-closed. This level's own
+// quota still binds it, and its next ordinary memory check publishes what it
+// holds; what is lost is only the window between an accepted reservation and
+// that check. See the follow-up issue, which carries the constraint as well as
+// the findings -- the constraint is the part worth inheriting.
 func (r *loopScratchReservation) reserveIfFits(scratchBytes int) bool {
 	if r.exec.memoryQuota <= 0 || scratchBytes <= 0 {
 		return true
@@ -3077,96 +3084,12 @@ func (r *loopScratchReservation) reserveIfFits(scratchBytes int) bool {
 
 	delta := r.exec.reserveLoopScratch(scratchBytes)
 	nextDelta := saturatingAdd(r.delta, delta)
-	total := saturatingAdd(r.baseline, nextDelta)
-	if total > r.exec.memoryBudgetBytes() {
+	if saturatingAdd(r.baseline, nextDelta) > r.exec.memoryBudgetBytes() {
 		r.exec.releaseLoopScratch(delta)
 		return false
 	}
 	r.delta = nextDelta
-	if !r.publishToChain(total) {
-		// Publication found the chain over quota, which the budget read at the
-		// top of this call could not see: a nonblocking parent can grow between
-		// that read and this point. Give the increment back rather than let the
-		// caller allocate against a path that no longer has room.
-		r.exec.releaseLoopScratch(delta)
-		r.delta = saturatingSub(nextDelta, delta)
-		// Not a claim about what was published: zero means nothing is known to
-		// be on the chain, so the next increment republishes rather than
-		// trusting a record that a refused publication may have moved.
-		r.published = 0
-		return false
-	}
 	return true
-}
-
-func saturatingSub(a, b int) int {
-	if b > a {
-		return 0
-	}
-	return a - b
-}
-
-// publishToChain reports a growing reservation to this execution's ancestors.
-//
-// Comparing against a budget is not sufficient on its own, and the reason is
-// worth recording because it is easy to miss: a snapshot comparison is only
-// enough when nobody can act during the reservation's life. A blocking parent
-// cannot, which is the case that makes "the right number, not a report" sound
-// complete. A `Tasks.run` parent that has spawned a worker and carries on
-// allocating *can*, and it would see the child's pre-reservation figure,
-// because nothing had published the accepted reservation.
-//
-// So it publishes, but on granule boundaries rather than per increment, which
-// keeps a hot loop from taking a chain walk on every accepted byte.
-//
-// Rounding is for the reporting, never for the deciding, and the two are split
-// deliberately. The figure handed to ancestors is rounded *up*, so they always
-// see at least what this level holds and the error is over-reporting. But a
-// refusal is decided on the exact total, because refusing on the padding would
-// reject a reservation that fits.
-//
-// It reports whether the reservation may stand. Publishing and discarding the
-// answer was the defect this replaced: publication is the first thing that sees
-// the chain as it is now rather than as the budget read it a moment ago, so it
-// is also the first thing that can discover a nonblocking parent has grown in
-// between. Publishing conservatively and then ignoring what it found is not a
-// conservative design.
-func (r *loopScratchReservation) publishToChain(total int) bool {
-	granule := r.exec.effectiveMemoryLimit() >> reservationPublishShift
-	if granule <= 0 {
-		granule = 1
-	}
-	rounded := saturatingAdd(total, granule-1)
-	rounded -= rounded % granule
-	if rounded <= r.published {
-		// A figure covering this one is already on the chain. The caller's
-		// budget check has already decided against the chain as it stands.
-		return true
-	}
-
-	// The padded figure first, the exact total as a fallback: a refusal is
-	// decided on what this level actually holds, never on the rounding, because
-	// refusing on the padding would reject a reservation that fits.
-	//
-	// r.published is assigned only here, from the candidate that was actually
-	// accepted, and never alongside the call that publishes it. Recording the
-	// padded figure up front and then falling back to the exact one left the two
-	// disagreeing: the chain held the smaller exact value while the record
-	// claimed the larger padded one, so a later increment inside that granule
-	// took the early return above although nothing covering it had ever been
-	// published. That is the same pair-of-values shape this design removed three
-	// times over, reintroduced by having two probes and one tracking variable.
-	// Deriving the record from the publication is what makes it one fact: a
-	// branch that publishes a different figure cannot leave it stale.
-	for _, candidate := range [...]int{rounded, total} {
-		// The reservation is already in reservedScratchBytes, so the estimate
-		// the chain is given includes it without a second walk of the graph.
-		if !r.exec.memoryExceeded(candidate) {
-			r.published = candidate
-			return true
-		}
-	}
-	return false
 }
 
 func (r *loopScratchReservation) reserve(scratchBytes int) error {
