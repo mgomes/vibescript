@@ -63,23 +63,25 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	// bound between here and the old position changes what this measures: the
 	// baseline is the graph tail, which is the modules and task globals the call
 	// arrived with, and binding writes to the root env rather than to those.
-	exec.captureMemoryInheritedBaseline(args, opts.Keywords)
+	exec.captureMemoryInheritedBaseline()
 
-	// Publish this level's own setup before binding, not just measure it. A
-	// binder is allowed to block -- the sleeping binder in this repository's own
-	// tests does -- and a level is invisible to its ancestors until it has
-	// published, not merely until it has a baseline. Nothing else on the bind
-	// path meters memory, so without this the fresh root and cloned definitions
-	// stayed off the chain for as long as a binder chose to wait, and an
-	// ancestor allocating meanwhile was admitted against a total missing them.
+	// Publish this level's own setup before anything else runs.
 	//
-	// Only when there is something to bind: a binder is the only thing here that
-	// can block, so a call without capabilities pays no extra walk for a window
-	// it does not have.
-	if len(opts.Capabilities) > 0 {
-		if err := exec.checkMemory(); err != nil {
-			return NewNil(), exec.wrapError(err, fn.Pos)
-		}
+	// The property is about *when this level becomes visible*, not about which
+	// callers can block. A child builds its root env and clones the call's
+	// classes and enums before its execution exists, so there is no node to
+	// publish to while that happens; the first publication after the node exists
+	// is the earliest an ancestor can see any of it. Until then a nonblocking
+	// parent allocates against a total that omits this whole level.
+	//
+	// It was previously gated on there being capabilities to bind, reasoning
+	// that a binder is the only thing on this path that can block. That was
+	// right about blocking and wrong about the property: an ordinary
+	// capability-free job has the same window, because the window is opened by
+	// allocating before registration rather than by waiting. Blocking only makes
+	// it longer.
+	if err := exec.checkMemory(); err != nil {
+		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
@@ -213,23 +215,25 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	// bound between here and the old position changes what this measures: the
 	// baseline is the graph tail, which is the modules and task globals the call
 	// arrived with, and binding writes to the root env rather than to those.
-	exec.captureMemoryInheritedBaseline(args, opts.Keywords)
+	exec.captureMemoryInheritedBaseline()
 
-	// Publish this level's own setup before binding, not just measure it. A
-	// binder is allowed to block -- the sleeping binder in this repository's own
-	// tests does -- and a level is invisible to its ancestors until it has
-	// published, not merely until it has a baseline. Nothing else on the bind
-	// path meters memory, so without this the fresh root and cloned definitions
-	// stayed off the chain for as long as a binder chose to wait, and an
-	// ancestor allocating meanwhile was admitted against a total missing them.
+	// Publish this level's own setup before anything else runs.
 	//
-	// Only when there is something to bind: a binder is the only thing here that
-	// can block, so a call without capabilities pays no extra walk for a window
-	// it does not have.
-	if len(opts.Capabilities) > 0 {
-		if err := exec.checkMemory(); err != nil {
-			return NewNil(), exec.wrapError(err, fn.Pos)
-		}
+	// The property is about *when this level becomes visible*, not about which
+	// callers can block. A child builds its root env and clones the call's
+	// classes and enums before its execution exists, so there is no node to
+	// publish to while that happens; the first publication after the node exists
+	// is the earliest an ancestor can see any of it. Until then a nonblocking
+	// parent allocates against a total that omits this whole level.
+	//
+	// It was previously gated on there being capabilities to bind, reasoning
+	// that a binder is the only thing on this path that can block. That was
+	// right about blocking and wrong about the property: an ordinary
+	// capability-free job has the same window, because the window is opened by
+	// allocating before registration rather than by waiting. Blocking only makes
+	// it longer.
+	if err := exec.checkMemory(); err != nil {
+		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
