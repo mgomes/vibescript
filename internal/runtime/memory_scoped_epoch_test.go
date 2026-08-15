@@ -96,6 +96,9 @@ func TestScopedMutatorInvalidatesEvenWhenItFails(t *testing.T) {
 	}
 }
 
+// maxAmplificationBound separates "the memo was destroyed" from "the memo held".
+const maxAmplificationBound = 15.0
+
 // scopedEpochVictimSource is linear in its receiver on its own: the block body
 // performs no mutation and calls no builtin, so nothing invalidates the
 // region's prefix memo from inside.
@@ -214,7 +217,7 @@ func TestConcurrentExecutionCannotDestroyMemo(t *testing.T) {
 	// by design (the legacy-map materialization behind hash.keys, and the
 	// bound-receiver cell, neither of which has an execution in scope), and both
 	// measure in that single-digit band.
-	const maxAmplification = 15.0
+	const maxAmplification = maxAmplificationBound
 
 	control := scopedEpochVictimVisitsPerElement(t, n)
 	for _, attacker := range attackers {
@@ -479,5 +482,62 @@ func TestHostBuiltinObjectArgumentCostsEveryoneElse(t *testing.T) {
 	if underAttack > control*recordedAmplification {
 		t.Fatalf("this shape degraded beyond what was recorded: %.0fx against a recorded %.0fx",
 			underAttack/control, recordedAmplification)
+	}
+}
+
+// TestNonRetainingDeclarationRestoresTheBand is the other half of
+// TestHostBuiltinObjectArgumentCostsEveryoneElse. The same attacker, with the
+// same object argument, against a builtin that has declared it retains nothing:
+// the crossing no longer revokes, so its writes stay on its own counter and
+// cost no other execution anything.
+//
+// This is what makes the recorded amplification in the other test a cost of the
+// default rather than of the mechanism. It also pins the falsification: the
+// shape does NOT come back into the band without the declaration, so the
+// revocation was genuinely needed for it.
+func TestNonRetainingDeclarationRestoresTheBand(t *testing.T) {
+	skipIfEstimatorVerify(t)
+	const n = 3000
+	control := scopedEpochVictimVisitsPerElement(t, n)
+
+	engine := MustNewEngine(Config{MemoryQuotaBytes: 64 << 20, StepQuota: Unlimited})
+	engine.RegisterBuiltin("host_obj", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+		return NewNil(), nil
+	})
+	DeclareNonRetaining(engine.builtins["host_obj"])
+	script := compileScriptWithEngine(t, engine,
+		"def run(n)\n  o = {a: 1}\n  i = 0\n  while i < n\n    host_obj(o)\n    i = i + 1\n  end\n  i\nend")
+
+	var stop, failed atomic.Bool
+	var rounds atomic.Uint64
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for !stop.Load() {
+			if _, err := script.Call(context.Background(), "run", []Value{NewInt(50)}, CallOptions{}); err != nil {
+				failed.Store(true)
+				return
+			}
+			rounds.Add(1)
+		}
+	})
+	for rounds.Load() == 0 && !failed.Load() {
+		runtime.Gosched()
+	}
+	started := rounds.Load()
+	underAttack := scopedEpochVictimVisitsPerElement(t, n)
+	during := rounds.Load() - started
+	stop.Store(true)
+	wg.Wait()
+
+	if failed.Load() {
+		t.Fatalf("attacker script failed; the measurement would be of nothing running")
+	}
+	if during == 0 {
+		t.Fatalf("attacker completed no call during the measurement window, so the result is not evidence either way")
+	}
+	t.Logf("declared non-retaining: %.1f visits/element against %.1f alone (%.0fx)",
+		underAttack, control, underAttack/control)
+	if underAttack > control*maxAmplificationBound {
+		t.Fatalf("a declared non-retaining builtin still cost an unrelated execution its memo: %.0fx", underAttack/control)
 	}
 }

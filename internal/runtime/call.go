@@ -284,7 +284,17 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// reachable from two executions. Marking the execution before the bump
 		// routes this and every later write in it to the process-wide counter.
 		declaredPure := builtin.declaredNonMutating()
-		if builtin.hostDriven {
+		// A builtin that has promised to retain nothing cannot make a container
+		// crossing into it reachable from a second execution, which is the only
+		// hazard the revocation guards. Suppressing it on that declaration alone
+		// is sufficient, and the reason is the write-side property: a still
+		// qualified execution's dispatch bump lands on exec.mutationEpoch, which
+		// is the counter walkEpoch reads, so an in-call mutation by a builtin
+		// that has NOT also declared itself non-mutating is still observed by
+		// the execution that made the call. Before writes consulted
+		// qualification, that bump could land on a counter the execution was not
+		// reading and this suppression would have been unsound.
+		if builtin.hostDriven && !builtin.declaredNonRetaining() {
 			exec.revokePrivateEpochForCall(receiver, block, args, kwargs)
 		}
 		if !declaredPure {
@@ -345,11 +355,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		contractCheck := exec.beginContractVerification(builtin)
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		contractCheck.check(exec, builtin)
-		if builtin.hostDriven {
+		if builtin.hostDriven && !builtin.declaredNonRetaining() {
 			// The result can be a container the body retained from an earlier
 			// call on another execution, which the inputs above could not
 			// reveal. Bump after marking so any raw write the body made to it
-			// is published process-wide rather than only here.
+			// is published process-wide rather than only here. A builtin that
+			// has promised to retain nothing has no such earlier call to draw
+			// from, so neither is needed.
 			exec.revokePrivateEpochFor(result)
 			exec.bumpMutationEpoch()
 		}
