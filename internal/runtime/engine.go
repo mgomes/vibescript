@@ -569,6 +569,14 @@ func cloneBuiltinValue(val Value) Value {
 		clonedBuiltin.CapturedValues = builtin.CapturedValues
 		clonedBuiltin.Capability = builtin.Capability
 		clonedBuiltin.hostDriven = builtin.hostDriven
+		// The clone wraps the same Fn, so the promises made about that Go body
+		// still describe the clone. Copying them is what keeps a per-call clone
+		// from silently reclassifying a builtin as conservative; a wrapper built
+		// around a *different* function must not copy them, which is why the
+		// other rebuild paths reconstruct from scratch and inherit the
+		// conservative default instead.
+		clonedBuiltin.nonMutating = builtin.nonMutating
+		clonedBuiltin.nonRetaining = builtin.nonRetaining
 		// A bound predicate's BoundReceiver and Fn both read one mutable cell, so a
 		// shallow copy that shares both stays consistent: the copy reads the same
 		// receiver, and a later two-phase clone rebuilds a fresh predicate around

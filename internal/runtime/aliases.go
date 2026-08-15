@@ -1113,7 +1113,58 @@ type Builtin struct {
 	// so its frame claims every backing rather than a named one (see
 	// array_shrink.go).
 	hostDriven bool
+
+	// nonMutating and nonRetaining record the two halves of a builtin's
+	// declared contract. Both are promises about the Go body, and both default
+	// to the conservative answer: the zero value of a Builtin declares nothing,
+	// so a builtin nobody classified keeps the behaviour it has today. Omission
+	// costs speed, never correctness, which is why every path that rebuilds a
+	// Builtin without copying these fields (cloneBuiltinValue, the direct-call
+	// alias rebinder, the revoked-capability replacement) stays sound by
+	// construction.
+	//
+	// See declaredNonMutating and declaredNonRetaining for the predicates
+	// themselves, which is where the promises are stated in full.
+	nonMutating  bool
+	nonRetaining bool
 }
+
+// declaredNonMutating reports whether this builtin has promised that no
+// invocation of it writes to any container reachable from its receiver, its
+// arguments, its keyword arguments, its block, or from any execution's roots.
+//
+// Allocating a fresh container and writing into it is not a mutation under this
+// promise: the promise is about state something else can already reach, so a
+// builtin that builds a result and returns it keeps the promise. Script code the
+// builtin drives through a block is not covered either, and does not need to be:
+// a script write advances the mutation epoch on its own.
+//
+// The runtime relies on the promise in two places, and both are the same claim.
+// Dispatch skips the mutation-epoch bump that would otherwise invalidate every
+// memoized estimator walk, and a memory check that runs while the builtin is on
+// the stack keeps using the memo instead of falling back to a full re-walk.
+// Both exist only because a Go body may write through a raw slice or map where
+// the epoch cannot observe it; a builtin that declares it does not is exactly
+// the case they were guarding against.
+func (b *Builtin) declaredNonMutating() bool { return b != nil && b.nonMutating }
+
+// declaredNonRetaining reports whether this builtin has promised that no
+// invocation of it stores, anywhere that outlives the invocation, a reference to
+// any Value it receives or returns, or to any container reachable from one.
+//
+// "Anywhere that outlives the invocation" means package-level variables, fields
+// on the adapter, closure captures, channels, caches, and anything handed to
+// another goroutine. The reachability clause is the part that is easy to get
+// wrong: keeping args[0].Hash()["rows"] is retention even though the argument
+// itself was not kept.
+//
+// It is deliberately separate from declaredNonMutating and neither implies the
+// other. A builtin that retains without ever writing is still a retainer: the
+// container it kept is now reachable from two executions, and script code in
+// the second can mutate it in a way attributed to that execution alone. A
+// builtin that mutates without retaining is harmless to the retention side and
+// fatal to the dispatch side.
+func (b *Builtin) declaredNonRetaining() bool { return b != nil && b.nonRetaining }
 
 // BuiltinFunc is the Go function signature for built-in Vibescript functions.
 type BuiltinFunc func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error)
@@ -1248,6 +1299,54 @@ func NewBuiltin(name string, fn BuiltinFunc) Value { return newBuiltin(name, fn,
 func MarkHostBuiltin(v Value) Value {
 	if b := valueBuiltin(v); b != nil {
 		b.hostDriven = true
+	}
+	return v
+}
+
+// DeclareNonMutating records a builtin's promise that no invocation of it
+// writes to any container reachable from its receiver, arguments, keyword
+// arguments, block, or from any execution's roots, and returns it. Allocating a
+// container and filling it in is not such a write; the promise covers only
+// state something else can already reach.
+//
+// This is a safety promise, not a performance hint. The runtime stops
+// invalidating its memoized memory-estimator walk around calls to a builtin
+// that makes it, so a declaration that is not true leaves an execution's memory
+// accounting missing whatever the builtin changed, and the execution then
+// allocates past its configured MemoryQuotaBytes. Declare nothing and the
+// builtin keeps today's conservative behaviour, which is slower and correct.
+//
+// The promise is between an embedder and itself. A host builtin already runs
+// arbitrary Go in the embedding process and can allocate without bound today,
+// so declaring grants no capability a host did not have, and script code can
+// neither read the declaration nor reach it. What it does do is disable a
+// backstop the host is then responsible for honouring.
+func DeclareNonMutating(v Value) Value {
+	if b := valueBuiltin(v); b != nil {
+		b.nonMutating = true
+	}
+	return v
+}
+
+// DeclareNonRetaining records a builtin's promise that no invocation of it
+// stores, anywhere that outlives the invocation, a reference to any Value it
+// receives or returns, or to any container reachable from one, and returns it.
+// Package-level variables, adapter fields, closure captures, channels, caches
+// and anything handed to another goroutine all count as outliving it, and
+// keeping a container reached through an argument counts as keeping the
+// argument.
+//
+// This is a safety promise, not a performance hint, and it carries the same
+// consequence as DeclareNonMutating: an execution calling a builtin that makes
+// it keeps accounting for memory on its own, so a false declaration lets a
+// container the host kept be mutated later without that execution observing it,
+// and its quota then admits allocations it should have refused.
+//
+// It is a separate promise from DeclareNonMutating and neither implies the
+// other, so a builtin that needs both wins must make both.
+func DeclareNonRetaining(v Value) Value {
+	if b := valueBuiltin(v); b != nil {
+		b.nonRetaining = true
 	}
 	return v
 }
