@@ -1117,7 +1117,7 @@ type Builtin struct {
 	// nonMutating and nonRetaining record the two halves of a builtin's
 	// declared contract. Both are promises about the Go body, and both default
 	// to the conservative answer: the zero value of a Builtin declares nothing,
-	// so a builtin nobody classified keeps the behaviour it has today. Omission
+	// so a builtin nobody classified keeps the behavior it has today. Omission
 	// costs speed, never correctness, which is why every path that rebuilds a
 	// Builtin without copying these fields (cloneBuiltinValue, the direct-call
 	// alias rebinder, the revoked-capability replacement) stays sound by
@@ -1164,6 +1164,10 @@ func (b *Builtin) declaredNonMutating() bool { return b != nil && b.nonMutating 
 // the second can mutate it in a way attributed to that execution alone. A
 // builtin that mutates without retaining is harmless to the retention side and
 // fatal to the dispatch side.
+//
+// No caller reads this yet. It is the half of the contract that the execution-
+// scoped walk memo needs (#1199), and it is recorded here so that change has a
+// declaration to consume rather than having to introduce one and use it at once.
 func (b *Builtin) declaredNonRetaining() bool { return b != nil && b.nonRetaining }
 
 // BuiltinFunc is the Go function signature for built-in Vibescript functions.
@@ -1314,13 +1318,13 @@ func MarkHostBuiltin(v Value) Value {
 // that makes it, so a declaration that is not true leaves an execution's memory
 // accounting missing whatever the builtin changed, and the execution then
 // allocates past its configured MemoryQuotaBytes. Declare nothing and the
-// builtin keeps today's conservative behaviour, which is slower and correct.
+// builtin keeps today's conservative behavior, which is slower and correct.
 //
 // The promise is between an embedder and itself. A host builtin already runs
 // arbitrary Go in the embedding process and can allocate without bound today,
 // so declaring grants no capability a host did not have, and script code can
 // neither read the declaration nor reach it. What it does do is disable a
-// backstop the host is then responsible for honouring.
+// backstop the host is then responsible for honoring.
 func DeclareNonMutating(v Value) Value {
 	if b := valueBuiltin(v); b != nil {
 		b.nonMutating = true
@@ -1336,14 +1340,18 @@ func DeclareNonMutating(v Value) Value {
 // keeping a container reached through an argument counts as keeping the
 // argument.
 //
-// This is a safety promise, not a performance hint, and it carries the same
-// consequence as DeclareNonMutating: an execution calling a builtin that makes
-// it keeps accounting for memory on its own, so a false declaration lets a
+// Nothing consults this promise yet: it is recorded and no more, so declaring
+// it changes no behavior today. It is published ahead of the change that reads
+// it (#1199), so hosts are not asked to adopt an API mid-flight.
+//
+// It is stated as a safety promise rather than a hint because of what it will
+// mean once consulted: an execution calling a builtin that makes it keeps
+// accounting for memory on its own, so an untrue declaration would let a
 // container the host kept be mutated later without that execution observing it,
-// and its quota then admits allocations it should have refused.
+// and its quota would then admit allocations it should have refused.
 //
 // It is a separate promise from DeclareNonMutating and neither implies the
-// other, so a builtin that needs both wins must make both.
+// other.
 func DeclareNonRetaining(v Value) Value {
 	if b := valueBuiltin(v); b != nil {
 		b.nonRetaining = true
