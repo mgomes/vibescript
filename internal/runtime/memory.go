@@ -825,67 +825,7 @@ func (exec *Execution) checkMemory() error {
 //
 // Only a level with an ancestor pays for this. A chain root publishes its
 // estimate whole, so its baseline is never consulted.
-// inheritedArgumentBytes is what an argument list shares with the caller that
-// passed it: the graph of each value, and nothing else.
-//
-// The values are what a worker binds into its environment while the caller still
-// retains them -- a task's cloned payload sits in its group's jobPayloads for as
-// long as the job runs -- so those graphs are genuinely held on both sides and
-// belong in the baseline. The containers are not. The []Value and the keyword
-// map stay with the caller; the worker never sees them, so subtracting them
-// hands the chain headroom for memory that is really there.
-//
-// Named rather than approximated by est.slice and est.hash, which is what this
-// replaced. Those price the container and its contents together, so subtracting
-// them over-subtracted by the container: measured at 22% of the figure across
-// argument counts from 8 to 4,096, and 131 KB at 4,096. The previous attempt at
-// this baseline omitted the arguments entirely and under-subtracted by the whole
-// payload. Both errors came from computing a quantity adjacent to the one meant
-// rather than the one meant, which is why this is a function whose name and
-// comment state exactly what crosses the boundary.
-//
-// est is shared with the caller's other baseline terms so that a value reachable
-// both as an argument and through the graph tail is subtracted once.
-func inheritedArgumentBytes(est *memoryEstimator, args []Value, kwargs map[string]Value) int {
-	total := 0
-	for _, arg := range args {
-		total = saturatingAdd(total, sharedArgumentBytes(est, arg))
-	}
-	for _, kwarg := range kwargs {
-		total = saturatingAdd(total, sharedArgumentBytes(est, kwarg))
-	}
-	return total
-}
-
-// sharedArgumentBytes returns what an argument shares with the caller that
-// passed it, and zero unless sharing is proven for its kind.
-//
-// Default-deny, deliberately. An omission here charges the same bytes on both
-// sides of the boundary, which refuses work that would have fit; a wrong
-// inclusion cancels memory that is really held on both sides, which admits work
-// past the ceiling. Three consecutive rounds of defects in this subtraction were
-// all the second kind, so the rule is now that a kind is subtracted only when
-// its sharing has been measured, and everything else stays charged twice.
-//
-// Strings are proven: binding one into a worker copies a header that keeps the
-// same backing, measured at 1.01x the live heap with the caller and the worker
-// both holding a 1 MiB payload. Composites are proven NOT to share: call entry
-// deep-copies them, so the caller's retained clone and the worker's binding are
-// two live graphs -- measured at 1.74x for an array and 2.53x for a hash on the
-// same instrument. Charging those twice is not a penalty, it is the count.
-//
-// Extending this to another kind means measuring that kind the same way, not
-// reasoning about it. The premise that failed last round -- that a worker binds
-// what its caller retains -- reads as obviously true and is false for exactly
-// the kinds that matter most.
-func sharedArgumentBytes(est *memoryEstimator, value Value) int {
-	if value.Kind() != KindString {
-		return 0
-	}
-	return est.value(value)
-}
-
-func (exec *Execution) captureMemoryInheritedBaseline(args []Value, kwargs map[string]Value) {
+func (exec *Execution) captureMemoryInheritedBaseline() {
 	if exec.memoryQuota <= 0 || exec.memChain == nil || exec.memChain.parent == nil {
 		return
 	}
@@ -901,7 +841,6 @@ func (exec *Execution) captureMemoryInheritedBaseline(args []Value, kwargs map[s
 	//
 	// One estimator across the tail and the arguments, so a value reachable from
 	// both is counted once rather than subtracted twice.
-	baseline = saturatingAdd(baseline, inheritedArgumentBytes(est, args, kwargs))
 	exec.memBaseline = baseline
 	exec.memBaselineSet = true
 }

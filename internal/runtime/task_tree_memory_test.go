@@ -1215,25 +1215,25 @@ func TestMemoryBudgetSubtractsWhatAncestorsHold(t *testing.T) {
 	}
 }
 
-// TestTaskPayloadIsChargedOnceAcrossTheBoundary pins that a task's argument is
-// not counted on both sides of the task boundary.
+// TestTaskPayloadCostsTwiceItsSize pins the price of not subtracting a task's
+// arguments, so that the accepted over-charge is a recorded number rather than
+// an emergent one.
 //
-// A worker's cloned arguments stay in its group's jobPayloads for as long as the
-// job runs, where the parent's own walk counts them through jobPayloadMemory.
-// The same values are then bound into the worker, and the worker's baseline
-// subtracted only the graph tail -- so the payload was charged twice and an item
-// well inside the quota was refused as though two copies were live.
+// The group retains the cloned payload while the job runs and the worker binds
+// it, and the baseline subtracts neither. For a composite that is the exact
+// count -- call entry deep-copies it, so two graphs really are live. For a
+// string it is an over-charge, because the backing is shared even though the
+// header and Value slot are not.
 //
-// The arguments a call is handed are inherited exactly as its globals are, and
-// the baseline is what this level inherited, so they belong in it. That is a
-// local change to one execution's accounting rather than a transfer of ownership
-// between the parent and the worker: a transfer has to be atomic against a
-// concurrent parent check, and every mechanism on this branch that needed
-// cross-goroutine atomicity has cost more than it was worth.
+// Subtracting the shared part was implemented and withdrawn: its correctness
+// needs an enumeration of shared parts per kind, three measurements of that were
+// wrong at three different granularities, and being wrong admits work past the
+// ceiling. Its whole benefit was this test's difference from 1x.
 //
-// The boundary is bisected rather than asserted against a single quota, because
-// the boundary is exactly what moves when a value is counted twice.
-func TestTaskPayloadIsChargedOnceAcrossTheBoundary(t *testing.T) {
+// So this asserts roughly 2x and not less. If someone makes it 1x again they
+// have re-entered that problem, and this comment is the argument they need to
+// answer. If they make it much more than 2x, something else regressed.
+func TestTaskPayloadCostsTwiceItsSize(t *testing.T) {
 	t.Parallel()
 
 	const payloadSize = 1 << 20
@@ -1269,17 +1269,14 @@ end`
 		}
 	}
 
-	// One copy plus the chain's own overhead. Half again the payload is far
-	// below the two copies a double charge needs and far above the few
-	// kilobytes the chain actually adds.
-	if lo > payloadSize+payloadSize/2 {
-		t.Fatalf("one %d byte task item needs a quota of %d (%.2fx the payload): the payload is charged on both sides of the task boundary, so an item well inside the quota is refused as though two copies were live",
+	if lo < payloadSize+payloadSize/2 {
+		t.Fatalf("one %d byte task item needs only %d (%.2fx): the payload is being subtracted from the worker's baseline again, which charges once for what may be two live graphs",
 			payloadSize, lo, float64(lo)/float64(payloadSize))
 	}
-	// And it is still charged once: a quota below the payload must not admit it.
-	if lo < payloadSize {
-		t.Fatalf("one %d byte task item passed under a quota of only %d, so the payload is not being charged at all", payloadSize, lo)
+	if lo > 3*payloadSize {
+		t.Fatalf("one %d byte task item needs %d (%.2fx), well past the two copies this charges for", payloadSize, lo, float64(lo)/float64(payloadSize))
 	}
+	t.Logf("one %d byte task item needs %d bytes (%.2fx) -- the recorded price of not subtracting arguments", payloadSize, lo, float64(lo)/float64(payloadSize))
 }
 
 // TestScanTableReservationCoversAppendGrowth pins that the bytes reserved before
@@ -1316,26 +1313,28 @@ func TestScanTableReservationCoversAppendGrowth(t *testing.T) {
 	}
 }
 
-// TestBaselineSubtractsOnlyProvenSharedArguments pins which arguments the
-// baseline may subtract, and that it defaults to subtracting nothing.
+// TestBaselineDoesNotSubtractArguments pins that a call's arguments are charged
+// on both sides of a task boundary, deliberately.
 //
-// The premise that failed twice is that a worker binds what its caller retains.
-// It is true for a string -- binding copies a header that keeps the same
-// backing, measured at 1.01x live heap with caller and worker both holding
-// 1 MiB -- and false for a composite, which call entry deep-copies, so the
-// caller's retained clone and the worker's binding are two live graphs: 1.74x
-// for an array and 2.53x for a hash on the same instrument.
+// The group retains the cloned payload in jobPayloads for as long as the job
+// runs, and the worker binds it, so subtracting it from the worker's baseline
+// would leave one charge for what may be two live graphs. Whether it is one or
+// two depends on the kind, and on which *parts* of the value: a composite is
+// deep-copied at call entry, and even a string shares only its backing while its
+// header and Value slot are the worker's own.
 //
-// So the rule is default-deny. An omission charges both sides and refuses work
-// that would have fit; a wrong inclusion cancels memory that is really held and
-// admits work past the ceiling. Three consecutive rounds of defects here were
-// all the second kind.
+// Subtracting the shared part was implemented and withdrawn. Its correctness
+// needs an enumeration of shared parts per kind, and being wrong about that
+// admits work past the ceiling. Three measurements were wrong at three
+// granularities -- which members cross, which kinds share, which parts of a
+// sharing kind share -- so the correctness condition is finer than the
+// instrument that was checking it. Its whole benefit was 33% on string payloads,
+// with composites identical either way.
 //
-// The earlier version of this test used strings only, which is why it passed
-// while composites were being canceled: it covered the case its author had in
-// mind. Both kinds are checked here, and the composite assertion is the one that
-// matters.
-func TestBaselineSubtractsOnlyProvenSharedArguments(t *testing.T) {
+// So the over-charge stands, in the direction that refuses rather than admits.
+// If this is ever revisited, the number to beat is in the PR body and the shape
+// that would justify it is a large string payload under a tight quota.
+func TestBaselineDoesNotSubtractArguments(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -1352,46 +1351,29 @@ func TestBaselineSubtractsOnlyProvenSharedArguments(t *testing.T) {
 		exec.memChain = &exec.memChainNode
 		return exec
 	}
-	baselineWith := func(args []Value) int {
-		bare := newChild()
-		bare.captureMemoryInheritedBaseline(nil, nil)
-		with := newChild()
-		with.captureMemoryInheritedBaseline(args, nil)
-		return with.memBaseline - bare.memBaseline
-	}
 
-	// Strings share their backing across the boundary, so they are subtracted.
-	strs := make([]Value, count)
-	for i := range strs {
-		strs[i] = NewString(strings.Repeat("v", 64))
-	}
-	est := newMemoryEstimator()
-	wantStrings := 0
-	for _, v := range strs {
-		wantStrings += est.value(v)
-	}
-	if got := baselineWith(strs); got != wantStrings {
-		t.Fatalf("%d string arguments moved the baseline by %d, want %d: only the value graphs cross, not the []Value that stays with the caller",
-			count, got, wantStrings)
-	}
+	bare := newChild()
+	bare.captureMemoryInheritedBaseline()
+	want := bare.memBaseline
 
-	// Composites are deep-copied at call entry, so both graphs are live and
-	// neither side may cancel the other.
-	composites := make([]Value, count)
-	for i := range composites {
-		composites[i] = NewArray([]Value{NewString(strings.Repeat("c", 64)), NewInt(int64(i))})
-	}
-	if got := baselineWith(composites); got != 0 {
-		t.Fatalf("%d composite arguments moved the baseline by %d, want 0: call entry deep-copies a composite, so the caller's retained clone and the worker's binding are two live graphs and subtracting one cancels memory that is really held",
-			count, got)
-	}
-
-	// And a hash, which is the kind that measured furthest from sharing.
-	hashes := make([]Value, count)
-	for i := range hashes {
-		hashes[i] = NewHash(map[string]Value{"k": NewString(strings.Repeat("h", 64))})
-	}
-	if got := baselineWith(hashes); got != 0 {
-		t.Fatalf("%d hash arguments moved the baseline by %d, want 0", count, got)
+	// Every kind, because the withdrawn mechanism was wrong about kinds twice.
+	for _, kind := range []struct {
+		name  string
+		build func(int) Value
+	}{
+		{"string", func(int) Value { return NewString(strings.Repeat("v", 64)) }},
+		{"array", func(i int) Value { return NewArray([]Value{NewString(strings.Repeat("c", 64)), NewInt(int64(i))}) }},
+		{"hash", func(int) Value { return NewHash(map[string]Value{"k": NewString(strings.Repeat("h", 64))}) }},
+	} {
+		args := make([]Value, count)
+		for i := range args {
+			args[i] = kind.build(i)
+		}
+		withArgs := newChild()
+		withArgs.captureMemoryInheritedBaseline()
+		if got := withArgs.memBaseline; got != want {
+			t.Fatalf("%s: baseline is %d with arguments present and %d without; arguments must not move it, or a payload that may be two live graphs is charged once",
+				kind.name, got, want)
+		}
 	}
 }
