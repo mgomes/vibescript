@@ -825,22 +825,31 @@ func (exec *Execution) checkMemory() error {
 //
 // Only a level with an ancestor pays for this. A chain root publishes its
 // estimate whole, so its baseline is never consulted.
+// The baseline is the graph tail and deliberately not the call's arguments, so
+// a task payload is charged on both sides of the boundary: once to the group
+// retaining the clone, once to the worker binding it. For a composite that is
+// the exact count, since call entry deep-copies it and two graphs really are
+// live. For a string it over-charges, because the backing is shared even though
+// the header and Value slot are not.
+//
+// Subtracting the shared part was implemented and withdrawn. Its correctness
+// needs an enumeration of which parts of a value are shared, per kind, and being
+// wrong about that admits work past the ceiling rather than refusing work that
+// fits. Three measurements of it were wrong at three granularities -- which
+// members cross, which kinds share, then which parts of a sharing kind share --
+// so the correctness condition was finer than the instrument checking it. The
+// whole benefit was 33% on string payloads: 2,105,228 bytes for a 1 MiB string
+// against 1,577,152, with composites identical at 6,371,368 either way.
+//
+// So the over-charge stands, in the direction that refuses rather than admits.
+// A host passing a large string as a task payload needs roughly twice it in
+// quota, and TestTaskPayloadCostsTwiceItsSize records that price.
 func (exec *Execution) captureMemoryInheritedBaseline() {
 	if exec.memoryQuota <= 0 || exec.memChain == nil || exec.memChain.parent == nil {
 		return
 	}
 	est := newMemoryEstimator()
 	baseline := exec.estimateGraphTail(est, taskLazyGlobalsFromContext(exec.ctx))
-	// The arguments this call was handed are inherited as much as its globals
-	// are, and the caller is already charged for them: a task worker's cloned
-	// payload sits in its group's jobPayloads, counted by jobPayloadMemory,
-	// for as long as the job runs. Leaving them out of the baseline charged the
-	// same values on both sides of the task boundary, so one item was refused
-	// as though two copies were live -- measured at 2.01x the payload where the
-	// same script needs 1.00x without this chain.
-	//
-	// One estimator across the tail and the arguments, so a value reachable from
-	// both is counted once rather than subtracted twice.
 	exec.memBaseline = baseline
 	exec.memBaselineSet = true
 }
