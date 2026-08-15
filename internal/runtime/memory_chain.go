@@ -332,3 +332,38 @@ func memoryChainFromContext(ctx context.Context) *memoryChain {
 	chain, _ := ctx.Value(memoryChainKey{}).(*memoryChain)
 	return chain
 }
+
+// memoryChainHidden hides the chain from a context while passing everything
+// else through.
+//
+// Hides rather than removes, because a context value cannot be removed. Only
+// this one key is answered locally; cancellation, deadline and every other
+// value still resolve against the wrapped context, because a callee that must
+// not inherit an allowance must still observe its caller's cancellation.
+type memoryChainHidden struct{ context.Context }
+
+func (c memoryChainHidden) Value(key any) any {
+	if _, ok := key.(memoryChainKey); ok {
+		return nil
+	}
+	return c.Context.Value(key)
+}
+
+// contextWithoutMemoryChain stops a node traveling further than the call that
+// linked to it.
+//
+// The chain reaches a callee by being read out of its context, and once it has
+// been read the context has no further use for it -- but Execution.ctx is what
+// CapabilityBinding.Context and Execution.Context() hand to host code. Leaving
+// the node reachable there means an adapter re-entering Script.Call joins the
+// chain of the call that bound it, which is the opposite of the fresh allowance
+// this design documents: an unlimited engine re-entered from a bounded caller
+// would become bounded, which master does not do, and a re-entry running
+// alongside a task child would be charged as its sibling.
+//
+// Nesting is unaffected. newTaskGroup republishes the execution's own node onto
+// the context its workers capture, and that is the single place nesting is
+// created.
+func contextWithoutMemoryChain(ctx context.Context) context.Context {
+	return memoryChainHidden{ctx}
+}

@@ -1644,6 +1644,21 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 			exec.memoryQuota = int(exec.memChainNode.limit)
 		}
 	}
+	// The node has now been read out of the context, and it goes no further.
+	// Everything this call hands outward derives from exec.ctx, so a node left
+	// reachable there is inherited by anything the host re-enters with it.
+	//
+	// Gated on having actually inherited one: a chain root's context never
+	// carried a node, so wrapping it would cost an allocation to hide something
+	// that is not there. The field says exactly that, without a second walk of
+	// the context to ask.
+	//
+	// Underneath the task-globals wrapper by construction, since that is applied
+	// after the execution is built (#1203) -- the ordering this design already
+	// depends on, now load-bearing for a second reason.
+	if exec.memChain != nil && exec.memChain.parent != nil {
+		exec.ctx = contextWithoutMemoryChain(exec.ctx)
+	}
 	// The module stacks stay nil: most calls never require a module,
 	// and append allocates them on first use.
 	exec.callStack = exec.callStackArr[:0]

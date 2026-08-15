@@ -1778,3 +1778,198 @@ end`, chunks)
 		})
 	}
 }
+
+// contextEscapeCapability records the contexts this package hands to host code,
+// which is every route by which a chain node could leave the runtime.
+type contextEscapeCapability struct {
+	mu       *sync.Mutex
+	bindCtx  *context.Context
+	execCtx  *context.Context
+	reentry  func(*Execution) error
+	observed *int
+}
+
+func (c contextEscapeCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	c.mu.Lock()
+	*c.bindCtx = binding.Context
+	c.mu.Unlock()
+	return map[string]Value{"host": NewObject(map[string]Value{
+		"observe": NewBuiltin("host.observe", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			c.mu.Lock()
+			*c.execCtx = exec.Context()
+			*c.observed++
+			c.mu.Unlock()
+			if c.reentry != nil {
+				if err := c.reentry(exec); err != nil {
+					return NewNil(), err
+				}
+			}
+			return NewNil(), nil
+		}),
+	})}, nil
+}
+
+// TestHostFacingContextsCarryNoChainNode is the guard the descope should have
+// had, and it exists because removing a mechanism was verified less carefully
+// than adding one would have been.
+//
+// This PR stopped publishing a level's own node onto its context, and the body
+// concluded from that that a capability adapter re-entering the engine gets a
+// fresh allowance. Those are different claims. A nested level still *inherited*
+// its group's node through the context it was called with, and both
+// CapabilityBinding.Context and Execution.Context() handed that context to host
+// code unchanged -- so an adapter re-entering Script.Call linked its callee to
+// the chain anyway, one level further up. The descope was verified by running
+// the descoped shape and finding the surviving figures byte-identical, which is
+// evidence that what remained worked and no evidence that nothing still
+// inherited.
+//
+// "We stopped doing X" is a claim like any other. This is the test that fails if
+// X resumes: it asserts on the contexts themselves, at every route out of the
+// package, from a level that genuinely is on a chain.
+func TestHostFacingContextsCarryNoChainNode(t *testing.T) {
+	t.Parallel()
+
+	const quota = 8 << 20
+
+	script := compileScriptWithConfig(t,
+		Config{MaxTaskConcurrency: 4, MemoryQuotaBytes: quota, StepQuota: Unlimited}, `
+def child(n)
+  host.observe()
+  n
+end
+
+def run()
+  Tasks.map([0], max: 1, with: :child)
+  "done"
+end`)
+
+	var (
+		mu       sync.Mutex
+		bindCtx  context.Context
+		execCtx  context.Context
+		observed int
+	)
+	cap := contextEscapeCapability{mu: &mu, bindCtx: &bindCtx, execCtx: &execCtx, observed: &observed}
+
+	if _, err := script.Call(context.Background(), "run", nil, callOptionsWithCapabilities(cap)); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	mu.Lock()
+	gotBind, gotExec, saw := bindCtx, execCtx, observed
+	mu.Unlock()
+
+	// Without this, the assertions below would pass on a run where the nested
+	// level never happened -- which is the way this guard would most plausibly
+	// stop applying.
+	if saw == 0 {
+		t.Fatalf("the capability was never invoked from a nested level, so nothing was actually inspected")
+	}
+	if gotBind == nil || gotExec == nil {
+		t.Fatalf("no host-facing context was captured (bind=%v exec=%v)", gotBind != nil, gotExec != nil)
+	}
+	if chain := memoryChainFromContext(gotBind); chain != nil {
+		t.Fatalf("CapabilityBinding.Context carries a chain node with limit %d: an adapter re-entering Script.Call with it links its callee to this call's chain, so a re-entered engine inherits an ancestor's ceiling instead of the fresh allowance this PR documents",
+			chain.limit)
+	}
+	if chain := memoryChainFromContext(gotExec); chain != nil {
+		t.Fatalf("Execution.Context() carries a chain node with limit %d: same inheritance, by the route a builtin reaches rather than the one a binder does",
+			chain.limit)
+	}
+
+	// Cancellation has to survive the hiding, or the fix trades a quota leak for
+	// a callee that outlives its caller's cancellation.
+	if gotBind.Done() == nil {
+		t.Fatalf("the binding context can no longer be canceled: hiding the chain must hide one key, not detach the context from its parent")
+	}
+}
+
+// TestCapabilityReEntryGetsAnAllowanceIndependentOfItsAncestors asserts the
+// claim itself, rather than the absence of the key that used to break it.
+//
+// The PR body says a script re-entered through a capability adapter gets a fresh
+// allowance, that this is what master does, and that the change is therefore
+// strictly an improvement on that path. That claim is load-bearing for why the
+// re-entry surface could be descoped at all, so it is worth a test that would
+// fail if re-entry started inheriting again by any route, not only by the
+// context key.
+//
+// The memory is held by the chain *root* rather than by the nested level, and
+// that detail was found by the test failing to fail. A re-entry that inherits
+// the context's node links to the node the task group published -- the nested
+// level's parent -- so it becomes that level's sibling, and a sibling's bytes
+// are deliberately not in its ancestor sum. Sizing the first attempt around what
+// the nested level held therefore proved nothing: it passed on the commit where
+// the leak was live.
+//
+// What the leak does share is the root's ceiling. So the root holds ~4.2 MiB
+// across the task, and the re-entry allocates ~5.2 MiB: together over the 8 MiB
+// ceiling, and alone comfortably inside it. The run completes only if the
+// re-entry is accounted against an allowance of its own.
+func TestCapabilityReEntryGetsAnAllowanceIndependentOfItsAncestors(t *testing.T) {
+	t.Parallel()
+
+	const (
+		quota = 8 << 20
+		held  = 800  // ~4.2 MiB held by the chain root across the task
+		inner = 1000 // ~5.2 MiB inside the re-entered call
+	)
+
+	chunk := strings.Repeat("q", 5000)
+	source := fmt.Sprintf(chunkPayloadFn, chunk) + fmt.Sprintf(`
+def inner(n)
+  payload(%d).size
+end
+
+def child(n)
+  host.observe()
+  n
+end
+
+def run()
+  mine = payload(%d)
+  Tasks.map([0], max: 1, with: :child)
+  mine.size
+end`, inner, held)
+
+	script := compileScriptWithConfig(t,
+		Config{MaxTaskConcurrency: 4, MemoryQuotaBytes: quota, StepQuota: Unlimited}, source)
+
+	var (
+		mu         sync.Mutex
+		bindCtx    context.Context
+		execCtx    context.Context
+		observed   int
+		reentryErr error
+	)
+	cap := contextEscapeCapability{
+		mu: &mu, bindCtx: &bindCtx, execCtx: &execCtx, observed: &observed,
+		reentry: func(exec *Execution) error {
+			// Through the context the runtime handed out, which is the route an
+			// adapter actually has.
+			_, err := script.Call(exec.Context(), "inner", []Value{NewInt(0)}, CallOptions{})
+			mu.Lock()
+			reentryErr = err
+			mu.Unlock()
+			return err
+		},
+	}
+
+	_, err := script.Call(context.Background(), "run", nil, callOptionsWithCapabilities(cap))
+
+	mu.Lock()
+	saw, rerr := observed, reentryErr
+	mu.Unlock()
+
+	if saw == 0 {
+		t.Fatalf("the re-entry never ran, so this test asserted nothing")
+	}
+	if rerr != nil {
+		t.Fatalf("a re-entered call allocating ~%d MiB under an %d MiB engine was refused while the chain root held ~%d MiB: it is being charged against its ancestors' ceiling instead of an allowance of its own, which is not what this PR claims and not what master does: %v",
+			(inner*5000)>>20, quota>>20, (held*5000)>>20, rerr)
+	}
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+}
