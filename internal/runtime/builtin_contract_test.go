@@ -142,7 +142,7 @@ func TestDeclaringNonMutatingRejectsBangMembers(t *testing.T) {
 
 // Every path that rebuilds a Builtin around an existing one either copies the
 // promises deliberately or drops them, and dropping them is the safe direction:
-// the rebuilt builtin falls back to the conservative behaviour. cloneBuiltinValue
+// the rebuilt builtin falls back to the conservative behavior. cloneBuiltinValue
 // is an exhaustive field-by-field copy, so it is the one that has to be kept in
 // step on purpose; this pins its choice either way rather than leaving it to a
 // reader to notice.

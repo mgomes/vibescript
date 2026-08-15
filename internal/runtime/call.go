@@ -278,7 +278,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// own, which is not a property a host can see or rely on.
 		//
 		// Left conservative, both still apply: the flag's zero value is the
-		// undeclared one, so anything unclassified keeps the old behaviour.
+		// undeclared one, so anything unclassified keeps the old behavior.
 		declaredPure := builtin.declaredNonMutating()
 		if !declaredPure {
 			bumpMutationEpoch()
