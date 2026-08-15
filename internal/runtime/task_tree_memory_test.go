@@ -623,9 +623,12 @@ func TestHardValueCheckPublishesToTheChain(t *testing.T) {
 		t.Fatalf("a hard value check allocated 8 KiB with only %d bytes left on the chain and was not refused: the check consults only this execution's own quota, so the shared ceiling is unenforced on every checkMemoryValue site", 512)
 	}
 
-	// The other half of the rule: the soft probe stays per-execution. It asks
-	// about a value that may never be built, so publishing it would let a
-	// hypothetical allocation refuse a concurrent sibling's real one.
+	// The other half of the rule, and it is about publishing rather than about
+	// consulting. A probe reads the chain too -- answering against this
+	// execution alone let a caller that allocates on the answer, and two of them
+	// do, size against room the chain does not have. What a probe must not do is
+	// *write*: it asks about a value that may never be built, so publishing its
+	// estimate would let a hypothetical allocation refuse a sibling's real one.
 	soft := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	soft.memChainNode.parent = ancestor
 	soft.memChainNode.limit = limit
@@ -633,8 +636,12 @@ func TestHardValueCheckPublishesToTheChain(t *testing.T) {
 	soft.memChain = &soft.memChainNode
 	soft.memBaselineSet = true
 
-	if !soft.memoryFitsWith(big) {
-		t.Fatalf("the soft probe consulted the chain; it must answer for this execution alone, or a speculative value that is never built can refuse a sibling's real allocation")
+	before := soft.memChain.marginal.Load()
+	if soft.memoryFitsWith(big) {
+		t.Fatalf("the probe admitted 8 KiB with %d bytes left on the chain: a probe that answers against this execution alone lets a caller allocating on its answer size against room the chain does not have", 512)
+	}
+	if got := soft.memChain.marginal.Load(); got != before {
+		t.Fatalf("the probe published %d to the chain (was %d): consulting is required, writing is not, and a speculative figure can refuse a sibling's real allocation", got, before)
 	}
 }
 

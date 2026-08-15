@@ -361,10 +361,21 @@ func (exec *Execution) checkProjectedTypedHashBytes(count int, receiver Value, a
 }
 
 func (exec *Execution) checkProjectedTypedHashTransformBytes(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
-	if !exec.projectedTypedHashTransformFits(outputEntries, scratchBytes, receiver, args, kwargs, block) {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	// A final admission: the caller allocates the typed output on this answer.
+	if exec.memoryExceeded(exec.projectedTypedHashTransformBytes(outputEntries, scratchBytes, receiver, args, kwargs, block)) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
+}
+
+// projectedTypedHashTransformBytes is the figure the admission above and the
+// probe below share.
+func (exec *Execution) projectedTypedHashTransformBytes(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+	used := exec.hashCallRootBytes(receiver, args, kwargs, block)
+	return saturatingAdd(used, typedHashTransformBufferBytes(outputEntries, scratchBytes))
 }
 
 // projectedTypedHashTransformFits is checkProjectedTypedHashTransformBytes's
@@ -376,9 +387,7 @@ func (exec *Execution) projectedTypedHashTransformFits(outputEntries, scratchByt
 		return true
 	}
 
-	used := exec.hashCallRootBytes(receiver, args, kwargs, block)
-	used = saturatingAdd(used, typedHashTransformBufferBytes(outputEntries, scratchBytes))
-	return used <= exec.memoryQuota
+	return exec.projectedTypedHashTransformBytes(outputEntries, scratchBytes, receiver, args, kwargs, block) <= exec.memoryBudgetBytes()
 }
 
 func (exec *Execution) maxProjectedTypedHashEntries(scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) int {

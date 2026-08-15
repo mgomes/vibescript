@@ -19,22 +19,37 @@ var quotaMeteringGuard = regexp.MustCompile(`exec\.memoryQuota\s*(?:<=|>)\s*0`)
 // enclosingFunc reports the name of the function a line sits in.
 var funcHeader = regexp.MustCompile(`^func (?:\([^)]*\) )?(\w+)`)
 
-// quotaReaders are the only functions permitted to read the local quota, and
-// each is here for a stated reason.
+// quotaReaders are the only functions permitted to read the local quota.
+//
+// Every entry is a function that *resolves* the quota into the bound in force,
+// or the single choke point that applies it. There are deliberately no probes
+// here, and that absence is the point.
+//
+// There were three, justified as "soft probes with a fallback". Two of them were
+// wrong: their callers allocated on the answer -- an output map, a 90 KiB
+// comparison memo -- so the answer was a final admission whatever the function
+// was named, and an allowlisted bypass is worse than an unguarded one because it
+// has been inspected and blessed. The classification came from reading the
+// function rather than asking what its caller does next.
+//
+// So the judgement was removed instead of repeated. A probe consulting
+// memoryBudgetBytes is chain-aware and needs no exemption, which is available
+// because that function only *reads* the chain -- the original justification for
+// keeping probes local confused consulting the chain with publishing to it, and
+// only publishing carries the speculative-refusal hazard. Consulting can make a
+// probe answer "no" more often, never "yes", so it is safe by construction.
+//
+// Membership is now checkable without judging caller behavior: does this
+// function turn the quota into the bound in force, or apply that bound? If a new
+// entry is proposed on any other grounds, it is a bypass.
 var quotaReaders = map[string]string{
-	// The two that turn the local quota into the number everything else should
-	// be using.
+	// Resolvers: the two functions that turn the local quota into the number
+	// everything else is supposed to be using.
 	"effectiveMemoryLimit": "resolves the local quota against the inherited ceiling",
 	"memoryBudgetBytes":    "resolves what is left of that ceiling after ancestors",
-	// The single choke point every hard refusal goes through.
+	// The single choke point every refusal goes through.
 	"memoryExceeded": "applies both bounds",
-	// Probes that choose between two paths, both of which are hard-checked
-	// afterwards. Answering for this execution alone can only make them fall
-	// back more often, never admit more.
-	"memoryFitsWith":                  "soft probe with a cheaper fallback",
-	"projectedHashTransformFits":      "soft probe with an exact fallback",
-	"projectedTypedHashTransformFits": "soft probe with an exact fallback",
-	// Where an inheriting execution adopts the ceiling as its own.
+	// Where an inheriting execution adopts the ceiling as its own quota.
 	"newExecutionForCall": "adopts the inherited ceiling",
 }
 

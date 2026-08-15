@@ -962,7 +962,7 @@ func (exec *Execution) memoryFitsWith(extras ...Value) bool {
 	if exec.memoryQuota <= 0 {
 		return true
 	}
-	return exec.estimateMemoryUsage(extras...) <= exec.memoryQuota
+	return exec.estimateMemoryUsage(extras...) <= exec.memoryBudgetBytes()
 }
 
 func (exec *Execution) checkMemoryWithCallRoots(callee, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
@@ -1319,10 +1319,24 @@ func (exec *Execution) checkProjectedHashBytes(count int, receiver Value, args [
 // the output-map projection -- could allocate past the quota on a large receiver
 // before any later check observed it.
 func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
-	if !exec.projectedHashTransformFits(outputEntries, scratchBytes, receiver, args, kwargs, block) {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	// The caller allocates the output map on the strength of this, so it is a
+	// final admission and goes through the chain-aware check rather than through
+	// the probe beside it.
+	if exec.memoryExceeded(exec.projectedHashTransformBytes(outputEntries, scratchBytes, receiver, args, kwargs, block)) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
+}
+
+// projectedHashTransformBytes is the figure both the admission above and the
+// probe below are asking about, so the two cannot answer different questions.
+func (exec *Execution) projectedHashTransformBytes(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+	used := exec.projectedHashBaseBytes(receiver, args, kwargs, block)
+	used = saturatingAdd(used, saturatingMul(outputEntries, estimatedMapEntryStructuralBytes))
+	return saturatingAdd(used, scratchBytes)
 }
 
 // projectedHashTransformFits is checkProjectedHashTransformBytes's quota test
@@ -1334,10 +1348,7 @@ func (exec *Execution) projectedHashTransformFits(outputEntries, scratchBytes in
 		return true
 	}
 
-	used := exec.projectedHashBaseBytes(receiver, args, kwargs, block)
-	used = saturatingAdd(used, saturatingMul(outputEntries, estimatedMapEntryStructuralBytes))
-	used = saturatingAdd(used, scratchBytes)
-	return used <= exec.memoryQuota
+	return exec.projectedHashTransformBytes(outputEntries, scratchBytes, receiver, args, kwargs, block) <= exec.memoryBudgetBytes()
 }
 
 // hashTransformBufferBytes returns the Go-local heap footprint a block-driven hash
