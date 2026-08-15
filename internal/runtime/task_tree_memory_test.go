@@ -1309,36 +1309,32 @@ func TestScanTableReservationCoversAppendGrowth(t *testing.T) {
 	}
 }
 
-// TestBaselineSubtractsArgumentValuesNotTheirContainers pins which part of an
-// argument list is shared across a task boundary.
+// TestBaselineSubtractsOnlyProvenSharedArguments pins which arguments the
+// baseline may subtract, and that it defaults to subtracting nothing.
 //
-// The values are: a worker binds them into its environment while its group still
-// retains them in jobPayloads, so they are genuinely held on both sides and
-// belong in the baseline. The containers are not: the []Value and the keyword
-// map stay with the caller and the worker never sees them, so subtracting them
-// hands the chain headroom for memory that is really there.
+// The premise that failed twice is that a worker binds what its caller retains.
+// It is true for a string -- binding copies a header that keeps the same
+// backing, measured at 1.01x live heap with caller and worker both holding
+// 1 MiB -- and false for a composite, which call entry deep-copies, so the
+// caller's retained clone and the worker's binding are two live graphs: 1.74x
+// for an array and 2.53x for a hash on the same instrument.
 //
-// Subtracting whole containers through est.slice and est.hash over-subtracted by
-// 22% of the figure across argument counts from 8 to 4,096. That turned the
-// previous round's over-count into an under-count, which is the unsafe
-// direction: the earlier error refused work that fit, this one admits work that
-// does not.
+// So the rule is default-deny. An omission charges both sides and refuses work
+// that would have fit; a wrong inclusion cancels memory that is really held and
+// admits work past the ceiling. Three consecutive rounds of defects here were
+// all the second kind.
 //
-// Measured as the difference two baselines make, rather than against a recomputed
-// expected total, so the assertion does not depend on reproducing the graph-tail
-// arithmetic that both sides share.
-func TestBaselineSubtractsArgumentValuesNotTheirContainers(t *testing.T) {
+// The earlier version of this test used strings only, which is why it passed
+// while composites were being canceled: it covered the case its author had in
+// mind. Both kinds are checked here, and the composite assertion is the one that
+// matters.
+func TestBaselineSubtractsOnlyProvenSharedArguments(t *testing.T) {
 	t.Parallel()
 
 	const (
 		ceiling = 8 << 20
 		count   = 256
 	)
-
-	args := make([]Value, count)
-	for i := range args {
-		args[i] = NewString(strings.Repeat("v", 64))
-	}
 
 	newChild := func() *Execution {
 		root := newMemoryChain(nil, ceiling)
@@ -1349,25 +1345,46 @@ func TestBaselineSubtractsArgumentValuesNotTheirContainers(t *testing.T) {
 		exec.memChain = &exec.memChainNode
 		return exec
 	}
-
-	without := newChild()
-	without.captureMemoryInheritedBaseline(nil, nil)
-
-	with := newChild()
-	with.captureMemoryInheritedBaseline(args, nil)
-
-	got := with.memBaseline - without.memBaseline
-
-	// What actually crosses: each argument's value graph, deduplicated the way
-	// one estimator would see them.
-	est := newMemoryEstimator()
-	want := 0
-	for _, arg := range args {
-		want += est.value(arg)
+	baselineWith := func(args []Value) int {
+		bare := newChild()
+		bare.captureMemoryInheritedBaseline(nil, nil)
+		with := newChild()
+		with.captureMemoryInheritedBaseline(args, nil)
+		return with.memBaseline - bare.memBaseline
 	}
 
-	if got != want {
-		t.Fatalf("%d arguments moved the baseline by %d bytes, but only %d bytes of value graph cross the boundary: the extra %d is the []Value that stays with the caller, and subtracting it grants the chain headroom for memory that is really held",
-			count, got, want, got-want)
+	// Strings share their backing across the boundary, so they are subtracted.
+	strs := make([]Value, count)
+	for i := range strs {
+		strs[i] = NewString(strings.Repeat("v", 64))
+	}
+	est := newMemoryEstimator()
+	wantStrings := 0
+	for _, v := range strs {
+		wantStrings += est.value(v)
+	}
+	if got := baselineWith(strs); got != wantStrings {
+		t.Fatalf("%d string arguments moved the baseline by %d, want %d: only the value graphs cross, not the []Value that stays with the caller",
+			count, got, wantStrings)
+	}
+
+	// Composites are deep-copied at call entry, so both graphs are live and
+	// neither side may cancel the other.
+	composites := make([]Value, count)
+	for i := range composites {
+		composites[i] = NewArray([]Value{NewString(strings.Repeat("c", 64)), NewInt(int64(i))})
+	}
+	if got := baselineWith(composites); got != 0 {
+		t.Fatalf("%d composite arguments moved the baseline by %d, want 0: call entry deep-copies a composite, so the caller's retained clone and the worker's binding are two live graphs and subtracting one cancels memory that is really held",
+			count, got)
+	}
+
+	// And a hash, which is the kind that measured furthest from sharing.
+	hashes := make([]Value, count)
+	for i := range hashes {
+		hashes[i] = NewHash(map[string]Value{"k": NewString(strings.Repeat("h", 64))})
+	}
+	if got := baselineWith(hashes); got != 0 {
+		t.Fatalf("%d hash arguments moved the baseline by %d, want 0", count, got)
 	}
 }

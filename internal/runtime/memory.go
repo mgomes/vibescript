@@ -849,12 +849,40 @@ func (exec *Execution) checkMemory() error {
 func inheritedArgumentBytes(est *memoryEstimator, args []Value, kwargs map[string]Value) int {
 	total := 0
 	for _, arg := range args {
-		total = saturatingAdd(total, est.value(arg))
+		total = saturatingAdd(total, sharedArgumentBytes(est, arg))
 	}
 	for _, kwarg := range kwargs {
-		total = saturatingAdd(total, est.value(kwarg))
+		total = saturatingAdd(total, sharedArgumentBytes(est, kwarg))
 	}
 	return total
+}
+
+// sharedArgumentBytes returns what an argument shares with the caller that
+// passed it, and zero unless sharing is proven for its kind.
+//
+// Default-deny, deliberately. An omission here charges the same bytes on both
+// sides of the boundary, which refuses work that would have fit; a wrong
+// inclusion cancels memory that is really held on both sides, which admits work
+// past the ceiling. Three consecutive rounds of defects in this subtraction were
+// all the second kind, so the rule is now that a kind is subtracted only when
+// its sharing has been measured, and everything else stays charged twice.
+//
+// Strings are proven: binding one into a worker copies a header that keeps the
+// same backing, measured at 1.01x the live heap with the caller and the worker
+// both holding a 1 MiB payload. Composites are proven NOT to share: call entry
+// deep-copies them, so the caller's retained clone and the worker's binding are
+// two live graphs -- measured at 1.74x for an array and 2.53x for a hash on the
+// same instrument. Charging those twice is not a penalty, it is the count.
+//
+// Extending this to another kind means measuring that kind the same way, not
+// reasoning about it. The premise that failed last round -- that a worker binds
+// what its caller retains -- reads as obviously true and is false for exactly
+// the kinds that matter most.
+func sharedArgumentBytes(est *memoryEstimator, value Value) int {
+	if value.Kind() != KindString {
+		return 0
+	}
+	return est.value(value)
 }
 
 func (exec *Execution) captureMemoryInheritedBaseline(args []Value, kwargs map[string]Value) {
