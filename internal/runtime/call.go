@@ -263,12 +263,26 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// Builtins are Go code that may mutate reachable containers through raw
 		// slice/map writes the epoch cannot observe per-write, so dispatch bumps
 		// the epoch once up front (invalidating any memoized estimator walk from
-		// before the call) and builtinDepth suppresses memo commits for every
-		// check that runs while the builtin — or script code it drives — is on
-		// the stack. Together they make a stale memo unreachable: no memo from
-		// before the call survives the bump, and no memo can be recorded while
-		// the builtin's unobserved writes may still be in progress.
-		bumpMutationEpoch()
+		// before the call) and counts the call in undeclaredBuiltinDepth, which
+		// suppresses memo use for every check that runs while the builtin — or
+		// script code it drives — is on the stack. Together they make a stale
+		// memo unreachable: no memo from before the call survives the bump, and
+		// none is used while the builtin's unobserved writes may be in progress.
+		//
+		// Both exist for the same reason, so one declaration retires both. A
+		// builtin that has promised to write to nothing reachable (see
+		// Builtin.declaredNonMutating) cannot leave a memo stale, so there is
+		// nothing to invalidate up front and nothing to stand aside for during
+		// the call. Skipping only the bump would have been the half of it that
+		// happens to help whichever builtins do not run a memory check of their
+		// own, which is not a property a host can see or rely on.
+		//
+		// Left conservative, both still apply: the flag's zero value is the
+		// undeclared one, so anything unclassified keeps the old behavior.
+		declaredPure := builtin.declaredNonMutating()
+		if !declaredPure {
+			bumpMutationEpoch()
+		}
 		// An accumulator-metered section only vouches for the loop that opened
 		// it, never for a nested builtin's allocations, so dispatch suspends
 		// any active sections for the duration of the call: the callee runs
@@ -299,6 +313,9 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// error returns a script can rescue.
 		yieldFrame := exec.pushCapabilityYieldFrame(scope, exec.builtinDepth+1, preCallKnownBuiltins, callAmbientEnvs)
 		exec.builtinDepth++
+		if !declaredPure {
+			exec.undeclaredBuiltinDepth++
+		}
 		// A builtin that walks an array captures its element header here and
 		// keeps reading it while the block it yields to runs. The claim tells
 		// an in-place shrink performed by that block to leave that storage
@@ -314,7 +331,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = receiver, args, kwargs
 		// A new frame holds new values, so it reserves its own.
 		exec.builtinFrameRootsReserved = false
+		// Off unless a test turns it on; with it on, a builtin that declared
+		// non-mutation and then wrote to the reachable graph without advancing
+		// the epoch panics here rather than silently costing a later check its
+		// accuracy.
+		contractCheck := exec.beginContractVerification(builtin)
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
+		contractCheck.check(exec, builtin)
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = prevReceiver, prevArgs, prevKwargs
 		exec.builtinFrameRootsReserved = prevReserved
 		// Dropping the claims moves any array a shrink narrowed off the storage
@@ -325,6 +348,9 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			result, err = NewNil(), releaseErr
 		}
 		exec.builtinDepth--
+		if !declaredPure {
+			exec.undeclaredBuiltinDepth--
+		}
 		exec.popCapabilityYieldFrame(yieldFrame)
 		// A capability adapter that ignored a quota error from the exported
 		// Step/CallBlock surface must not decide this call's outcome: a

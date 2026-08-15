@@ -14,6 +14,7 @@ import (
 func TestMain(m *testing.M) {
 	maybeEnableEnvRecycleVerify()
 	maybeEnableEstimatorVerify()
+	maybeEnableBuiltinContractVerify()
 	code := m.Run()
 	if code == 0 {
 		if err := checkGoroutineLeakProfile(os.Stderr); err != nil {

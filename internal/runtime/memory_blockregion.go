@@ -18,7 +18,7 @@ import (
 // iterating an n-element collection under a memory quota re-walked the whole
 // collection O(n) times — quadratic. The base-walk memo (see beginBaseWalk)
 // could collapse those repeats to O(1) per check, but two things defeat it every
-// iteration: the driver is a Go builtin (builtinDepth > 0 forces the memo
+// iteration: the driver is a Go builtin (an undeclared one forces the memo
 // bypass), and binding the block parameter bumps the mutation epoch (which
 // invalidates the memo).
 //
@@ -43,10 +43,15 @@ import (
 //     from the prefix (which goes through the value package) — still bumps, so
 //     the prefix memo is invalidated exactly when the prefix truly changes.
 //
-//   - The memo is engaged only while builtinDepth equals the region's driver
-//     depth, i.e. in the block body the region drives directly. A deeper builtin
-//     called from the block body (which may mutate reachable containers through
-//     raw writes the epoch cannot observe) re-raises the ordinary bypass.
+//   - The memo is engaged only while the undeclared-builtin depth equals the
+//     region's driver depth, i.e. in the block body the region drives directly.
+//     A deeper builtin called from the block body re-raises the ordinary bypass,
+//     because it may mutate reachable containers through raw writes the epoch
+//     cannot observe — unless it has declared that it does not, in which case it
+//     is not counted, and a check inside it keeps the region's memo. Without
+//     that, a block body calling a member which runs a memory check of its own
+//     (a string transform charging its scan, say) paid a whole-graph re-walk per
+//     element even though nothing it did could invalidate the prefix.
 //
 // Correctness rests on one invariant: an epoch-neutral scope is re-walked fresh
 // on every check for as long as it is on the stack. The boundary guarantees it —
@@ -66,6 +71,14 @@ type blockRegionScope struct {
 	prevBoundary     int
 	prevBuiltinDepth int
 }
+
+// blockRegionDriverDepth is the depth the region compares against to decide it
+// is running in the block body it drives rather than inside a deeper builtin.
+// It counts only the builtins that have not declared non-mutation, so a
+// declared one called from the block body does not look like a new driver: the
+// region stays engaged through it, which is the whole point of the declaration
+// for a member that runs a memory check of its own.
+func (exec *Execution) blockRegionDriverDepth() int { return exec.undeclaredBuiltinDepth }
 
 // beginBlockIterationRegion opens a block-iteration region anchored at the
 // current env-stack depth. A driver calls it as
@@ -90,7 +103,7 @@ func (exec *Execution) beginBlockIterationRegion() blockRegionScope {
 		exec.blockRegionBoundary = len(exec.envStack)
 	}
 	exec.blockRegionActive = true
-	exec.blockRegionBuiltinDepth = exec.builtinDepth
+	exec.blockRegionBuiltinDepth = exec.blockRegionDriverDepth()
 	return scope
 }
 
@@ -113,7 +126,7 @@ func (scope blockRegionScope) end() {
 // reference walk).
 func (exec *Execution) blockRegionBaseWalkEngaged(globals *taskLazyGlobals) bool {
 	return exec.blockRegionActive &&
-		exec.builtinDepth == exec.blockRegionBuiltinDepth &&
+		exec.blockRegionDriverDepth() == exec.blockRegionBuiltinDepth &&
 		exec.blockRegionBoundary >= 0 &&
 		exec.blockRegionBoundary <= len(exec.envStack) &&
 		len(exec.activeTaskGroups) == 0 &&

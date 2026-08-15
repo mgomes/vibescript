@@ -191,9 +191,15 @@ func TestBaseWalkMemoIsUsedAndInvalidated(t *testing.T) {
 }
 
 // TestBaseWalkMemoBuiltinDepthBypass pins the guard that closes the raw-write
-// hazard: while a Go builtin is on the stack its checks must neither reuse nor
-// refresh the memo, because builtins mutate containers through raw slice/map
-// writes the epoch cannot observe per-write.
+// hazard: while a Go builtin that has not declared non-mutation is on the
+// stack, its checks must neither reuse nor refresh the memo, because such a
+// builtin mutates containers through raw slice/map writes the epoch cannot
+// observe per-write.
+//
+// Dispatch counts an undeclared builtin in both builtinDepth and
+// undeclaredBuiltinDepth, and it is the second that the memo consults, so the
+// simulation raises both. Raising only builtinDepth would simulate a builtin
+// that promised not to do the very write this test then performs.
 func TestBaseWalkMemoBuiltinDepthBypass(t *testing.T) {
 	exec, env := newEstimatorCacheExec()
 	estimatorCacheShapes(env)
@@ -204,7 +210,11 @@ func TestBaseWalkMemoBuiltinDepthBypass(t *testing.T) {
 	}
 
 	exec.builtinDepth++
-	defer func() { exec.builtinDepth-- }()
+	exec.undeclaredBuiltinDepth++
+	defer func() {
+		exec.builtinDepth--
+		exec.undeclaredBuiltinDepth--
+	}()
 
 	// Simulate a builtin's raw in-place write with no epoch bump: the flat
 	// array's first element grows by a large string.
@@ -221,6 +231,36 @@ func TestBaseWalkMemoBuiltinDepthBypass(t *testing.T) {
 	if exec.baseWalkCache != nil && exec.baseWalkCache.valid {
 		t.Fatalf("in-builtin check must not refresh the memo")
 	}
+}
+
+// The other side of the same guard: a builtin that declared non-mutation is not
+// counted, so a check inside it keeps the memo instead of re-walking. That is
+// the whole benefit of the declaration for a member running a memory check of
+// its own, and it is sound only because the declaration rules out exactly the
+// raw write the test above performs -- so this one performs no write, and
+// requires the memoized answer to equal the fresh one anyway.
+func TestBaseWalkMemoKeptInsideDeclaredBuiltin(t *testing.T) {
+	exec, env := newEstimatorCacheExec()
+	estimatorCacheShapes(env)
+
+	fresh := freshUncachedEstimate(exec)
+	if got := exec.estimateMemoryUsage(); got != fresh {
+		t.Fatalf("cold estimate %d != fresh %d", got, fresh)
+	}
+
+	// A declared builtin raises builtinDepth alone; undeclaredBuiltinDepth
+	// stays at zero, which is what keeps the memo engaged.
+	exec.builtinDepth++
+	defer func() { exec.builtinDepth-- }()
+
+	if got := exec.estimateMemoryUsage(); got != fresh {
+		t.Fatalf("check inside a declared builtin returned %d, want the unchanged %d", got, fresh)
+	}
+	if exec.baseWalkCache == nil || !exec.baseWalkCache.valid {
+		t.Fatal("a check inside a declared builtin discarded the memo; the declaration buys " +
+			"nothing for a builtin that runs a memory check of its own")
+	}
+	_ = env
 }
 
 // baseWalkMemoMutation primes the memo, applies mutate, and requires the next

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -12,6 +13,10 @@ type memberTable struct {
 	// receiverKinds lists the value kinds this table's members may be invoked
 	// against.
 	receiverKinds []ValueKind
+	// nonMutating names the members of this table whose bodies have been read
+	// and declare non-mutation. A name absent here is conservative, so the list
+	// is the whole of the claim and adding to it is the only way to make one.
+	nonMutating map[string]struct{}
 }
 
 // newTypedMemberTable builds a member table whose members reach into a
@@ -32,6 +37,31 @@ func newTypedMemberTable(names []string, receiverKinds ...ValueKind) *memberTabl
 	}
 }
 
+// declaringNonMutating records that the named members of this table promise not
+// to write to any container reachable from their receiver, arguments, keyword
+// arguments, block, or from an execution's roots (see Builtin.declaredNonMutating).
+// It is chained onto the table's construction so the claim sits beside the name
+// list it qualifies.
+//
+// A name ending in "!" is rejected outright. The suffix is this language's
+// convention for an in-place mutator, so such a member is the exact opposite of
+// the promise, and the whole class -- upcase!, strip!, map!, and their kin --
+// is kept out by construction rather than by remembering. The panic fires at
+// package initialization, so a wrong declaration cannot reach a running script.
+func (t *memberTable) declaringNonMutating(names ...string) *memberTable {
+	if t.nonMutating == nil {
+		t.nonMutating = make(map[string]struct{}, len(names))
+	}
+	for _, name := range names {
+		if strings.HasSuffix(name, "!") {
+			panic(fmt.Sprintf("vibescript: member %q cannot declare non-mutating: the "+
+				"trailing ! marks an in-place mutator", name))
+		}
+		t.nonMutating[name] = struct{}{}
+	}
+	return t
+}
+
 func (t *memberTable) lookup(name string, build func(string) (Value, error)) (Value, bool) {
 	t.once.Do(func() {
 		t.buildAll(build)
@@ -48,6 +78,11 @@ func (t *memberTable) buildAll(build func(string) (Value, error)) {
 			panic(err)
 		}
 		guardMemberReceiver(member, t.receiverKinds)
+		if _, declared := t.nonMutating[name]; declared {
+			// After the receiver guard, which wraps Fn in place around the same
+			// body and adds no write of its own.
+			DeclareNonMutating(member)
+		}
 		table[name] = member
 	}
 	t.table = table

@@ -207,6 +207,20 @@ type Execution struct {
 	baseTopoVersion uint64
 	builtinDepth    int
 
+	// undeclaredBuiltinDepth counts the subset of those builtins that have not
+	// declared non-mutation, and it is that subset -- not builtinDepth -- that
+	// the memo consults. The reason the memo stands aside for a builtin is
+	// stated just above: a Go body may write through a raw slice or map between
+	// its own checks without advancing the epoch. A builtin that declares it
+	// does not is precisely the case that reason excludes, so it leaves this
+	// counter alone and checks inside it keep using the memo.
+	//
+	// It is kept separate from builtinDepth rather than folded into it because
+	// builtinDepth means something else to the array-backing claims, the
+	// capability yield frames and the block region's driver identity, none of
+	// which are about unobserved writes. Nothing here changes what those see.
+	undeclaredBuiltinDepth int
+
 	// builtinFrameReceiver, builtinFrameArgs and builtinFrameKwargs are the
 	// values the innermost builtin frame was dispatched with. They live on that
 	// frame's Go stack, where no walk reaches them, so a block the frame drives

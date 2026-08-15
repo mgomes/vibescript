@@ -28,7 +28,23 @@ var arrayMemberNames = []string{
 	"inspect", "to_s", "string",
 }
 
-var arrayBuiltinMembers = newTypedMemberTable(arrayMemberNames, KindArray)
+// pureArrayMemberNames are the array members that only read the receiver's
+// elements. They are the smallest useful set rather than the largest defensible
+// one: an array member is where an in-place write would live if there were one,
+// so the list stays to members that answer a question about the receiver and
+// build at most a fresh result.
+//
+// Everything that drives a block is absent, as is every member that writes to
+// the receiver -- the bang forms, and the non-bang mutators push, append,
+// prepend, unshift, pop, shift, delete, insert, clear, fill, delete_if and
+// keep_if, which the ! guard cannot catch.
+var pureArrayMemberNames = []string{
+	"size", "length", "empty?", "first", "last", "at",
+	"include?", "join", "sum",
+}
+
+var arrayBuiltinMembers = newTypedMemberTable(arrayMemberNames, KindArray).
+	declaringNonMutating(pureArrayMemberNames...)
 
 func arrayMember(array Value, property string) (Value, error) {
 	if member, ok := arrayBuiltinMembers.lookup(property, arrayMemberBuiltin); ok {
