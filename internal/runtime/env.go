@@ -29,7 +29,6 @@ type Env struct {
 	inlineLen          uint8
 	values             map[string]Value
 	statics            map[string]Value
-	staticBytes        int32
 	arrayAppendBuffers map[string][]Value
 	assignBoundary     bool
 	rebindOuter        bool
@@ -100,6 +99,16 @@ type Env struct {
 	// reset only per frame lifetime, at acquisition (markRegionNeutral) — never at
 	// pop — so a body push cannot re-neutralize an escaped frame.
 	neutralityRevoked bool
+
+	// staticBytes sums the deep size of the statics map's entries, so a memory
+	// check reads it instead of re-walking them (see the type comment). It is
+	// declared down here, away from statics, to sit in the sub-word run the
+	// flags above already occupy: the run had spare padding, and putting a
+	// four-byte counter in it keeps the whole struct inside the size it had
+	// before owner was added. Every Env is charged its own struct size
+	// (estimatedEnvBytes), so a field that grows this type raises the memory a
+	// script is billed for every scope it opens.
+	staticBytes int32
 
 	// epoch points at the mutation counter of the execution this scope belongs
 	// to, so a binding write invalidates that execution's memoized estimator
