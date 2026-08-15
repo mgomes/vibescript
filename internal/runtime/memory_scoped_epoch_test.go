@@ -428,7 +428,7 @@ func TestObjectPassThroughDoesNotRevoke(t *testing.T) {
 // removes comes back for scripts that had nothing to do with it. The cost of one
 // execution's safety is paid by everyone else.
 //
-// The bound here records today's behaviour rather than endorsing it. Consuming
+// The bound here records today's behavior rather than endorsing it. Consuming
 // a non-retaining declaration is what should bring this shape back into the
 // single-digit band the others hold, because a host that stores no reference to
 // what it is handed cannot let a third execution reach it, which is exactly the
