@@ -4355,7 +4355,13 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 	// table is never counted twice.
 	projected := 0
 	if bounded {
-		projected = exec.reserveLoopScratch(projectedRegexSubmatchIndexBytes(limit, groups))
+		// Priced for the matches this scan would admit, not for limit. limit is
+		// budget+1 -- one match beyond what the quota holds, asked for only so
+		// that overrunning is detectable -- and the budget was derived by
+		// dividing the remaining room by the same per-match price, so reserving
+		// limit here is guaranteed to exceed that room and reject every scan.
+		// The overshoot the probe can build is one match's worth, and bounded.
+		projected = exec.reserveLoopScratch(worstCaseRegexSubmatchIndexBytes(budget, groups))
 		if err := exec.checkMemory(); err != nil {
 			exec.releaseLoopScratch(projected)
 			return NewNil(), err
@@ -4529,10 +4535,7 @@ func scanMatchBudget(exec *Execution, groups int, receiver Value, args []Value, 
 	// is a slice header per unused slot. Charging the logical rows alone let a
 	// scan landing on a growth boundary allocate past the budget, so the
 	// per-match price carries the overshoot the append can leave behind.
-	perMatch := saturatingAdd(
-		projectedRegexSubmatchIndexBytes(1, groups),
-		regexSubmatchIndexSlotBytes(1),
-	)
+	perMatch := worstCaseRegexSubmatchIndexBytes(1, groups)
 	if perMatch <= 0 {
 		return 0, false
 	}
@@ -4683,6 +4686,25 @@ func regexSubmatchIndexSlotBytes(n int) int {
 func projectedRegexSubmatchIndexBytes(matchCount, groups int) int {
 	return saturatingAdd(
 		saturatingMul(matchCount, regexSubmatchIndexRowBytes(groups)),
+		regexSubmatchIndexSlotBytes(matchCount),
+	)
+}
+
+// worstCaseRegexSubmatchIndexBytes bounds the table for matchCount matches
+// before it exists, including the spare capacity Go's append leaves behind: one
+// row per match, and two outer slots, the second covering the growth.
+//
+// Every figure taken before the table exists comes from here, so the bound that
+// decides how many matches to ask for and the reservation that charges them
+// cannot disagree. They did: scanMatchBudget priced two slots per match while
+// the pre-allocation reservation priced one through projectedRegexSubmatchIndexBytes,
+// so the engine could build a table larger than the bytes reserved for it and a
+// parent allocating meanwhile saw headroom that was not there. That is the same
+// two-models-of-one-quantity drift the comment above records, reintroduced by a
+// caller added later.
+func worstCaseRegexSubmatchIndexBytes(matchCount, groups int) int {
+	return saturatingAdd(
+		projectedRegexSubmatchIndexBytes(matchCount, groups),
 		regexSubmatchIndexSlotBytes(matchCount),
 	)
 }

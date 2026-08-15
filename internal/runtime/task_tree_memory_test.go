@@ -1274,3 +1274,37 @@ end`
 		t.Fatalf("one %d byte task item passed under a quota of only %d, so the payload is not being charged at all", payloadSize, lo)
 	}
 }
+
+// TestScanTableReservationCoversAppendGrowth pins that the bytes reserved before
+// the regexp engine builds its table cover the table it actually builds.
+//
+// FindAllStringSubmatchIndex appends into the outer slice, so its capacity
+// overshoots the match count and every unused slot is a slice header.
+// scanMatchBudget has always priced that growth; the pre-allocation reservation
+// added later priced one slot per match instead, so the engine could build a
+// table larger than the bytes charged for it and a parent allocating
+// concurrently saw headroom that was not there.
+//
+// Both now price through one function, which is what keeps them from drifting
+// again. The assertions below are the two halves of that: the shared figure must
+// cover a grown table, and the row-only projection must not -- if it did, the
+// shared figure would be unnecessary and the drift would not have mattered.
+func TestScanTableReservationCoversAppendGrowth(t *testing.T) {
+	t.Parallel()
+
+	const groups = 2
+	for _, matches := range []int{8, 512, 5000} {
+		// A table that grew the way append grows one: more capacity than length.
+		grown := make([][]int, matches, matches+matches/2)
+		actual := actualRegexSubmatchIndexBytes(grown, groups)
+
+		if reserved := worstCaseRegexSubmatchIndexBytes(matches, groups); reserved < actual {
+			t.Fatalf("%d matches: reserved %d bytes before the engine ran but the table occupies %d: the engine builds a table larger than the bytes charged for it, so a parent allocating meanwhile sees headroom that is not there",
+				matches, reserved, actual)
+		}
+		if rowsOnly := projectedRegexSubmatchIndexBytes(matches, groups); rowsOnly >= actual {
+			t.Fatalf("%d matches: the row-only projection (%d) already covers a grown table (%d), so this test is not exercising the growth it exists for",
+				matches, rowsOnly, actual)
+		}
+	}
+}
