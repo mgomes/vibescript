@@ -530,10 +530,11 @@ func (exec *Execution) chargeEstimatorWalk(n int) error {
 // beginBaseWalk opens a base-walk session, reusing the memoized graph walk
 // when it is provably current and re-walking (and re-memoizing) otherwise.
 //
-// The memo is bypassed entirely -- neither used nor refreshed -- while any Go
-// builtin is on the call stack (builtinDepth > 0), because builtin code can
-// mutate reachable containers through raw slice/map writes between its own
-// checks without bumping the epoch; while task groups are active or lazily
+// The memo is bypassed entirely -- neither used nor refreshed -- while a Go
+// builtin that has not declared non-mutation is on the call stack
+// (undeclaredBuiltinDepth > 0), because such code can mutate reachable
+// containers through raw slice/map writes between its own checks without
+// bumping the epoch; while task groups are active or lazily
 // cloned task globals exist, whose retained memory evolves concurrently with
 // the walk; and under the test-only kill switch. Bypass walks run on the same
 // shared estimator, so they invalidate the memo (valid = false) rather than
@@ -550,7 +551,7 @@ func (exec *Execution) baseWalkSessionsAreCheap() bool {
 	if exec.blockRegionBaseWalkEngaged(globals) {
 		return true
 	}
-	return exec.builtinDepth == 0 && len(exec.activeTaskGroups) == 0 && globals == nil &&
+	return exec.undeclaredBuiltinDepth == 0 && len(exec.activeTaskGroups) == 0 && globals == nil &&
 		!baseWalkCacheDisabled.Load()
 }
 
@@ -569,7 +570,7 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 	if exec.blockRegionBaseWalkEngaged(globals) {
 		return exec.beginRegionBaseWalk(est, scalars)
 	}
-	if exec.builtinDepth > 0 || len(exec.activeTaskGroups) > 0 || globals != nil || baseWalkCacheDisabled.Load() {
+	if exec.undeclaredBuiltinDepth > 0 || len(exec.activeTaskGroups) > 0 || globals != nil || baseWalkCacheDisabled.Load() {
 		// The bypass walk clobbers whatever committed state the shared
 		// estimator held, so an existing memo is discarded; a cache that was
 		// never allocated stays unallocated and the bypass costs nothing.

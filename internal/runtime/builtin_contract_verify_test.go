@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,44 @@ func runWithContractVerification(t *testing.T, src string, name string, builtin 
 		t.Fatalf("run: %v", err)
 	}
 	return nil
+}
+
+// A gate that never armed reports nothing and reads exactly like a clean run,
+// so the wiring from the environment variable to the flag is pinned rather than
+// assumed. Without this, a misspelling in either name would turn the whole
+// verification run into a silent no-op.
+func TestBuiltinContractVerifyEnablerWiring(t *testing.T) {
+	prev := builtinContractVerify
+	defer func() { builtinContractVerify = prev }()
+
+	builtinContractVerify = false
+	t.Setenv("VIBES_BUILTIN_CONTRACT_VERIFY", "1")
+	maybeEnableBuiltinContractVerify()
+	if !builtinContractVerify {
+		t.Fatal("VIBES_BUILTIN_CONTRACT_VERIFY=1 did not turn the verifier on; a run under it " +
+			"would report nothing and look identical to a clean one")
+	}
+
+	builtinContractVerify = false
+	t.Setenv("VIBES_BUILTIN_CONTRACT_VERIFY", "0")
+	maybeEnableBuiltinContractVerify()
+	if builtinContractVerify {
+		t.Fatal("the verifier turned on without being asked; it costs a full graph walk per " +
+			"declared dispatch and must stay off by default")
+	}
+}
+
+// When the suite is actually run under the variable, this asserts the flag
+// reached production code, which the enabler test above cannot show on its own:
+// it proves the TestMain call happens, not merely that the function works.
+func TestBuiltinContractVerifyIsArmedUnderItsEnvVar(t *testing.T) {
+	if os.Getenv("VIBES_BUILTIN_CONTRACT_VERIFY") != "1" {
+		t.Skip("not running under VIBES_BUILTIN_CONTRACT_VERIFY=1")
+	}
+	if !builtinContractVerify {
+		t.Fatal("running under VIBES_BUILTIN_CONTRACT_VERIFY=1 but the verifier is off; " +
+			"TestMain did not arm it, so every declaration in this run went unchecked")
+	}
 }
 
 // The instrument has to be shown returning a positive before its negatives mean

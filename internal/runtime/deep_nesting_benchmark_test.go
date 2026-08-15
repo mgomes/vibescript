@@ -95,7 +95,12 @@ func TestDeepNestingScalingIsQuadraticUnderQuota(t *testing.T) {
 
 	// The same build without metering walks nothing at all, which localizes the
 	// cost squarely to the quota's per-assignment walk rather than to
-	// construction: the estimator is the only thing that scales here.
+	// construction: the estimator is the only thing that scales here. The
+	// contract verifier walks the graph on every declared dispatch regardless of
+	// quota, so it is the one thing that can make an unmetered build walk.
+	if builtinContractVerify {
+		return
+	}
 	for _, depth := range []int64{1000, 2000} {
 		if visits := measure(Unlimited, depth); visits != 0 {
 			t.Fatalf("the unmetered build walked %d nodes at depth %d, so the estimator is not the whole cost",
