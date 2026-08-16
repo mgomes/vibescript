@@ -451,3 +451,121 @@ end
 		t.Fatalf("run() = %s, want [1] [1, 2] [1]", got)
 	}
 }
+
+// TestCompoundAssignmentIsolatesItsTarget covers the write form that reads,
+// computes, and writes back. It prepares its target before the right side runs,
+// which made it the one assignment path that reached its receiver without
+// isolating it: `a[0] += 1` wrote through whatever wrapper the read found, and
+// every other binding of a saw it.
+func TestCompoundAssignmentIsolatesItsTarget(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ name, body, want string }{
+		{
+			name: "index add",
+			body: `a = [1, 2]
+  b = a
+  a[0] += 10
+  a.inspect + " " + b.inspect`,
+			want: "[11, 2] [1, 2]",
+		},
+		{
+			name: "hash index add",
+			body: `h = { n: 1 }
+  g = h
+  h["n"] += 10
+  h.inspect + " " + g.inspect`,
+			want: "{n: 11} {n: 1}",
+		},
+		{
+			name: "member add",
+			body: `m = { n: 1 }
+  k = m
+  m.n += 10
+  m.inspect + " " + k.inspect`,
+			want: "{n: 11} {n: 1}",
+		},
+		{
+			name: "member or-assign",
+			body: `o = { n: nil }
+  p = o
+  o.n ||= 5
+  o.inspect + " " + p.inspect`,
+			want: "{n: 5} {n: nil}",
+		},
+		{
+			name: "index or-assign",
+			body: `q = [nil]
+  r = q
+  q[0] ||= 7
+  q.inspect + " " + r.inspect`,
+			want: "[7] [nil]",
+		},
+		{
+			name: "nested path add",
+			body: `d = { rows: [[1, 2]] }
+  e = d
+  d["rows"][0][1] += 5
+  d.inspect + " " + e.inspect`,
+			want: "{rows: [[1, 7]]} {rows: [[1, 2]]}",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  "+tc.body+"\nend\n")
+			if got := callFunc(t, script, "run", nil).String(); got != tc.want {
+				t.Fatalf("%s = %s, want %s", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCompoundAssignmentReisolatesAfterTheRightSideRuns pins why the target is
+// isolated twice. The right side is script code: it can bind the receiver
+// somewhere new between the moment the target was prepared and the moment the
+// write lands, and a wrapper that was exclusively held then need not still be.
+func TestCompoundAssignmentReisolatesAfterTheRightSideRuns(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `class Holder
+  def keep(x)
+    @kept = x
+    10
+  end
+  def kept()
+    @kept
+  end
+end
+
+def run()
+  holder = Holder.new
+  a = [1, 2]
+  a[0] += holder.keep(a)
+  a.inspect + " " + holder.kept.inspect
+end
+`)
+
+	if got := callFunc(t, script, "run", nil).String(); got != "[11, 2] [1, 2]" {
+		t.Fatalf("run() = %s, want [11, 2] [1, 2]", got)
+	}
+}
+
+// TestCompoundAssignmentStillReachesItsRoot is the other half: isolating must
+// not cost the update. A loop that accumulates through one path has to land
+// every time, or value semantics would just be a way to lose writes.
+func TestCompoundAssignmentStillReachesItsRoot(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  acc = { n: 0 }
+  5.times { acc["n"] += 1 }
+  acc.inspect
+end
+`)
+
+	if got := callFunc(t, script, "run", nil).String(); got != "{n: 5}" {
+		t.Fatalf("run() = %s, want {n: 5}", got)
+	}
+}

@@ -420,6 +420,50 @@ func rootAutoInvokes(val Value) bool {
 	}
 }
 
+// resolveMutableTarget is resolveMutableReceiver for a write whose value is only
+// computed after the target is prepared -- a compound assignment evaluates
+// `a[0] += f()` by reading a[0], running f, and writing back. It hands the path
+// back so the write can isolate again immediately before it lands, and it leaves
+// the permission it granted withdrawn, because evaluating the right side runs
+// script code that must not inherit it.
+//
+// Isolating twice is not redundant. The right side can bind the receiver
+// somewhere new (`a[0] += (b = a; 1)`), so a wrapper that was exclusively held
+// when the target was prepared need not still be when the write happens. The
+// second pass costs a re-read of an already-resolved path, whose keys are cached
+// and whose reads are pure, so nothing is evaluated or invoked twice.
+func (exec *Execution) resolveMutableTarget(expr Expression, env *Env) (Value, mutablePath, bool, error) {
+	saved := exec.savedAddressedScope()
+	defer exec.restore(saved)
+
+	path, ok := exec.mutablePathFor(expr, env)
+	if !ok {
+		return NewNil(), mutablePath{}, false, nil
+	}
+	leaf, _, addressable, resolved, err := exec.walkMutablePath(path, env)
+	if err != nil || !resolved {
+		return NewNil(), mutablePath{}, false, err
+	}
+	if !addressable {
+		return leaf, mutablePath{}, false, nil
+	}
+	return leaf, path, true, nil
+}
+
+// writeThroughMutablePath isolates the path again and runs write against the
+// leaf that isolation produced, with the addressability record in force for
+// exactly that write.
+func (exec *Execution) writeThroughMutablePath(path mutablePath, env *Env, write func(Value) error) error {
+	leaf, chain, err := exec.isolateMutablePath(path, env)
+	if err != nil {
+		return err
+	}
+	saved := exec.savedAddressedScope()
+	exec.addressCollection(leaf, chain)
+	defer exec.restore(saved)
+	return write(leaf)
+}
+
 // mutablePathFor decomposes expr into a rebindable root and the hops from it,
 // reporting false for anything that names no such slot.
 //

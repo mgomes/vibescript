@@ -4768,9 +4768,19 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 		}
 		return compoundAssignmentTarget{current: current, assign: assign}, nil
 	case *MemberExpr:
-		obj, err := exec.evalExpressionWithAuto(t.Object, env, true)
+		// A compound assignment writes through its receiver just as a plain one
+		// does, so it resolves that receiver as an addressable path too.
+		// Without this, `h.k += 1` wrote through whatever wrapper the read
+		// found and every other binding of h saw it.
+		obj, path, addressed, err := exec.resolveMutableTarget(t.Object, env)
 		if err != nil {
 			return compoundAssignmentTarget{}, err
+		}
+		if !addressed {
+			obj, err = exec.evalExpressionWithAuto(t.Object, env, true)
+			if err != nil {
+				return compoundAssignmentTarget{}, err
+			}
 		}
 		if err := exec.checkMemoryValue(obj); err != nil {
 			return compoundAssignmentTarget{}, err
@@ -4784,7 +4794,12 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 			return compoundAssignmentTarget{}, err
 		}
 		assign := func(value Value) error {
-			return exec.assignToEvaluatedMember(t, obj, value)
+			if !addressed {
+				return exec.assignToEvaluatedMember(t, obj, value)
+			}
+			return exec.writeThroughMutablePath(path, env, func(leaf Value) error {
+				return exec.assignToEvaluatedMember(t, leaf, value)
+			})
 		}
 		return compoundAssignmentTarget{
 			current:     current,
@@ -4792,9 +4807,15 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 			expectation: memberSetterValueExpectation(obj, t.Property),
 		}, nil
 	case *IndexExpr:
-		obj, err := exec.evalExpressionWithAuto(t.Object, env, true)
+		obj, path, addressed, err := exec.resolveMutableTarget(t.Object, env)
 		if err != nil {
 			return compoundAssignmentTarget{}, err
+		}
+		if !addressed {
+			obj, err = exec.evalExpressionWithAuto(t.Object, env, true)
+			if err != nil {
+				return compoundAssignmentTarget{}, err
+			}
 		}
 		if err := exec.checkMemoryValue(obj); err != nil {
 			return compoundAssignmentTarget{}, err
@@ -4808,7 +4829,12 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 			return compoundAssignmentTarget{}, err
 		}
 		assign := func(value Value) error {
-			return exec.assignToEvaluatedIndex(t, obj, indices, value)
+			if !addressed {
+				return exec.assignToEvaluatedIndex(t, obj, indices, value)
+			}
+			return exec.writeThroughMutablePath(path, env, func(leaf Value) error {
+				return exec.assignToEvaluatedIndex(t, leaf, indices, value)
+			})
 		}
 		return compoundAssignmentTarget{current: current, assign: assign}, nil
 	case *IvarExpr, *ClassVarExpr:
