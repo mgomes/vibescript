@@ -215,17 +215,7 @@ func deepClone(val value.Value) value.Value {
 		for k, v := range hash {
 			cloned[k] = deepClone(v)
 		}
-		// Preserve the hash's Ruby-style default metadata so the isolated copy
-		// keeps the same missing-key behavior. The default value is deep-cloned
-		// like an entry; the default proc is a runtime-only block, rejected by
-		// validateDataOnly before reaching this clone, so it is copied by
-		// reference rather than dropped.
-		defaultProc := value.HashDefaultProc(val)
-		defaultValue := value.HashDefaultValue(val)
-		if defaultProc.Kind() == value.KindNil && defaultValue.Kind() == value.KindNil {
-			return value.NewHash(cloned)
-		}
-		return value.NewHashWithDefault(cloned, deepClone(defaultValue), defaultProc)
+		return value.NewHash(cloned)
 	case value.KindObject:
 		obj := val.Hash()
 		cloned := make(map[string]value.Value, len(obj))

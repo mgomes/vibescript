@@ -407,54 +407,6 @@ func TestTypedReceiverCopiesChargeKeyPayloads(t *testing.T) {
 	}
 }
 
-// A key that fails canonicalization partway — a long string followed by an
-// unsupported element — stops HashKey at the failure, so no ancestor copies
-// the partial child encoding. The charge for the completed prefix must not
-// grow with nesting depth, or a quota sized for the actual work would
-// replace the expected miss with a quota error. slice treats the failing
-// candidate as a miss, so the probe completes and isolates the charge: the
-// fixed-depth ratio pins that the prefix is charged at all, and the depth
-// ratio pins that the failed encoding never reaches an ancestor.
-func TestFailedKeyCanonicalizationChargesOnlyThePrefix(t *testing.T) {
-	t.Parallel()
-
-	keyAtDepth := func(depth int) string {
-		return "k = [s, {}]\n  j = 0\n  while j < " + fmt.Sprint(depth) + "\n    k = [k]\n    j = j + 1\n  end\n  h = {a: 1}\n  h.slice(k).length"
-	}
-	atSmall := minStepsForKeyOp(t, keyAtDepth(6), 8<<10)
-	atLarge := minStepsForKeyOp(t, keyAtDepth(6), 64<<10)
-	if atLarge < atSmall*4 {
-		t.Errorf("failing candidate cost %d steps over 8 KiB and %d over 64 KiB; the "+
-			"prefix HashKey reads must be charged", atSmall, atLarge)
-	}
-	atDeep := minStepsForKeyOp(t, keyAtDepth(18), 64<<10)
-	if atDeep >= atLarge*2 {
-		t.Errorf("failing candidate cost %d steps at depth 6 and %d at depth 18; "+
-			"ancestors never copy a failed child encoding, so the charge must not "+
-			"scale with depth", atLarge, atDeep)
-	}
-}
-
-// HashKey copies the complete child encoding into every ancestor's canonical
-// string, so a depth-d single-child chain around one string costs Θ(d·len);
-// a leaf-only charge let deep linear keys do unbounded copying under a flat
-// budget.
-func TestDeepArrayKeyChargesPerLevel(t *testing.T) {
-	t.Parallel()
-
-	keyAtDepth := func(depth int) string {
-		return "k = [s]\n  j = 0\n  while j < " + fmt.Sprint(depth) + "\n    k = [k]\n    j = j + 1\n  end\n  h = {}\n  h[k] = 1\n  h.length"
-	}
-	atShallow := minStepsForKeyOp(t, keyAtDepth(6), 8<<10)
-	atDeep := minStepsForKeyOp(t, keyAtDepth(18), 8<<10)
-	// Tripling the depth roughly triples the ancestor copies; require 2x to
-	// track the class with headroom.
-	if atDeep < atShallow*2 {
-		t.Errorf("deep key cost %d steps at depth 6 and %d at depth 18; every "+
-			"ancestor copies the child encoding, so the charge must scale with depth", atShallow, atDeep)
-	}
-}
-
 // The tally capacity sampler canonicalizes the leading elements of a large
 // blockless receiver; its key charge must land before that work and surface
 // quota errors as quota errors, not as unsupported-key failures.
@@ -574,28 +526,6 @@ func TestOverlappingResliceKeyIsChargedPerOccurrence(t *testing.T) {
 	// occurrences must be billed at the scan rate.
 	if want := 2 * len(payload) / 64; exec.steps < want {
 		t.Fatalf("charged %d steps, want at least %d (both occurrences of the shared payload)", exec.steps, want)
-	}
-}
-
-// HashKey canonicalizes a shared subtree once per occurrence — [a, a] copies
-// a twice — so the key charge must scale with the occurrence count, not the
-// distinct-backing count: a permanent visited set billed a shared DAG once
-// while canonicalization copied it exponentially.
-func TestSharedDAGHashKeyChargesPerOccurrence(t *testing.T) {
-	t.Parallel()
-
-	keyAtDepth := func(depth int) string {
-		return "k = [s]\n  j = 0\n  while j < " + fmt.Sprint(depth) + "\n    k = [k, k]\n    j = j + 1\n  end\n  h = {}\n  h[k] = 1\n  h.length"
-	}
-	// The per-level encoding copies push the true cost well past
-	// minStepsForStringOp's payload-sized search ceiling, so search wider.
-	atShallow := minStepsForKeyOp(t, keyAtDepth(4), 8<<10)
-	atDeep := minStepsForKeyOp(t, keyAtDepth(6), 8<<10)
-	// Depth 6 holds four times the leaf occurrences of depth 4, so the charge
-	// must grow by at least 3x; a distinct-backing charge stays flat.
-	if atDeep < atShallow*3 {
-		t.Errorf("shared-DAG key cost %d steps at depth 4 and %d at depth 6; "+
-			"canonicalization copies each occurrence, so the charge must too", atShallow, atDeep)
 	}
 }
 

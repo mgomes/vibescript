@@ -336,9 +336,6 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 		// than emit a result one byte over the cap.
 		return appendByteBounded(buf, ']', limit)
 	case KindHash:
-		if typed := v.data.(*hashData).typedEntries; typed != nil {
-			return v.appendStringTypedHash(buf, state, limit, typed)
-		}
 		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return appendBounded(buf, "{}", limit)
@@ -357,7 +354,9 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 			return err
 		}
 		first := true
-		for k, val := range entries {
+		var keyBuf [smallHashIterationBuffer]string
+		for _, k := range v.hashIterationKeys(keyBuf[:]) {
+			val := entries[k]
 			if !first {
 				// The entry separator counts against the budget like any other
 				// byte, so a packed hash trips the limit on the separator rather
@@ -408,51 +407,6 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 			return ErrStringRenderTruncated
 		}
 		return appendBounded(buf, v.String(), limit)
-	}
-}
-
-func (v Value) appendStringTypedHash(buf *strings.Builder, state *valueStringState, limit int, entries map[HashLookupKey]HashEntry) error {
-	if len(entries) == 0 {
-		return appendBounded(buf, "{}", limit)
-	}
-	id := HashIdentity(v)
-	if id != 0 {
-		if _, seen := state.maps[id]; seen {
-			return appendBounded(buf, cycleMarker, limit)
-		}
-		state.maps[id] = struct{}{}
-		defer delete(state.maps, id)
-	}
-	if err := appendByteBounded(buf, '{', limit); err != nil {
-		return err
-	}
-	first := true
-	if err := v.data.(*hashData).forEachTypedEntry(func(entry HashEntry) error {
-		if !first {
-			if err := appendBounded(buf, elementSeparator, limit); err != nil {
-				return err
-			}
-		}
-		first = false
-		if err := appendStringHashEntryKey(buf, entry.Key, state, limit); err != nil {
-			return err
-		}
-		if err := appendBounded(buf, keyValueSeparator, limit); err != nil {
-			return err
-		}
-		return entry.Value.appendString(buf, state, limit)
-	}); err != nil {
-		return err
-	}
-	return appendByteBounded(buf, '}', limit)
-}
-
-func appendStringHashEntryKey(buf *strings.Builder, key Value, state *valueStringState, limit int) error {
-	switch key.kind {
-	case KindString, KindSymbol:
-		return appendBounded(buf, key.String(), limit)
-	default:
-		return key.appendInspect(buf, state, limit)
 	}
 }
 
@@ -568,9 +522,6 @@ func (v Value) stringByteLenWithState(state *valueStringState) int {
 		}
 		return total
 	case KindHash:
-		if typed := v.data.(*hashData).typedEntries; typed != nil {
-			return v.typedHashStringByteLenWithState(state, typed)
-		}
 		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose)
@@ -606,36 +557,6 @@ func (v Value) stringByteLenWithState(state *valueStringState) int {
 	}
 }
 
-func (v Value) typedHashStringByteLenWithState(state *valueStringState, entries map[HashLookupKey]HashEntry) int {
-	if len(entries) == 0 {
-		return len(hashOpen) + len(hashClose)
-	}
-	id := HashIdentity(v)
-	if id != 0 {
-		if _, seen := state.maps[id]; seen {
-			return len(cycleMarker)
-		}
-		state.maps[id] = struct{}{}
-		defer delete(state.maps, id)
-	}
-	total := len(hashOpen) + len(hashClose)
-	total += separatorBytes(len(entries))
-	for _, entry := range entries {
-		total += hashStringEntryKeyByteLenWithState(entry.Key, state) + len(keyValueSeparator)
-		total += entry.Value.stringByteLenWithState(state)
-	}
-	return total
-}
-
-func hashStringEntryKeyByteLenWithState(key Value, state *valueStringState) int {
-	switch key.kind {
-	case KindString, KindSymbol:
-		return len(key.String())
-	default:
-		return key.inspectByteLenWithState(state)
-	}
-}
-
 func (v Value) stringRuneLenWithState(state *valueStringState) int {
 	switch v.kind {
 	case KindArray:
@@ -659,9 +580,6 @@ func (v Value) stringRuneLenWithState(state *valueStringState) int {
 		}
 		return total
 	case KindHash:
-		if typed := v.data.(*hashData).typedEntries; typed != nil {
-			return v.typedHashStringRuneLenWithState(state, typed)
-		}
 		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose)
@@ -692,40 +610,6 @@ func (v Value) stringRuneLenWithState(state *valueStringState) int {
 			}
 		}
 		return utf8.RuneCountInString(v.String())
-	}
-}
-
-func (v Value) typedHashStringRuneLenWithState(state *valueStringState, entries map[HashLookupKey]HashEntry) int {
-	if len(entries) == 0 {
-		return len(hashOpen) + len(hashClose)
-	}
-	id := HashIdentity(v)
-	if id != 0 {
-		if _, seen := state.maps[id]; seen {
-			return len(cycleMarker)
-		}
-		state.maps[id] = struct{}{}
-		defer delete(state.maps, id)
-	}
-	total := len(hashOpen) + len(hashClose)
-	total += separatorBytes(len(entries))
-	for _, entry := range entries {
-		total += hashStringEntryKeyRuneLenWithState(entry.Key, state) + len(keyValueSeparator)
-		total += entry.Value.stringRuneLenWithState(state)
-	}
-	return total
-}
-
-func hashStringEntryKeyRuneLenWithState(key Value, state *valueStringState) int {
-	switch key.kind {
-	case KindString, KindSymbol:
-		return utf8.RuneCountInString(key.String())
-	default:
-		var buf strings.Builder
-		if err := key.appendInspect(&buf, state, 0); err != nil {
-			return 0
-		}
-		return utf8.RuneCountInString(buf.String())
 	}
 }
 
@@ -868,9 +752,6 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 		}
 		return total, nil
 	case KindHash:
-		if typed := v.data.(*hashData).typedEntries; typed != nil {
-			return v.typedHashStringByteLenBoundedWithState(state, step, typed)
-		}
 		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose), nil
@@ -915,47 +796,6 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 	}
 }
 
-func (v Value) typedHashStringByteLenBoundedWithState(state *valueStringState, step func() error, entries map[HashLookupKey]HashEntry) (int, error) {
-	if len(entries) == 0 {
-		return len(hashOpen) + len(hashClose), nil
-	}
-	id := HashIdentity(v)
-	if id != 0 {
-		if _, seen := state.maps[id]; seen {
-			return len(cycleMarker), nil
-		}
-		state.maps[id] = struct{}{}
-		defer delete(state.maps, id)
-	}
-	total := len(hashOpen) + len(hashClose)
-	total += separatorBytes(len(entries))
-	for _, entry := range entries {
-		n, err := hashStringEntryKeyByteLenBoundedWithState(entry.Key, state, step)
-		if err != nil {
-			return 0, err
-		}
-		total += n + len(keyValueSeparator)
-		valueBytes, err := entry.Value.stringByteLenBoundedWithState(state, step)
-		if err != nil {
-			return 0, err
-		}
-		total += valueBytes
-	}
-	return total, nil
-}
-
-func hashStringEntryKeyByteLenBoundedWithState(key Value, state *valueStringState, step func() error) (int, error) {
-	switch key.kind {
-	case KindString, KindSymbol:
-		if err := step(); err != nil {
-			return 0, err
-		}
-		return len(key.String()), nil
-	default:
-		return key.inspectByteLenBoundedWithState(state, step)
-	}
-}
-
 func (v Value) stringRuneLenBoundedWithState(state *valueStringState, step func() error) (int, error) {
 	if err := step(); err != nil {
 		return 0, err
@@ -986,9 +826,6 @@ func (v Value) stringRuneLenBoundedWithState(state *valueStringState, step func(
 		}
 		return total, nil
 	case KindHash:
-		if typed := v.data.(*hashData).typedEntries; typed != nil {
-			return v.typedHashStringRuneLenBoundedWithState(state, step, typed)
-		}
 		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose), nil
@@ -1035,50 +872,6 @@ func (v Value) stringRuneLenBoundedWithState(state *valueStringState, step func(
 	}
 }
 
-func (v Value) typedHashStringRuneLenBoundedWithState(state *valueStringState, step func() error, entries map[HashLookupKey]HashEntry) (int, error) {
-	if len(entries) == 0 {
-		return len(hashOpen) + len(hashClose), nil
-	}
-	id := HashIdentity(v)
-	if id != 0 {
-		if _, seen := state.maps[id]; seen {
-			return len(cycleMarker), nil
-		}
-		state.maps[id] = struct{}{}
-		defer delete(state.maps, id)
-	}
-	total := len(hashOpen) + len(hashClose)
-	total += separatorBytes(len(entries))
-	for _, entry := range entries {
-		n, err := hashStringEntryKeyRuneLenBoundedWithState(entry.Key, state, step)
-		if err != nil {
-			return 0, err
-		}
-		total += n + len(keyValueSeparator)
-		valueRunes, err := entry.Value.stringRuneLenBoundedWithState(state, step)
-		if err != nil {
-			return 0, err
-		}
-		total += valueRunes
-	}
-	return total, nil
-}
-
-func hashStringEntryKeyRuneLenBoundedWithState(key Value, state *valueStringState, step func() error) (int, error) {
-	switch key.kind {
-	case KindString, KindSymbol:
-		if err := step(); err != nil {
-			return 0, err
-		}
-		return utf8.RuneCountInString(key.String()), nil
-	default:
-		if _, err := key.inspectByteLenBoundedWithState(state, step); err != nil {
-			return 0, err
-		}
-		return hashStringEntryKeyRuneLenWithState(key, state), nil
-	}
-}
-
 func (v Value) stringByteLenBoundedUpToWithState(state *valueStringState, limit int, step func() error) (int, bool, error) {
 	if err := step(); err != nil {
 		return 0, false, err
@@ -1116,9 +909,6 @@ func (v Value) stringByteLenBoundedUpToWithState(state *valueStringState, limit 
 		}
 		return total, false, nil
 	case KindHash:
-		if typed := v.data.(*hashData).typedEntries; typed != nil {
-			return v.typedHashStringByteLenBoundedUpToWithState(state, limit, step, typed)
-		}
 		entries := v.hashEntries()
 		if len(entries) == 0 {
 			total, truncated := stringByteLenCappedAdd(0, len(hashOpen)+len(hashClose), limit)
@@ -1181,47 +971,6 @@ func (v Value) stringByteLenBoundedUpToWithState(state *valueStringState, limit 
 		total, truncated := stringByteLenCappedAdd(0, len(v.String()), limit)
 		return total, truncated, nil
 	}
-}
-
-func (v Value) typedHashStringByteLenBoundedUpToWithState(state *valueStringState, limit int, step func() error, entries map[HashLookupKey]HashEntry) (int, bool, error) {
-	if len(entries) == 0 {
-		total, truncated := stringByteLenCappedAdd(0, len(hashOpen)+len(hashClose), limit)
-		return total, truncated, nil
-	}
-	id := HashIdentity(v)
-	if id != 0 {
-		if _, seen := state.maps[id]; seen {
-			total, truncated := stringByteLenCappedAdd(0, len(cycleMarker), limit)
-			return total, truncated, nil
-		}
-		state.maps[id] = struct{}{}
-		defer delete(state.maps, id)
-	}
-	total, truncated := stringByteLenCappedAdd(0, len(hashOpen)+len(hashClose)+separatorBytes(len(entries)), limit)
-	if truncated {
-		return total, true, nil
-	}
-	for _, entry := range entries {
-		n, err := hashStringEntryKeyByteLenBoundedWithState(entry.Key, state, step)
-		if err != nil {
-			return 0, false, err
-		}
-		var keyTruncated bool
-		total, keyTruncated = stringByteLenCappedAdd(total, n+len(keyValueSeparator), limit)
-		if keyTruncated {
-			return total, true, nil
-		}
-		valueBytes, childTruncated, err := entry.Value.stringByteLenBoundedUpToWithState(state, limit-total, step)
-		if err != nil {
-			return 0, false, err
-		}
-		var addTruncated bool
-		total, addTruncated = stringByteLenCappedAdd(total, valueBytes, limit)
-		if childTruncated || addTruncated {
-			return total, true, nil
-		}
-	}
-	return total, false, nil
 }
 
 func stringByteLenCappedAdd(total, n, limit int) (int, bool) {
@@ -1672,166 +1421,6 @@ func flushEqualityCharge(state *equalityState) {
 	}
 }
 
-// chargeEqualityKeyText bills the text a hash key contributes to an equality
-// walk, reporting whether the walk may continue. A string-like key bills its
-// payload. An array key recurses: the typed-hash equality paths canonicalize
-// it through NewHashLookupKey, which copies every nested string once per
-// occurrence — shared subtrees included — so the charge follows the same
-// traversal with a stack-scoped cycle guard, and carries a node budget so
-// computing the charge cannot itself become the unbounded work (past the
-// budget the cost saturates, tripping any bounded quota). Other kinds and
-// unmetered walks are free.
-func chargeEqualityKeyText(state *equalityState, key Value) bool {
-	if state.charge == nil {
-		return true
-	}
-	budget := equalityKeyCostNodeBudget
-	bytes, _, _ := equalityKeyTextBytes(key, nil, &budget)
-	return chargeEqualityBytes(state, bytes)
-}
-
-// equalityKeyCostNodeBudget bounds the key-cost walk; see chargeEqualityKeyText.
-const equalityKeyCostNodeBudget = 1 << 16
-
-// chargeDisplayKeyRender bills a composite key's rendered Inspect length,
-// reporting the projected byte count for the caller's reservation and
-// pregrown render. The display path writes each descendant payload once,
-// unlike lookup-key canonicalization's per-level copies, so billing the
-// canonical model here overcharged deeply nested singleton keys —
-// Θ(depth·payload) for Θ(rendered) work — into spurious quota errors.
-func chargeDisplayKeyRender(state *equalityState, key Value) (projected int, ok bool) {
-	// The sizing pass itself scans every scalar payload (escape counting)
-	// and visits every node, so it is billed from inside the walk: leaf
-	// bytes through the sizing state's charge hook and a small structural
-	// constant per node, letting a spent budget interrupt the sizing
-	// instead of only being billed after it completes. The rendering pass
-	// that follows re-reads everything it writes, billed as the projection
-	// below.
-	sizing := newValueStringState()
-	sizing.chargeBytes = func(n int) error {
-		if state.err != nil {
-			return state.err
-		}
-		if !chargeEqualityBytes(state, n) {
-			return state.err
-		}
-		return nil
-	}
-	projected, err := key.inspectByteLenBoundedWithState(sizing, func() error {
-		if state.err != nil {
-			return state.err
-		}
-		if !chargeEqualityBytes(state, displayKeyNodeBytes) {
-			return state.err
-		}
-		return nil
-	})
-	if err != nil {
-		if state.err == nil {
-			state.err = err
-		}
-		return 0, false
-	}
-	return projected, chargeEqualityBytes(state, projected)
-}
-
-// displayKeyNodeBytes is the structural charge per node the display-key
-// sizing walk visits, so composites of many payload-free nodes stay bounded
-// by the byte budget too.
-const displayKeyNodeBytes = 2
-
-// equalityKeyTextBytes models the bytes NewHashLookupKey's canonicalization
-// reads for key, in element order: each array level copies every child's
-// complete encoding into its own canonical string, so a depth-d chain around
-// one string costs Θ(d·len). It returns the bytes to charge and the
-// subtree's encoding size; walkable reports whether canonicalization would
-// read past this node (an unsupported element, a NaN float, or a cycle stops
-// it immediately), and a spent node budget stops the walk with the cost
-// saturated.
-func equalityKeyTextBytes(key Value, onPath map[SliceIdentity]struct{}, budget *int) (int, int, bool) {
-	if *budget <= 0 {
-		return math.MaxInt / 2, math.MaxInt / 2, false
-	}
-	*budget--
-	switch key.kind {
-	case KindString, KindSymbol:
-		// The canonical encoding wraps the payload in kind-and-length
-		// framing, which ancestors copy like payload bytes; see the
-		// runtime-side cost model for why empty strings must not encode
-		// to zero.
-		n := len(key.data.(string))
-		enc := n + 16
-		if enc < 0 {
-			enc = math.MaxInt / 2
-		}
-		return n, enc, true
-	case KindNil, KindBool, KindInt, KindRange:
-		return 0, 16, true
-	case KindFloat:
-		return 0, 16, !math.IsNaN(key.Float())
-	case KindArray:
-		elems := key.Array()
-		// Full slice-header identity, as HashKey's cycle guard uses:
-		// overlapping reslices share a pointer but are distinct keys read in
-		// full, so a pointer-only guard misread them as cycles.
-		var id SliceIdentity
-		if cap(elems) > 0 {
-			id = SliceIdentity{Ptr: reflect.ValueOf(elems).Pointer(), Len: len(elems), Cap: cap(elems)}
-		}
-		if id.Ptr != 0 {
-			if _, ok := onPath[id]; ok {
-				return 0, 0, false
-			}
-			if onPath == nil {
-				onPath = make(map[SliceIdentity]struct{})
-			}
-			onPath[id] = struct{}{}
-		}
-		charge, childEnc := 0, 0
-		walkable := true
-		for _, elem := range elems {
-			c, e, ok := equalityKeyTextBytes(elem, onPath, budget)
-			if charge += c; charge < 0 {
-				charge = math.MaxInt / 2
-			}
-			if !ok {
-				// The failing element is never encoded, so none of it is
-				// copied into this level's string.
-				walkable = false
-				break
-			}
-			if childEnc += e; childEnc < 0 {
-				childEnc = math.MaxInt / 2
-			}
-		}
-		if id.Ptr != 0 {
-			delete(onPath, id)
-		}
-		// This level's canonical string copies every child encoding it reached.
-		// Canonicalization writes each element's encoding into the level's
-		// builder as it goes, so the copy is performed for the whole prefix
-		// even when a later element aborts the level.
-		if charge += childEnc; charge < 0 {
-			charge = math.MaxInt / 2
-		}
-		if !walkable {
-			// The aborted level's string is discarded, so no encoding reaches
-			// an ancestor and the ancestor copies nothing of it. Propagating
-			// the partial encoding would instead grow the charge with nesting
-			// depth for copies never performed, turning the ordinary unequal
-			// answer into a spurious quota error.
-			return charge, 0, false
-		}
-		enc := childEnc + 16
-		if enc < 0 {
-			enc = math.MaxInt / 2
-		}
-		return charge, enc, walkable
-	default:
-		return 0, 0, false
-	}
-}
-
 func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool) bool {
 	if state.err != nil {
 		return false
@@ -1976,53 +1565,9 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 				return true
 			}
 		}
-		leftTyped := v.HashHasTypedEntries()
-		rightTyped := other.HashHasTypedEntries()
-		if !leftTyped && !rightTyped {
-			return hashMapsEqual(v.Hash(), other.Hash(), state, strictKinds)
-		}
-		// HashEntries materializes a fresh entry slice per side, live for
-		// the whole comparison; on a metered walk both copies are validated
-		// before they exist, like every other scratch the walk allocates.
-		if state.charge != nil && state.reserveScratch != nil {
-			entryCopies := (v.HashLen() + other.HashLen()) * hashEntrySliceEntryBytes
-			state.scratchHeld += entryCopies
-			defer releaseScratchBytes(state, entryCopies)
-			if err := state.reserveScratch(state.scratchHeld, state.rootLeft, state.rootRight); err != nil {
-				state.err = err
-				return false
-			}
-		}
-		left := v.HashEntries()
-		right := other.HashEntries()
-		if !leftTyped || !rightTyped {
-			return hashEntriesEqualByDisplayKey(left, right, state, strictKinds)
-		}
-		if len(right) <= smallHashEqualityEntryLimit {
-			return hashEntriesEqualByLookupKeyLinear(left, right, state, strictKinds)
-		}
-		rightByKey, heldRight, ok := hashEntriesByLookupKey(right, state)
-		defer releaseScratchBytes(state, heldRight)
-		if !ok {
-			return false
-		}
-		for _, leftEntry := range left {
-			if !chargeEqualityKeyText(state, leftEntry.Key) {
-				return false
-			}
-			key, err := NewHashLookupKey(leftEntry.Key)
-			if err != nil {
-				return false
-			}
-			rightEntry, ok := rightByKey[key]
-			if !ok {
-				return false
-			}
-			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, state, strictKinds) {
-				return false
-			}
-		}
-		return true
+		// Hash keys live in one string keyspace, so two hashes compare as the
+		// string-keyed maps they are, exactly like objects below.
+		return hashMapsEqual(v.Hash(), other.Hash(), state, strictKinds)
 	case KindObject:
 		left := v.Hash()
 		right := other.Hash()
@@ -2229,8 +1774,6 @@ func hashMapsEqual(left, right map[string]Value, state *equalityState, strictKin
 	return true
 }
 
-const smallHashEqualityEntryLimit = 8
-
 func equalityPairSeen(state *equalityState, pair valueEqualityPair) bool {
 	if state.seen == nil {
 		state.seen = make(map[valueEqualityPair]struct{})
@@ -2240,410 +1783,4 @@ func equalityPairSeen(state *equalityState, pair valueEqualityPair) bool {
 	}
 	state.seen[pair] = struct{}{}
 	return false
-}
-
-func hashEntriesEqualByDisplayKey(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
-	if len(right) <= smallHashEqualityEntryLimit {
-		return hashEntriesEqualByDisplayKeyLinear(left, right, state, strictKinds)
-	}
-	leftByKey, heldLeft, ok := hashEntriesByDisplayKey(left, state)
-	defer releaseScratchBytes(state, heldLeft)
-	if !ok {
-		return false
-	}
-	rightByKey, heldRight, ok := hashEntriesByDisplayKey(right, state)
-	defer releaseScratchBytes(state, heldRight)
-	if !ok {
-		return false
-	}
-	if len(leftByKey) != len(rightByKey) {
-		return false
-	}
-	if state.charge == nil {
-		for key, leftEntry := range leftByKey {
-			rightEntry, ok := rightByKey[key]
-			if !ok {
-				return false
-			}
-			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, state, strictKinds) {
-				return false
-			}
-		}
-		return true
-	}
-	// The display keys were billed while the maps were built; the sort
-	// re-reads already-charged payloads only.
-	displayKeys, chargeOK := sortedMapKeys(leftByKey, state)
-	if !chargeOK {
-		return false
-	}
-	defer releaseKeySortScratch(state, len(displayKeys))
-	for _, key := range displayKeys {
-		rightEntry, ok := rightByKey[key]
-		if !ok {
-			return false
-		}
-		if !valuesEqualWithKinds(leftByKey[key].Value, rightEntry.Value, state, strictKinds) {
-			return false
-		}
-	}
-	return true
-}
-
-// sortedEntryScratchBytes approximates one entry's structural share of the
-// mixed-path sort scratch: a keyedHashEntry slot (string header, rendered
-// flag, and the HashEntry copy), with slack for alignment. Rendered display
-// strings are reserved separately at their realized capacity.
-const sortedEntryScratchBytes = 128
-
-// hashEntrySliceEntryBytes approximates one slot of the entry slices
-// HashEntries materializes for a typed or mixed comparison: two Value
-// structs per HashEntry.
-const hashEntrySliceEntryBytes = 64
-
-// releaseScratchBytes retires n bytes of walk scratch accounting.
-func releaseScratchBytes(state *equalityState, n int) {
-	state.scratchHeld -= n
-	if state.scratchHeld < 0 {
-		state.scratchHeld = 0
-	}
-}
-
-// scratchAllocCapacity projects the bytes the allocator will actually
-// reserve for a scratch allocation of the requested size. Without an
-// installed rounder the request itself is the projection.
-func (s *equalityState) scratchAllocCapacity(bytes int) int {
-	if s.roundScratchAlloc == nil {
-		return bytes
-	}
-	return s.roundScratchAlloc(bytes)
-}
-
-// renderDisplayKeyPregrown renders key's Inspect form into a builder pregrown
-// to the projected length, so the rendering takes exactly one allocation of
-// the capacity the caller reserved instead of a doubling growth that retains
-// — and transiently allocates — more than was validated. projected must come
-// from InspectByteLenBounded.
-func renderDisplayKeyPregrown(key Value, projected int) string {
-	var rendered strings.Builder
-	rendered.Grow(projected)
-	key.WriteInspectTo(&rendered)
-	return rendered.String()
-}
-
-// keyedHashEntry pairs a hash entry with its rendered display key. The
-// metered mixed-hash walk renders every key up front — under reservation —
-// and reuses the rendering for the duplicate screen and each comparison; the
-// unmetered walk leaves entries unrendered and renders on first use.
-type keyedHashEntry struct {
-	display  string
-	rendered bool
-	entry    HashEntry
-}
-
-func (k *keyedHashEntry) displayKey() string {
-	if !k.rendered {
-		k.display = HashDisplayKey(k.entry.Key)
-		k.rendered = true
-	}
-	return k.display
-}
-
-// sortEntriesForMeteredWalk returns entries paired with their rendered
-// display keys, ordered by that key when the walk is metered: a legacy hash
-// materializes its entries in randomized map order, and a charged linear
-// walk must not let iteration order decide between an answer and a quota
-// error. Keys are billed as they render, the full live footprint — the pair
-// slice and each rendering at its realized backing capacity — is validated
-// as scratch, and the sort's comparisons charge in batches like the key
-// sorter's. held reports the scratch bytes still accounted; the caller
-// releases them when its walk over the returned slice finishes, since the
-// renderings and slice stay live that long. The unmetered path returns the
-// entries unsorted and unrendered.
-func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) (keyed []keyedHashEntry, held int, ok bool) {
-	if state.charge == nil {
-		keyed = make([]keyedHashEntry, len(entries))
-		for i, entry := range entries {
-			keyed[i].entry = entry
-		}
-		return keyed, 0, true
-	}
-	reserve := func(delta int) bool {
-		if state.reserveScratch == nil {
-			return true
-		}
-		state.scratchHeld += delta
-		held += delta
-		if err := state.reserveScratch(state.scratchHeld, state.rootLeft, state.rootRight); err != nil {
-			state.err = err
-			return false
-		}
-		return true
-	}
-	if !reserve(len(entries) * sortedEntryScratchBytes) {
-		return nil, held, false
-	}
-	keyed = make([]keyedHashEntry, len(entries))
-	for i, entry := range entries {
-		display := ""
-		switch entry.Key.Kind() {
-		case KindString, KindSymbol:
-			// HashDisplayKey aliases the key's own payload, which the
-			// memory estimator already counts; only the string header is
-			// new, covered by the structural share. The sort and probes
-			// read the text, so its bytes are billed.
-			display = HashDisplayKey(entry.Key)
-			if !chargeEqualityBytes(state, len(display)) {
-				return nil, held, false
-			}
-		default:
-			// A composite key renders through Inspect, which can be
-			// arbitrarily large; preflight the size, bill the rendered
-			// length (see chargeDisplayKeyRender), and reserve the
-			// rendering's realized capacity before it is built, not
-			// after.
-			projected, ok := chargeDisplayKeyRender(state, entry.Key)
-			if !ok {
-				return nil, held, false
-			}
-			if !reserve(state.scratchAllocCapacity(projected)) {
-				return nil, held, false
-			}
-			display = renderDisplayKeyPregrown(entry.Key, projected)
-		}
-		keyed[i] = keyedHashEntry{display: display, rendered: true, entry: entry}
-	}
-	const sortChargeBatchBytes = 4096
-	pending := 0
-	slices.SortFunc(keyed, func(a, b keyedHashEntry) int {
-		if state.err != nil {
-			return len(a.display) - len(b.display)
-		}
-		n := min(len(a.display), len(b.display))
-		i := 0
-		for i < n && a.display[i] == b.display[i] {
-			i++
-		}
-		read := i + 1
-		if read > n {
-			read = n
-		}
-		if pending += read; pending >= sortChargeBatchBytes {
-			chargeEqualityBytes(state, pending)
-			pending = 0
-		}
-		if i < n {
-			if a.display[i] < b.display[i] {
-				return -1
-			}
-			return 1
-		}
-		return len(a.display) - len(b.display)
-	})
-	if state.err != nil {
-		return nil, held, false
-	}
-	if pending > 0 {
-		if !chargeEqualityBytes(state, pending) {
-			return nil, held, false
-		}
-	}
-	return keyed, held, true
-}
-
-func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
-	sortedLeft, heldLeft, ok := sortEntriesForMeteredWalk(left, state)
-	defer releaseScratchBytes(state, heldLeft)
-	if !ok {
-		return false
-	}
-	sortedRight, heldRight, ok := sortEntriesForMeteredWalk(right, state)
-	defer releaseScratchBytes(state, heldRight)
-	if !ok {
-		return false
-	}
-	return hashEntriesEqualByDisplayKeyLinearOrdered(sortedLeft, sortedRight, state, strictKinds)
-}
-
-func hashEntriesEqualByDisplayKeyLinearOrdered(left, right []keyedHashEntry, state *equalityState, strictKinds bool) bool {
-	if hashEntriesHaveDuplicateDisplayKey(left, state) || hashEntriesHaveDuplicateDisplayKey(right, state) {
-		return false
-	}
-	for l := range left {
-		leftEntry := &left[l]
-		key := leftEntry.displayKey()
-		if !chargeEqualityBytes(state, len(key)) {
-			return false
-		}
-		found := false
-		for r := range right {
-			rightEntry := &right[r]
-			// Each probe compares rendered display strings; bill the probed
-			// key's text. The metered walk pre-rendered every display key,
-			// so reading its length performs no new work.
-			if !chargeEqualityBytes(state, len(rightEntry.displayKey())) {
-				return false
-			}
-			if rightEntry.displayKey() != key {
-				continue
-			}
-			if !valuesEqualWithKinds(leftEntry.entry.Value, rightEntry.entry.Value, state, strictKinds) {
-				return false
-			}
-			found = true
-			break
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
-}
-
-func hashEntriesHaveDuplicateDisplayKey(entries []keyedHashEntry, state *equalityState) bool {
-	for i := range entries {
-		key := entries[i].displayKey()
-		if !chargeEqualityBytes(state, len(key)) {
-			return false
-		}
-		for j := i + 1; j < len(entries); j++ {
-			// The metered walk rendered every display key under reservation
-			// before the entries arrived here; each pairwise probe reads the
-			// rendered text, so its length is billed.
-			if !chargeEqualityBytes(state, len(entries[j].displayKey())) {
-				return false
-			}
-			if entries[j].displayKey() == key {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
-	for _, leftEntry := range left {
-		if !chargeEqualityKeyText(state, leftEntry.Key) {
-			return false
-		}
-		leftKey, err := NewHashLookupKey(leftEntry.Key)
-		if err != nil {
-			return false
-		}
-		found := false
-		for _, rightEntry := range right {
-			if !chargeEqualityKeyText(state, rightEntry.Key) {
-				return false
-			}
-			rightKey, err := NewHashLookupKey(rightEntry.Key)
-			if err != nil {
-				return false
-			}
-			if rightKey != leftKey {
-				continue
-			}
-			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, state, strictKinds) {
-				return false
-			}
-			found = true
-			break
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
-}
-
-// displayKeyIndexEntryBytes approximates one slot of a display-key index
-// map: the string-header key, the HashEntry copy, and a bucket share.
-// Rendered composite key strings are reserved separately at their realized
-// capacity.
-const displayKeyIndexEntryBytes = 128
-
-// lookupKeyIndexEntryBytes approximates one slot of a lookup-key index map:
-// the HashLookupKey struct, the HashEntry copy, and a bucket share. Canonical
-// key text retained by array and big-integer keys is reserved separately.
-const lookupKeyIndexEntryBytes = 160
-
-// reserveHeldEqualityScratch adds delta to the walk's cumulative scratch and
-// validates it, accumulating into held so the caller can release the bytes
-// when it drops the structure they back.
-func reserveHeldEqualityScratch(state *equalityState, held *int, delta int) bool {
-	if state.reserveScratch == nil {
-		return true
-	}
-	state.scratchHeld += delta
-	*held += delta
-	if err := state.reserveScratch(state.scratchHeld, state.rootLeft, state.rootRight); err != nil {
-		state.err = err
-		return false
-	}
-	return true
-}
-
-// hashEntriesByDisplayKey indexes entries by rendered display key. On a
-// metered walk the map's own backing is reserved before it is allocated and
-// each composite key's rendering is reserved at its realized capacity before
-// it is built, since the map retains both for the caller's whole comparison;
-// held reports the bytes still accounted, which the caller releases when it
-// drops the map.
-func hashEntriesByDisplayKey(entries []HashEntry, state *equalityState) (byKey map[string]HashEntry, held int, ok bool) {
-	reserve := func(delta int) bool {
-		return reserveHeldEqualityScratch(state, &held, delta)
-	}
-	if !reserve(len(entries) * displayKeyIndexEntryBytes) {
-		return nil, held, false
-	}
-	byKey = make(map[string]HashEntry, len(entries))
-	for _, entry := range entries {
-		key := ""
-		if state.charge == nil || entry.Key.Kind() == KindString || entry.Key.Kind() == KindSymbol {
-			key = HashDisplayKey(entry.Key)
-			// Building the map hashes the key text; bill its bytes.
-			if !chargeEqualityBytes(state, len(key)) {
-				return nil, held, false
-			}
-		} else {
-			projected, ok := chargeDisplayKeyRender(state, entry.Key)
-			if !ok {
-				return nil, held, false
-			}
-			if !reserve(state.scratchAllocCapacity(projected)) {
-				return nil, held, false
-			}
-			key = renderDisplayKeyPregrown(entry.Key, projected)
-		}
-		if _, exists := byKey[key]; exists {
-			return nil, held, false
-		}
-		byKey[key] = entry
-	}
-	return byKey, held, true
-}
-
-// hashEntriesByLookupKey indexes entries by canonical lookup key. On a
-// metered walk the map's backing and the canonical key text array and
-// big-integer keys retain are reserved before they are materialized, since
-// both stay live until the caller's scan finishes; held reports the bytes
-// still accounted, which the caller releases when it drops the map.
-func hashEntriesByLookupKey(entries []HashEntry, state *equalityState) (byKey map[HashLookupKey]HashEntry, held int, ok bool) {
-	if !reserveHeldEqualityScratch(state, &held, len(entries)*lookupKeyIndexEntryBytes) {
-		return nil, held, false
-	}
-	byKey = make(map[HashLookupKey]HashEntry, len(entries))
-	for _, entry := range entries {
-		if !chargeEqualityKeyText(state, entry.Key) {
-			return nil, held, false
-		}
-		key, err := NewHashLookupKey(entry.Key)
-		if err != nil {
-			return nil, held, false
-		}
-		if !reserveHeldEqualityScratch(state, &held, key.ExtraPayloadBytes()) {
-			return nil, held, false
-		}
-		byKey[key] = entry
-	}
-	return byKey, held, true
 }

@@ -313,22 +313,16 @@ payload = JSON.parse("{\"id\":\"p-1\",\"score\":10}")
 payload["score"] # 10
 ```
 
-**Object keys parse as strings, not symbols.** A hash literal writes symbol keys
-(`{name: "Ada"}`), so a parsed object is not equal to the literal it came from
-and a symbol lookup reads `nil` rather than reporting anything:
+**A round trip preserves lookup.** Hash keys live in one string keyspace, so a
+parsed object is equal to the literal it came from and both key spellings read
+the same entry:
 
 ```vibe
 obj  = { name: "Ada" }
 back = JSON.parse(JSON.stringify(obj))
 back["name"]  # "Ada"
-back[:name]   # nil
-back == obj   # false
-```
-
-Convert the keys when you need the symbol-keyed form back:
-
-```vibe
-back.transform_keys { |k| k.to_sym } == obj   # true
+back[:name]   # "Ada"
+back == obj   # true
 ```
 
 `JSON.parse` enforces a 1 MiB input limit and rejects more than 10,000 nested
@@ -434,24 +428,19 @@ Regexp.union("cat", "dog").match?("dog")  # true
 
 ## Hash
 
-`Hash` constructs hashes with a configured default value or default proc,
-consulted when a missing key is read.
+`Hash` constructs an empty hash.
 
-### `Hash.new(default = nil)` / `Hash.new { |hash, key| ... }`
+### `Hash.new`
 
-Builds an empty hash with a Ruby-style default consulted on missing-key `[]`
-access. `Hash.new(default)` returns the default value without inserting it;
-`Hash.new { |hash, key| ... }` installs a default proc invoked with the hash and
-the missing key, which inserts an entry only if its body assigns one. The value
-and block forms are mutually exclusive, and bare `Hash.new` builds a hash whose
-default is `nil` (identical to a `{}` literal). See
-[Default values](hashes.md#default-values) for the full semantics, including how
-transforms preserve or drop the default.
+Builds an empty hash, identical to a `{}` literal. Hashes carry no per-hash
+default, so `Hash.new` takes no argument and no block; a missing key reads as
+`nil` and `fetch` supplies a fallback per lookup. See
+[Missing keys](hashes.md#missing-keys).
 
 ```vibe
-Hash.new(0)[:missing]                              # 0
-Hash.new { |hash, key| hash[key] = key }["a"]      # "a"
-Hash.new                                           # {} with a nil default
+Hash.new                     # {}
+Hash.new[:missing]           # nil
+Hash.new.fetch(:missing, 0)  # 0
 ```
 
 ## Module Loading

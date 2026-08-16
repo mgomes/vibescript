@@ -228,7 +228,7 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 		}
 		keyType := ty.TypeArgs[0]
 		valueType := ty.TypeArgs[1]
-		if hashHasTypedEntries(val) {
+		if val.Kind() == KindHash {
 			for _, entry := range val.HashEntries() {
 				keyMatches, err := s.matches(entry.Key, keyType)
 				if err != nil {
@@ -404,7 +404,11 @@ func typeAllowsStringHashKey(ty *TypeExpr) (bool, bool) {
 		// preserve unknown-type/resolution errors instead of silently treating
 		// them as mismatches.
 		return false, false
-	case TypeAny, TypeString:
+	case TypeAny, TypeString, TypeSymbol:
+		// Hash keys live in one string keyspace, and a symbol key normalizes to
+		// its string, so `hash<symbol, V>` and `hash<string, V>` describe the
+		// same hash. Accepting both spellings keeps existing annotations
+		// working the way `h[:name]` and `h["name"]` do.
 		return true, true
 	case TypeUnion:
 		anyMatches := false

@@ -67,7 +67,7 @@ func TestOrderingMembersAcceptArrays(t *testing.T) {
 		{name: "max", expr: `[[1, 2], [1, 1]].max.inspect`, want: "[1, 2]"},
 		{name: "minmax", expr: `[[1, 2], [1, 1]].minmax.inspect`, want: "[[1, 1], [1, 2]]"},
 		// The motivating case: a hash ordered through to_a.
-		{name: "hash entries sort", expr: `({north: 300, south: 200}).to_a.sort.inspect`, want: "[[:north, 300], [:south, 200]]"},
+		{name: "hash entries sort", expr: `({north: 300, south: 200}).to_a.sort.inspect`, want: `[["north", 300], ["south", 200]]`},
 		// A multi-key sort key is an array, which is the natural spelling.
 		{name: "sort_by with an array key", expr: `[{d: "z", n: "a"}, {d: "a", n: "q"}].sort_by { |r| [r[:d], r[:n]] }.inspect`, want: `[{d: "a", n: "q"}, {d: "z", n: "a"}]`},
 	}

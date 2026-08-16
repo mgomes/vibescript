@@ -22,13 +22,13 @@ func TestJSONParseKeysAreStrings(t *testing.T) {
 		want string
 	}{
 		{name: "string lookup finds the value", expr: `JSON.parse(JSON.stringify({name: "Ada"}))["name"].inspect`, want: `"Ada"`},
-		{name: "symbol lookup reads nil", expr: `JSON.parse(JSON.stringify({name: "Ada"}))[:name].inspect`, want: "nil"},
+		{name: "symbol lookup finds the same value", expr: `JSON.parse(JSON.stringify({name: "Ada"}))[:name].inspect`, want: `"Ada"`},
 		{name: "keys are strings", expr: `JSON.parse(JSON.stringify({name: "Ada"})).keys.inspect`, want: `["name"]`},
-		{name: "a round trip is not identity", expr: `(JSON.parse(JSON.stringify({name: "Ada"})) == {name: "Ada"}).to_s`, want: "false"},
-		// The documented conversion restores the symbol-keyed form.
-		{name: "transform_keys restores equality", expr: `(JSON.parse(JSON.stringify({name: "Ada"})).transform_keys { |k| k.to_sym } == {name: "Ada"}).to_s`, want: "true"},
-		{name: "transform_keys on several keys", expr: `(JSON.parse(JSON.stringify({name: "Ada", age: 36})).transform_keys { |k| k.to_sym } == {name: "Ada", age: 36}).to_s`, want: "true"},
-		{name: "transform_keys preserves values", expr: `JSON.parse(JSON.stringify({name: "Ada"})).transform_keys { |k| k.to_sym }[:name].inspect`, want: `"Ada"`},
+		// One keyspace makes the round trip an identity: this is what ADR-006
+		// item 3 buys, and it needs no conversion step.
+		{name: "a round trip is identity", expr: `(JSON.parse(JSON.stringify({name: "Ada"})) == {name: "Ada"}).to_s`, want: "true"},
+		{name: "a round trip is identity for several keys", expr: `(JSON.parse(JSON.stringify({name: "Ada", age: 36})) == {name: "Ada", age: 36}).to_s`, want: "true"},
+		{name: "a nested round trip is identity", expr: `(JSON.parse(JSON.stringify({a: {b: 1}})) == {a: {b: 1}}).to_s`, want: "true"},
 	}
 
 	for _, tc := range tests {

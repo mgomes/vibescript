@@ -1,9 +1,9 @@
 # Hashes in Vibescript
 
-Hashes are dictionaries with Ruby-style key identity. String and symbol keys are
-distinct, and keys assigned at runtime can be other hashable values such as
-integers, arrays, booleans, nil, floats, and ranges. Declare common
-identifier-shaped symbol keys with Ruby-style shorthand:
+Hashes are ordered dictionaries with one string keyspace. Strings and symbols
+are the only accepted keys, and a symbol normalizes to its string, so
+`hash["name"]`, `hash[:name]`, and the label `name:` all address one entry.
+Declare identifier-shaped keys with Ruby-style shorthand:
 
 ```vibe
 player = {
@@ -13,10 +13,9 @@ player = {
 }
 ```
 
-Shorthand labels (`name:`) create symbol keys, so access them with symbol
-notation (`player[:name]`). Use quoted string keys when the key must be a
-string (`player["name"]`), and index assignment when the key is another
-runtime value.
+Shorthand labels (`name:`) create string keys, so `player[:name]` and
+`player["name"]` read the same entry and `player.keys` returns `["id", "name",
+"raised"]`.
 
 When a label key is followed immediately by `,`, `}`, or end-of-input, the value
 is omitted and read from the local variable of the same name. `{ name: }` is
@@ -43,11 +42,11 @@ player = {
 }
 
 player["first-name"]  # "Ada"
-player[:"first-name"] # nil
+player[:"first-name"] # "Ada"  (the same key)
 ```
 
-Quoted keys are strings. Quoted symbols are separate keys, matching Ruby's
-string/symbol distinction.
+A quoted key and its symbol spelling name one entry, so a literal that writes
+both keeps one entry holding the later value.
 
 Reserved words are valid shorthand labels when followed by an explicit value, so
 keyword-shaped payload keys behave like any other label:
@@ -71,17 +70,29 @@ it:
 
 ```vibe
 current_key = :nickname
-player = { name: "Ada", "first-name": "Ada" }
+player = { name: "Ada" }
 player[current_key] = "dynamic"
-
-numbers = {}
-numbers[1] = "one"
-numbers[[2, 3]] = "pair"
 ```
 
-Keys assigned through index access keep the same Ruby-style key identity as
-literal keys, and may be any hashable value. Unsupported key values, such as
-NaN floats, cyclic arrays, and objects, raise `unsupported hash key type ...`.
+A key must be a string or a symbol wherever one enters or probes a hash --
+index assignment, `store`, `[]`, `fetch`, `key?`, `delete`, `dig`, `slice`,
+`except`, `values_at`, the merge family, `transform_keys`, `Array#to_h`,
+`group_by`, and `tally`. Anything else raises `unsupported hash key type ...:
+hash keys must be strings or symbols; convert the key with to_s`. Convert a
+computed key explicitly:
+
+```vibe
+numbers = {}
+numbers[1.to_s] = "one"        # "1"
+numbers[[2, 3].to_s] = "pair"  # "[2, 3]"
+```
+
+Because keys are strings, a JSON round trip does not change lookup behavior:
+
+```vibe
+person = { name: "Ada" }
+JSON.parse(JSON.stringify(person)) == person # true
+```
 
 Dot access keeps hash method names reserved. If a stored key is named like a
 hash method, use index access for the entry:
@@ -92,94 +103,42 @@ sizes.size   # 1
 sizes[:size] # "XL"
 ```
 
-## Default values
+## Missing keys
 
-Hash literals return `nil` for a missing key. To return something else, build the
-hash with `Hash.new` and a Ruby-style default. `Hash.new` accepts either a
-default value or a default proc, but not both:
+A missing key reads as `nil`. Hashes carry no per-hash default: `Hash.new` takes
+no argument and no block, so a fallback is written where it is needed rather
+than stored on the hash.
 
 ```vibe
-counts = Hash.new(0)
-counts[:misses]   # 0   (the default value)
-counts.size       # 0   (a value default never inserts)
-
-cache = Hash.new { |hash, key| hash[key] = "made-" + key }
-cache["a"]        # "made-a"  (the proc runs and stores)
-cache.size        # 1         (the proc inserted the entry)
-cache["a"]        # "made-a"  (now present, the proc does not run again)
+counts = {}
+counts[:misses]              # nil
+counts.fetch(:misses, 0)     # 0   (an explicit fallback, per lookup)
+counts.fetch(:misses) { 0 }  # 0   (computed only on a miss)
+counts.size                  # 0   (fetch never inserts)
 ```
 
-A default value is returned without inserting it, so repeated misses keep the
-hash empty and always return the same default. A default proc is invoked with the
-hash and the missing key; it inserts an entry only if its body assigns one
-(`hash[key] = ...`). A proc that merely returns a value leaves the hash unchanged:
+`fetch` with no fallback raises for a missing key, which is the way to demand a
+key be present:
 
 ```vibe
-computed = Hash.new { |hash, key| "computed-" + key }
-computed["x"]     # "computed-x"
-computed.size     # 0   (the proc did not store)
+{ a: 1 }.fetch(:a)       # 1
+{ a: 1 }.fetch(:missing) # error: hash.fetch key not found: :missing
 ```
 
-Read the configured default with `default` and `default_proc`:
-
-- `default` with no argument returns the configured default value, or `nil`. Like
-  Ruby, it never runs the default proc, so a proc-only hash reports `nil` here.
-- `default(key)` resolves the default the same way a missing-key `[]` access
-  would: a default proc is invoked with `(hash, key)` (and may store), otherwise
-  the default value is returned.
-- `default_proc` returns the configured default proc, or `nil`.
+To fill a hash lazily, write the store where the miss is handled:
 
 ```vibe
-Hash.new(0).default                 # 0
-Hash.new(0).default(:any)           # 0
-Hash.new { |h, k| 1 }.default       # nil
-Hash.new { |h, k| k }.default(:x)   # :x  (proc invoked with the key)
-Hash.new { |h, k| 1 }.default_proc  # the proc
-{}.default                          # nil
-{}.default_proc                     # nil
+cache = {}
+key = "a"
+cache[key] = "made-" + key if cache[key].nil?
 ```
 
-`[]` access, `dig`, and `values_at` all consult the default for a missing key,
-because each is a `[]` lookup in Ruby: `dig` consults the default at every hash
-level it walks, and `values_at` consults it once per missing key. A default proc
-runs (and may store) on each such miss. `fetch` is the exception: like Ruby, it
-ignores the hash default and uses only its own optional fallback.
+`dig` and `values_at` read as `[]` does: a missing key contributes `nil` rather
+than consulting anything stored on the hash.
 
 ```vibe
-Hash.new(0).fetch(:missing, 99) # 99 (fetch's own default, not the hash default)
-Hash.new(0).dig(:missing)       # 0  (the default value)
-Hash.new(0).values_at(:a, :b)   # [0, 0]
-```
-
-The default travels with the hash object: the in-place mutators (index
-assignment, `store`, `delete`, `clear`, `delete_if`/`keep_if`, and
-`update`/`merge!`) keep the receiver's default, `merge` copies the receiver's
-default onto the merged hash, and `replace` adopts the replacement's default.
-Every transform that returns a new hash (`select`, `reject`, `slice`,
-`except`, `transform_keys`, `transform_values`, `compact`, ...) returns a
-plain hash with no default, so derived hashes do not silently inherit
-missing-key behavior.
-
-```vibe
-base = Hash.new(0)
-base.merge({ a: 1 })[:b]        # 0   (default preserved)
-base.select { |k, v| true }[:b] # nil (default dropped)
-```
-
-A hash default is part of a hash's value type, because a missing-key lookup
-returns it. When a hash is passed where `hash<key, value>` is expected, the
-default value must itself match `value`, and the validated default travels with
-the normalized hash. A hash carrying a default proc is rejected, because the
-proc's result cannot be checked ahead of time.
-
-```vibe
-def totals(counts: hash<string, int>) -> int
-  counts[:missing]
-end
-
-totals(Hash.new(0))               # 0   (int default conforms)
-totals(Hash.new("oops"))          # error: argument counts expected hash<string, int>
-totals(Hash.new { |h, k| 1 })     # error: a default proc cannot be type-checked
+{}.dig(:missing)              # nil
+{ a: 1 }.values_at(:a, :b)    # [1, nil]
 ```
 
 ## Query helpers
@@ -195,16 +154,13 @@ def has_required_fields(player)
 end
 ```
 
-The key membership predicates accept any candidate key and use the same key
-identity as `[]` lookup.
+The key membership predicates use the same key identity as `[]` lookup, and
+reject a candidate that is neither a string nor a symbol.
 
 ```vibe
-numbers = {}
-numbers[1] = "one"
-
 { a: 1 }.key?(:a)  # true
-{ a: 1 }.key?("a") # false
-numbers.key?(1)    # true
+{ a: 1 }.key?("a") # true  (the same key)
+{ a: 1 }.key?(1)   # error: hash keys must be strings or symbols
 ```
 
 `value?` and `has_value?` compare the candidate against each stored value using
@@ -291,20 +247,18 @@ end
   receiver in place and returns the removed value, matching Ruby's mutating
   `delete`. On a miss it returns `nil` — or, with a block, the block's result
   for the requested key — and leaves the receiver untouched.
-- `clear` empties the receiver in place and returns it. The hash keeps its
-  object identity and any `Hash.new` default value or proc.
+- `clear` empties the receiver in place and returns it, keeping its object
+  identity.
 - `delete_if { |key, value| }` removes every entry the block accepts and
   returns the receiver; `keep_if { |key, value| }` keeps only accepted entries.
   The block sees a snapshot of the entries, so the receiver is pruned only
   after the walk completes; surviving entries keep their insertion order.
 - `compact` removes `nil` values.
-- `slice(*keys)` keeps only selected keys. Candidate keys that are absent are
-  omitted, and keys whose type cannot be a hash key (anything other than a symbol
-  or string) are treated as misses rather than raising, so `slice` with only
-  unmatched candidates returns an empty hash.
-- `except(*keys)` removes selected keys. Keys whose type cannot be a hash key
-  (anything other than a symbol or string) are treated as misses and ignored, so
-  the surrounding entries are preserved.
+- `slice(*keys)` keeps only selected keys. Absent candidates are omitted, so
+  `slice` with only unmatched candidates returns an empty hash; a candidate that
+  is not a string or symbol is rejected.
+- `except(*keys)` removes selected keys. Absent candidates are ignored; a
+  candidate that is not a string or symbol is rejected.
 - `select` / `reject` with a block.
 - `transform_keys` / `transform_values` with a block.
 - `deep_transform_keys` for recursive key mapping across nested hashes/arrays.

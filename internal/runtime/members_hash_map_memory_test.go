@@ -21,16 +21,17 @@ func TestHashMapDoesNotChargeTheResultBackingTwice(t *testing.T) {
 	}
 	receiver := NewHash(entries)
 
-	// Each quota sits between the double-charged threshold and the correct
-	// one: the 400-slot backing is about 6.4KB, and charging it twice moved
-	// every threshold by that much.
+	// Each quota sits between the correct threshold and the double-charged one:
+	// the 400-entry output backing (map slots plus the insertion-order slots
+	// beside them) is about 38KB, and charging it twice moved every threshold
+	// by that much.
 	tests := []struct {
 		name  string
 		body  string
 		quota int
 	}{
-		{name: "separate key and value", body: "h.map { |k, v| v }", quota: 66000},
-		{name: "collapsed pair", body: "h.map { |p| p }", quota: 135000},
+		{name: "separate key and value", body: "h.map { |k, v| v }", quota: 84000},
+		{name: "collapsed pair", body: "h.map { |p| p }", quota: 156000},
 	}
 
 	for _, tc := range tests {
@@ -112,10 +113,10 @@ func TestDestructuringBlockParametersMatchRuby(t *testing.T) {
 		body string
 		want string
 	}{
-		{body: "({a: 1}).map { |(k, v)| [k, v] }.inspect", want: `[[:a, 1]]`},
-		{body: "({a: 1}).map { |(k, *v)| [k, v] }.inspect", want: `[[:a, [1]]]`},
-		{body: "({a: 1}).map { |(x)| x }.inspect", want: `[:a]`},
-		{body: "({a: 1}).map { |x| x }.inspect", want: `[[:a, 1]]`},
+		{body: "({a: 1}).map { |(k, v)| [k, v] }.inspect", want: `[["a", 1]]`},
+		{body: "({a: 1}).map { |(k, *v)| [k, v] }.inspect", want: `[["a", [1]]]`},
+		{body: "({a: 1}).map { |(x)| x }.inspect", want: `["a"]`},
+		{body: "({a: 1}).map { |x| x }.inspect", want: `[["a", 1]]`},
 	}
 
 	for _, tc := range tests {

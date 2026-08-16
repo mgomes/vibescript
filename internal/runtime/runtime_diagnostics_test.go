@@ -251,12 +251,12 @@ end`,
     { value: v }
   end
 end`,
-			errMsg: "array.group_by block returned unsupported hash key",
+			errMsg: "array.group_by block returned an unsupported hash key",
 		},
 		{
 			name:   "array.tally with unsupported values",
 			script: `def run() [{ value: 1 }].tally end`,
-			errMsg: "array.tally value is unsupported hash key",
+			errMsg: "array.tally value is an unsupported hash key",
 		},
 		{
 			name:   "array.tally with argument",
@@ -470,7 +470,7 @@ end`,
     { bad: 1 }
   end
 end`,
-			errMsg: "hash.transform_keys block returned unsupported hash key",
+			errMsg: "hash.transform_keys block returned an unsupported hash key",
 		},
 		{
 			name:   "hash unknown method",

@@ -436,7 +436,7 @@ func TestArrayTallyDoesNotRechargeReceiverOwnedKeyPayload(t *testing.T) {
 	}
 	initialScratch := hashAggregationMapScratchBytes(1, initialCapacity)
 	initialScratch = saturatingAdd(initialScratch, arrayTallyBucketSliceScratchBytes(initialCapacity))
-	resultScratch := typedHashResultBytes(count, 0)
+	resultScratch := hashResultBytes(count)
 	quota := roots + initialScratch + resultScratch + 1024
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
@@ -858,12 +858,9 @@ func groupedSingleBucketQuota(t *testing.T, receiver, block Value) int {
 	initialScratch := hashAggregationMapScratchBytes(1, initialCapacity)
 	initialScratch = saturatingAdd(initialScratch, arrayGroupBucketSliceScratchBytes(initialCapacity))
 	key := NewSymbol("all")
-	aggregationKey, err := newHashAggregationKey(key)
-	if err != nil {
-		t.Fatalf("newHashAggregationKey(all) error = %v", err)
-	}
-	firstKeyScratch := hashAggregationKeyScratchPayloadBytes(aggregationKey)
-	firstKeyScratch = saturatingAdd(firstKeyScratch, newMemoryEstimator().valuePayload(key))
+	// The bucket key string aliases the block result's own payload, so only
+	// the key value itself is fresh scratch.
+	firstKeyScratch := newMemoryEstimator().valuePayload(key)
 	groupCap := 0
 	for i := range len(receiver.Array()) {
 		groupCap = projectedAppendCap(i, groupCap)

@@ -58,7 +58,7 @@ end
 def untyped(payload)
   payload
 end`)
-	payload := NewTypedHash(6)
+	payload := NewHashWithCapacity(6)
 	for i := range 6 {
 		if err := payload.HashSet(NewSymbol(fmt.Sprintf("key_%d", i)), NewInt(int64(i))); err != nil {
 			b.Fatalf("hash set: %v", err)

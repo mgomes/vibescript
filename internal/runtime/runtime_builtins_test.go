@@ -1128,7 +1128,8 @@ func TestJSONBuiltins(t *testing.T) {
 		t.Fatalf("stringify_reused_deep_array = %q", got.String())
 	}
 
-	compareArrays(t, callFunc(t, script, "parsed_object_key_identity", nil), []Value{NewInt(1), NewInt(2), NewInt(2)})
+	// A symbol write lands on the parsed string key, so the object keeps one entry.
+	compareArrays(t, callFunc(t, script, "parsed_object_key_identity", nil), []Value{NewInt(2), NewInt(2), NewInt(1)})
 	if got := callFunc(t, script, "parsed_object_truthiness", nil); !got.Equal(NewString("truthy")) {
 		t.Fatalf("parsed_object_truthiness = %s, want truthy", got.Inspect())
 	}

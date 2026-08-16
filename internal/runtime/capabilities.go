@@ -117,33 +117,17 @@ func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 		}
 		return clonedValue
 	case KindHash:
-		// Preserve the hash's Ruby-style default metadata so the clone keeps the
-		// same missing-key behavior. The default value is deep-cloned like an
-		// entry; the default proc is a runtime-only block, copied by reference.
 		id := hashIdentity(val)
 		if id != 0 {
 			if cloned, ok := state.clonedHash(id); ok {
 				return cloned
 			}
 		}
-		defaultProc := hashDefaultProc(val)
-		defaultValue := hashDefaultValue(val)
-		hasDefault := !defaultProc.IsNil() || !defaultValue.IsNil()
-		clonedEntries := make(map[string]Value, val.HashLen())
-		cloned := NewHash(clonedEntries)
+		cloned := NewHash(make(map[string]Value, val.HashLen()))
 		state.rememberHash(id, cloned)
-		if hasDefault {
-			cloned.SetHashDefaults(deepCloneValueWithState(defaultValue, state), defaultProc)
-		}
-		if hashHasTypedEntries(val) {
-			var entryBuf [smallHashKeyBufferSize]HashEntry
-			for _, entry := range val.HashEntriesInto(entryBuf[:]) {
-				setClonedHashEntry(cloned, deepCloneValueWithState(entry.Key, state), deepCloneValueWithState(entry.Value, state))
-			}
-			return cloned
-		}
-		for key, item := range val.Hash() {
-			clonedEntries[key] = deepCloneValueWithState(item, state)
+		var entryBuf [smallHashKeyBufferSize]HashEntry
+		for _, entry := range val.HashEntriesInto(entryBuf[:]) {
+			setClonedHashEntry(cloned, entry.Key, deepCloneValueWithState(entry.Value, state))
 		}
 		return cloned
 	case KindObject:
@@ -453,18 +437,7 @@ func (s *capabilityDataCloneScanner) cloneArray(val Value) (Value, error) {
 }
 
 func (s *capabilityDataCloneScanner) cloneHash(val Value) (Value, error) {
-	// A typed hash is walked through its entries, so its lossy display-key
-	// view is never materialized here — building it would allocate a map and
-	// bump the mutation epoch for a view this clone does not read.
-	typed := hashHasTypedEntries(val)
-	var entries map[string]Value
-	ptr := hashIdentity(val)
-	if !typed {
-		entries = val.Hash()
-		if ptr == 0 {
-			ptr = reflect.ValueOf(entries).Pointer()
-		}
-	}
+	ptr := hashScanIdentity(val)
 	if ptr != 0 {
 		if _, visiting := s.visitingMaps[ptr]; visiting {
 			return NewNil(), fmt.Errorf("%s must not contain cyclic references", s.label)
@@ -479,46 +452,14 @@ func (s *capabilityDataCloneScanner) cloneHash(val Value) (Value, error) {
 	if ptr != 0 {
 		s.clonedMaps[ptr] = cloned
 	}
-	// A typed hash clones entry by entry with its original keys: rebuilding
-	// from the display-key view would drop every entry whose key renders like
-	// another's (`:x` beside `"x"`), silently changing the data that crosses
-	// the boundary.
-	if typed {
-		var entryBuf [smallHashKeyBufferSize]TypedHashEntry
-		for _, typedEntry := range val.OrderedTypedHashEntriesInto(entryBuf[:]) {
-			clonedKey, err := s.clone(typedEntry.Entry.Key)
-			if err != nil {
-				return NewNil(), err
-			}
-			clonedItem, err := s.clone(typedEntry.Entry.Value)
-			if err != nil {
-				return NewNil(), err
-			}
-			setClonedTypedHashEntry(cloned, typedEntry.LookupKey, clonedKey, clonedItem)
+	// The clone is filled entry by entry so it iterates in its source's order.
+	var entryBuf [smallHashKeyBufferSize]HashEntry
+	for _, entry := range val.HashEntriesInto(entryBuf[:]) {
+		clonedItem, err := s.clone(entry.Value)
+		if err != nil {
+			return NewNil(), err
 		}
-	} else {
-		for key, item := range entries {
-			clonedItem, err := s.clone(item)
-			if err != nil {
-				return NewNil(), err
-			}
-			clonedEntries[key] = clonedItem
-		}
-	}
-	defaultValue, err := s.clone(hashDefaultValue(val))
-	if err != nil {
-		return NewNil(), err
-	}
-	defaultProc, err := s.clone(hashDefaultProc(val))
-	if err != nil {
-		return NewNil(), err
-	}
-	if !defaultValue.IsNil() || !defaultProc.IsNil() {
-		// The defaults attach to the wrapper already populated above. Rebuilding
-		// one from clonedEntries would discard everything a typed clone wrote —
-		// those entries live in the wrapper's typed table, not in that map — and
-		// would also swap out the wrapper already registered for cycle reuse.
-		cloned.SetHashDefaults(defaultValue, defaultProc)
+		setClonedHashEntry(cloned, entry.Key, clonedItem)
 	}
 	if ptr != 0 {
 		delete(s.visitingMaps, ptr)
@@ -769,29 +710,14 @@ func (s *capabilityTraversalDepthScanner) check(label string, val Value, depth i
 		}
 		s.visitingMaps[ptr] = struct{}{}
 		var entryErr error
-		// A typed hash's keys are part of the graph a boundary walks: an array
-		// key nests arbitrarily and the clone recurses through it, so the depth
-		// guard has to count keys too or a deeply nested one is admitted and
-		// then cloned without a bound.
-		anyTypedHashKey(val, func(key Value) bool {
-			entryErr = s.check(label, key, depth+1)
-			return entryErr != nil
-		})
-		if entryErr != nil {
-			return entryErr
-		}
+		// Hash keys are plain strings and nest nothing, so the values are the
+		// whole graph the depth guard has to count.
 		anyHashValue(val, func(item Value) bool {
 			entryErr = s.check(label, item, depth+1)
 			return entryErr != nil
 		})
 		if entryErr != nil {
 			return entryErr
-		}
-		if err := s.check(label, hashDefaultValue(val), depth+1); err != nil {
-			return err
-		}
-		if err := s.check(label, hashDefaultProc(val), depth+1); err != nil {
-			return err
 		}
 		delete(s.visitingMaps, ptr)
 		if seenRemaining, seen := s.seenMaps[ptr]; !seen || remainingDepth < seenRemaining {
@@ -880,13 +806,6 @@ func (s *capabilityCycleScanner) containsCycle(val Value) bool {
 		if anyHashValue(val, s.containsCycle) {
 			return true
 		}
-		// A KindHash's default value/proc are reachable hash state and may
-		// themselves nest collections, so walk them for cycles too. They share
-		// the same visiting set, so a default that references its own hash is
-		// detected as a cycle like any other back-edge.
-		if s.containsCycle(hashDefaultValue(val)) || s.containsCycle(hashDefaultProc(val)) {
-			return true
-		}
 		delete(s.visitingMaps, ptr)
 		s.seenMaps[ptr] = struct{}{}
 		return false
@@ -923,18 +842,7 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 			return false
 		}
 		s.seenMaps[ptr] = struct{}{}
-		if anyHashValue(val, s.containsCallable) {
-			return true
-		}
-		// A KindHash may carry Ruby-style default metadata outside its entry
-		// map: a default value (itself possibly a callable or a collection of
-		// callables) and a default proc (a KindBlock, always a callable). Scan
-		// both so Hash.new { ... } or Hash.new(some_proc) cannot smuggle a
-		// script callable past a data-only boundary.
-		if s.containsCallable(hashDefaultValue(val)) {
-			return true
-		}
-		return s.containsCallable(hashDefaultProc(val))
+		return anyHashValue(val, s.containsCallable)
 	default:
 		return false
 	}
@@ -1094,10 +1002,6 @@ func (s *capabilityContractScanner) bindContracts(
 		for _, item := range entries {
 			s.bindContracts(item, scope, target, scopes)
 		}
-		// A KindHash's default value/proc are reachable hash state, so contracts
-		// must bind to any builtins they expose just as they do for entries.
-		s.bindContracts(hashDefaultValue(val), scope, target, scopes)
-		s.bindContracts(hashDefaultProc(val), scope, target, scopes)
 	case KindClass:
 		classDef := valueClass(val)
 		if classDef == nil {
@@ -1197,11 +1101,6 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 			}
 			s.collectBuiltins(item, out)
 		}
-		// A KindHash's default value/proc are reachable hash state, so any
-		// builtins they expose must be collected like entry builtins. The proc
-		// is a KindBlock whose captured env is walked by the KindBlock case.
-		s.collectBuiltins(hashDefaultValue(val), out)
-		s.collectBuiltins(hashDefaultProc(val), out)
 	case KindClass:
 		classDef := valueClass(val)
 		if classDef == nil {
@@ -1326,17 +1225,7 @@ func (s *strictGlobalsScanner) containsCallable(val Value) bool {
 		s.seenMaps[ptr] = struct{}{}
 		s.stackMaps[ptr] = struct{}{}
 		defer delete(s.stackMaps, ptr)
-		if anyHashValue(val, s.containsCallable) {
-			return true
-		}
-		// A KindHash may carry Ruby-style default metadata outside its entry
-		// map: a default value and a default proc (a KindBlock callable). A
-		// strict global must be data-only, so scan both rather than admitting a
-		// Hash.new { ... } as an empty, callable-free hash.
-		if s.containsCallable(hashDefaultValue(val)) {
-			return true
-		}
-		return s.containsCallable(hashDefaultProc(val))
+		return anyHashValue(val, s.containsCallable)
 	default:
 		return false
 	}

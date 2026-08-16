@@ -3496,8 +3496,8 @@ func TestMergeLocalValueFactsKeepsOnlyCommonProvenance(t *testing.T) {
 		{
 			name: "hash provenance first",
 			left: checkLocalValueFact{
-				staticVals:   []Expression{hashLiteral},
-				hashDefaults: []directCoreHashDefaultCapture{{freshEmpty: true}},
+				staticVals:  []Expression{hashLiteral},
+				blockValues: []capturedBlockLiteralValue{{block: callback, strict: true}},
 			},
 			right: checkLocalValueFact{staticVals: []Expression{arrayLiteral}},
 		},
@@ -3505,8 +3505,8 @@ func TestMergeLocalValueFactsKeepsOnlyCommonProvenance(t *testing.T) {
 			name: "hash provenance second",
 			left: checkLocalValueFact{staticVals: []Expression{arrayLiteral}},
 			right: checkLocalValueFact{
-				staticVals:   []Expression{hashLiteral},
-				hashDefaults: []directCoreHashDefaultCapture{{freshEmpty: true}},
+				staticVals:  []Expression{hashLiteral},
+				blockValues: []capturedBlockLiteralValue{{block: callback, strict: true}},
 			},
 		},
 		{
@@ -3532,7 +3532,7 @@ func TestMergeLocalValueFactsKeepsOnlyCommonProvenance(t *testing.T) {
 			if !exact || len(merged.staticVals) != 2 {
 				t.Fatalf("mergeLocalValueFacts() = %#v, %t, want two static alternatives", merged, exact)
 			}
-			if len(merged.blockValues) != 0 || len(merged.hashDefaults) != 0 {
+			if len(merged.blockValues) != 0 {
 				t.Fatalf("mergeLocalValueFacts() = %#v, want no one-sided provenance", merged)
 			}
 		})
@@ -3542,14 +3542,14 @@ func TestMergeLocalValueFactsKeepsOnlyCommonProvenance(t *testing.T) {
 	second := &BlockLiteral{Lambda: true}
 	merged, exact := checker.mergeLocalValueFacts(
 		checkLocalValueFact{
-			hashDefaults: []directCoreHashDefaultCapture{{block: first, strict: true}},
+			blockValues: []capturedBlockLiteralValue{{block: first, strict: true}},
 		},
 		checkLocalValueFact{
-			hashDefaults: []directCoreHashDefaultCapture{{block: second, strict: true}},
+			blockValues: []capturedBlockLiteralValue{{block: second, strict: true}},
 		},
 	)
-	if !exact || len(merged.hashDefaults) != 2 {
-		t.Fatalf("mergeLocalValueFacts() = %#v, %t, want both exact hash defaults", merged, exact)
+	if !exact || len(merged.blockValues) != 2 {
+		t.Fatalf("mergeLocalValueFacts() = %#v, %t, want both exact block values", merged, exact)
 	}
 }
 

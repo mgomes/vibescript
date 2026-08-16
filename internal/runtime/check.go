@@ -147,7 +147,6 @@ type scriptChecker struct {
 	callArrayReceiverLength    checkArrayReceiverLength
 	shapeFieldSources          map[*TypeExpr]map[string]checkValueSource
 	evaluatedBlockValues       map[Expression][]capturedBlockLiteralValue
-	evaluatedHashDefaults      map[Expression][]directCoreHashDefaultCapture
 	evaluatedDestructureFacts  map[Expression]capturedDestructureValueFact
 	destructureProjectionFacts map[Expression]capturedDestructureValueFact
 	variadicParamStaticValues  map[string][]Expression
@@ -4750,7 +4749,6 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		}
 	case *CallExpr:
 		delete(c.evaluatedBlockValues, typed)
-		delete(c.evaluatedHashDefaults, typed)
 		// The receiver's nil-ness resolves from the facts at its evaluation
 		// point, before member dispatch poisons the receiver's own facts.
 		callSkipsInferred := c.safeNavigationCallSkipsInferred(typed)
@@ -5828,8 +5826,6 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			return false
 		}
 		c.captureEvaluatedDestructureFactOnce(typed.Object)
-		hashDefaults, hashDefaultsExact := c.captureDirectCoreHashDefaults(typed.Object)
-		hashDefaultAliases := c.directCoreHashDefaultReceiverAliasNames(typed.Object)
 		c.captureAssignmentReceiver(typed)
 		dispatchType := c.instanceDispatchReceiverType(
 			typed.Object,
@@ -5845,7 +5841,6 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		}
 		var dispatch instanceScriptDispatchSelection
 		var effects regionIvarEffects
-		var defaultMayRun bool
 		var completed bool
 		c.withEvaluatedDestructureArgumentFacts(typed.Indices, func() {
 			dispatch = c.indexScriptDispatch(typed, dispatchType)
@@ -5853,40 +5848,13 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				c.captureNonCompletingExpressionArm()
 			}
 			effects = c.scriptDispatchIvarEffects(dispatch)
-			hashDefaults, hashDefaultsExact = c.validateEvaluatedDirectCoreHashDefaults(
-				hashDefaults,
-				hashDefaultsExact,
-				hashDefaultAliases,
-			)
-			defaultEffects, mayRun, defaultMayReject := c.indexReadIvarEffects(typed, dispatchType, hashDefaults)
-			c.applyDirectCoreHashDefaultNamespaceMutations(
-				typed,
-				dispatchType,
-				hashDefaults,
-			)
-			defaultMayRun = mayRun
-			mergeRegionIvarEffects(&effects, defaultEffects)
-			completed = c.indexExpressionMayCompleteWithReceiverAndDefaults(
-				typed,
-				dispatchType,
-				hashDefaults,
-				hashDefaultsExact,
-			)
-			if defaultMayRun {
-				// A default callback receives the Hash itself and may retain or
-				// populate it before returning or raising. Later reads therefore
-				// cannot reuse the fresh-empty provenance observed by this read.
-				c.poisonDirectCoreHashDefaultReceiverAliases(hashDefaultAliases)
-			}
-			if defaultMayReject {
-				c.captureNonCompletingExpressionArm()
-			}
+			completed = c.indexExpressionMayCompleteWithReceiver(typed, dispatchType)
 		})
 		c.enqueueReachableInstanceDispatch(dispatchType, "[]")
 		if opaqueDispatch {
 			c.markOpaqueClassConstants()
 		}
-		if dispatch.mayRunScript() || defaultMayRun {
+		if dispatch.mayRunScript() {
 			c.widenRegionIvarFacts(effects)
 			c.captureNonCompletingExpressionArm()
 		}
@@ -7343,27 +7311,6 @@ func (c *scriptChecker) indexExpressionMayCompleteWithReceiver(
 ) bool {
 	if expr == nil {
 		return true
-	}
-	defaults, exact := c.captureDirectCoreHashDefaults(expr.Object)
-	return c.indexExpressionMayCompleteWithReceiverAndDefaults(
-		expr,
-		receiverType,
-		defaults,
-		exact,
-	)
-}
-
-func (c *scriptChecker) indexExpressionMayCompleteWithReceiverAndDefaults(
-	expr *IndexExpr,
-	receiverType *TypeExpr,
-	defaults []directCoreHashDefaultCapture,
-	defaultsExact bool,
-) bool {
-	if expr == nil {
-		return true
-	}
-	if defaultsExact {
-		return c.directCoreHashDefaultMayComplete(expr, receiverType, defaults)
 	}
 	if c.indexedHashOperationProvablyAbortsWithReceiver(expr, receiverType) {
 		return false
@@ -9173,7 +9120,6 @@ func (c *scriptChecker) checkCapturedBlockLiteral(
 	// walk; the body must resolve them again under the namespace in effect
 	// when the retained block is actually invoked.
 	c.evaluatedBlockValues = nil
-	c.evaluatedHashDefaults = nil
 	c.checkBlockLiteralWithIvarWidening(
 		function,
 		block,
@@ -17068,7 +17014,7 @@ func staticLiteralHashKey(expr Expression) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	key, err := valueToHashKey(val)
+	key, err := hashKeyString(val)
 	if err != nil {
 		return "", false
 	}
@@ -20357,7 +20303,6 @@ func (s *namespaceMutationScan) capturedIndexGetter(
 	target *IndexExpr,
 	receiver checkAssignmentReceiverCapture,
 ) bool {
-	hashDefaults, hashDefaultsExact := s.checker.captureDirectCoreHashDefaults(target.Object)
 	call := &CallExpr{
 		Callee: &MemberExpr{
 			Object:   target.Object,
@@ -20379,26 +20324,9 @@ func (s *namespaceMutationScan) capturedIndexGetter(
 			}
 		}
 	}
-	if hashDefaultsExact {
-		effects, mayRun, _ := s.checker.indexReadIvarEffects(
-			target,
-			receiver.receiverType,
-			hashDefaults,
-		)
-		if mayRun {
-			if effects.unknown {
-				s.markUnknownDirectIvarEffects()
-			}
-			for name := range effects.writes {
-				s.recordDirectIvarWrite(name)
-			}
-		}
-	}
-	return s.checker.indexExpressionMayCompleteWithReceiverAndDefaults(
+	return s.checker.indexExpressionMayCompleteWithReceiver(
 		target,
 		receiver.receiverType,
-		hashDefaults,
-		hashDefaultsExact,
 	)
 }
 

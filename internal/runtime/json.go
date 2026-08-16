@@ -1,13 +1,11 @@
 package runtime
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"math"
 	"math/big"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -164,7 +162,7 @@ func (p *jsonValueParser) parseObject() (Value, error) {
 		return NewHash(nil), nil
 	}
 
-	values := NewTypedHash(jsonInitialObjectCapacity)
+	values := NewHashWithCapacity(jsonInitialObjectCapacity)
 	for {
 		if p.pos >= len(p.raw) {
 			return NewNil(), fmt.Errorf("unexpected end of JSON input")
@@ -651,9 +649,8 @@ func appendJSONValueRendered(buf []byte, val Value, state *jsonStringifyState) (
 }
 
 type jsonObjectEntry struct {
-	key     string
-	sortKey string
-	value   Value
+	key   string
+	value Value
 }
 
 func jsonObjectIdentity(val Value) uintptr {
@@ -665,31 +662,16 @@ func jsonObjectIdentity(val Value) uintptr {
 	return reflect.ValueOf(val.Hash()).Pointer()
 }
 
+// jsonObjectEntries returns the members stringify emits, in the order the hash
+// iterates: Ruby-style insertion order for a hash built by a script, the way
+// Ruby's JSON.generate does, and sorted keys for a bare host map or an object,
+// which record no order.
 func jsonObjectEntries(val Value) ([]jsonObjectEntry, error) {
-	// Typed hashes carry Ruby-style insertion order, so stringify emits members
-	// in that order the way Ruby's JSON.generate does. Legacy hashes and
-	// objects have no recorded order and keep sorted keys for determinism.
-	if val.Kind() == KindHash && hashHasTypedEntries(val) {
-		hashEntries := val.HashEntries()
-		entries := make([]jsonObjectEntry, len(hashEntries))
-		for i, entry := range hashEntries {
-			key, err := valueToHashKey(entry.Key)
-			if err != nil {
-				return nil, fmt.Errorf("JSON.stringify key: %w", err)
-			}
-			entries[i] = jsonObjectEntry{key: key, value: entry.Value}
-		}
-		return entries, nil
+	hashEntries := val.HashEntries()
+	entries := make([]jsonObjectEntry, len(hashEntries))
+	for i, entry := range hashEntries {
+		entries[i] = jsonObjectEntry{key: entry.Key.String(), value: entry.Value}
 	}
-
-	hash := val.Hash()
-	entries := make([]jsonObjectEntry, 0, len(hash))
-	for key, item := range hash {
-		entries = append(entries, jsonObjectEntry{key: key, sortKey: key, value: item})
-	}
-	slices.SortFunc(entries, func(a, b jsonObjectEntry) int {
-		return cmp.Compare(a.sortKey, b.sortKey)
-	})
 	return entries, nil
 }
 

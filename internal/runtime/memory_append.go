@@ -109,7 +109,7 @@ func (exec *Execution) hashStoreCharged(target, key, val Value) (handled bool, e
 		exec.blockRegionActive || baseWalkCacheDisabled.Load() {
 		return false, nil
 	}
-	if target.Kind() != KindHash || !hashHasTypedEntries(target) {
+	if target.Kind() != KindHash {
 		return false, nil
 	}
 	c := exec.baseWalkCache
@@ -124,23 +124,13 @@ func (exec *Execution) hashStoreCharged(target, key, val Value) (handled bool, e
 	if _, committed := exec.memoryEst.seenHashData[id]; !committed {
 		return false, nil
 	}
-	lookupKey, keyErr := hashLookupKey(key)
+	keyText, keyErr := hashKeyString(key)
 	if keyErr != nil {
-		// The ordinary path owns unhashable-key errors.
+		// The ordinary path owns unsupported-key errors.
 		return false, nil
 	}
 	if _, exists, getErr := target.HashGet(key); getErr != nil || exists {
 		return false, nil
-	}
-	legacyEntries, legacyMirrored := hashStringMapIfMaterialized(target)
-	if legacyMirrored {
-		// A kind-strict add can still collide in the legacy display-key
-		// mirror (an int 1 and a string "1" both display as "1"), turning
-		// the mirror write into a replacement whose delta cannot be added
-		// arithmetically. Leave those to the ordinary path.
-		if _, collides := legacyEntries[hashDisplayKey(key)]; collides {
-			return false, nil
-		}
 	}
 
 	// See appendArrayCharged: the walk commits directly, success keeps the
@@ -148,28 +138,20 @@ func (exec *Execution) hashStoreCharged(target, key, val Value) (handled bool, e
 	est := &exec.memoryEst
 	est.journal = nil
 	est.dormant = exec.currentDormantSet()
-	marginal := est.valuePayload(key)
+	// The entry map prices each entry as a bucket, a Value slot, and the key's
+	// header and bytes (mapStructuralBytes), so the marginal add is that slot
+	// plus whatever the value payload does not deduplicate.
+	marginal := saturatingAdd(estimatedMapEntryStructuralBytes, len(keyText))
 	marginal = saturatingAdd(marginal, est.valuePayload(val))
-	marginal = saturatingAdd(marginal, lookupKey.ExtraPayloadBytes())
 
-	// An add past the typed capacity high-water mark realizes one more entry
-	// slot; an add below it consumes a slot the walk already prices.
-	entryCount := target.HashLen()
-	if entryCount+1 > value.HashTypedEntryCapacity(target) {
-		marginal = saturatingAdd(marginal, estimatedMapEntryBytes+estimatedHashLookupKeyBytes+estimatedHashEntryBytes)
-	}
-	// A literal-built hash keeps its legacy string map materialized; HashSet
-	// mirrors every write into it, and mapStructuralBytes prices each entry as
-	// a bucket, a Value slot, and the display key's header and bytes. The
-	// reference walk also visits the mirrored value twice — once through the
-	// legacy map's loop and once through the typed entries — and the second
-	// visit charges whatever does not deduplicate (a string's header, a
-	// regex's source length). Walking the value again over the just-committed
-	// state reproduces that residue exactly.
-	if legacyMirrored {
-		displayKey := hashDisplayKey(key)
-		marginal = saturatingAdd(marginal, estimatedMapEntryBytes+estimatedValueBytes+estimatedStringHeaderBytes+len(displayKey))
-		marginal = saturatingAdd(marginal, est.valuePayload(val))
+	// hashReservedBytes charges the buckets reserved past the live entry
+	// count, so an add that lands in one of them turns a reserved slot into a
+	// live one and the entry slot above is already paid for. An add past the
+	// high-water mark instead grows the capacity with the entry, leaving the
+	// reserved slack at zero. Either way the slack only shrinks, so this is a
+	// credit or nothing -- never a second slot.
+	if value.HashEntryCapacity(target) > target.HashLen() {
+		marginal -= estimatedMapEntryStructuralBytes
 	}
 
 	// No transient peak is charged for the order backing's growth: the
@@ -193,7 +175,7 @@ func (exec *Execution) hashStoreCharged(target, key, val Value) (handled bool, e
 		return true, setErr
 	}
 	if orderCapAfter := value.HashOrderCapacity(target); orderCapAfter != orderCapBefore {
-		growth := saturatingMul(orderCapAfter-orderCapBefore, estimatedHashLookupKeyBytes)
+		growth := saturatingMul(orderCapAfter-orderCapBefore, estimatedStringHeaderBytes)
 		if orderCapBefore == 0 {
 			growth = saturatingAdd(growth, estimatedSliceBaseBytes)
 		}

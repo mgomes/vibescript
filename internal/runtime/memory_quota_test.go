@@ -807,27 +807,6 @@ func TestMemoryQuotaHashLiteralDuplicateKeyReleasesDiscardedValue(t *testing.T) 
 	}
 }
 
-func TestMemoryEstimatorCountsTypedHashDisplayCollisions(t *testing.T) {
-	t.Parallel()
-
-	first := NewString(strings.Repeat("x", 4096))
-	second := NewString(strings.Repeat("y", 4096))
-	typed := NewHash(map[string]Value{})
-	if err := typed.HashSet(NewString("same"), first); err != nil {
-		t.Fatalf("set string key: %v", err)
-	}
-	if err := typed.HashSet(NewSymbol("same"), second); err != nil {
-		t.Fatalf("set symbol key: %v", err)
-	}
-
-	legacyView := NewHash(map[string]Value{"same": second})
-	typedBytes := newMemoryEstimator().value(typed)
-	legacyBytes := newMemoryEstimator().value(legacyView)
-	if typedBytes <= legacyBytes {
-		t.Fatalf("typed collision hash estimate = %d, want greater than legacy view %d", typedBytes, legacyBytes)
-	}
-}
-
 func TestMemoryQuotaHashLiteralChargesTypedEntryStorage(t *testing.T) {
 	t.Parallel()
 
@@ -856,9 +835,9 @@ func TestMemoryQuotaHashLiteralChargesTypedEntryStorage(t *testing.T) {
 		total = saturatingAdd(total, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
 		total = saturatingAdd(total, saturatingMul(count, estimatedMapEntryStructuralBytes))
 		for i := range count {
-			key, err := canonicalHashKey(NewString(fmt.Sprintf("k%05d", i)))
+			key, err := hashKeyString(NewString(fmt.Sprintf("k%05d", i)))
 			if err != nil {
-				t.Fatalf("canonicalHashKey(k%05d) error = %v, want nil", i, err)
+				t.Fatalf("hashKeyString(k%05d) error = %v, want nil", i, err)
 			}
 			total = saturatingAdd(total, est.stringPayloadSize(key))
 			total = saturatingAdd(total, est.valuePayload(NewString(element)))
@@ -1880,64 +1859,6 @@ func TestConcurrentCallsAndBuiltinRegistration(t *testing.T) {
 		})
 	}
 	wg.Wait()
-}
-
-// TestMemoryQuotaCountsHashDefaultPayloads pins that a hash's Ruby-style default
-// metadata counts toward the memory estimate. A default value and a default proc
-// are reachable hash state stored outside the entry map, so a script that retains
-// a large payload solely through Hash.new(big) or a closure-capturing default proc
-// must not see an empty, free hash. Before the fix the KindHash estimator charged
-// only the entry map, so the default payloads were invisible.
-func TestMemoryQuotaCountsHashDefaultPayloads(t *testing.T) {
-	t.Parallel()
-
-	payload := strings.Repeat("abcdefghij", 300)
-
-	t.Run("default value payload is charged", func(t *testing.T) {
-		t.Parallel()
-		plain := newMemoryEstimator().value(NewHash(map[string]Value{}))
-		withDefault := newMemoryEstimator().value(
-			NewHashWithDefault(map[string]Value{}, NewString(payload), NewNil()),
-		)
-		// The default value's string payload (deduplicated) is the only thing
-		// the two hashes differ by, so the gap must cover that payload.
-		if gap := withDefault - plain; gap < len(payload) {
-			t.Fatalf("default value payload not charged: gap=%d, want >= %d", gap, len(payload))
-		}
-	})
-
-	t.Run("default proc closure payload is charged", func(t *testing.T) {
-		t.Parallel()
-		env := newEnv(nil)
-		env.Define("retained", NewString(payload))
-		proc := NewBlock(nil, nil, env)
-
-		plain := newMemoryEstimator().value(NewHash(map[string]Value{}))
-		withProc := newMemoryEstimator().value(
-			NewHashWithDefault(map[string]Value{}, NewNil(), proc),
-		)
-		// The proc captures the large string in its environment, so the hash that
-		// carries it must charge at least that payload beyond an empty hash.
-		if gap := withProc - plain; gap < len(payload) {
-			t.Fatalf("default proc closure payload not charged: gap=%d, want >= %d", gap, len(payload))
-		}
-	})
-
-	t.Run("payload shared with an entry is not double-counted", func(t *testing.T) {
-		t.Parallel()
-		shared := NewString(payload)
-		hash := NewHashWithDefault(map[string]Value{"k": shared}, shared, NewNil())
-		// The same string object backs both an entry and the default value; the
-		// estimator deduplicates string payloads, so the hash costs about one
-		// payload, not two.
-		got := newMemoryEstimator().value(hash)
-		if got >= 2*len(payload) {
-			t.Fatalf("shared payload double-counted: got=%d, want < %d", got, 2*len(payload))
-		}
-		if got < len(payload) {
-			t.Fatalf("shared payload undercounted: got=%d, want >= %d", got, len(payload))
-		}
-	})
 }
 
 // TestMemoryQuotaCountsHashDataWrapper verifies the hashData wrapper every

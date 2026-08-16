@@ -961,74 +961,37 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 				return clone
 			}
 		}
-		typedEntries := hashHasTypedEntries(val)
-		// Only the legacy string-key map participates in shared-entry dedup. A
-		// typed hash rebinds through HashEntries() below, so avoid materializing
-		// its lossy string-key map here at all.
-		var entries map[string]Value
-		var entriesPtr uintptr
-		var sharedEntries map[string]Value
-		var sharedSeen bool
-		if !typedEntries {
-			entries = val.Hash()
-			entriesPtr = reflect.ValueOf(entries).Pointer()
-			// A distinct wrapper that shares this entry map already cloned it;
-			// reuse that cloned map so both rebound wrappers mutate one map in
-			// place and the host's intentional aliasing survives rebinding. The
-			// shared map is already fully populated, so skip the fill loop -- only
-			// a fresh wrapper (with this wrapper's own rebound defaults) is built
-			// around it.
-			sharedEntries, sharedSeen = r.seenHashEntries[entriesPtr]
-		}
+		entries := val.Hash()
+		entriesPtr := reflect.ValueOf(entries).Pointer()
+		// A distinct wrapper that shares this entry map already cloned it;
+		// reuse that cloned map so both rebound wrappers mutate one map in
+		// place and the host's intentional aliasing survives rebinding. The
+		// shared map is already fully populated, so skip the fill loop -- only
+		// a fresh wrapper is built around it.
+		sharedEntries, sharedSeen := r.seenHashEntries[entriesPtr]
 		clonedEntries := sharedEntries
 		if !sharedSeen {
 			clonedEntries = make(map[string]Value, val.HashLen())
 		}
-		defaultValue := hashDefaultValue(val)
-		defaultProc := hashDefaultProc(val)
-		hasDefault := !defaultValue.IsNil() || !defaultProc.IsNil()
-		var cloned Value
-		if hasDefault {
-			cloned = NewHashWithDefault(clonedEntries, NewNil(), NewNil())
-		} else {
-			cloned = NewHash(clonedEntries)
-		}
-		// Register the wrapper before rebinding defaults or entries so a hash that
-		// contains itself -- whether through an entry or through a default that
-		// reaches the hash (e.g. Hash.new { |_, _| h }) -- rebinds against this
-		// clone rather than recursing forever or rebinding a second wrapper.
+		cloned := NewHash(clonedEntries)
+		// Register the wrapper before rebinding entries so a hash that contains
+		// itself rebinds against this clone rather than recursing forever or
+		// rebinding a second wrapper.
 		if id != 0 {
 			if r.seenHashes == nil {
 				r.seenHashes = make(map[uintptr]Value)
 			}
 			r.seenHashes[id] = cloned
 		}
-		if !typedEntries && !sharedSeen && entriesPtr != 0 {
+		if !sharedSeen && entriesPtr != 0 {
 			if r.seenHashEntries == nil {
 				r.seenHashEntries = make(map[uintptr]map[string]Value)
 			}
 			r.seenHashEntries[entriesPtr] = clonedEntries
 		}
-		if hasDefault {
-			clonedDefaultValue := NewNil()
-			clonedDefaultProc := NewNil()
-			if !defaultValue.IsNil() {
-				clonedDefaultValue = r.rebindValue(defaultValue)
-			}
-			if !defaultProc.IsNil() {
-				clonedDefaultProc = r.rebindValue(defaultProc)
-			}
-			cloned.SetHashDefaults(clonedDefaultValue, clonedDefaultProc)
-		}
 		if !sharedSeen {
-			if typedEntries {
-				for _, entry := range val.HashEntries() {
-					setClonedHashEntry(cloned, r.rebindValue(entry.Key), r.rebindValue(entry.Value))
-				}
-			} else {
-				for key, item := range entries {
-					clonedEntries[key] = r.rebindValue(item)
-				}
+			for _, entry := range val.HashEntries() {
+				setClonedHashEntry(cloned, entry.Key, r.rebindValue(entry.Value))
 			}
 		}
 		return cloned
@@ -1203,16 +1166,12 @@ func (r *callFunctionRebinder) inboundValueUnseen(val Value) bool {
 }
 
 // inboundHashUnseen reports whether the slow path has rebound neither this
-// hash wrapper nor its entry map. The scan admitted only legacy-keyed hashes,
-// so the entry map is always materialized; fail safe to the slow path if not.
+// hash wrapper nor its entry map.
 func (r *callFunctionRebinder) inboundHashUnseen(val Value) bool {
 	if _, seen := r.seenHashes[hashIdentity(val)]; seen {
 		return false
 	}
-	entries, ok := hashStringMapIfMaterialized(val)
-	if !ok {
-		return false
-	}
+	entries := val.Hash()
 	if entries == nil {
 		return true
 	}
@@ -2390,7 +2349,11 @@ func hashLiteralValueType(ty *TypeExpr, key Value) *TypeExpr {
 		}
 		return nil
 	case TypeShape:
-		field, ok := ty.Shape[hashDisplayKey(key)]
+		name, err := hashKeyString(key)
+		if err != nil {
+			return nil
+		}
+		field, ok := ty.Shape[name]
 		if !ok {
 			return nil
 		}

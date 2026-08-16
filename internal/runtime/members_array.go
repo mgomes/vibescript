@@ -8,8 +8,6 @@ import (
 	"slices"
 	"strings"
 	"unsafe"
-
-	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // arrayMemberNames mirrors the names dispatched by arrayMember and feeds
@@ -312,12 +310,11 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			groupIndexes := make(map[hashAggregationKey]int, initialCapacity)
+			groupIndexes := make(map[string]int, initialCapacity)
 			groups := make([]arrayGroupBucket, 0, initialCapacity)
 			distinct := 0
 			chargedEntries := initialCapacity
 			groupsCap := initialCapacity
-			lookupPayloadBytes := 0
 			var keyValueEst *memoryEstimator
 			if exec.memoryQuota > 0 {
 				keyValueEst = newMemoryEstimator()
@@ -336,13 +333,13 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err := exec.chargeValueKeySteps(groupValue); err != nil {
 					return NewNil(), err
 				}
-				key, err := newHashAggregationKey(groupValue)
+				key, err := hashKeyString(groupValue)
 				if err != nil {
-					return NewNil(), fmt.Errorf("array.group_by block returned unsupported hash key: %w", err)
+					return NewNil(), fmt.Errorf("array.group_by block returned an unsupported hash key: %w", err)
 				}
 				index, exists := groupIndexes[key]
 				if !exists {
-					if err := reserveKeyedMapEntryScratch(&scratch, &distinct, &chargedEntries, key, 1); err != nil {
+					if err := reserveKeyedMapEntryScratch(&scratch, &distinct, &chargedEntries, 1); err != nil {
 						return NewNil(), err
 					}
 					if err := reserveArrayGroupBucketAppendScratch(&scratch, &groupsCap, len(groups)); err != nil {
@@ -356,7 +353,6 @@ func arrayMemberGrouping(property string) (Value, error) {
 					index = len(groups)
 					groupIndexes[key] = index
 					groups = append(groups, arrayGroupBucket{key: groupValue})
-					lookupPayloadBytes = saturatingAdd(lookupPayloadBytes, hashAggregationKeyLookupPayloadBytes(key))
 				}
 				chargedCap := groups[index].chargedCap
 				if err := reserveValueSliceAppendScratch(&scratch, &chargedCap, len(groups[index].items)); err != nil {
@@ -371,13 +367,12 @@ func arrayMemberGrouping(property string) (Value, error) {
 			// together is what neither of them charged -- once per group, which
 			// grows with the receiver.
 			if err := scratch.reserve(saturatingAdd(
-				typedHashResultBytes(len(groups), lookupPayloadBytes),
+				hashResultBytes(len(groups)),
 				nestedArrayWrapperBytes(len(groups)))); err != nil {
 				return NewNil(), err
 			}
 			// Ruby's Hash#group_by result lists groups in first-encounter order.
-			result := NewTypedHash(len(groups))
-			result.ReserveHashOrder(len(groups))
+			result := NewHashWithCapacity(len(groups))
 			for _, group := range groups {
 				if err := hashSet(result, group.key, NewArray(group.items)); err != nil {
 					return NewNil(), err
@@ -409,7 +404,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			groupIndexes := make(map[hashAggregationKey]int, initialCapacity)
+			groupIndexes := make(map[string]int, initialCapacity)
 			groups := make([]arrayGroupBucket, 0, initialCapacity)
 			distinct := 0
 			chargedEntries := initialCapacity
@@ -432,13 +427,13 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err := exec.chargeValueKeySteps(groupValue); err != nil {
 					return NewNil(), err
 				}
-				key, err := newHashAggregationKey(groupValue)
+				key, err := hashKeyString(groupValue)
 				if err != nil {
-					return NewNil(), fmt.Errorf("array.group_by_stable block returned unsupported hash key: %w", err)
+					return NewNil(), fmt.Errorf("array.group_by_stable block returned an unsupported hash key: %w", err)
 				}
 				index, exists := groupIndexes[key]
 				if !exists {
-					if err := reserveKeyedMapEntryScratch(&scratch, &distinct, &chargedEntries, key, 1); err != nil {
+					if err := reserveKeyedMapEntryScratch(&scratch, &distinct, &chargedEntries, 1); err != nil {
 						return NewNil(), err
 					}
 					if err := reserveArrayGroupBucketAppendScratch(&scratch, &groupsCap, len(groups)); err != nil {
@@ -482,11 +477,11 @@ func arrayMemberGrouping(property string) (Value, error) {
 			initialCapacity, precharged, err := arrayTallyInitialCapacity(exec, arr, hasBlock)
 			if err != nil {
 				// Sampling's key charge surfaces quota errors as themselves;
-				// only canonicalization failures take the unsupported-key label.
+				// only a rejected key takes the unsupported-key label.
 				if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) {
 					return NewNil(), err
 				}
-				return NewNil(), fmt.Errorf("array.tally value is unsupported hash key: %w", err)
+				return NewNil(), fmt.Errorf("array.tally value is an unsupported hash key: %w", err)
 			}
 			scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
 			if err != nil {
@@ -498,7 +493,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if err := scratch.reserve(initialScratch); err != nil {
 				return NewNil(), err
 			}
-			bucketIndexes := make(map[hashAggregationKey]int, initialCapacity)
+			bucketIndexes := make(map[string]int, initialCapacity)
 			counts := make([]arrayTallyBucket, 0, initialCapacity)
 			var runner *blockCallRunner
 			if hasBlock {
@@ -510,7 +505,6 @@ func arrayMemberGrouping(property string) (Value, error) {
 			distinct := 0
 			chargedEntries := initialCapacity
 			countsCap := initialCapacity
-			lookupPayloadBytes := 0
 			var keyValueEst *memoryEstimator
 			if exec.memoryQuota > 0 && hasBlock {
 				keyValueEst = newMemoryEstimator()
@@ -542,13 +536,13 @@ func arrayMemberGrouping(property string) (Value, error) {
 						return NewNil(), err
 					}
 				}
-				key, err := newHashAggregationKey(keyValue)
+				key, err := hashKeyString(keyValue)
 				if err != nil {
-					return NewNil(), fmt.Errorf("array.tally value is unsupported hash key: %w", err)
+					return NewNil(), fmt.Errorf("array.tally value is an unsupported hash key: %w", err)
 				}
 				index, exists := bucketIndexes[key]
 				if !exists {
-					if err := reserveKeyedMapEntryScratch(&scratch, &distinct, &chargedEntries, key, 1); err != nil {
+					if err := reserveKeyedMapEntryScratch(&scratch, &distinct, &chargedEntries, 1); err != nil {
 						return NewNil(), err
 					}
 					if err := reserveArrayTallyBucketAppendScratch(&scratch, &countsCap, len(counts)); err != nil {
@@ -562,16 +556,14 @@ func arrayMemberGrouping(property string) (Value, error) {
 					index = len(counts)
 					bucketIndexes[key] = index
 					counts = append(counts, arrayTallyBucket{key: keyValue})
-					lookupPayloadBytes = saturatingAdd(lookupPayloadBytes, hashAggregationKeyLookupPayloadBytes(key))
 				}
 				counts[index].count++
 			}
-			if err := scratch.reserve(typedHashResultBytes(len(counts), lookupPayloadBytes)); err != nil {
+			if err := scratch.reserve(hashResultBytes(len(counts))); err != nil {
 				return NewNil(), err
 			}
 			// Ruby's Array#tally result lists keys in first-encounter order.
-			result := NewTypedHash(len(counts))
-			result.ReserveHashOrder(len(counts))
+			result := NewHashWithCapacity(len(counts))
 			for _, count := range counts {
 				if err := hashSet(result, count.key, NewInt(count.count)); err != nil {
 					return NewNil(), err
@@ -830,43 +822,31 @@ func hashAggregationMapScratchBytes(mapCount, capacity int) int {
 }
 
 func hashAggregationMapEntryStructuralBytes() int {
-	return estimatedMapEntryBytes + int(unsafe.Sizeof(hashAggregationKey{})) + estimatedValueBytes
+	return estimatedMapEntryStructuralBytes
 }
 
-func reserveKeyedMapEntryScratch(reservation *loopScratchReservation, distinct, chargedEntries *int, key hashAggregationKey, mapCount int) error {
+// reserveKeyedMapEntryScratch charges one distinct bucket of a Go-local
+// aggregation map. The key string aliases the value's own payload, so only the
+// map's structural slot is new, and only past the capacity already charged.
+func reserveKeyedMapEntryScratch(reservation *loopScratchReservation, distinct, chargedEntries *int, mapCount int) error {
 	*distinct = *distinct + 1
-	scratchBytes := saturatingMul(mapCount, hashAggregationKeyScratchPayloadBytes(key))
-	if *distinct > *chargedEntries {
-		scratchBytes = saturatingAdd(scratchBytes, saturatingMul(mapCount, hashAggregationMapEntryStructuralBytes()))
-		*chargedEntries = *distinct
+	if *distinct <= *chargedEntries {
+		return nil
 	}
-	return reservation.reserve(scratchBytes)
+	*chargedEntries = *distinct
+	return reservation.reserve(saturatingMul(mapCount, hashAggregationMapEntryStructuralBytes()))
 }
 
-func hashAggregationKeyScratchPayloadBytes(key hashAggregationKey) int {
-	switch key.kind {
-	case KindArray, KindRange:
-		return len(key.text)
-	}
-	return 0
-}
-
-func hashAggregationKeyLookupPayloadBytes(key hashAggregationKey) int {
-	if key.kind != KindArray {
-		return 0
-	}
-	return len(key.text)
-}
-
-func typedHashResultBytes(entries, lookupPayloadBytes int) int {
+// hashResultBytes is the footprint of an aggregation's published hash: the
+// value, the wrapper, the entry map's base and slots, and the insertion-order
+// backing. Key strings alias the bucket values the caller already charged.
+func hashResultBytes(entries int) int {
 	bytes := estimatedValueBytes + estimatedHashDataBytes + estimatedMapBaseBytes
 	if entries > 0 {
-		entryBytes := estimatedMapEntryBytes + estimatedHashLookupKeyBytes + estimatedHashEntryBytes
-		bytes = saturatingAdd(bytes, saturatingMul(entries, entryBytes))
-		bytes = saturatingAdd(bytes, estimatedSliceBaseBytes)
-		bytes = saturatingAdd(bytes, saturatingMul(entries, estimatedHashLookupKeyBytes))
+		bytes = saturatingAdd(bytes, saturatingMul(entries, estimatedMapEntryStructuralBytes))
+		bytes = saturatingAdd(bytes, hashOrderBackingBytes(entries))
 	}
-	return saturatingAdd(bytes, lookupPayloadBytes)
+	return bytes
 }
 
 func stableGroupResultBytes(groups int) int {
@@ -894,56 +874,6 @@ func boundedFilterCap(n int) int {
 	return n
 }
 
-type hashAggregationKey struct {
-	text   string
-	number int64
-	bits   uint64
-	kind   ValueKind
-}
-
-func newHashAggregationKey(val Value) (hashAggregationKey, error) {
-	switch val.Kind() {
-	case KindNil:
-		return hashAggregationKey{kind: KindNil}, nil
-	case KindBool:
-		if val.Bool() {
-			return hashAggregationKey{kind: KindBool, bits: 1}, nil
-		}
-		return hashAggregationKey{kind: KindBool}, nil
-	case KindInt:
-		if bi, ok := value.BigIntPayload(val); ok {
-			// Big integers aggregate by hexadecimal text (linear in words,
-			// unlike superlinear decimal), disjoint from compact keys (numeric
-			// field, empty text) by the canonical invariant. Callers charge
-			// steps per key word before building.
-			return hashAggregationKey{kind: KindInt, text: bi.Text(16)}, nil
-		}
-		return hashAggregationKey{kind: KindInt, number: val.Int()}, nil
-	case KindFloat:
-		f := val.Float()
-		if math.IsNaN(f) {
-			return hashAggregationKey{}, fmt.Errorf("unsupported hash key float NaN")
-		}
-		if f == 0 {
-			f = 0
-		}
-		return hashAggregationKey{kind: KindFloat, bits: math.Float64bits(f)}, nil
-	case KindString:
-		return hashAggregationKey{kind: KindString, text: val.String()}, nil
-	case KindSymbol:
-		return hashAggregationKey{kind: KindSymbol, text: val.String()}, nil
-	case KindArray, KindRange:
-		key, err := canonicalHashKey(val)
-		if err != nil {
-			return hashAggregationKey{}, err
-		}
-		return hashAggregationKey{kind: val.Kind(), text: key}, nil
-	default:
-		_, err := canonicalHashKey(val)
-		return hashAggregationKey{}, err
-	}
-}
-
 // arrayTallyInitialCapacity sizes the tally's maps, sampling the first
 // elements of a large blockless receiver. precharged reports how many leading
 // elements had their key cost billed during sampling, so the main loop does
@@ -960,15 +890,15 @@ func arrayTallyInitialCapacity(exec *Execution, arr []Value, hasBlock bool) (cap
 	// Sample direct values only; blocks may be expensive or effectful, so
 	// block tallies use the conservative fixed cap above.
 	const sampleLimit = 64
-	var keys [sampleLimit]hashAggregationKey
+	var keys [sampleLimit]string
 	distinct := 0
 	for _, item := range arr[:sampleLimit] {
-		// Sampling canonicalizes the key exactly as the main loop will;
-		// charge before that work, not after.
+		// Sampling reads the key exactly as the main loop will; charge before
+		// that work, not after.
 		if err := exec.chargeValueKeySteps(item); err != nil {
 			return 0, 0, err
 		}
-		key, err := newHashAggregationKey(item)
+		key, err := hashKeyString(item)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -3374,9 +3304,9 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		if err := exec.chargeValueKeySteps(elements[0]); err != nil {
 			return NewNil(), err
 		}
-		key, err := canonicalHashKey(elements[0])
+		key, err := hashKeyString(elements[0])
 		if err != nil {
-			return NewNil(), fmt.Errorf("array.to_h pair key is unsupported hash key: %w", err)
+			return NewNil(), fmt.Errorf("array.to_h pair key is an unsupported hash key: %w", err)
 		}
 		if err := hashSet(out, elements[0], elements[1]); err != nil {
 			return NewNil(), err

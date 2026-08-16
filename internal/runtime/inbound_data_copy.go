@@ -3,6 +3,8 @@ package runtime
 import (
 	"maps"
 	"reflect"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // inboundDataScanner decides whether one public Script.Call may deep-copy its
@@ -87,15 +89,6 @@ func (s *inboundDataScanner) scan(val Value) bool {
 		}
 		return true
 	case KindHash:
-		// Typed-key hashes and hashes carrying Ruby-style defaults rebind
-		// through the slow path: defaults may hold procs and typed entries
-		// carry Value keys, both outside the tight copier's contract.
-		if hashHasTypedEntries(val) {
-			return false
-		}
-		if !hashDefaultValue(val).IsNil() || !hashDefaultProc(val).IsNil() {
-			return false
-		}
 		if !s.admit(hashIdentity(val)) {
 			return false
 		}
@@ -103,7 +96,7 @@ func (s *inboundDataScanner) scan(val Value) bool {
 		// wrappers sharing one mutable entry map must dedup to one cloned map
 		// (the rebinder's seenHashEntries contract), which the tight copier
 		// cannot provide.
-		entries, _ := hashStringMapIfMaterialized(val)
+		entries := val.Hash()
 		if entries == nil {
 			return true
 		}
@@ -194,7 +187,9 @@ func copyInboundDataValue(val Value) Value {
 		}
 		return NewArray(cloned)
 	case KindHash:
-		return NewHash(copyInboundDataEntries(val.Hash()))
+		// The copy iterates the way its source does, which cloning the entry
+		// map alone would not preserve.
+		return value.NewHashWithOrder(copyInboundDataEntries(val.Hash()), val.HashKeyOrder())
 	case KindObject:
 		return retagClonedObject(val, copyInboundDataEntries(val.Hash()))
 	default:
@@ -254,7 +249,7 @@ func (r *callFunctionRebinder) copyAndRegisterInboundValue(val Value) Value {
 	case KindHash:
 		entries := val.Hash()
 		clonedEntries := r.copyAndRegisterInboundEntries(entries)
-		clonedVal := NewHash(clonedEntries)
+		clonedVal := value.NewHashWithOrder(clonedEntries, val.HashKeyOrder())
 		if r.seenHashes == nil {
 			r.seenHashes = make(map[uintptr]Value)
 		}

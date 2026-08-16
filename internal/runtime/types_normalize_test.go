@@ -31,7 +31,7 @@ func TestHashNormalizationNoChangeSharesBacking(t *testing.T) {
 			got.Kind(), hashIdentity(got), hashIdentity(stringKeyed))
 	}
 
-	symbolKeyed := NewTypedHash(2)
+	symbolKeyed := NewHashWithCapacity(2)
 	for i, key := range []string{"first", "second"} {
 		if err := symbolKeyed.HashSet(NewSymbol(key), NewInt(int64(i))); err != nil {
 			t.Fatalf("HashSet(:%s) error = %v", key, err)
@@ -86,13 +86,13 @@ end
 	keys := []string{"k0", "k1", "k2"}
 
 	for changedAt := range keys {
-		payload := NewTypedHash(len(keys))
+		payload := NewHashWithCapacity(len(keys))
 		for i, key := range keys {
 			val := NewEnumValue(active)
 			if i == changedAt {
 				val = NewSymbol("retired")
 			}
-			if err := payload.HashSet(NewSymbol(key), val); err != nil {
+			if err := payload.HashSet(NewString(key), val); err != nil {
 				t.Fatalf("HashSet(:%s) error = %v", key, err)
 			}
 		}
@@ -113,8 +113,8 @@ end
 			t.Fatalf("changedAt=%d result entries = %d, want %d", changedAt, len(entries), len(keys))
 		}
 		for i, entry := range entries {
-			if entry.Key.Kind() != KindSymbol || entry.Key.String() != keys[i] {
-				t.Fatalf("changedAt=%d entry %d key = %s %q, want :%s (insertion order preserved)",
+			if entry.Key.Kind() != KindString || entry.Key.String() != keys[i] {
+				t.Fatalf("changedAt=%d entry %d key = %s %q, want %q (insertion order preserved)",
 					changedAt, i, entry.Key.Kind(), entry.Key.String(), keys[i])
 			}
 			if entry.Value.Kind() != KindEnumValue {
@@ -129,51 +129,13 @@ end
 			}
 		}
 
-		original, ok, err := payload.HashGet(NewSymbol(keys[changedAt]))
+		original, ok, err := payload.HashGet(NewString(keys[changedAt]))
 		if err != nil || !ok {
 			t.Fatalf("changedAt=%d original lookup = %v, %v", changedAt, ok, err)
 		}
 		if original.Kind() != KindSymbol {
 			t.Fatalf("changedAt=%d original entry mutated to %s, want symbol", changedAt, original.Kind())
 		}
-	}
-}
-
-// TestHashNormalizationCoercedDefaultBackfillsEntries pins the default-value
-// arm of copy-on-change: when every entry already conforms but the Ruby-style
-// hash default needs coercion, the copy still carries all entries and the
-// normalized default, and the original hash keeps its raw default.
-func TestHashNormalizationCoercedDefaultBackfillsEntries(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `
-enum Status
-  Active
-  Retired
-end
-`)
-	enumDef := script.enums["Status"]
-	active := enumDef.MembersByKey["active"]
-
-	ctx := typeContext{owner: script}
-	ty := hashTypeExpr(TypeString, &TypeExpr{Kind: TypeEnum, Name: "Status"})
-
-	payload := NewHashWithDefault(map[string]Value{"a": NewEnumValue(active)}, NewSymbol("retired"), NewNil())
-	got, err := normalizeValueForType(payload, ty, ctx)
-	if err != nil {
-		t.Fatalf("normalize error = %v", err)
-	}
-	if hashIdentity(got) == hashIdentity(payload) {
-		t.Fatalf("coerced default must produce a fresh hash, got the original")
-	}
-	if val, ok, err := got.HashGet(NewString("a")); err != nil || !ok || val.Kind() != KindEnumValue {
-		t.Fatalf("copied entry a = %v, %v, %v; want carried enum value", val, ok, err)
-	}
-	if def := hashDefaultValue(got); def.Kind() != KindEnumValue {
-		t.Fatalf("normalized default kind = %s, want enum value", def.Kind())
-	}
-	if def := hashDefaultValue(payload); def.Kind() != KindSymbol {
-		t.Fatalf("original default mutated to %s, want symbol", def.Kind())
 	}
 }
 

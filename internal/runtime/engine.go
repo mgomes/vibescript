@@ -632,16 +632,14 @@ func registerDataBuiltins(engine *Engine) {
 }
 
 // registerHashBuiltins exposes the Hash namespace, whose new constructor builds
-// an empty hash carrying Ruby-style default metadata. Hash.new(default) returns
-// the default value for missing keys without inserting; Hash.new { |h, k| ... }
-// installs a default proc invoked on missing-key lookup. The two forms are
-// mutually exclusive, matching Ruby's ArgumentError when both are supplied.
+// an empty hash. Per-hash defaults are gone, so Hash.new takes no argument and
+// no block: a missing key reads as nil and fetch supplies an explicit fallback.
 func registerHashBuiltins(engine *Engine) {
 	engine.builtins["Hash"] = NewObject(map[string]Value{
-		// AutoBuiltin so a bare `Hash.new` (no parentheses, no block) builds an
-		// empty hash with a nil default, matching Ruby. Explicit `Hash.new(...)`
-		// and `Hash.new { ... }` calls still flow through the normal call path.
-		"new": newCheckedAutoBuiltin("Hash.new", builtinHashNew, staticCallSpec{minArgs: 0, maxArgs: 1, rejectKeywords: true, usesBlock: true, resultType: checkTypeHash}),
+		// AutoBuiltin so a bare `Hash.new` (no parentheses) builds an empty
+		// hash. Explicit `Hash.new(...)` calls still flow through the normal
+		// call path, where they are rejected.
+		"new": newCheckedAutoBuiltin("Hash.new", builtinHashNew, staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, resultType: checkTypeHash}),
 	})
 }
 
@@ -649,21 +647,10 @@ func builtinHashNew(exec *Execution, receiver Value, args []Value, kwargs map[st
 	if len(kwargs) > 0 {
 		return NewNil(), fmt.Errorf("Hash.new does not accept keyword arguments")
 	}
-	if len(args) > 1 {
-		return NewNil(), fmt.Errorf("Hash.new expects at most one default value")
+	if len(args) > 0 || !block.IsNil() {
+		return NewNil(), fmt.Errorf("Hash.new takes no default: a missing key reads as nil, and hash.fetch(key, fallback) supplies a default per lookup")
 	}
-	hasProc := !block.IsNil()
-	if hasProc && len(args) > 0 {
-		return NewNil(), fmt.Errorf("Hash.new cannot take both a default value and a block")
-	}
-	if hasProc {
-		return NewHashWithDefault(make(map[string]Value), NewNil(), block), nil
-	}
-	defaultValue := NewNil()
-	if len(args) == 1 {
-		defaultValue = args[0]
-	}
-	return NewHashWithDefault(make(map[string]Value), defaultValue, NewNil()), nil
+	return NewHash(make(map[string]Value)), nil
 }
 
 func registerDurationBuiltins(engine *Engine) {

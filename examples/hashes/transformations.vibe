@@ -59,11 +59,11 @@ end
 
 def deep_transform_profile(record)
   record.deep_transform_keys do |key|
-    if key == :player_id
+    if key == "player_id"
       :playerId
-    elsif key == :total_raised
+    elsif key == "total_raised"
       :totalRaised
-    elsif key == :amount_cents
+    elsif key == "amount_cents"
       :amountCents
     else
       key

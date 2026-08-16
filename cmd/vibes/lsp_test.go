@@ -3056,7 +3056,7 @@ func TestMemberDocsMatchRuntimeMembers(t *testing.T) {
 		{"array", "map"},
 		{"array", "take"},
 		{"hash", "fetch"},
-		{"hash", "default_proc"},
+		{"hash", "transform_keys"},
 		{"int", "times"},
 		{"float", "nan?"},
 		{"money", "cents"},

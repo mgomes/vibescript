@@ -312,15 +312,6 @@ end
 			warning: "write to h expected key string, got symbol",
 		},
 		{
-			name: "string and symbol merge keys with the same spelling stay distinct",
-			source: `
-def f(h: hash<string, int>)
-  h.merge!({ a: 1, "a": 2 })
-end
-`,
-			warning: "write to h expected key string, got symbol",
-		},
-		{
 			name: "compatible mixed-key merge preserves the fact",
 			source: `
 def f(h: hash<string | symbol, int>)
@@ -575,15 +566,6 @@ end
 			source: `
 def f(h: hash<int, int>)
   h.keys &&= 1
-end
-`,
-			warning: "write to h expected key int, got symbol",
-		},
-		{
-			name: "hash default getter may reach a typed hash write",
-			source: `
-def f(h: hash<int, int>)
-  h.default ||= 1
 end
 `,
 			warning: "write to h expected key int, got symbol",
@@ -1523,14 +1505,6 @@ end
 `,
 		},
 		{
-			name: "typed hash default proc skips and assignment",
-			source: `
-def f(h: hash<int, int>)
-  h.default_proc &&= 1
-end
-`,
-		},
-		{
 			name: "required argument hash getter aborts before assignment",
 			source: `
 def f(h: hash<int, int>)
@@ -2327,13 +2301,13 @@ end
 
 def impossible_key_getter
   h = {}
-  h[1] = false
+  h["other"] = false
   h.value ||= fail_right_side()
 end
 
 def impossible_compound_key_getter
   h = {}
-  h[1] = 1
+  h["other"] = 1
   h.value += fail_right_side()
 end
 
@@ -2342,21 +2316,23 @@ def fail_right_side
 end
 `)
 
+	// A member write addresses the one entry both spellings name, so every
+	// shape below reads the written value back through either spelling.
 	compareArrays(t, callFunc(t, script, "existing_symbol", nil), []Value{
 		NewInt(1),
-		NewNil(),
+		NewInt(1),
 	})
 	compareArrays(t, callFunc(t, script, "existing_string", nil), []Value{
-		NewNil(),
+		NewInt(1),
 		NewInt(1),
 	})
 	compareArrays(t, callFunc(t, script, "symbol_wins", nil), []Value{
 		NewInt(1),
-		NewString("string"),
+		NewInt(1),
 	})
 	compareArrays(t, callFunc(t, script, "missing_key", nil), []Value{
 		NewInt(1),
-		NewNil(),
+		NewInt(1),
 	})
 	compareArrays(t, callFunc(t, script, "compound_and_logical", nil), []Value{
 		NewInt(3),
@@ -2415,81 +2391,4 @@ end
 		NewBool(true),
 		NewInt(1),
 	})
-}
-
-func TestHashWriteSymbolBoundaryRejectsObjectBacking(t *testing.T) {
-	t.Parallel()
-
-	script := compileScriptDefault(t, `
-def write(h: hash<symbol, int>)
-  h[:value] = 1
-end
-`)
-	receiver := NewObject(map[string]Value{})
-	requireCallErrorContains(
-		t,
-		script,
-		"write",
-		[]Value{receiver},
-		CallOptions{},
-		"argument h expected hash<symbol, int>, got {}",
-	)
-	if entries := receiver.HashEntries(); len(entries) != 0 {
-		t.Fatalf("object entries after rejected boundary = %#v, want none", entries)
-	}
-}
-
-func TestHashReplaceShapeCheckMatchesRuntimeKeyIdentity(t *testing.T) {
-	t.Parallel()
-
-	colliding := compileScriptDefault(t, `
-def replace_fields(user: { name: int })
-  user.replace({ name: 1, "name": 2 })
-end
-`)
-	requireCheckWarningContains(
-		t,
-		colliding,
-		"write to user adds field name to exact shape { name: int }",
-	)
-
-	receiver := NewTypedHash(1)
-	if err := receiver.HashSet(NewSymbol("name"), NewInt(0)); err != nil {
-		t.Fatalf("HashSet(:name, 0) error = %v", err)
-	}
-	got := callFunc(t, colliding, "replace_fields", []Value{receiver})
-	if got.HashLen() != 2 {
-		t.Fatalf("replace_fields({name: 0}).HashLen() = %d, want 2", got.HashLen())
-	}
-	if value, ok, err := got.HashGet(NewSymbol("name")); err != nil {
-		t.Fatalf("replace_fields({name: 0})[:name] error = %v", err)
-	} else if !ok || !value.Equal(NewInt(1)) {
-		t.Errorf("replace_fields({name: 0})[:name] = %v, %t, want 1, true", value, ok)
-	}
-	if value, ok, err := got.HashGet(NewString("name")); err != nil {
-		t.Fatalf(`replace_fields({name: 0})["name"] error = %v`, err)
-	} else if !ok || !value.Equal(NewInt(2)) {
-		t.Errorf(`replace_fields({name: 0})["name"] = %v, %t, want 2, true`, value, ok)
-	}
-
-	overwritten := compileScriptDefault(t, `
-def replace_fields(user: { name: int })
-  user.replace({ name: "discarded", name: 2 })
-end
-`)
-	requireNoCheckWarnings(t, overwritten)
-
-	receiver = NewTypedHash(1)
-	if err := receiver.HashSet(NewSymbol("name"), NewInt(0)); err != nil {
-		t.Fatalf("HashSet(:name, 0) error = %v", err)
-	}
-	got = callFunc(t, overwritten, "replace_fields", []Value{receiver})
-	if got.HashLen() != 1 {
-		t.Fatalf("replace_fields({name: 0}).HashLen() = %d, want 1", got.HashLen())
-	}
-	if value, ok, err := got.HashGet(NewSymbol("name")); err != nil {
-		t.Fatalf("replace_fields({name: 0})[:name] error = %v", err)
-	} else if !ok || !value.Equal(NewInt(2)) {
-		t.Errorf("replace_fields({name: 0})[:name] = %v, %t, want 2, true", value, ok)
-	}
 }

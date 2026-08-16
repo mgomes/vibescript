@@ -121,7 +121,7 @@ func TestArrayToHashRejectsMisuse(t *testing.T) {
 		{
 			name:    "unsupported key type",
 			source:  "def run() [[{a: 1}, 2]].to_h end",
-			wantErr: "array.to_h pair key is unsupported hash key",
+			wantErr: "array.to_h pair key is an unsupported hash key",
 		},
 		{
 			name:    "block returns a non-pair",
@@ -178,25 +178,25 @@ func TestHashToArray(t *testing.T) {
 			name: "key-value pairs",
 			fn:   "pairs",
 			want: []Value{
-				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
-				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+				NewArray([]Value{NewString("a"), NewInt(1)}),
+				NewArray([]Value{NewString("b"), NewInt(2)}),
 			},
 		},
 		{
 			name: "pairs follow insertion order",
 			fn:   "deterministic_order",
 			want: []Value{
-				NewArray([]Value{NewSymbol("c"), NewInt(3)}),
-				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
-				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+				NewArray([]Value{NewString("c"), NewInt(3)}),
+				NewArray([]Value{NewString("a"), NewInt(1)}),
+				NewArray([]Value{NewString("b"), NewInt(2)}),
 			},
 		},
 		{
 			name: "nested values are preserved as-is",
 			fn:   "nested_values_kept",
 			want: []Value{
-				NewArray([]Value{NewSymbol("a"), NewArray([]Value{NewInt(1), NewInt(2)})}),
-				NewArray([]Value{NewSymbol("b"), NewHash(map[string]Value{"c": NewInt(3)})}),
+				NewArray([]Value{NewString("a"), NewArray([]Value{NewInt(1), NewInt(2)})}),
+				NewArray([]Value{NewString("b"), NewHash(map[string]Value{"c": NewInt(3)})}),
 			},
 		},
 		{
@@ -439,7 +439,7 @@ func TestHashToArrayRejectsSlotBackingUpFront(t *testing.T) {
 	// so reserveSlots rejects before make allocates it.
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	roots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, NewNil())
-	baseline := roots + sortedKeyBufferBytes(count)
+	baseline := roots + sortedHashEntryBufferBytes(count)
 	slotBacking := estimatedValueBytes + estimatedSliceBaseBytes + count*estimatedValueBytes
 	quota := baseline + slotBacking/4
 	if quota >= baseline+slotBacking {

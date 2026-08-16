@@ -558,17 +558,12 @@ func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, v
 		if err != nil {
 			return NewNil(), err
 		}
-		// The canonical form copies a string-like key's whole text and the
-		// entry maps hash it in full, so the key's bytes are charged before
-		// the conversions run, like every other key-canonicalization site.
+		// The entry map hashes the key's whole text, so the key's bytes are
+		// charged before the write runs, like every other key site.
 		if err := exec.chargeValueKeySteps(keyVal); err != nil {
 			return NewNil(), exec.wrapError(err, pair.Key.Pos())
 		}
-		key, err := canonicalHashKey(keyVal)
-		if err != nil {
-			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
-		}
-		lookupKey, err := hashLookupKey(keyVal)
+		key, err := hashKeyString(keyVal)
 		if err != nil {
 			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
 		}
@@ -583,9 +578,9 @@ func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, v
 		if acc != nil {
 			_, replacing := entries[key]
 			if replacing || acc.replacing {
-				err = acc.replaceEntry(key, lookupKey, keyVal, val, entries)
+				err = acc.replaceEntry(key, val, entries)
 			} else {
-				err = acc.addDistinctEntry(entries, lookupKey, keyVal, val)
+				err = acc.addDistinctEntry(entries, key, val)
 			}
 			if err != nil {
 				return NewNil(), err
@@ -594,7 +589,7 @@ func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, v
 		if err := hashSetUnpublished(hash, keyVal, val); err != nil {
 			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
 		}
-		entries[key] = hashLiteralEntry{key: keyVal, lookupKey: lookupKey, value: val}
+		entries[key] = hashLiteralEntry{key: key, value: val}
 	}
 	if acc == nil {
 		if err := exec.checkMemoryValue(hash); err != nil {
@@ -1007,8 +1002,8 @@ func (exec *Execution) indexHash(e *IndexExpr, obj Value, indices []Value) (Valu
 		return NewNil(), exec.errorAt(e.Position, "%s index expects a single key", obj.Kind())
 	}
 	idx := indices[0]
-	// Canonicalizing a big-integer key is linear in its words; charge before
-	// the lookup so key-heavy loops stay inside the step quota.
+	// The lookup hashes the key's whole text; charge before it so key-heavy
+	// loops stay inside the step quota.
 	if err := exec.chargeValueKeySteps(idx); err != nil {
 		return NewNil(), err
 	}
@@ -1027,14 +1022,7 @@ func (exec *Execution) indexHash(e *IndexExpr, obj Value, indices []Value) (Valu
 	if ok {
 		return val, nil
 	}
-	// A missing key consults the hash's Ruby-style default. Only KindHash
-	// carries default metadata (objects never do), so a missing object key
-	// stays nil. A default proc takes precedence over a default value and is
-	// invoked with (hash, key); the key keeps its original symbol/string
-	// value so the proc can render it the way Ruby does.
-	if obj.Kind() == KindHash {
-		return exec.hashMissingKeyDefault(obj, idx, e.IndexPos(0))
-	}
+	// A missing key reads as nil; hash.fetch supplies an explicit fallback.
 	return NewNil(), nil
 }
 
@@ -3522,53 +3510,9 @@ func (exec *Execution) evalForLoop(stmt *ForStmt, env *Env, mode loopResultMode)
 }
 
 func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value, mode loopResultMode) (Value, bool, error) {
-	if hashHasTypedEntries(iterable) {
-		count := iterable.HashLen()
-		reservePair := !exec.valueReachableFromLiveBase(iterable, NewNil())
-		scratch := sortedHashEntryBufferBytes(count)
-		if reservePair {
-			scratch = saturatingAdd(scratch, exec.maxCollapsedPairBytes(iterable))
-		}
-		delta := exec.reserveLoopScratch(scratch)
-		defer exec.releaseLoopScratch(delta)
-		if !reservePair {
-			if err := exec.checkCollapsedPairBytesWithLiveBase(iterable, NewNil()); err != nil {
-				return NewNil(), false, err
-			}
-		}
-		if err := exec.checkProjectedHashWalkBytes(iterable, nil, nil, NewNil()); err != nil {
-			return NewNil(), false, err
-		}
-		var entryBuf [smallHashKeyBufferSize]HashEntry
-		for _, entry := range orderedTypedHashEntriesInto(iterable, entryBuf[:]) {
-			if err := exec.step(); err != nil {
-				return NewNil(), false, exec.wrapError(err, stmt.Pos())
-			}
-			pair := NewArray([]Value{entry.Key, entry.Value})
-			if err := exec.assign(stmt.Target, pair, env); err != nil {
-				return NewNil(), false, exec.wrapError(err, stmt.Target.Pos())
-			}
-			val, returned, err := exec.evalStatements(stmt.Body, env)
-			if err != nil {
-				if errors.Is(err, errLoopBreak) {
-					return loopBreakResult(err, mode, last)
-				}
-				if errors.Is(err, errLoopNext) {
-					continue
-				}
-				return NewNil(), false, err
-			}
-			if returned {
-				return val, true, nil
-			}
-			last = val
-		}
-		return loopNormalResult(mode, iterable, last), false, nil
-	}
-
-	entries := iterable.Hash()
+	count := iterable.HashLen()
 	reservePair := !exec.valueReachableFromLiveBase(iterable, NewNil())
-	scratch := sortedKeyBufferBytes(len(entries))
+	scratch := sortedHashEntryBufferBytes(count)
 	if reservePair {
 		scratch = saturatingAdd(scratch, exec.maxCollapsedPairBytes(iterable))
 	}
@@ -3582,9 +3526,12 @@ func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value
 	if err := exec.checkProjectedHashWalkBytes(iterable, nil, nil, NewNil()); err != nil {
 		return NewNil(), false, err
 	}
-	var keyBuf [smallHashKeyBufferSize]string
-	for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
-		pair := NewArray([]Value{NewSymbol(key), entries[key]})
+	var entryBuf [smallHashKeyBufferSize]HashEntry
+	for _, entry := range iterable.HashEntriesInto(entryBuf[:]) {
+		if err := exec.step(); err != nil {
+			return NewNil(), false, exec.wrapError(err, stmt.Pos())
+		}
+		pair := NewArray([]Value{entry.Key, entry.Value})
 		if err := exec.assign(stmt.Target, pair, env); err != nil {
 			return NewNil(), false, exec.wrapError(err, stmt.Target.Pos())
 		}

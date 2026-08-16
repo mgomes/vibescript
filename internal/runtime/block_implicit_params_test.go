@@ -130,12 +130,12 @@ end`)
 	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 	compareArrays(t, got, []Value{
 		NewArray([]Value{
-			NewArray([]Value{NewSymbol("b"), NewInt(2)}),
-			NewArray([]Value{NewSymbol("a"), NewInt(1)}),
+			NewArray([]Value{NewString("b"), NewInt(2)}),
+			NewArray([]Value{NewString("a"), NewInt(1)}),
 		}),
 		NewArray([]Value{
-			NewArray([]Value{NewSymbol("b"), NewInt(2)}),
-			NewArray([]Value{NewSymbol("a"), NewInt(1)}),
+			NewArray([]Value{NewString("b"), NewInt(2)}),
+			NewArray([]Value{NewString("a"), NewInt(1)}),
 		}),
 	})
 }

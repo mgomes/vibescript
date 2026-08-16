@@ -5,22 +5,17 @@ import (
 	"testing"
 )
 
-// literalEntryFor builds the canonical key, lookup key, and entry a hash literal
-// pair produces, so a test can drive the build accumulator the way
-// evalHashLiteralWithValueTypes does.
-func literalEntryFor(t *testing.T, name string, value Value) (string, HashLookupKey, Value, hashLiteralEntry) {
+// literalEntryFor builds the key and entry a hash literal pair produces, so a
+// test can drive the build accumulator the way evalHashLiteralWithValueTypes
+// does.
+func literalEntryFor(t *testing.T, name string, val Value) (string, hashLiteralEntry) {
 	t.Helper()
 
-	key := NewSymbol(name)
-	canonical, err := canonicalHashKey(key)
+	key, err := hashKeyString(NewSymbol(name))
 	if err != nil {
-		t.Fatalf("canonical key for %q: %v", name, err)
+		t.Fatalf("key for %q: %v", name, err)
 	}
-	lookup, err := hashLookupKey(key)
-	if err != nil {
-		t.Fatalf("lookup key for %q: %v", name, err)
-	}
-	return canonical, lookup, key, hashLiteralEntry{key: key, lookupKey: lookup, value: value}
+	return key, hashLiteralEntry{key: key, value: val}
 }
 
 // buildLiteralThroughReplacement drives `{a: 1, a: 2, b: 3}`: one distinct key,
@@ -44,23 +39,23 @@ func buildLiteralThroughReplacement(t *testing.T, quota int) (admitted bool, use
 	}
 
 	current := map[string]hashLiteralEntry{}
-	aCanonical, aLookup, aKey, aEntry := literalEntryFor(t, "a", NewInt(1))
-	if err := acc.addDistinctEntry(current, aLookup, aKey, aEntry.value); err != nil {
+	aKey, aEntry := literalEntryFor(t, "a", NewInt(1))
+	if err := acc.addDistinctEntry(current, aKey, aEntry.value); err != nil {
 		return false, 0
 	}
-	current[aCanonical] = aEntry
+	current[aKey] = aEntry
 
-	_, _, _, aReplacement := literalEntryFor(t, "a", NewInt(2))
-	if err := acc.replaceEntry(aCanonical, aLookup, aKey, aReplacement.value, current); err != nil {
+	_, aReplacement := literalEntryFor(t, "a", NewInt(2))
+	if err := acc.replaceEntry(aKey, aReplacement.value, current); err != nil {
 		return false, 0
 	}
-	current[aCanonical] = aReplacement
+	current[aKey] = aReplacement
 
-	bCanonical, bLookup, bKey, bEntry := literalEntryFor(t, "b", NewInt(3))
-	if err := acc.replaceEntry(bCanonical, bLookup, bKey, bEntry.value, current); err != nil {
+	bKey, bEntry := literalEntryFor(t, "b", NewInt(3))
+	if err := acc.replaceEntry(bKey, bEntry.value, current); err != nil {
 		return false, 0
 	}
-	current[bCanonical] = bEntry
+	current[bKey] = bEntry
 
 	held, _ := acc.sessionUsedBytes(current, nil)
 	return true, held
@@ -89,7 +84,7 @@ func TestSessionLiteralAdmissionWeighsNewEntryStructure(t *testing.T) {
 	// One entry's structure either side of wherever the boundary falls, so the
 	// sweep straddles it whatever the estimator's constants are.
 	_, held := buildLiteralThroughReplacement(t, 1<<20)
-	structure := estimatedMapEntryBytes + 2*estimatedHashLookupKeyBytes + estimatedHashEntryBytes
+	structure := estimatedMapEntryStructuralBytes + estimatedStringHeaderBytes
 	admittedAny := false
 	for quota := held - 2*structure; quota <= held+structure; quota++ {
 		admitted, used := buildLiteralThroughReplacement(t, quota)

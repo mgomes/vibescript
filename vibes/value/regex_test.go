@@ -45,8 +45,8 @@ func TestRegexValueBasics(t *testing.T) {
 		t.Fatalf("regexes with different sources should not be equal")
 	}
 
-	if _, err := value.NewHashLookupKey(re); err == nil {
-		t.Fatalf("NewHashLookupKey(regex) error = nil, want unsupported hash key")
+	if _, err := value.HashKeyString(re); err == nil {
+		t.Fatalf("HashKeyString(regex) error = nil, want unsupported hash key")
 	}
 }
 

@@ -2,11 +2,22 @@ package runtime
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/mgomes/vibescript/vibes/value"
 )
+
+// loopMemoStringArray builds n distinct string keys so a store loop can vary
+// its key without a builtin call in the loop body.
+func loopMemoStringArray(n int) Value {
+	elems := make([]Value, n)
+	for i := range elems {
+		elems[i] = NewString("k" + strconv.Itoa(i))
+	}
+	return NewArray(elems)
+}
 
 // The #1129 build-loop shapes: each appends one element per iteration with
 // `<<`, so before the charged append every iteration's epoch bump forced a
@@ -16,9 +27,11 @@ import (
 // append (the shovel commits its delta into the memo instead of invalidating
 // it), doubling the iterations must roughly double the estimator's visits.
 func TestGrowthLoopsKeepBaseWalkMemo(t *testing.T) {
+	const small, large = 400, 800
 	sources := []struct {
 		name string
 		src  string
+		args Value
 	}{
 		{
 			name: "int append",
@@ -33,13 +46,14 @@ func TestGrowthLoopsKeepBaseWalkMemo(t *testing.T) {
 			src:  "def run(a, n)\n  out = []\n  j = 0\n  while j < n\n    out << {id: j, name: \"x\"}\n    j = j + 1\n  end\n  out.length\nend",
 		},
 		{
-			// Integer keys, deliberately: a builtin call in the loop body (a
-			// j.to_s key, for example) runs bypass memory checks at builtin
-			// depth that discard the memo, which is the documented remaining
-			// contributor — the charged store keeps builtin-free store loops
-			// linear.
+			// The keys come from a host-provided array, deliberately: a builtin
+			// call in the loop body (a j.to_s key, for example) runs bypass
+			// memory checks at builtin depth that discard the memo, which is the
+			// documented remaining contributor — the charged store keeps
+			// builtin-free store loops linear.
 			name: "hash store loop",
-			src:  "def run(a, n)\n  h = {}\n  j = 0\n  while j < n\n    h[j] = j\n    j = j + 1\n  end\n  h.length\nend",
+			src:  "def run(a, n)\n  h = {}\n  j = 0\n  while j < n\n    h[a[j]] = j\n    j = j + 1\n  end\n  h.length\nend",
+			args: loopMemoStringArray(large),
 		},
 	}
 
@@ -47,11 +61,14 @@ func TestGrowthLoopsKeepBaseWalkMemo(t *testing.T) {
 		t.Skip("the estimator oracle recomputes a reference walk per charged append, which is deliberately quadratic")
 	}
 
-	const small, large = 400, 800
 	for _, tc := range sources {
 		t.Run(tc.name, func(t *testing.T) {
-			atSmall := estimatorVisitsFor(t, tc.src, NewNil(), small)
-			atLarge := estimatorVisitsFor(t, tc.src, NewNil(), large)
+			args := tc.args
+			if args.Kind() == KindNil {
+				args = NewNil()
+			}
+			atSmall := estimatorVisitsFor(t, tc.src, args, small)
+			atLarge := estimatorVisitsFor(t, tc.src, args, large)
 			if atLarge > atSmall*3 {
 				t.Errorf("estimator visited %d nodes for %d iterations and %d for %d; "+
 					"doubling the iterations should roughly double the walk, so the "+

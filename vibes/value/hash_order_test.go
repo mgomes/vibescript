@@ -41,12 +41,12 @@ func TestHashSetPreservesInsertionOrder(t *testing.T) {
 				t.Fatalf("HashSet(%s) error = %v, want nil", name, err)
 			}
 		}
-		requireKeyOrder(t, hash, []value.Value{value.NewSymbol("z"), value.NewSymbol("b"), value.NewSymbol("a")})
+		requireKeyOrder(t, hash, []value.Value{value.NewString("z"), value.NewString("b"), value.NewString("a")})
 	})
 
 	t.Run("overwrite_keeps_position", func(t *testing.T) {
 		t.Parallel()
-		hash := value.NewTypedHash(2)
+		hash := value.NewHashWithCapacity(2)
 		if err := hash.HashSet(value.NewSymbol("b"), value.NewInt(2)); err != nil {
 			t.Fatalf("HashSet(b) error = %v, want nil", err)
 		}
@@ -56,14 +56,14 @@ func TestHashSetPreservesInsertionOrder(t *testing.T) {
 		if err := hash.HashSet(value.NewSymbol("b"), value.NewInt(9)); err != nil {
 			t.Fatalf("HashSet(b overwrite) error = %v, want nil", err)
 		}
-		requireKeyOrder(t, hash, []value.Value{value.NewSymbol("b"), value.NewSymbol("a")})
+		requireKeyOrder(t, hash, []value.Value{value.NewString("b"), value.NewString("a")})
 		updated, ok, err := hash.HashGet(value.NewSymbol("b"))
 		if err != nil || !ok || !updated.Equal(value.NewInt(9)) {
 			t.Fatalf("HashGet(b) = %v, %v, %v; want 9, true, nil", updated, ok, err)
 		}
 	})
 
-	t.Run("legacy_promotion_seeds_sorted_then_appends", func(t *testing.T) {
+	t.Run("bare_map_seeds_sorted_then_appends", func(t *testing.T) {
 		t.Parallel()
 		hash := value.NewHash(map[string]value.Value{
 			"c": value.NewInt(3),
@@ -77,20 +77,27 @@ func TestHashSetPreservesInsertionOrder(t *testing.T) {
 			value.NewString("a"),
 			value.NewString("b"),
 			value.NewString("c"),
-			value.NewSymbol("aa"),
+			value.NewString("aa"),
 		})
 	})
 
-	t.Run("mixed_key_kinds_keep_insertion_order", func(t *testing.T) {
+	t.Run("symbol_and_string_spellings_share_one_slot", func(t *testing.T) {
 		t.Parallel()
-		hash := value.NewTypedHash(3)
-		keys := []value.Value{value.NewInt(2), value.NewString("a"), value.NewSymbol("a"), value.NewBool(true)}
-		for i, key := range keys {
-			if err := hash.HashSet(key, value.NewInt(int64(i))); err != nil {
-				t.Fatalf("HashSet(%v) error = %v, want nil", key, err)
-			}
+		hash := value.NewHashWithCapacity(2)
+		if err := hash.HashSet(value.NewSymbol("a"), value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet(:a) error = %v, want nil", err)
 		}
-		requireKeyOrder(t, hash, keys)
+		if err := hash.HashSet(value.NewString("b"), value.NewInt(2)); err != nil {
+			t.Fatalf("HashSet(\"b\") error = %v, want nil", err)
+		}
+		if err := hash.HashSet(value.NewString("a"), value.NewInt(9)); err != nil {
+			t.Fatalf("HashSet(\"a\") error = %v, want nil", err)
+		}
+		requireKeyOrder(t, hash, []value.Value{value.NewString("a"), value.NewString("b")})
+		updated, ok, err := hash.HashGet(value.NewSymbol("a"))
+		if err != nil || !ok || !updated.Equal(value.NewInt(9)) {
+			t.Fatalf("HashGet(:a) = %v, %v, %v; want 9, true, nil", updated, ok, err)
+		}
 	})
 }
 
@@ -99,46 +106,43 @@ func TestHashOrderCapacity(t *testing.T) {
 
 	orderOnly := value.NewHash(map[string]value.Value{})
 	orderOnly.ReserveHashOrder(3)
-	if orderOnly.HashHasTypedEntries() {
-		t.Fatalf("ReserveHashOrder() initialized typed entries, want order-only reservation")
-	}
 	if got := value.HashOrderCapacity(orderOnly); got != 3 {
 		t.Fatalf("ReserveHashOrder() order capacity = %d, want 3", got)
 	}
-
-	typedReserved := value.NewHash(map[string]value.Value{})
-	typedReserved.ReserveTypedHashOrder(3)
-	if !typedReserved.HashHasTypedEntries() {
-		t.Fatalf("ReserveTypedHashOrder() left hash legacy-only, want typed entries")
-	}
-	if got := value.HashTypedEntryCapacity(typedReserved); got != 3 {
-		t.Fatalf("ReserveTypedHashOrder() typed entry capacity = %d, want 3", got)
-	}
-	if got := value.HashOrderCapacity(typedReserved); got != 3 {
-		t.Fatalf("ReserveTypedHashOrder() order capacity = %d, want 3", got)
+	if got := value.HashEntryCapacity(orderOnly); got != 0 {
+		t.Fatalf("ReserveHashOrder() entry capacity = %d, want 0", got)
 	}
 
-	newTypedReserved := value.NewTypedHash(3)
-	if got := value.HashTypedEntryCapacity(newTypedReserved); got != 3 {
-		t.Fatalf("NewTypedHash(3) typed entry capacity = %d, want 3", got)
+	reserved := value.NewHash(map[string]value.Value{})
+	reserved.ReserveHashCapacity(3)
+	if got := value.HashEntryCapacity(reserved); got != 3 {
+		t.Fatalf("ReserveHashCapacity() entry capacity = %d, want 3", got)
 	}
-	if got := value.HashOrderCapacity(newTypedReserved); got != 3 {
-		t.Fatalf("NewTypedHash(3) order capacity = %d, want 3", got)
+	if got := value.HashOrderCapacity(reserved); got != 3 {
+		t.Fatalf("ReserveHashCapacity() order capacity = %d, want 3", got)
 	}
 
-	grownTyped := value.NewTypedHash(0)
-	if err := grownTyped.HashSet(value.NewSymbol("a"), value.NewInt(1)); err != nil {
+	newReserved := value.NewHashWithCapacity(3)
+	if got := value.HashEntryCapacity(newReserved); got != 3 {
+		t.Fatalf("NewHashWithCapacity(3) entry capacity = %d, want 3", got)
+	}
+	if got := value.HashOrderCapacity(newReserved); got != 3 {
+		t.Fatalf("NewHashWithCapacity(3) order capacity = %d, want 3", got)
+	}
+
+	grown := value.NewHashWithCapacity(0)
+	if err := grown.HashSet(value.NewSymbol("a"), value.NewInt(1)); err != nil {
 		t.Fatalf("HashSet(a) error = %v, want nil", err)
 	}
-	grownTyped.ReserveTypedHashOrder(3)
-	if got := value.HashTypedEntryCapacity(grownTyped); got != 3 {
-		t.Fatalf("ReserveTypedHashOrder() grown typed entry capacity = %d, want 3", got)
+	grown.ReserveHashCapacity(3)
+	if got := value.HashEntryCapacity(grown); got != 3 {
+		t.Fatalf("ReserveHashCapacity() grown entry capacity = %d, want 3", got)
 	}
-	if got, ok, err := grownTyped.HashGet(value.NewSymbol("a")); err != nil || !ok || !got.Equal(value.NewInt(1)) {
-		t.Fatalf("HashGet(a) after ReserveTypedHashOrder() = %v, %v, %v; want 1, true, nil", got, ok, err)
+	if got, ok, err := grown.HashGet(value.NewSymbol("a")); err != nil || !ok || !got.Equal(value.NewInt(1)) {
+		t.Fatalf("HashGet(a) after ReserveHashCapacity() = %v, %v, %v; want 1, true, nil", got, ok, err)
 	}
 
-	hash := value.NewTypedHash(0)
+	hash := value.NewHashWithCapacity(0)
 	if got := value.HashOrderCapacity(hash); got != 0 {
 		t.Fatalf("empty typed hash order capacity = %d, want 0", got)
 	}
@@ -148,8 +152,8 @@ func TestHashOrderCapacity(t *testing.T) {
 	if got := value.HashOrderCapacity(hash); got < 1 {
 		t.Fatalf("order capacity after insert = %d, want >= 1", got)
 	}
-	if got := value.HashOrderCapacity(value.NewHash(map[string]value.Value{"a": value.NewInt(1)})); got != 0 {
-		t.Fatalf("legacy hash order capacity = %d, want 0", got)
+	if got := value.HashOrderCapacity(value.NewHash(map[string]value.Value{"a": value.NewInt(1)})); got != 1 {
+		t.Fatalf("bare-map hash order capacity = %d, want 1", got)
 	}
 	if got := value.HashOrderCapacity(value.NewInt(1)); got != 0 {
 		t.Fatalf("non-hash order capacity = %d, want 0", got)
@@ -159,7 +163,7 @@ func TestHashOrderCapacity(t *testing.T) {
 func TestHashRenderingFollowsInsertionOrder(t *testing.T) {
 	t.Parallel()
 
-	hash := value.NewTypedHash(3)
+	hash := value.NewHashWithCapacity(3)
 	for _, name := range []string{"e", "b", "a", "d", "c"} {
 		if err := hash.HashSet(value.NewSymbol(name), value.NewInt(1)); err != nil {
 			t.Fatalf("HashSet(%s) error = %v, want nil", name, err)
@@ -183,24 +187,14 @@ func TestHashRenderingFollowsInsertionOrder(t *testing.T) {
 	}
 }
 
-func TestHashEntriesFallBackWhenOrderUntracked(t *testing.T) {
+func TestBareMapHashIteratesSorted(t *testing.T) {
 	t.Parallel()
 
-	// A legacy hash never tracks order; entries still surface exactly once
-	// each even though their order is Go map order.
+	// A bare host map records no insertion order, so it iterates by sorted key
+	// rather than exposing Go's randomized map traversal.
 	hash := value.NewHash(map[string]value.Value{
 		"b": value.NewInt(2),
 		"a": value.NewInt(1),
 	})
-	entries := hash.HashEntries()
-	if len(entries) != 2 {
-		t.Fatalf("legacy entries = %d, want 2", len(entries))
-	}
-	seen := map[string]bool{}
-	for _, entry := range entries {
-		seen[entry.Key.String()] = true
-	}
-	if !seen["a"] || !seen["b"] {
-		t.Fatalf("legacy entries missing keys: %v", seen)
-	}
+	requireKeyOrder(t, hash, []value.Value{value.NewString("a"), value.NewString("b")})
 }

@@ -592,8 +592,8 @@ end
 	compareArrays(t, got, []Value{
 		NewInt(3),
 		NewInt(7),
-		NewArray([]Value{NewSymbol("a"), NewInt(1)}),
-		NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+		NewArray([]Value{NewString("a"), NewInt(1)}),
+		NewArray([]Value{NewString("b"), NewInt(2)}),
 		NewInt(5),
 	})
 }

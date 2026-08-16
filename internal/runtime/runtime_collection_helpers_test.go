@@ -252,7 +252,7 @@ func TestHashValuesAtRejectsNonKeyArguments(t *testing.T) {
     end
     `)
 
-	requireCallErrorContains(t, script, "lookup", nil, CallOptions{}, "hash.values_at key is unsupported hash key")
+	requireCallErrorContains(t, script, "lookup", nil, CallOptions{}, "hash.values_at key is an unsupported hash key")
 }
 
 func TestCollectionHelpersPreserveReceiver(t *testing.T) {

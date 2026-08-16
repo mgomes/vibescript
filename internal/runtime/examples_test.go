@@ -1309,7 +1309,7 @@ func TestExamples(t *testing.T) {
 					"raised": intVal(250),
 				}),
 			},
-			want: arrayVal(symbolVal("goal"), intVal(1000), symbolVal("raised"), intVal(250)),
+			want: arrayVal(strVal("goal"), intVal(1000), strVal("raised"), intVal(250)),
 		},
 		{
 			name:     "hashes/symbolize_report",

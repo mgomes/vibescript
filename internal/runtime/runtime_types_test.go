@@ -629,7 +629,7 @@ end
 `)
 
 	// Undeclared extras pass through the typed-hash path unvalidated.
-	withExtras := NewTypedHash(0)
+	withExtras := NewHashWithCapacity(0)
 	for _, kv := range []struct {
 		key Value
 		val Value
@@ -647,7 +647,7 @@ end
 	}
 
 	// A missing required field is still rejected even with extras present.
-	missing := NewTypedHash(0)
+	missing := NewHashWithCapacity(0)
 	if err := missing.HashSet(NewString("role"), NewString("captain")); err != nil {
 		t.Fatalf("HashSet(\"role\") error = %v", err)
 	}
@@ -665,7 +665,7 @@ end
 `)
 
 	// The typed-hash normalization path accepts an absent optional field.
-	withoutAge := NewTypedHash(0)
+	withoutAge := NewHashWithCapacity(0)
 	if err := withoutAge.HashSet(NewString("name"), NewString("Ada")); err != nil {
 		t.Fatalf("HashSet(\"name\") error = %v", err)
 	}
@@ -674,74 +674,12 @@ end
 	}
 
 	// A missing required field is still rejected.
-	withoutName := NewTypedHash(0)
+	withoutName := NewHashWithCapacity(0)
 	if err := withoutName.HashSet(NewString("age"), NewInt(36)); err != nil {
 		t.Fatalf("HashSet(\"age\") error = %v", err)
 	}
 	requireCallErrorContains(t, script, "accept", []Value{withoutName}, CallOptions{},
 		"argument payload expected { age?: int, name: string }")
-}
-
-func TestShapeValidationRejectsTypedHashDisplayCollisions(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `
-def accept(payload: { name: int }) -> { name: int }
-  payload
-end
-`)
-
-	colliding := NewTypedHash(0)
-	if err := colliding.HashSet(NewSymbol("name"), NewInt(1)); err != nil {
-		t.Fatalf("HashSet(:name) error = %v", err)
-	}
-	if err := colliding.HashSet(NewString("name"), NewInt(2)); err != nil {
-		t.Fatalf("HashSet(\"name\") error = %v", err)
-	}
-	requireCallErrorContains(t, script, "accept", []Value{colliding}, CallOptions{}, "argument payload expected { name: int }")
-
-	stringKeyed := NewTypedHash(0)
-	if err := stringKeyed.HashSet(NewString("name"), NewInt(3)); err != nil {
-		t.Fatalf("HashSet(\"name\") error = %v", err)
-	}
-	if got := callFunc(t, script, "accept", []Value{stringKeyed}); !got.Equal(stringKeyed) {
-		t.Fatalf("accept(string-keyed typed hash) = %s, want original hash", got)
-	}
-}
-
-func TestShapeNormalizationPreservesTypedHashKeys(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `
-enum Status
-  Draft
-end
-
-def accept(payload: { status: Status }) -> { status: Status }
-  payload
-end
-`)
-
-	payload := NewTypedHash(0)
-	if err := payload.HashSet(NewString("status"), NewSymbol("draft")); err != nil {
-		t.Fatalf("HashSet(\"status\") error = %v", err)
-	}
-	got := callFunc(t, script, "accept", []Value{payload})
-	if got.Kind() != KindHash {
-		t.Fatalf("accept(payload) kind = %s, want hash", got.Kind())
-	}
-	if _, ok, err := got.HashGet(NewSymbol("status")); err != nil {
-		t.Fatalf("HashGet(:status) error = %v", err)
-	} else if ok {
-		t.Fatalf("normalized typed hash should not expose string key through :status")
-	}
-	val, ok, err := got.HashGet(NewString("status"))
-	if err != nil {
-		t.Fatalf("HashGet(\"status\") error = %v", err)
-	}
-	if !ok || val.Kind() != KindEnumValue {
-		t.Fatalf("HashGet(\"status\") = %s (ok=%v), want enum value", val, ok)
-	}
 }
 
 func TestTypeSemanticsContainersNullabilityCoercionAndKeywordStrictness(t *testing.T) {
@@ -1098,64 +1036,6 @@ func TestTypedFunctionsRejectCyclicHashInputWithoutInfiniteRecursion(t *testing.
 	case <-time.After(2 * time.Second):
 		t.Fatalf("type validation did not terminate for cyclic payload")
 	}
-}
-
-// TestTypedHashValidatesDefaults pins that a Ruby-style hash default is part of
-// a typed hash's value type. A missing-key lookup returns the default, so an
-// int-typed hash must reject a string default (or any default proc, whose result
-// the type checker cannot inspect) and must carry a conforming default through
-// normalization rather than dropping it.
-func TestTypedHashValidatesDefaults(t *testing.T) {
-	t.Parallel()
-	script := compileScript(t, `
-    def missing_lookup(h: hash<string, int>) -> int
-      h[:missing]
-    end
-
-    def passes_string_default()
-      missing_lookup(Hash.new("oops"))
-    end
-
-    def passes_proc_default()
-      missing_lookup(Hash.new { |hash, key| 1 })
-    end
-
-    def preserves_int_default()
-      missing_lookup(Hash.new(42))
-    end
-
-	    def preserves_default_with_entries(present: int)
-	      base = Hash.new(0)
-	      base["present"] = present
-	      missing_lookup(base)
-	    end
-    `)
-
-	t.Run("rejects_string_default", func(t *testing.T) {
-		t.Parallel()
-		requireCallErrorContains(t, script, "passes_string_default", nil, CallOptions{}, "argument h expected hash<string, int>, got {}")
-	})
-
-	t.Run("rejects_proc_default", func(t *testing.T) {
-		t.Parallel()
-		requireCallErrorContains(t, script, "passes_proc_default", nil, CallOptions{}, "argument h expected hash<string, int>, got {} with a default proc")
-	})
-
-	t.Run("preserves_conforming_default", func(t *testing.T) {
-		t.Parallel()
-		got := callFunc(t, script, "preserves_int_default", nil)
-		if got.Kind() != KindInt || got.Int() != 42 {
-			t.Fatalf("expected missing-key lookup to return preserved default 42, got %#v", got)
-		}
-	})
-
-	t.Run("preserves_default_when_entries_change", func(t *testing.T) {
-		t.Parallel()
-		got := callFunc(t, script, "preserves_default_with_entries", []Value{NewInt(5)})
-		if got.Kind() != KindInt || got.Int() != 0 {
-			t.Fatalf("expected missing-key lookup to return preserved default 0, got %#v", got)
-		}
-	})
 }
 
 func TestExistingUntypedScriptsRemainCompatible(t *testing.T) {
