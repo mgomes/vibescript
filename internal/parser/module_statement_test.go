@@ -16,10 +16,6 @@ func TestParserModuleDeclaration(t *testing.T) {
     "ok"
   end
 
-  def shared_helper
-    1
-  end
-
   module Rates
     BASE = 2
   end
@@ -39,8 +35,8 @@ end`
 	if len(module.ClassMethods) != 1 || module.ClassMethods[0].Name != "code" {
 		t.Fatalf("class methods = %+v, want [code]", module.ClassMethods)
 	}
-	if len(module.Methods) != 1 || module.Methods[0].Name != "shared_helper" {
-		t.Fatalf("methods = %+v, want [shared_helper]", module.Methods)
+	if len(module.Methods) != 0 {
+		t.Fatalf("methods = %+v, want none: a module declares no instance-style methods", module.Methods)
 	}
 	if len(module.Body) != 1 {
 		t.Fatalf("body statements = %d, want 1 (the constant assignment)", len(module.Body))

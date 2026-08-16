@@ -218,9 +218,10 @@ predicate — `{ "respond_to?": 1 }.respond_to?(:keys)` still calls the predicat
   implicit receiver dispatch or `include_all` is `true`, matching
   `respond_to?`'s privacy rules.
 - `is_a?(class) -> bool` and `kind_of?(class) -> bool` – report whether the
-  receiver is an instance of the given script class. Without inheritance these
-  test direct class identity; when a superclass chain is added they will also walk
-  it. A non-instance receiver (a core value, a class value, an enum value) reports
+  receiver is an instance of the given script class. There is no inheritance
+  and no module membership, so these test direct class identity and agree with
+  `instance_of?` on every value; a module argument always reports `false`. A
+  non-instance receiver (a core value, a class value, an enum value) reports
   `false`. The argument must be a class.
 - `instance_of?(class) -> bool` – reports whether the receiver is an instance of
   exactly the given script class.
@@ -228,8 +229,8 @@ predicate — `{ "respond_to?": 1 }.respond_to?(:keys)` still calls the predicat
   coercion. The atom is a symbol or string naming a primitive (`:int`,
   `:float`, `:number`, `:string`, `:bool`, `:symbol`, `:nil`, `:duration`,
   `:time`, `:money`), a bare container (`:array`, `:hash`/`:object`, `:range`,
-  `:function`), or a class or enum name matched by exact name (no module
-  ancestry — use `is_a?` for that). A module alias qualifies a name the way
+  `:function`), or a class or enum name matched by exact name. A module alias
+  qualifies a name the way
   annotations do: `v.is_type?("lv.Level")` tests against the enum the
   required module exports, and an unknown qualified name is an error. A trailing `?` tests the nullable form:
   `'int?'` is int or nil. Parameterized spellings such as `array<int>` and

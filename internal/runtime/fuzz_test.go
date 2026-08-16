@@ -1094,20 +1094,6 @@ func validateFuzzStatement(context string, stmt Statement) error {
 					return fmt.Errorf("%s.members[%d].visibility level is empty", context, i)
 				}
 			}
-			if member.Mixin != nil {
-				set++
-				if member.Mixin.Kind == "" {
-					return fmt.Errorf("%s.members[%d].mixin kind is empty", context, i)
-				}
-				if len(member.Mixin.Modules) == 0 {
-					return fmt.Errorf("%s.members[%d].mixin has no modules", context, i)
-				}
-				for j, ref := range member.Mixin.Modules {
-					if ref.Name == "" {
-						return fmt.Errorf("%s.members[%d].mixin.modules[%d] name is empty", context, i, j)
-					}
-				}
-			}
 			if set != 1 {
 				return fmt.Errorf("%s.members[%d] must contain exactly one declaration", context, i)
 			}

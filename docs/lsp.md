@@ -36,7 +36,7 @@ namespace receiver resolves to the qualified entry first, so hovering
 `parse_as` in `JSON.parse_as(...)` shows the `JSON.parse_as` documentation;
 `Math`, `Time`, `Duration`, `Regexp`, `Hash`, and `Proc` members resolve the
 same way. Reserved keywords and contextual declaration words
-(`module`, `include`, `alias`, ...) show a one-line description. Any other
+(`module`, `alias`, `private`, ...) show a one-line description. Any other
 identifier falls back to being classified as a plain symbol. UTF-16 positions
 (the LSP wire encoding) are translated correctly for documents containing
 multi-byte characters.

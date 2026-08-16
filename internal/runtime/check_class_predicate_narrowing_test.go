@@ -9,12 +9,7 @@ import (
 // branches when every arm provably reaches the runtime universal predicate.
 
 const classPredicateNarrowingPrelude = `
-module Payable
-end
-
 class User
-  include Payable
-
   def initialize()
   end
 end
@@ -100,33 +95,6 @@ def run(flag)
 end
 `,
 			warning: "call to takes_order argument value expected Order, got User",
-		},
-		{
-			name: "qualified module ancestry narrows kind_of",
-			source: `
-module Billing
-  module QualifiedPayable
-  end
-end
-
-class QualifiedUser
-  include Billing::QualifiedPayable
-
-  def initialize()
-  end
-end
-
-def takes_qualified_user(value: QualifiedUser)
-  value
-end
-
-def run(u: QualifiedUser | Order)
-  unless u.kind_of?(Billing::QualifiedPayable)
-    takes_qualified_user(u)
-  end
-end
-`,
-			warning: "call to takes_qualified_user argument value expected QualifiedUser, got Order",
 		},
 		{
 			name: "container arm keeps the receiver fact",
@@ -452,8 +420,6 @@ module Billing
 end
 
 class QualifiedUser
-  include Billing::QualifiedPayable
-
   def initialize()
   end
 end
@@ -479,8 +445,6 @@ module Billing
 end
 
 class QualifiedUser
-  include Billing::QualifiedPayable
-
   def initialize()
   end
 end
@@ -502,28 +466,6 @@ end
 			source: `
 class Wrapper
   User = 1
-
-  def initialize()
-  end
-
-  def check(u: User | Order)
-    unless u.is_a?(User)
-      takes_order(u)
-    end
-    u
-  end
-end
-`,
-		},
-		{
-			name: "included module constant disables narrowing",
-			source: `
-module Aliases
-  User = 2
-end
-
-class Holder
-  include Aliases
 
   def initialize()
   end
@@ -583,34 +525,6 @@ end
 class Holder
   self.class = self
   self.class.User = Order
-
-  def initialize()
-  end
-
-  def check(u: User | Order)
-    if u.is_a?(User)
-      takes_order(u)
-    end
-    u
-  end
-end
-`,
-		},
-		{
-			name: "included self class write uses receiver setters",
-			source: `
-module Mutator
-  def self.User=(value)
-    value
-  end
-
-  def stash(value)
-    self.class.User = value
-  end
-end
-
-class Holder
-  include Mutator
 
   def initialize()
   end
@@ -2557,24 +2471,11 @@ func TestCheckClassPredicateNarrowingTracksClassMutationAcrossCalls(t *testing.T
 			mutation:    "holder.stash(Order)",
 			wantWarning: true,
 		},
-		{
-			name: "included self class write",
-			definition: `  include Mutator
-`,
-			mutation:    "holder.stash(Order)",
-			wantWarning: true,
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			script := compileScriptDefault(t, classPredicateNarrowingPrelude+`
-module Mutator
-  def stash(value)
-    self.class.User = value
-  end
-end
-
 class Holder
 `+tc.definition+`
   def initialize()
@@ -2631,73 +2532,12 @@ end
 	}
 }
 
-func TestCheckDynamicModuleConstructorDoesNotReachInstanceMethods(t *testing.T) {
-	t.Parallel()
-
-	script := compileScriptDefault(t, `
-module Factory
-  def build(value)
-    JSON.stringify = replacement
-    takes_bool(value)
-  end
-end
-
-def replacement(value)
-  1
-end
-
-def takes_int(value: int)
-  value
-end
-
-def takes_bool(value: bool)
-  value
-end
-
-def serialize()
-  JSON.stringify({})
-end
-
-def run()
-  target = Factory
-  begin
-    target.new.build("bad")
-  rescue RuntimeError
-    nil
-  end
-  takes_int(serialize())
-end
-`)
-	warnings := script.CheckWarningsForFunction("run")
-	intWarnings := 0
-	boolWarnings := 0
-	for _, warning := range warnings {
-		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
-			intWarnings++
-		}
-		if strings.Contains(warning.Message, "call to takes_bool argument value expected bool, got string") {
-			boolWarnings++
-		}
-	}
-	if intWarnings != 1 || boolWarnings != 0 {
-		t.Fatalf("CheckWarningsForFunction() = %#v, want one int warning and no bool warning", warnings)
-	}
-}
-
 func TestCheckClassPredicateNarrowingRespectsClassSetters(t *testing.T) {
 	t.Parallel()
 
 	engine := MustNewEngine(Config{})
 	script, err := engine.CompileSnippet(classPredicateNarrowingPrelude+`
-module Mutator
-  def stash(value)
-    self.class.User = value
-  end
-end
-
 class Holder
-  include Mutator
-
   def self.User=(value)
     1
   end

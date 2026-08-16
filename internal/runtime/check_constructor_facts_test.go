@@ -364,7 +364,7 @@ end
 			name: "module annotations keep methods dynamic",
 			source: `
 module Nameable
-  def display_name
+  def self.display_name(value)
     "n"
   end
 end

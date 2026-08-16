@@ -4,7 +4,7 @@ package ast
 // coverage of the cloneStatement/cloneExpression type switches lives in
 // internal/runtime's walker coverage test; this test catches the other
 // historical failure mode: a node type whose case arm exists but silently
-// drops or shallow-shares a field (ClassMemberDecl.Visibility/.Mixin and
+// drops or shallow-shares a field (ClassMemberDecl.Visibility and
 // ClassStmt.Modules shipped exactly that way).
 //
 // For every Statement and Expression type it builds a fully populated

@@ -134,44 +134,6 @@ end
 	}
 }
 
-// An accessor declared by an included module backs the ivar with the same
-// contract in the including class's methods.
-func TestTypedPropertyContractFromIncludedModule(t *testing.T) {
-	t.Parallel()
-	script := compileScript(t, `
-module Named
-  property name: string
-end
-
-class Robot
-  include Named
-
-  def initialize
-    @name = "r2"
-  end
-
-  def rename(value)
-    @name = value
-  end
-end
-
-def good_module_write
-  r = Robot.new
-  r.rename("c3")
-  r.name
-end
-
-def bad_module_write
-  Robot.new.rename(4)
-end
-`)
-
-	if got := callFunc(t, script, "good_module_write", nil); !got.Equal(NewString("c3")) {
-		t.Fatalf("good_module_write = %v, want \"c3\"", got)
-	}
-	requireCallErrorContains(t, script, "bad_module_write", nil, CallOptions{}, "instance variable @name expected string, got int")
-}
-
 func TestNullableTypedPropertyDirectWrite(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

@@ -216,8 +216,6 @@ func addDocEntries(entries map[string]builtinDocEntry, refs []builtinDocRef, sig
 var lspContextualWords = []string{
 	"alias",
 	"alias_method",
-	"extend",
-	"include",
 	"module",
 	"protected",
 	"public",
@@ -266,9 +264,7 @@ var keywordDocs = map[string]string{
 
 	"alias":        "Declares an alternate name for a method: `alias new_name old_name`.",
 	"alias_method": "Declares an alternate method name: `alias_method :new_name, :old_name`.",
-	"extend":       "Mixes a module's methods into the class's own (`self.`) methods.",
-	"include":      "Mixes a module's instance-style methods into the class's instance methods.",
-	"module":       "Declares a namespace of module functions and constants; contextual — it only opens a declaration before a constant name.",
+	"module":       "Declares a namespace of `def self.` functions, constants, and nested modules; contextual — it only opens a declaration before a constant name.",
 	"protected":    "Marks subsequent methods callable only within the class family.",
 	"public":       "Restores public visibility for subsequent method declarations.",
 }

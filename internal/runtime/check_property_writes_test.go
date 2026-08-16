@@ -136,23 +136,6 @@ end
 			warning: "write to @nickname expected string?, got int",
 		},
 		{
-			name: "included module accessor",
-			source: `
-module Named
-  property name: string
-end
-
-class Robot
-  include Named
-
-  def rename
-    @name = 9
-  end
-end
-`,
-			warning: "write to @name expected string, got int",
-		},
-		{
 			name: "annotated param flows into write",
 			source: `
 class User
@@ -4083,21 +4066,6 @@ class User
   end
 end
 `), "write to @name expected string, got nil")
-
-	requireCheckWarningContains(t, compileScriptDefault(t, `
-module State
-  property b: int
-end
-
-class User
-  include State
-  property a: int
-
-  def initialize
-    @a = @b
-  end
-end
-`), "write to @a expected int, got nil")
 
 	requireCheckWarningContains(t, compileScriptDefault(t, `
 class User

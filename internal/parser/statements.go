@@ -794,6 +794,23 @@ func (p *parser) parseOperatorMethodName() (string, bool) {
 	}
 }
 
+// moduleNamespaceReplacement names what replaces every removed form of
+// behavior injection: a module is a namespace, so the code it holds is
+// reached by calling it on the module rather than by copying it into a class.
+const moduleNamespaceReplacement = "define module functions with def self.name and call them on the module (Naming.display_name(person))"
+
+// moduleNamespaceHint states the rule and the replacement together, for the
+// diagnostics that need both.
+const moduleNamespaceHint = "modules are namespaces: " + moduleNamespaceReplacement
+
+// The removed behavior-injection directives. The words are contextual, so
+// they are still recognized in class-member position to report the
+// replacement rather than fail as an unknown call.
+const (
+	mixinIncludeWord = "include"
+	mixinExtendWord  = "extend"
+)
+
 func (p *parser) parseClassStatement() ast.Statement {
 	pos := p.curToken.Pos
 	if p.peekToken.Type == ast.TokenShovel {
@@ -804,11 +821,11 @@ func (p *parser) parseClassStatement() ast.Statement {
 		return nil
 	}
 	// `class B < A` is a syntax error that says nothing about why. Inheritance
-	// is deliberately absent and mixins are the documented alternative, so the
-	// error names the decision rather than leaving the author to assume a
-	// syntax slip and retry variants.
+	// is deliberately absent and shared behavior lives in a module namespace,
+	// so the error names the decision rather than leaving the author to assume
+	// a syntax slip and retry variants.
 	if p.peekToken.Type == ast.TokenLT {
-		p.addParseError(p.peekToken.Pos, "class inheritance is not supported; use \"include SomeModule\" to share behavior")
+		p.addParseError(p.peekToken.Pos, "class inheritance is not supported; "+moduleNamespaceHint)
 		return nil
 	}
 	return p.parseClassLikeBody(pos, false)
@@ -898,6 +915,10 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 				return nil
 			}
 			fn := fnStmt.(*ast.FunctionStmt)
+			if isModule && !fn.IsClassMethod {
+				p.addParseError(fn.Position, fmt.Sprintf("def %s in module %s must be def self.%s; a module is a namespace, not a method source", fn.Name, name, fn.Name))
+				break
+			}
 			if fn.IsClassMethod {
 				stmt.ClassMethods = append(stmt.ClassMethods, fn)
 			} else {
@@ -913,6 +934,10 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 						return nil
 					}
 					aliasStmt := alias.(*ast.AliasStmt)
+					if isModule {
+						p.addParseError(aliasStmt.Pos(), fmt.Sprintf("alias in module %s is not supported; a module has no instance methods to rename, so %s", name, moduleNamespaceReplacement))
+						break
+					}
 					stmt.Aliases = append(stmt.Aliases, aliasStmt)
 					stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Alias: aliasStmt})
 				} else {
@@ -927,6 +952,10 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 					return nil
 				}
 				aliasStmt := alias.(*ast.AliasStmt)
+				if isModule {
+					p.addParseError(aliasStmt.Pos(), fmt.Sprintf("alias_method in module %s is not supported; a module has no instance methods to rename, so %s", name, moduleNamespaceReplacement))
+					break
+				}
 				stmt.Aliases = append(stmt.Aliases, aliasStmt)
 				stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Alias: aliasStmt})
 			case ast.VisibilityPublic, ast.VisibilityProtected:
@@ -956,18 +985,14 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 						stmt.Body = append(stmt.Body, s)
 					}
 				}
-			case ast.MixinInclude, ast.MixinExtend:
+			case mixinIncludeWord, mixinExtendWord:
 				if p.startsMixinDirective() {
-					mixin := p.parseMixinMember()
-					if mixin == nil {
-						return nil
-					}
-					stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Mixin: mixin})
-				} else {
-					s := p.parseStatement()
-					if s != nil {
-						stmt.Body = append(stmt.Body, s)
-					}
+					p.reportRemovedMixinDirective()
+					break
+				}
+				s := p.parseStatement()
+				if s != nil {
+					stmt.Body = append(stmt.Body, s)
 				}
 			default:
 				s := p.parseStatement()
@@ -980,10 +1005,15 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 				continue
 			}
 		case ast.TokenProperty, ast.TokenGetter, ast.TokenSetter:
+			kind := p.curToken.Literal
 			decl := p.parsePropertyDecl(p.curToken.Type)
 			if p.pendingVisibility != "" {
 				decl.Visibility = p.pendingVisibility
 				p.pendingVisibility = ""
+			}
+			if isModule {
+				p.addParseError(decl.Position, fmt.Sprintf("%s in module %s is not supported; a module has no instances, so %s", kind, name, moduleNamespaceReplacement))
+				break
 			}
 			stmt.Properties = append(stmt.Properties, decl)
 			stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Property: &decl})
@@ -1007,14 +1037,15 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 }
 
 // startsMixinDirective reports whether an `include`/`extend` identifier in
-// class-member position begins a mixin directive rather than an ordinary
-// statement. It is a directive when followed on the same line by a module
-// name, an opening paren, or `self` (which gets a targeted diagnostic), or
-// when it stands alone (a bare directive missing its module name, also a
-// targeted diagnostic) — unless a local of that name is in scope, in which
-// case the bare word reads the local as it always has. Anything else — an
-// assignment such as `include = 1` — parses as a normal statement so the
-// words stay usable as identifiers.
+// class-member position is written as a mixin directive rather than as an
+// ordinary statement. Both directives are removed, so the shape is still
+// recognized only to report where behavior injection went; see
+// reportRemovedMixinDirective. It is a directive when followed on the same
+// line by a module name, an opening paren, or `self`, or when it stands alone
+// — unless a local of that name is in scope, in which case the bare word reads
+// the local as it always has. Anything else — an assignment such as
+// `include = 1` — parses as a normal statement so the words stay usable as
+// identifiers.
 func (p *parser) startsMixinDirective() bool {
 	if p.peekToken.Pos.Line == p.curToken.Pos.Line {
 		switch p.peekToken.Type {
@@ -1025,54 +1056,13 @@ func (p *parser) startsMixinDirective() bool {
 	return !p.isLocalName(p.curToken.Literal) && p.peekEndsStatement(p.curToken.Pos)
 }
 
-// parseMixinMember parses an include/extend directive with curToken on the
-// directive word. Module names may be scope-qualified (Support::Naming) and
-// comma-separated; an optional paren group wraps the list.
-func (p *parser) parseMixinMember() *ast.MixinDecl {
-	kind := p.curToken.Literal
+// reportRemovedMixinDirective reports an include/extend directive with
+// curToken on the directive word, and consumes the rest of the line so the
+// module list that follows does not produce a second, unrelated error.
+func (p *parser) reportRemovedMixinDirective() {
 	pos := p.curToken.Pos
-	decl := &ast.MixinDecl{Kind: kind, Position: pos}
-
-	parenthesized := false
-	if p.peekToken.Type == ast.TokenLParen && p.peekToken.Pos.Line == pos.Line {
-		parenthesized = true
-		p.nextToken()
-	}
-	for {
-		if p.peekToken.Type == ast.TokenSelf {
-			p.addParseError(p.peekToken.Pos, fmt.Sprintf("%s self is not supported; define module functions with def self.name", kind))
-			p.recoverSameLineStatementRemainder(pos.Line)
-			return nil
-		}
-		if p.peekToken.Type != ast.TokenIdent {
-			p.addParseError(p.peekToken.Pos, fmt.Sprintf("%s expects a module name", kind))
-			p.recoverSameLineStatementRemainder(pos.Line)
-			return nil
-		}
-		p.nextToken()
-		if !startsUppercaseIdentifier(p.curToken.Literal) {
-			p.addParseError(p.curToken.Pos, "module name must start with an uppercase letter")
-			p.recoverSameLineStatementRemainder(pos.Line)
-			return nil
-		}
-		ref := ast.MixinRef{Name: p.curToken.Literal, Position: p.curToken.Pos}
-		for p.peekToken.Type == ast.TokenScope {
-			p.nextToken()
-			if !p.expectPeek(ast.TokenIdent) {
-				return nil
-			}
-			ref.Name += "::" + p.curToken.Literal
-		}
-		decl.Modules = append(decl.Modules, ref)
-		if p.peekToken.Type != ast.TokenComma {
-			break
-		}
-		p.nextToken()
-	}
-	if parenthesized && !p.expectPeek(ast.TokenRParen) {
-		return nil
-	}
-	return decl
+	p.addParseError(pos, fmt.Sprintf("%s is not supported; %s", p.curToken.Literal, moduleNamespaceHint))
+	p.recoverSameLineStatementRemainder(pos.Line)
 }
 
 // startsVisibilityDirective reports whether a `public`/`protected` identifier

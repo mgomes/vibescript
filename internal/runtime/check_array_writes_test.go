@@ -93,26 +93,6 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
-			name: "module element admits including class instances",
-			source: `
-module Nameable
-end
-
-class User
-  include Nameable
-
-  def initialize()
-  end
-end
-
-def f(items: array<Nameable>, u: User)
-  items << u
-  items << 1
-end
-`,
-			warning: "write to items expected element Nameable, got int",
-		},
-		{
 			name: "indexed write whose value escapes the receiver",
 			source: `
 def returns_string(a) -> string

@@ -329,10 +329,9 @@ end
 `protected method balance` error. A protected class method is callable only
 from other class methods of the same class. Operator and index methods
 (`def +`, `def []`) honor `private` and `protected` like any other method.
-Protected access is scoped to the exact class definition: two classes that
-include the same module are not a family, so an instance of one cannot call
-protected methods on an instance of the other (in Ruby, the shared module
-ancestor would grant that access).
+Protected access is scoped to the exact class definition: two unrelated
+classes are not a family, so an instance of one cannot call protected methods
+on an instance of the other.
 
 One documented divergence from Ruby: a visibility section also covers
 `def self.` class methods declared after it, whereas Ruby scopes sections to
@@ -394,26 +393,25 @@ Rules and limits:
   a class declaration inside a module body.
 - Modules cannot be instantiated: `Billing.new` raises
   `module Billing cannot be instantiated`.
-- A module may also declare instance-style methods (plain `def`); they are not
-  callable on the module itself — they exist to be mixed into classes with
-  `include`/`extend` (see Mixins below).
+- A module is a namespace, not a method source. It declares functions only
+  with `def self.name`; a plain `def`, a `property`/`getter`/`setter`, or an
+  `alias` in a module body is a compile error naming the `def self.` form.
+- There is no `include` or `extend`. Reusable behavior stays in its module and
+  is called on it, so every dependency is visible where it is used.
 
-## Mixins: `include` And `extend`
+## Reusing Behavior Across Classes
 
-Class bodies (and module bodies) accept Ruby's mixin directives. `include`
-mixes a module's instance-style methods into the class's instance methods;
-`extend` mixes them into the class's own (`self.`) methods:
+Vibescript has no mixins and no inheritance. Shared behavior lives in a module
+and is called on that module, with the receiver passed as an argument:
 
 ```vibe
-module Named
-  def display_name
-    "I am " + name
+module Naming
+  def self.display_name(person)
+    "I am " + person.name
   end
 end
 
 class Person
-  include Named
-
   def initialize(name)
     @name = name
   end
@@ -423,55 +421,16 @@ class Person
   end
 end
 
-Person.new("Ada").display_name    # "I am Ada"
+Naming.display_name(Person.new("Ada"))    # "I am Ada"
 ```
 
-The directive references a module declared earlier in source (file-based
-`require` namespaces cannot be included). Multiple modules may be listed
-(`include A, B`), names may be scope-qualified (`include Support::Naming`),
-and inside a module body a sibling nested module resolves by short name.
-
-Vibescript applies mixins by copying method definitions at compile time, with
-collision rules that match Ruby's ancestor ordering:
-
-- the class's own definitions always win over included methods, wherever the
-  `include` appears in the body;
-- a later `include` wins over an earlier one;
-- within one directive, earlier modules win (`include A, B` behaves as if `B`
-  were included first).
-
-What carries over:
-
-- **Visibility** — a module's private/protected methods stay private/protected
-  in the including class, and the class may retarget them
-  (`public :name`) without affecting the module. Protected access stays
-  scoped to each including class: two classes that include the same module
-  cannot call each other's protected methods (unlike Ruby, where the shared
-  module ancestor grants access).
-- **Operator and index methods** — `def +`, `def []`, `def []=` defined in a
-  module dispatch on instances of the including class.
-- **Accessors** — `property`/`getter`/`setter` declared in a module generate
-  accessor methods that copy like any other method.
-- **Constants** — an included module's constants surface as class constants
-  (`Config::MAX`) and are readable by bare name inside methods. The class's
-  own constants win; mutations stay in the class's per-call copy and never
-  write back to the module.
-- **Ancestry** — `is_a?`/`kind_of?` report `true` for included modules
-  (`instance_of?` stays exact-class), and a module name used as a type
-  contract (`def describe(thing: Named)`) accepts instances of any class that
-  includes it.
-
-Modules can `include` other modules; the composed method set, constants, and
-ancestry all flow through transitively — a class including the outer module
-also `is_a?` every module that module includes, and matches them as type
-contracts. Re-including a module that is already in the ancestry is a no-op,
-as in Ruby: it does not restore the module's methods or constants over a
-later include's. `extend` copies the module's instance-style methods to the
-class surface only — it does not adopt constants and does not affect `is_a?`.
-
-Not supported (each fails with a targeted diagnostic): `extend self` (define
-module functions with `def self.name` instead), including a class, and
-referencing a module that has not been declared yet.
+`include` and `extend` in a class or module body are compile errors that name
+this replacement. Migrating a mixin means moving each of its instance-style
+methods to `def self.name(receiver, ...)` and rewriting `object.method(...)`
+call sites as `Module.method(object, ...)`. A module's constants stay on the
+module, so a class that read an adopted `MAX` by bare name now reads
+`Limits::MAX`, and `is_a?` no longer reports module membership: a module names
+a namespace, not a type, so nothing is an instance of one.
 
 ## Introspection
 
@@ -488,12 +447,9 @@ user.instance_of?(User)     # true
 user.respond_to?(:greet)    # false  (no such method)
 ```
 
-`is_a?` and `kind_of?` test the instance's own class plus its module ancestry:
-they report `true` for the exact class and for any module the class includes,
-directly or through another module's `include` (see
-[Mixins](#mixins-include-and-extend)). `instance_of?` tests the exact class
-only, so it disagrees with `is_a?` precisely when the argument is an included
-module. There is no class inheritance yet. `respond_to?` reports public methods;
+`is_a?`, `kind_of?`, and `instance_of?` all test the instance's own class:
+there is no inheritance and no module membership, so the three agree on every
+value and a module argument always reports `false`. `respond_to?` reports public methods;
 private and protected methods report `false` externally but `true` when the
 receiver checks itself (or when called with `respond_to?(name, true)`). Instance variables are
 attributes, not methods, so they never respond. These predicates are documented

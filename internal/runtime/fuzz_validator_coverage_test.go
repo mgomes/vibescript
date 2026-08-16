@@ -13,7 +13,7 @@ import (
 // or fields that the validator or cloner miss surface here as deterministic
 // failures instead of latent fuzz flakes (issue #902 was exactly that: the
 // validator rejected endless ranges and splat arguments, and the cloner
-// dropped mixin and visibility member declarations).
+// dropped visibility member declarations).
 func TestFuzzValidatorCoversModernSyntax(t *testing.T) {
 	t.Parallel()
 
@@ -34,9 +34,7 @@ func TestFuzzValidatorCoversModernSyntax(t *testing.T) {
 		"p = lambda do |x|\n  x\nend",
 		"module Billing\n  LIMIT = 1\n  def self.code()\n    1\n  end\nend",
 		"module Outer\n  module Inner\n    def self.deep()\n      1\n    end\n  end\nend",
-		"class C\n  include M\nend",
-		"class C\n  extend M, N\nend",
-		"class C\n  include M\n  private\n  def m()\n    1\n  end\nend",
+		"class C\n  private\n  def m()\n    1\n  end\nend",
 		"class C\n  protected def m()\n    1\n  end\nend",
 		"class C\n  def m()\n    1\n  end\n  private :m\nend",
 		"match /id/",
@@ -68,12 +66,12 @@ func TestFuzzValidatorCoversModernSyntax(t *testing.T) {
 }
 
 // TestCloneStatementsDeepClonesClassMemberDecls pins that the cloner copies
-// the mixin, visibility, and nested-module structures rather than sharing
-// them: mutating the original after cloning must not leak into the clone.
+// the visibility and nested-module structures rather than sharing them:
+// mutating the original after cloning must not leak into the clone.
 func TestCloneStatementsDeepClonesClassMemberDecls(t *testing.T) {
 	t.Parallel()
 
-	program, errs := parser.Parse("class C\n  include M\n  private :m\n  def m()\n    1\n  end\nend\nmodule Outer\n  module Inner\n  end\nend")
+	program, errs := parser.Parse("class C\n  private :m\n  def m()\n    1\n  end\nend\nmodule Outer\n  module Inner\n  end\nend")
 	if len(errs) > 0 {
 		t.Fatalf("parse failed: %v", errs[0])
 	}
@@ -82,15 +80,6 @@ func TestCloneStatementsDeepClonesClassMemberDecls(t *testing.T) {
 	class := program.Statements[0].(*ClassStmt)
 	classClone := cloned.Statements[0].(*ClassStmt)
 	for i, member := range class.Members {
-		if member.Mixin != nil {
-			if classClone.Members[i].Mixin == member.Mixin {
-				t.Fatalf("members[%d].Mixin is shared with the original", i)
-			}
-			member.Mixin.Modules[0].Name = "Mutated"
-			if classClone.Members[i].Mixin.Modules[0].Name == "Mutated" {
-				t.Fatalf("members[%d].Mixin.Modules leaked into the clone", i)
-			}
-		}
 		if member.Visibility != nil {
 			if classClone.Members[i].Visibility == member.Visibility {
 				t.Fatalf("members[%d].Visibility is shared with the original", i)
