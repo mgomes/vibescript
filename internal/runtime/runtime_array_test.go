@@ -26,9 +26,12 @@ func TestArrayPushPopAndSum(t *testing.T) {
 	if popped := result["popped"]; !popped.Equal(NewInt(4)) {
 		t.Fatalf("popped mismatch: %v", popped)
 	}
-	compareArrays(t, result["values"], []Value{NewInt(1), NewInt(2), NewInt(3)})
-	if !result["same"].Bool() {
-		t.Fatal("push must return the receiver itself")
+	// push updates the local it addresses and returns it, but binding that
+	// result to pushed makes another value, so the pop that follows is the
+	// pushed array's alone.
+	compareArrays(t, result["values"], []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
+	if result["same"].Bool() {
+		t.Fatal("the popped result must not equal the array it was bound from")
 	}
 	// Host arguments are cloned per call, so the script-side push/pop never
 	// leaks back into the host's original array.
@@ -219,24 +222,27 @@ func TestArrayAppendAssignmentAliasSemantics(t *testing.T) {
     end
     `)
 
+	// b was bound before the push, so it holds what a held then, and writing
+	// through b cannot reach a. Both halves of the inversion matter: a still
+	// sees its own push, and b still sees its own element write.
 	push := callFunc(t, script, "push_alias", nil).Hash()
-	compareArrays(t, push["a"], []Value{NewInt(9), NewInt(2)})
-	compareArrays(t, push["b"], []Value{NewInt(9), NewInt(2)})
+	compareArrays(t, push["a"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, push["b"], []Value{NewInt(9)})
 
 	concat := callFunc(t, script, "concat_alias", nil).Hash()
 	compareArrays(t, concat["a"], []Value{NewInt(1), NewInt(2)})
 	compareArrays(t, concat["b"], []Value{NewInt(9)})
 
 	repeated := callFunc(t, script, "repeated_alias", nil).Hash()
-	compareArrays(t, repeated["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
-	compareArrays(t, repeated["b"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, repeated["a"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, repeated["b"], []Value{NewInt(1), NewInt(3)})
 }
 
-// TestArrayAppendAssignmentBlockResultsAliasReceiver pins Ruby's reference
-// semantics for a block returning `out.push(v)`: push returns the receiver, so
-// a map collecting the results holds aliases of one object and a later element
-// write is visible through every one of them.
-func TestArrayAppendAssignmentBlockResultsAliasReceiver(t *testing.T) {
+// TestArrayAppendAssignmentBlockResultsAreIndependent inverts the aliasing a
+// block returning `out.push(v)` used to produce. Each result is stored into the
+// map's output array, which is another value, so a later element write through
+// one of them reaches only that one.
+func TestArrayAppendAssignmentBlockResultsAreIndependent(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
     def block_results()
@@ -254,8 +260,8 @@ func TestArrayAppendAssignmentBlockResultsAliasReceiver(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("block_results length = %d, want 2", len(results))
 	}
-	compareArrays(t, results[0], []Value{NewInt(9), NewInt(2)})
-	compareArrays(t, results[1], []Value{NewInt(9), NewInt(2)})
+	compareArrays(t, results[0], []Value{NewInt(1)})
+	compareArrays(t, results[1], []Value{NewInt(1), NewInt(2)})
 }
 
 func TestArrayPhaseTwoHelpers(t *testing.T) {
@@ -2063,7 +2069,7 @@ func TestArrayAppendPrependRejectKeywordArguments(t *testing.T) {
 		"array.prepend does not take keyword arguments")
 }
 
-func TestArrayAppendAssignmentSharesReceiver(t *testing.T) {
+func TestArrayAppendAssignmentKeepsBindingsIndependent(t *testing.T) {
 	t.Parallel()
 	// append is an alias of push, so x = x.append(i) mutates the shared object
 	// and rebinds x to that same object: loop accumulation still works, and an
@@ -2101,12 +2107,12 @@ func TestArrayAppendAssignmentSharesReceiver(t *testing.T) {
 	compareArrays(t, callFunc(t, script, "append_accumulate", []Value{NewInt(5)}), want)
 
 	aliased := callFunc(t, script, "append_alias", nil).Hash()
-	compareArrays(t, aliased["a"], []Value{NewInt(9), NewInt(2)})
-	compareArrays(t, aliased["b"], []Value{NewInt(9), NewInt(2)})
+	compareArrays(t, aliased["a"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, aliased["b"], []Value{NewInt(9)})
 
 	repeated := callFunc(t, script, "repeated_append_alias", nil).Hash()
-	compareArrays(t, repeated["a"], []Value{NewInt(9), NewInt(2), NewInt(3), NewInt(4)})
-	compareArrays(t, repeated["b"], []Value{NewInt(9), NewInt(2), NewInt(3), NewInt(4)})
+	compareArrays(t, repeated["a"], []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
+	compareArrays(t, repeated["b"], []Value{NewInt(9), NewInt(2), NewInt(3)})
 }
 
 // TestArrayPushAssignmentLeavesNoAppendBuffer pins the routing contract after

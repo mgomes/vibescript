@@ -79,10 +79,10 @@ func TestHashDelete(t *testing.T) {
 	}
 }
 
-func TestHashDeleteMutatesReceiver(t *testing.T) {
+func TestHashDeleteUpdatesItsRoot(t *testing.T) {
 	t.Parallel()
-	// delete removes the entry from the receiver itself, so an alias bound
-	// before the call observes the pruned contents, matching Ruby.
+	// delete updates the local it addresses, and a binding taken before the
+	// call keeps the value it was given.
 	script := compileScript(t, `
     def delete_mutates_source(record)
       other = record
@@ -94,7 +94,7 @@ func TestHashDeleteMutatesReceiver(t *testing.T) {
 	result := callFunc(t, script, "delete_mutates_source",
 		[]Value{NewHash(map[string]Value{"a": NewInt(1), "b": NewInt(2)})}).Hash()
 	compareHash(t, result["source"].Hash(), map[string]Value{"b": NewInt(2)})
-	compareHash(t, result["other"].Hash(), map[string]Value{"b": NewInt(2)})
+	compareHash(t, result["other"].Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
 	if diff := valueDiff(NewInt(1), result["removed"]); diff != "" {
 		t.Fatalf("removed mismatch (-want +got):\n%s", diff)
 	}

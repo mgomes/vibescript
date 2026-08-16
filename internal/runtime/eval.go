@@ -1845,6 +1845,12 @@ func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots .
 	if err := runner.exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
+	// A block result is on its way into a slot of the collection the caller is
+	// building, and later iterations can run script code that reaches it again
+	// -- `out = out.push(v)` inside a map body hands back the same collection
+	// every time. Counting the slot here rather than when the finished array is
+	// wrapped is what makes each result the value it was when it was produced.
+	publishCollection(val)
 	return val, nil
 }
 

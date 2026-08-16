@@ -207,9 +207,9 @@ func TestArrayMutatorIndependence(t *testing.T) {
 		[]Value{NewInt(1), NewInt(2)})
 }
 
-// TestArrayConcatAccumulatorPreservesIdentity pins that the `x = x + [...]`
-// accumulator fast path never forks array identity: reading the variable
-// settles the hidden buffer but keeps the same wrapper, so an alias taken
+// TestArrayConcatAccumulatorKeepsBindingsIndependent pins that the
+// `x = x + [...]` accumulator fast path, which reuses a hidden backing buffer
+// across iterations, never lets that reuse show: a binding taken
 // after a concat-reassignment observes every later in-place mutation, exactly
 // like an alias of a literal-built array. Expectations verified against Ruby
 // 3.4 (`a = a + [x]` rebinds to a new object; aliases of the pre-rebind object
@@ -275,21 +275,22 @@ func TestArrayConcatAccumulatorPreservesIdentity(t *testing.T) {
 
 	direct := callFunc(t, script, "direct_alias", nil).Hash()
 	compareArrays(t, direct["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
-	compareArrays(t, direct["b"], []Value{NewInt(1), NewInt(2), NewInt(3)})
-	if !direct["same"].Bool() {
-		t.Fatal("alias of a concat-built array must be the same object")
+	compareArrays(t, direct["b"], []Value{NewInt(1), NewInt(2)})
+	if direct["same"].Bool() {
+		t.Fatal("a binding taken from a concat-built array must not track it")
 	}
 
 	hashAlias := callFunc(t, script, "hash_value_alias", nil).Hash()
 	compareArrays(t, hashAlias["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
-	compareArrays(t, hashAlias["via_hash"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, hashAlias["via_hash"], []Value{NewInt(1), NewInt(2)})
 
 	element := callFunc(t, script, "element_alias", nil).Hash()
 	compareArrays(t, element["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
-	compareArrays(t, element["via_element"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, element["via_element"], []Value{NewInt(1), NewInt(2)})
 
-	// Ruby: b aliases the [1] object; the later a = a + [2] rebinds a to a
-	// fresh object, so b keeps [1] while a accumulates [1, 2, 3].
+	// b keeps [1] while a accumulates: the same answer as before, now for the
+	// reason that holds for every binding rather than only for the rebinding
+	// concat form.
 	interleaved := callFunc(t, script, "interleaved", nil).Hash()
 	compareArrays(t, interleaved["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
 	compareArrays(t, interleaved["b"], []Value{NewInt(1)})
@@ -305,7 +306,7 @@ func TestArrayConcatAccumulatorPreservesIdentity(t *testing.T) {
 	compareArrays(t, loop["b"], []Value{NewInt(1), NewInt(2)})
 }
 
-// TestArrayConcatBuiltArraysMutateLikeLiterals pins that an array grown via
+// TestArrayConcatBuiltArraysPassLikeLiterals pins that an array grown via
 // the concat fast path is indistinguishable from a push-built or literal one
 // when passed to a function that mutates its argument (Ruby reference
 // semantics: the callee mutates the caller's object).
@@ -337,20 +338,20 @@ func TestArrayConcatBuiltArraysMutateLikeLiterals(t *testing.T) {
     end
     `)
 
-	want := []Value{NewInt(1), NewInt(2), NewInt(100)}
+	// However the array was built, passing it to a function makes another
+	// value, so the callee's push is invisible to the caller.
+	want := []Value{NewInt(1), NewInt(2)}
 	for _, fn := range []string{"via_concat", "via_push", "via_literal"} {
 		compareArrays(t, callFunc(t, script, fn, nil), want)
 	}
 }
 
-// TestArrayConcatAccumulatorEscapeSettles pins the two non-read escape routes
-// of a live accumulator. A block whose last statement is the concat
-// reassignment hands the accumulator itself out as the block value (Ruby: the
-// assignment's value is the new object bound to the variable), and a method
-// whose implicit return is the reassignment hands it to the caller. The
-// escaping value and the variable must stay one object, and later concats
-// through the variable must never share backing with the escaped value.
-func TestArrayConcatAccumulatorEscapeSettles(t *testing.T) {
+// TestArrayConcatAccumulatorEscapeIsAValue pins the escape route of a live
+// accumulator: a block whose last statement is the concat reassignment hands
+// the accumulator out as the block value. That value is counted as it enters
+// the map's output, so it is what the accumulator held then and later concats
+// through the variable cannot reach it.
+func TestArrayConcatAccumulatorEscapeIsAValue(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
     def block_result_identity()
@@ -362,10 +363,10 @@ func TestArrayConcatAccumulatorEscapeSettles(t *testing.T) {
     `)
 
 	block := callFunc(t, script, "block_result_identity", nil).Hash()
-	if !block["last_same"].Bool() {
-		t.Fatal("last block result must be the accumulator object itself")
+	if block["last_same"].Bool() {
+		t.Fatal("a block result must not track the accumulator it was produced from")
 	}
-	compareArrays(t, block["last"], []Value{NewInt(0), NewInt(1), NewInt(2), NewInt(99)})
+	compareArrays(t, block["last"], []Value{NewInt(0), NewInt(1), NewInt(2)})
 	compareArrays(t, block["first"], []Value{NewInt(0), NewInt(1)})
 }
 
