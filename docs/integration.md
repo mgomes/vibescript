@@ -56,33 +56,28 @@ mocks you can repurpose.
 
 ### Quota Profiles
 
-Each execution runs under four quotas set on `Config`: `StepQuota` (aborts
+Each execution runs under three quotas set on `Config`: `StepQuota` (aborts
 runaway loops), `MemoryQuotaBytes` (bounds retained heap, enforced by the
-reachable-graph accounting), `RecursionLimit` (bounds call depth), and
-`MaxSleepDuration` (bounds the wall-clock time one `Call` may spend sleeping).
-For each field a **positive** value is an explicit limit, `vibes.Unlimited`
-disables that quota, and a **zero** value selects the engine's conservative
-built-in default — the `low` profile (1,000,000 steps / 16 MiB / 256 / 1 minute),
-so `low` is the reproducible name for the default sandbox budget. An unlimited
-memory quota skips the accounting walk entirely.
+reachable-graph accounting), and `RecursionLimit` (bounds call depth). For each
+field a **positive** value is an explicit limit, `vibes.Unlimited` disables that
+quota, and a **zero** value selects the engine's conservative built-in default —
+the `low` profile (1,000,000 steps / 16 MiB / 256), so `low` is the reproducible
+name for the default sandbox budget. An unlimited memory quota skips the
+accounting walk entirely.
 
-`MaxSleepDuration` is a per-`Call` budget, not a per-`sleep` cap: concurrent
-tasks draw from the same allowance as the script that spawned them, so a script
-cannot buy more sleeping time by fanning out.
-
-Rather than tune the four fields by hand, select a coherent bundle with a named
+Rather than tune the three fields by hand, select a coherent bundle with a named
 profile:
 
-| Profile              | Step quota  | Memory quota | Recursion | Max sleep |
-| -------------------- | ----------- | ------------ | --------- | --------- |
-| `vibes.ProfileLow`   | 1,000,000   | 16 MiB       | 256       | 1 minute  |
-| `vibes.ProfileMedium`| 20,000,000  | 128 MiB      | 1,000     | 10 minutes|
-| `vibes.ProfileHigh`  | 200,000,000 | 512 MiB      | 4,000     | 1 hour    |
-| `vibes.ProfileXHigh` | unlimited   | unlimited    | 10,000    | unlimited |
+| Profile              | Step quota  | Memory quota | Recursion |
+| -------------------- | ----------- | ------------ | --------- |
+| `vibes.ProfileLow`   | 1,000,000   | 16 MiB       | 256       |
+| `vibes.ProfileMedium`| 20,000,000  | 128 MiB      | 1,000     |
+| `vibes.ProfileHigh`  | 200,000,000 | 512 MiB      | 4,000     |
+| `vibes.ProfileXHigh` | unlimited   | unlimited    | 10,000    |
 
 Apply one to a `Config` with `ApplyTo` (it writes every quota field, leaving the
 rest untouched), or resolve one from a user-supplied name. Because `ApplyTo`
-overwrites all four, set any per-quota override **after** applying the profile,
+overwrites all three, set any per-quota override **after** applying the profile,
 not before:
 
 ```go
