@@ -168,6 +168,37 @@ jobs:
       - name: Oracle fuzz gate (estimator-exercising target)
         run: go test ./internal/runtime -run '^$' -fuzz=FuzzGeneratedScriptSemantics -fuzztime=20000x
 
+  collection-copy-oracle:
+    # Arrays and hashes are values (ADR-006 item 2), implemented with
+    # copy-on-write rather than a copy per binding. That trades one bug class
+    # for speed: a store that creates a durable handle without publishing it
+    # leaves a wrapper looking exclusively held, and a later write mutates in
+    # place something another binding can still see. Such a store is invisible
+    # until some write happens to reach it, so no ordinary test finds it.
+    #
+    # Copy-per-write is the reference semantics the ref state optimizes, so this
+    # job runs the runtime suite with every addressable write copying its whole
+    # path. Any test that passes one way and fails the other is a missing
+    # publish site. The cost-measuring tests skip themselves under it, since the
+    # oracle changes every byte charged and every step taken by design.
+    runs-on: ubuntu-latest
+    env:
+      VIBES_COW_ALWAYS_COPY: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Runtime suite under the always-copy collection oracle
+        run: go test -timeout 20m ./internal/runtime -count=1
+
+      - name: Oracle fuzz gate (semantics target)
+        run: go test ./internal/runtime -run '^$' -fuzz=FuzzGeneratedScriptSemantics -fuzztime=20000x
+
   quality-gates:
     runs-on: ubuntu-latest
     steps:

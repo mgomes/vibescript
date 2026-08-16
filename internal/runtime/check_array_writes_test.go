@@ -2792,6 +2792,10 @@ end
 	}
 }
 
+// TestArrayFillMutationMatchesCheckerModel pins fill against the checker's
+// model of it. The alias bound before the call keeps what it was given, and the
+// returned value is another binding again, so the shovel that follows reaches
+// only it.
 func TestArrayFillMutationMatchesCheckerModel(t *testing.T) {
 	t.Parallel()
 
@@ -2808,11 +2812,10 @@ end
 `)
 
 	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
-	filled := NewArray([]Value{NewString("bad"), NewString("bad"), NewString("tail")})
 	want := NewArray([]Value{
-		filled,
-		filled,
-		filled,
+		NewArray([]Value{NewString("bad"), NewString("bad")}),
+		NewArray([]Value{NewInt(1), NewInt(2)}),
+		NewArray([]Value{NewString("bad"), NewString("bad"), NewString("tail")}),
 		NewArray([]Value{}),
 	})
 	if !got.Equal(want) {
@@ -3805,10 +3808,11 @@ def entry()
 end
 `)
 		requireNoCheckWarnings(t, script)
+		// The fill result is a binding of its own, so the shovel through it
+		// never reaches items.
 		got := callScript(t, context.Background(), script, "entry", nil, CallOptions{})
 		want := NewArray([]Value{
 			NewInt(1),
-			NewString("poison"),
 			NewBool(true),
 		})
 		if !got.Equal(want) {
@@ -3863,11 +3867,11 @@ end
 					warnings,
 				)
 			}
-			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
-			want := NewArray([]Value{NewInt(2), NewInt(2), NewInt(2)})
-			if !got.Equal(want) {
-				t.Fatalf("run() = %s, want %s", got.String(), want.String())
-			}
+			// The selector grows the binding it addresses, which is no longer
+			// the receiver: the receiver stays one element long and the
+			// negative span the selector returns is out of range for it.
+			requireCallErrorContains(t, script, "run", nil, CallOptions{},
+				"array.fill range -3..-1 out of range")
 		})
 	}
 
@@ -5121,10 +5125,11 @@ end
 `)
 
 	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
-	mutatedValue := NewArray([]Value{NewInt(1), NewString("bad")})
+	// The selector's push reaches the local it addresses, not the copy the
+	// literal already stored, so the two are the values each was given.
 	want := NewArray([]Value{
-		NewArray([]Value{mutatedValue}),
-		mutatedValue,
+		NewArray([]Value{NewArray([]Value{NewInt(1)})}),
+		NewArray([]Value{NewInt(1)}),
 		NewArray([]Value{NewString("bad"), NewString("bad")}),
 		NewArray([]Value{NewString("bad"), NewString("bad")}),
 		NewArray([]Value{NewString("bad"), NewString("bad")}),
@@ -5527,7 +5532,6 @@ end
 			start: 0,
 			want: NewArray([]Value{
 				NewInt(1),
-				NewString("poison"),
 				NewBool(true),
 			}),
 		},
@@ -5540,7 +5544,6 @@ end
 				NewNil(),
 				NewNil(),
 				NewNil(),
-				NewString("poison"),
 				NewBool(true),
 			}),
 		},

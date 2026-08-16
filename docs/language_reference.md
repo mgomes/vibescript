@@ -488,9 +488,9 @@ path reuses `==`, integers and floats remain distinct kinds, so `1 === 1.0` is
 language features.
 
 The collection operators work on arrays. `array << value` appends a single
-value to the receiver in place and returns the receiver, exactly like Ruby's
-shovel: a bare `values << x` statement accumulates and every alias of the array
-observes the append. `array & other` returns a new array holding the elements
+value and returns the receiver, so a bare `values << x` statement accumulates
+into the local it names. Arrays are values, so the append reaches that binding
+and no other (see [Arrays](arrays.md)). `array & other` returns a new array holding the elements
 common to both arrays with duplicates removed and the left array's order
 preserved. Following Ruby, `+` binds tighter than
 `<<`, which binds tighter than `&`. The `&` operator is disambiguated from the

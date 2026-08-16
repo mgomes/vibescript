@@ -309,3 +309,46 @@ func TestRemovedCollectionBangMembersStayRemoved(t *testing.T) {
 		})
 	}
 }
+
+// TestDestructuringRightSideHoldsASnapshot replaces the evaluation-order cases
+// that pinned a destructuring right side reading a container a sibling target
+// mutates. The right side is evaluated first and what it captured is a value, so
+// a write through one target cannot reach it -- which is the same rule every
+// other binding follows, now that it holds here too.
+func TestDestructuringRightSideHoldsASnapshot(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `class User
+  property p: string
+
+  def initialize()
+    source = [[0], ["a", "b"]]
+    source[1][0], (@p, ignored) = ["ok", source[1]]
+    @rest = source[1]
+  end
+
+  def rest()
+    @rest
+  end
+end
+
+def run()
+  u = User.new
+  [u.p, u.rest.inspect]
+end
+`)
+
+	got := callFunc(t, script, "run", nil).Array()
+	if len(got) != 2 {
+		t.Fatalf("run() returned %d values, want 2", len(got))
+	}
+	// @p took the first element of the value source[1] had when the right side
+	// was built, not the "ok" the sibling target wrote afterwards.
+	if got[0].String() != "a" {
+		t.Fatalf("@p = %s, want a (the value the right side captured)", got[0].String())
+	}
+	// The sibling target still reached the path it addresses.
+	if got[1].String() != `["ok", "b"]` {
+		t.Fatalf("source[1] = %s, want [\"ok\", \"b\"]", got[1].String())
+	}
+}

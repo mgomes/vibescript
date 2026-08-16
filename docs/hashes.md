@@ -222,14 +222,9 @@ end
   hash. Later hashes win on key conflicts, and an optional block resolves
   conflicts by yielding `(key, old_value, new_value)`. Called with no arguments
   it returns a copy of the receiver.
-- `update(*others)` / `merge!(*others)` are Ruby's in-place merge: they fold
-  the argument hashes into the receiver itself (later hashes and the optional
-  conflict block win exactly as with `merge`) and return the receiver, so every
-  alias of the hash observes the merge. Called with no arguments they are
-  no-ops returning the receiver.
-- `replace(other)` discards the receiver's entries and adopts `other`'s
-  entries in place, returning the receiver. It does not carry default
-  metadata: hashes have none.
+- `replace(other)` discards the receiver's entries and adopts `other`'s,
+  updating the local, instance variable, or nested path the call names. It
+  does not carry default metadata: hashes have none.
 - `flatten(depth = 1)` returns a flat array of the entries. At the default depth
   the result is `[key, value, ...]`; values that are arrays are kept nested
   unless a deeper `depth` is given. A `depth` of `0` returns the `[key, value]`
@@ -263,12 +258,12 @@ end
 - `remap_keys(mapping_hash)` for direct key rename maps.
 
 The map-producing transforms run inside the sandbox. Before building a derived
-map (or growing the receiver, for the in-place `update` / `merge!` / `replace`)
-they project its size against the memory quota, so a transform over a large
+map (or growing the receiver, for `replace`) they project its size against the
+memory quota, so a transform over a large
 hash is rejected up front rather than after the backing map is allocated. While
 walking entries they charge the step quota per entry and honor context
-cancellation, so large materializations stay bounded. This applies to `merge`
-(and its in-place `update` / `merge!` forms), `replace`, `compact`, `slice`,
+cancellation, so large materializations stay bounded. This applies to `merge`,
+`replace`, `compact`, `slice`,
 `except`, `select`, `reject`, `transform_keys`, `transform_values`, and
 `remap_keys`. The in-place `store`, `delete`, and `clear` allocate nothing
 beyond the single written entry, so they carry no per-entry walk.
