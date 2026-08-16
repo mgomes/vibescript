@@ -133,11 +133,6 @@ type Execution struct {
 	capabilityReturnProof     capabilityReturnProof
 	memoryEst                 memoryEstimator
 	reservedScratchBytes      int
-	// adoptedConstantBytes sums the class-constant map entries mixin adoption
-	// has inserted since its last memory check (see chargeAdoptedConstant). It
-	// carries across includes so that many small adoptions are measured as
-	// often as one large one.
-	adoptedConstantBytes int
 
 	// stringScanCharge caches chargeEqualityScanBytes as a bound function for
 	// the equality byte charge (see stringScanChargeFunc), so metered
