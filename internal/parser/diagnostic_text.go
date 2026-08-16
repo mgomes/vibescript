@@ -18,6 +18,12 @@ const maxDiagnosticSourceBytes = 64
 // It formats to a bounded prefix of that text, and only when the diagnostic is
 // actually built, so passing it costs nothing for an error the parse-error cap
 // discards.
+//
+// It belongs on the untrusted interpolant and nowhere else. A message the
+// lexer or parser wrote is already bounded by construction, and any source it
+// quotes was bounded where that source was interpolated; truncating the
+// finished message again bounds nothing and cuts the part that says what is
+// wrong.
 type srcText string
 
 func (s srcText) String() string {

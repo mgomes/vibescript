@@ -1162,7 +1162,12 @@ func (p *parser) parseStringInterpolationExpression(raw string, pos ast.Position
 	exprParser.l.interpDepth = p.l.interpDepth + 1
 	expr := exprParser.parseLineExpression(lowestPrec)
 	if len(exprParser.errors) > 0 {
-		p.addParseError(pos, "invalid string interpolation: %s", srcText(parseErrorMessage(exprParser.errors[0])))
+		// The sub-parser's message is a finished diagnostic, not source text:
+		// whatever source it quotes was already bounded where it was
+		// interpolated, and nesting is capped at maxInterpolationDepth, so it
+		// carries here in full. Bounding it again would cut the half that says
+		// what is actually wrong.
+		p.addParseError(pos, "invalid string interpolation: %s", parseErrorMessage(exprParser.errors[0]))
 		return nil, false
 	}
 	if expr == nil {

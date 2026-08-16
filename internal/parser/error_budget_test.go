@@ -72,10 +72,10 @@ func TestParseErrorsPastTheCapAllocateNothingPerError(t *testing.T) {
 	}
 }
 
-// TestParseErrorMessagesBoundQuotedSourceText pins the other half: the errors
-// the cap does keep quote a bounded amount of source. A full error list, each
-// message quoting a large identifier in full, is a large allocation the cap
-// alone does not bound.
+// TestParseErrorMessagesBoundQuotedSourceText pins the second guard, which is
+// separate from the cap: the errors the cap does keep quote a bounded amount
+// of source. A full error list, each message quoting a large identifier in
+// full, is a large allocation the cap alone does not bound.
 func TestParseErrorMessagesBoundQuotedSourceText(t *testing.T) {
 	t.Parallel()
 
@@ -88,5 +88,48 @@ func TestParseErrorMessagesBoundQuotedSourceText(t *testing.T) {
 		if len(err.Error()) > maxDiagnosticSourceBytes*8 {
 			t.Fatalf("error %d is %d bytes; a diagnostic must not quote an identifier in full", i, len(err.Error()))
 		}
+	}
+}
+
+// TestDiagnosticsKeepAuthoredProse pins the boundary of that second guard. The
+// bound belongs on the untrusted interpolant, not on the message: a diagnostic
+// the lexer or parser wrote is already bounded by construction, and quoting
+// two of them past the bound must not cost the explanation. Nesting composes
+// interpolation diagnostics, and truncating the composed message cut exactly
+// the half that says what is wrong.
+func TestDiagnosticsKeepAuthoredProse(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name:   "composed interpolation diagnostic",
+			source: "x = \"a#{\"b#{\"c#{def}\"}\"}d\"\n",
+			want:   "invalid string interpolation: invalid string interpolation: invalid string interpolation: unexpected token 'def'",
+		},
+		{
+			name:   "lexer message longer than the source bound",
+			source: "x = 1_000e5_\n",
+			want:   "malformed exponent in numeric literal: underscore must sit between exponent digits",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, errs := Parse(tc.source)
+			if len(errs) == 0 {
+				t.Fatalf("expected a parse error for %q", tc.source)
+			}
+			if len(tc.want) <= maxDiagnosticSourceBytes {
+				t.Fatalf("the case no longer exercises the bound: %q is %d bytes", tc.want, len(tc.want))
+			}
+			joined := joinTeachingErrors(errs)
+			if !strings.Contains(joined, tc.want) {
+				t.Fatalf("error = %s, want it to keep %q whole", joined, tc.want)
+			}
+		})
 	}
 }
