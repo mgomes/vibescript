@@ -469,10 +469,12 @@ func (e *parseError) Message() string { return e.msg }
 func (p *parser) errorExpected(tok ast.Token, expected string) {
 	// Diagnostic illegal tokens carry a human-readable lexer message in the
 	// literal (such as a malformed numeric literal); surface it verbatim so
-	// the cause is clear. Plain illegal characters carry only the raw source
-	// rune, so they fall back to the generic "expected X, got invalid token".
+	// the cause is clear. The lexer writes those messages itself, so unlike
+	// source text they are already bounded and are not truncated. Plain
+	// illegal characters carry only the raw source rune, so they fall back to
+	// the generic "expected X, got invalid token".
 	if tok.Type == ast.TokenIllegal && tok.Diagnostic {
-		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), "%s", srcText(tok.Literal))
+		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), "%s", tok.Literal)
 		return
 	}
 	p.addParseErrorSpan(tok.Pos, tokenEnd(tok), "expected %s, got %s", expected, tokenLabel(tok.Type))
@@ -481,10 +483,12 @@ func (p *parser) errorExpected(tok ast.Token, expected string) {
 func (p *parser) errorUnexpected(tok ast.Token) {
 	// Diagnostic illegal tokens carry a human-readable lexer message in the
 	// literal (such as a malformed numeric literal); surface it verbatim so
-	// the cause is clear. Plain illegal characters carry only the raw source
-	// rune, so they fall back to the generic "unexpected token invalid token".
+	// the cause is clear. The lexer writes those messages itself, so unlike
+	// source text they are already bounded and are not truncated. Plain
+	// illegal characters carry only the raw source rune, so they fall back to
+	// the generic "unexpected token invalid token".
 	if tok.Type == ast.TokenIllegal && tok.Diagnostic {
-		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), "%s", srcText(tok.Literal))
+		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), "%s", tok.Literal)
 		return
 	}
 	p.addParseErrorSpan(tok.Pos, tokenEnd(tok), "unexpected token %s", tokenLabel(tok.Type))
