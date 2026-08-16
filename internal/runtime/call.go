@@ -973,7 +973,17 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		if !sharedSeen {
 			clonedEntries = make(map[string]Value, val.HashLen())
 		}
-		cloned := NewHash(clonedEntries)
+		// A shared map is already filled, so the fill loop below is skipped and
+		// the wrapper needs this source's order handed to it: two wrappers over
+		// one map can iterate differently, and NewHash would derive one order
+		// from the map's contents for both. A fresh map is filled entry by
+		// entry below, which records the same order as it goes.
+		var cloned Value
+		if sharedSeen {
+			cloned = newHashWithOrder(clonedEntries, val.HashKeyOrder())
+		} else {
+			cloned = NewHash(clonedEntries)
+		}
 		// Register the wrapper before rebinding entries so a hash that contains
 		// itself rebinds against this clone rather than recursing forever or
 		// rebinding a second wrapper.

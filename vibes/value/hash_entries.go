@@ -122,14 +122,37 @@ func (v Value) hashEntryMap() map[string]Value {
 // The order slots hold the key Values themselves rather than bare strings, so
 // walking a hash hands out the stored key instead of boxing a fresh string
 // Value per entry on every iteration.
+//
+// Matching lengths alone would not establish that the record is current: Hash()
+// hands a host the live entry map, and swapping one key for another through it
+// leaves the count unchanged while the record names a key the map no longer
+// holds. The order keys are unique by construction (HashSet appends only for an
+// absent key), so a record whose keys are all present and whose length matches
+// is exactly the map's key set; probing membership is therefore a complete
+// check, not a heuristic.
 func (v Value) hashIterationKeys(buf []Value) []Value {
 	if v.kind == KindHash {
 		hd := v.data.(*hashData)
-		if len(hd.order) == len(hd.entries) {
+		if hd.orderCoversEntries() {
 			return hd.order
 		}
 	}
 	return sortedMapKeysInto(v.hashEntryMap(), buf)
+}
+
+// orderCoversEntries reports whether the recorded order still names exactly the
+// live entry set. See hashIterationKeys for why membership plus length is
+// exact rather than approximate.
+func (hd *hashData) orderCoversEntries() bool {
+	if len(hd.order) != len(hd.entries) {
+		return false
+	}
+	for i := range hd.order {
+		if _, ok := hd.entries[hd.order[i].data.(string)]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func sortedMapKeysInto(m map[string]Value, buf []Value) []Value {

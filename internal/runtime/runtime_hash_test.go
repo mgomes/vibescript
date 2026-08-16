@@ -2285,3 +2285,31 @@ func TestHashLiteralReservesExactOrderCapacity(t *testing.T) {
 		t.Fatalf("literal order capacity = %d, want 3 (append growth would overshoot to 4)", capacity)
 	}
 }
+
+// Two hash wrappers may share one entry map while iterating differently: a
+// wrapper whose recorded order has gone stale falls back to sorted keys, while
+// the wrapper that did the writing keeps its insertion order. The cloners reuse
+// one cloned map for both, so each clone must still be built with its own
+// source's order rather than one derived from the shared map.
+func TestSharedEntryMapClonesKeepEachWrappersOrder(t *testing.T) {
+	t.Parallel()
+
+	shared := map[string]Value{}
+	sorted := NewHash(shared)
+	ordered := NewHash(shared)
+	for _, name := range []string{"b", "a"} {
+		if err := ordered.HashSet(NewString(name), NewInt(1)); err != nil {
+			t.Fatalf("HashSet(%s) error = %v", name, err)
+		}
+	}
+
+	script := compileScript(t, "def run(x, y)\n  [x.keys, y.keys]\nend\n")
+	got := callScript(t, context.Background(), script, "run", []Value{sorted, ordered}, CallOptions{})
+	arms := got.Array()
+	if want := `["a", "b"]`; arms[0].Inspect() != want {
+		t.Fatalf("stale-order wrapper cloned as %s, want %s", arms[0].Inspect(), want)
+	}
+	if want := `["b", "a"]`; arms[1].Inspect() != want {
+		t.Fatalf("insertion-ordered wrapper cloned as %s, want %s", arms[1].Inspect(), want)
+	}
+}

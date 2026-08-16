@@ -308,6 +308,13 @@ func NewHash(h map[string]Value) Value { return value.NewHash(h) }
 // NewHashWithCapacity returns an empty hash pre-sized for capacity entries.
 func NewHashWithCapacity(capacity int) Value { return value.NewHashWithCapacity(capacity) }
 
+// newHashWithOrder returns a hash over entries that iterates in the given key
+// order, for the cloners that reuse a shared entry map and must still give each
+// wrapper its own order.
+func newHashWithOrder(entries map[string]Value, order []Value) Value {
+	return value.NewHashWithOrder(entries, order)
+}
+
 // hashIdentity returns a stable identity for a hash wrapper, or 0 when v is not
 // a hash. Cloners and scanners key their seen-sets on this rather than the bare
 // entry map, so two wrappers sharing one map stay distinct.
@@ -875,7 +882,17 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 	if !sharedSeen {
 		clonedEntries = make(map[string]Value, val.HashLen())
 	}
-	cloned := NewHash(clonedEntries)
+	// A shared map is already filled, so the fill loop below is skipped and the
+	// wrapper needs this source's order handed to it: two wrappers over one map
+	// can iterate differently, and NewHash would derive one order from the
+	// map's contents for both. A fresh map is filled entry by entry below,
+	// which records the same order as it goes.
+	var cloned Value
+	if sharedSeen {
+		cloned = newHashWithOrder(clonedEntries, val.HashKeyOrder())
+	} else {
+		cloned = NewHash(clonedEntries)
+	}
 	// Register the wrapper before cloning entries so a hash that contains itself
 	// dedups against this clone rather than recursing forever or cloning a
 	// second wrapper.

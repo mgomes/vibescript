@@ -198,3 +198,27 @@ func TestBareMapHashIteratesSorted(t *testing.T) {
 	})
 	requireKeyOrder(t, hash, []value.Value{value.NewString("a"), value.NewString("b")})
 }
+
+// A host holding the live map from Hash() can swap one key for another, leaving
+// the entry count unchanged while the recorded order names a key the map no
+// longer holds. Iteration must notice and fall back to sorted keys rather than
+// emitting the departed key with a zero value and dropping the new one.
+func TestHostKeySwapThroughLiveMapFallsBackToSortedKeys(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{"a": value.NewInt(1)})
+	live := hash.Hash()
+	delete(live, "a")
+	live["b"] = value.NewInt(2)
+
+	entries := hash.HashEntries()
+	if len(entries) != 1 {
+		t.Fatalf("entries after key swap = %d, want 1", len(entries))
+	}
+	if got := entries[0].Key.String(); got != "b" {
+		t.Fatalf("entry key after swap = %q, want %q", got, "b")
+	}
+	if got := entries[0].Value; !got.Equal(value.NewInt(2)) {
+		t.Fatalf("entry value after swap = %s, want 2", got.Inspect())
+	}
+}
