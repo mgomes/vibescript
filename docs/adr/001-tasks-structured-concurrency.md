@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted - 2026-06-06
+Superseded by
+[ADR-006](006-slim-language-for-predictable-sandboxing.md) - 2026-08-15
+(previously accepted - 2026-06-06)
 
 ## Decision
 
