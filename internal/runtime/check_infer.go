@@ -13396,86 +13396,6 @@ func (c *scriptChecker) typeFactMayBeEmptyKeywordHash(fact *TypeExpr) bool {
 	return false
 }
 
-// mergeArgumentsProvablyAbort reports whether a merge!/update call provably
-// raises before merging any entries: splat expansion rejects a non-array
-// value, and every positional argument is validated as a hash up front.
-func (c *scriptChecker) mergeArgumentsProvablyAbort(call *CallExpr, argumentFacts map[Expression]*TypeExpr) bool {
-	for _, arg := range call.Args {
-		if _, isSplat := arg.(*SplatArg); isSplat {
-			written := c.mutatorCallArgumentFact(arg, argumentFacts)
-			if written != nil && typeExprArmsAll(written, func(arm *TypeExpr) bool {
-				if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
-					return true
-				}
-				return arm.Kind != TypeArray
-			}) {
-				return true
-			}
-			// A successfully expanded splat contributes its elements as
-			// positional arguments, so a witnessed element arm that is
-			// provably not a hash (witness arms are real elements) fails
-			// the up-front validation too.
-			if written != nil && written.Kind == TypeArray && !written.Nullable &&
-				literalArrayElementsWitnessed(written) &&
-				len(written.TypeArgs) == 1 {
-				if arms, ok := typeExprArms(written.TypeArgs[0], 0); ok {
-					if slices.ContainsFunc(arms, typeExprProvablyNotHash) {
-						return true
-					}
-				}
-			}
-			continue
-		}
-		if written := c.mutatorCallArgumentFact(arg, argumentFacts); typeExprProvablyNotHash(written) {
-			return true
-		}
-	}
-	return false
-}
-
-// hashMergeCallMayWrite reports whether a successfully validated merge! or
-// update call can contribute at least one entry. Statically empty hashes and
-// splatted array literals are true no-ops, so they preserve both declared and
-// witnessed receiver facts.
-func (c *scriptChecker) hashMergeCallMayWrite(
-	call *CallExpr,
-	argumentFacts map[Expression]*TypeExpr,
-) bool {
-	if call == nil || len(call.KwArgs) != 0 ||
-		c.mergeArgumentsProvablyAbort(call, argumentFacts) {
-		return false
-	}
-	for _, arg := range call.Args {
-		if c.hashMergeArgumentMayWrite(arg, argumentFacts) {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *scriptChecker) hashMergeArgumentMayWrite(
-	arg Expression,
-	argumentFacts map[Expression]*TypeExpr,
-) bool {
-	if splat, ok := arg.(*SplatArg); ok {
-		if array, literal := splat.Value.(*ArrayLiteral); literal {
-			for _, element := range array.Elements {
-				if c.hashMergeArgumentMayWrite(element, argumentFacts) {
-					return true
-				}
-			}
-			return false
-		}
-		return true
-	}
-	if hash, literal := arg.(*HashLiteral); literal && hash.ShapeType == nil {
-		return len(hash.Pairs) != 0
-	}
-	written := c.mutatorCallArgumentFact(arg, argumentFacts)
-	return written == nil || written.Kind != TypeShape || written.Nullable || written.Open ||
-		len(written.Shape) != 0
-}
-
 func (c *scriptChecker) shapeMutatorCallMayWrite(
 	call *CallExpr,
 	property string,
@@ -13664,31 +13584,6 @@ func (c *scriptChecker) checkShapeReplacementLiteral(
 	return compatible
 }
 
-// checkShapeMergeEntry checks one statically known merge entry against a
-// declared shape contract: an absent key always violates exactness (an
-// exact shape can never already hold it, so the entry stores directly with
-// or without a conflict block), while a present key's value only diagnoses
-// without a block (a conflict lets the block decide the stored value).
-func (c *scriptChecker) checkShapeMergeEntry(function, name string, shape *TypeExpr, key string, written *TypeExpr, keyPos, valuePos Position, blockConflicts bool) {
-	field, present := shape.Shape[key]
-	if !present {
-		c.add(function, keyPos, "write to %s adds field %s to exact shape %s",
-			name, key, formatTypeExpr(shape))
-		return
-	}
-	if blockConflicts || written == nil {
-		return
-	}
-	if typedWriteRejected(written, field, c.checkNamedTypeResolver()) {
-		c.add(function, valuePos, "write to %s field %s expected %s, got %s",
-			name, key, formatTypeExpr(field), formatTypeExpr(written))
-	}
-}
-
-// typeExprProvablyUnstorableKey reports a fact no arm of which the runtime
-// accepts as a hash key: hashes, shapes, functions, and the temporal kinds
-// all raise "unsupported hash key" before any entry is written. Named arms
-// stay conservatively storable (an enum's underlying values are opaque).
 func typeExprProvablyUnstorableKey(ty *TypeExpr) bool {
 	return typeExprArmsAll(ty, func(arm *TypeExpr) bool {
 		if _, isShapeValue := shapeValuePayload(arm); isShapeValue {

@@ -114,8 +114,8 @@ type Execution struct {
 	// addressedPath is that receiver together with every container the write
 	// reached it through, so a value being stored into it can be recognized as
 	// one of them and copied rather than made into a cycle.
-	addressedPath []uintptr
-	callStack     []callFrame
+	addressedPath    []uintptr
+	callStack        []callFrame
 	root             *Env
 	modules          map[string]Value
 	moduleSearchPins map[string]string
