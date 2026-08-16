@@ -76,9 +76,9 @@ func (v Value) Float() float64 {
 
 // Array returns the array content of v, or nil if v is not an array. The
 // returned slice is the array's live backing: element writes through it are
-// visible to every alias of the array, but callers must not assume its length
-// stays current across Ruby-style in-place mutators (push, pop, ...), which
-// swap the wrapper's element slice.
+// visible through this wrapper, but callers must not assume its length stays
+// current across the in-place mutators (push, pop, ...), which swap the
+// wrapper's element slice.
 func (v Value) Array() []Value {
 	if v.kind != KindArray {
 		return nil

@@ -3638,8 +3638,8 @@ func arrayMemberTransforms(property string) (Value, error) {
 	switch property {
 	case "push", "append":
 		// Ruby exposes Array#append as an alias for Array#push, appending the
-		// arguments (in order) to the end of the receiver in place and
-		// returning the receiver; every alias of the array observes the growth.
+		// arguments (in order) to the end of the receiver and returning it. What
+		// grows is the binding the receiver names; see collection_values.go.
 		name := "array." + property
 		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(kwargs) > 0 {

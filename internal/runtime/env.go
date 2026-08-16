@@ -561,11 +561,11 @@ func (e *Env) arrayAppendBuffer(name string) ([]Value, bool) {
 
 // clearArrayAppendBuffer settles the hidden concat accumulator for name when
 // its wrapper escapes through a variable read. Settling only unregisters the
-// buffer -- the binding keeps the exact wrapper the reader received, so both
-// handles stay the same Ruby object and later in-place mutations remain
-// visible through every alias. Once unregistered, the next `x = x + [...]`
-// takes the copy path into a fresh buffer, so nothing ever appends into the
-// escaped wrapper's backing again.
+// buffer, so the binding keeps the exact wrapper the reader received. Once
+// unregistered, the next `x = x + [...]` takes the copy path into a fresh
+// buffer, so nothing ever appends into the escaped wrapper's backing again --
+// which is what keeps the reuse invisible now that the escaped value and the
+// binding are two values.
 func (e *Env) clearArrayAppendBuffer(name string) {
 	if scope, ok := e.lookupBindingScope(name); ok {
 		scope.dropArrayAppendBuffer(name)

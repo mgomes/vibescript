@@ -3086,10 +3086,9 @@ func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Va
 
 	// Only `values = values + [...]` uses the accumulator fast path: `+` is a
 	// genuinely non-mutating operator, so reusing the receiver's hidden backing
-	// buffer across iterations is invisible. push and << mutate the receiver in
-	// place nowadays (matching Ruby), so they need no reassignment fast path —
-	// the mutation itself already amortizes growth and must stay visible
-	// through every alias, which the hidden-buffer path would break.
+	// buffer across iterations is invisible. push and << update the binding
+	// they name, so they need no reassignment fast path -- the update itself
+	// already amortizes growth.
 	value, ok := stmt.Value.(*BinaryExpr)
 	if !ok || value.Operator != tokenPlus {
 		return NewNil(), false, nil

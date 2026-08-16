@@ -147,11 +147,10 @@ place and returns it.
 
 ## Mutating methods
 
-Arrays are mutable objects with reference semantics, exactly as in Ruby: two
-variables bound to the same array observe each other's mutations, `dup` /
-`clone` detach a deep copy, and `equal?` reports object identity (two empty
-literals are distinct objects). The Ruby-named mutators modify the receiver in
-place:
+Arrays are values (ADR-006 item 2): two variables bound to the same array each
+hold their own, so neither observes the other's updates, and `equal?` reports
+content equality because there is no identity left to report. The Ruby-named
+mutators update the receiver they name:
 
 - `push`/`append`, `prepend`/`unshift`, `<<`, `insert`, `fill`, and `clear`
   mutate and return the receiver.
