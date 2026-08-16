@@ -288,7 +288,9 @@ func (e *Env) getBoundValue(name string, lastMutable *Env) (Value, bool) {
 		val := e.inline[idx].value
 		if lazy, ok := lazyValue(val); ok {
 			value.BumpMutationEpoch()
+			previous := val
 			val = lazy.materialize()
+			publishBindingReplacement(previous, val)
 			e.inline[idx].value = val
 			e.dropArrayAppendBuffer(name)
 		}
@@ -297,7 +299,9 @@ func (e *Env) getBoundValue(name string, lastMutable *Env) (Value, bool) {
 	if val, ok := e.values[name]; ok {
 		if lazy, ok := lazyValue(val); ok {
 			value.BumpMutationEpoch()
+			previous := val
 			val = lazy.materialize()
+			publishBindingReplacement(previous, val)
 			e.values[name] = val
 			e.dropArrayAppendBuffer(name)
 		}
@@ -328,7 +332,9 @@ func (e *Env) getSkipping(name string, skip map[*Env]struct{}) (Value, bool) {
 			val := scope.inline[idx].value
 			if lazy, ok := lazyValue(val); ok {
 				value.BumpMutationEpoch()
+				previous := val
 				val = lazy.materialize()
+				publishBindingReplacement(previous, val)
 				scope.inline[idx].value = val
 				scope.dropArrayAppendBuffer(name)
 			}
@@ -337,7 +343,9 @@ func (e *Env) getSkipping(name string, skip map[*Env]struct{}) (Value, bool) {
 		if val, ok := scope.values[name]; ok {
 			if lazy, ok := lazyValue(val); ok {
 				value.BumpMutationEpoch()
+				previous := val
 				val = lazy.materialize()
+				publishBindingReplacement(previous, val)
 				scope.values[name] = val
 				scope.dropArrayAppendBuffer(name)
 			}
@@ -424,6 +432,7 @@ func (e *Env) growStatics(n int) {
 // DefineStatic binds a variable whose deep size is fixed at definition
 // time, keeping it out of the per-check estimation walk.
 func (e *Env) DefineStatic(name string, val Value) {
+	publishBindingReplacement(e.statics[name], val)
 	e.bumpEpochUnlessNeutral()
 	e.deleteDynamic(name)
 	if e.statics == nil {
@@ -745,11 +754,13 @@ func (e *Env) getOwn(name string) (Value, bool) {
 
 func (e *Env) setExistingDynamic(name string, val Value) bool {
 	if idx, ok := e.inlineIndex(name); ok {
+		publishBindingReplacement(e.inline[idx].value, val)
 		e.bumpEpochUnlessScalarRebind(e.inline[idx].value, val)
 		e.inline[idx].value = val
 		return true
 	}
 	if old, ok := e.values[name]; ok {
+		publishBindingReplacement(old, val)
 		e.bumpEpochUnlessScalarRebind(old, val)
 		e.values[name] = val
 		return true
@@ -790,6 +801,7 @@ func (e *Env) setDynamic(name string, val Value) {
 	if e.setExistingDynamic(name, val) {
 		return
 	}
+	publishCollection(val)
 	e.bumpEpochUnlessNeutral()
 	if e.values != nil {
 		e.values[name] = val
@@ -894,6 +906,7 @@ func (e *Env) materializeStatic(name string, val Value) Value {
 	}
 	value.BumpMutationEpoch()
 	materialized := lazy.materialize()
+	publishBindingReplacement(val, materialized)
 	e.statics[name] = materialized
 	return materialized
 }

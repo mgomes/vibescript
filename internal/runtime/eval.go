@@ -140,6 +140,22 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	case *MemberExpr:
 		var obj Value
 		var err error
+		if isCollectionMutator(e.Property) {
+			// A parenless mutator (`a.pop`, `a.shift`) is auto-invoked from
+			// here rather than through a call expression, so it resolves its
+			// receiver as an addressable path the same way, or the write would
+			// land on a copy the script never sees again.
+			defer exec.restore(exec.savedAddressedScope())
+			var addressed bool
+			obj, addressed, err = exec.resolveMutableReceiver(e.Object, env)
+			if !addressed {
+				obj, err = exec.evalExpressionWithAuto(e.Object, env, memberReceiverAutoInvokes(e.Object, e.Property, env))
+			}
+			if err != nil {
+				return NewNil(), err
+			}
+			return exec.finishMemberExpr(e, obj, env, autoCall)
+		}
 		if _, objIsMember := e.Object.(*MemberExpr); e.Property == "call" && objIsMember {
 			// Resolve a member-of-member receiver exactly like the
 			// parenthesized call form so c.cb.call (no parens) sees the stored
@@ -153,20 +169,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		if err != nil {
 			return NewNil(), err
 		}
-		if e.Safe && obj.Kind() == KindNil {
-			return NewNil(), nil
-		}
-		if err := exec.checkMemoryValue(obj); err != nil {
-			return NewNil(), err
-		}
-		member, err := exec.getPublicMember(obj, e.Property, e.Pos())
-		if err != nil {
-			return NewNil(), err
-		}
-		if autoCall {
-			return exec.autoInvokeIfNeeded(e, member, obj)
-		}
-		return member, nil
+		return exec.finishMemberExpr(e, obj, env, autoCall)
 	case *ScopeExpr:
 		obj, err := exec.evalExpressionWithAuto(e.Object, env, true)
 		if err != nil {
@@ -1049,8 +1052,44 @@ func (exec *Execution) indexSelectorToInt(e *IndexExpr, idx Value, i int) (int, 
 	}
 }
 
+// finishMemberExpr resolves the member of an already-evaluated receiver, which
+// is the tail both the ordinary member path and the addressable-receiver path a
+// parenless mutator takes share.
+func (exec *Execution) finishMemberExpr(e *MemberExpr, obj Value, env *Env, autoCall bool) (Value, error) {
+	if e.Safe && obj.Kind() == KindNil {
+		return NewNil(), nil
+	}
+	if err := exec.checkMemoryValue(obj); err != nil {
+		return NewNil(), err
+	}
+	member, err := exec.getPublicMember(obj, e.Property, e.Pos())
+	if err != nil {
+		return NewNil(), err
+	}
+	if autoCall {
+		return exec.autoInvokeIfNeeded(e, member, obj)
+	}
+	return member, nil
+}
+
 func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error) {
-	left, err := exec.evalExpression(expr.Left, env)
+	var (
+		left Value
+		err  error
+	)
+	if expr.Operator == tokenShovel {
+		// The shovel writes through its left operand, so it resolves that
+		// operand the way a mutating member call resolves its receiver: as an
+		// addressable path whose root the append rebinds.
+		defer exec.restore(exec.savedAddressedScope())
+		var addressed bool
+		left, addressed, err = exec.resolveMutableReceiver(expr.Left, env)
+		if !addressed {
+			left, err = exec.evalExpression(expr.Left, env)
+		}
+	} else {
+		left, err = exec.evalExpression(expr.Left, env)
+	}
 	if err != nil {
 		return NewNil(), err
 	}
@@ -1313,6 +1352,17 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		// (#1129); when it is not eligible, charge the backing reallocation
 		// up front and take the ordinary epoch-bumping path.
 		if left.Kind() == KindArray {
+			writable, writableErr := exec.writableCollection(left)
+			if writableErr != nil {
+				return NewNil(), exec.wrapError(writableErr, pos)
+			}
+			left = writable
+			detached, detachErr := exec.detachStoredCollection(right)
+			if detachErr != nil {
+				return NewNil(), exec.wrapError(detachErr, pos)
+			}
+			right = detached
+			publishCollection(right)
 			handled, appendErr := exec.appendArrayCharged(left, right)
 			if appendErr != nil {
 				return NewNil(), exec.wrapError(appendErr, pos)
@@ -2534,6 +2584,7 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 	}
 
 	bumpMutationEpoch()
+	publishBindingReplacement(vars[property], value)
 	vars[property] = value
 	return nil
 }
@@ -2543,6 +2594,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 	case *Identifier:
 		if self, ok := classConstantAssignmentSelf(t.Name, env); ok && !env.hasCallLocalBinding(t.Name) {
 			bumpMutationEpoch()
+			publishBindingReplacement(valueClass(self).ClassVars[t.Name], value)
 			valueClass(self).ClassVars[t.Name] = value
 			return nil
 		}
@@ -2553,7 +2605,11 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 			return exec.assign(target, value, env)
 		})
 	case *MemberExpr:
-		obj, err := exec.evalExpression(t.Object, env)
+		defer exec.restore(exec.savedAddressedScope())
+		obj, addressed, err := exec.resolveMutableReceiver(t.Object, env)
+		if !addressed {
+			obj, err = exec.evalExpression(t.Object, env)
+		}
 		if err != nil {
 			return err
 		}
@@ -2572,6 +2628,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 			return err
 		}
 		bumpMutationEpoch()
+		publishBindingReplacement(inst.Ivars[t.Name], normalized)
 		inst.Ivars[t.Name] = normalized
 		return nil
 	case *ClassVarExpr:
@@ -2582,17 +2639,23 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		switch self.Kind() {
 		case KindInstance:
 			bumpMutationEpoch()
+			publishBindingReplacement(valueInstance(self).Class.ClassVars[t.Name], value)
 			valueInstance(self).Class.ClassVars[t.Name] = value
 			return nil
 		case KindClass:
 			bumpMutationEpoch()
+			publishBindingReplacement(valueClass(self).ClassVars[t.Name], value)
 			valueClass(self).ClassVars[t.Name] = value
 			return nil
 		default:
 			return exec.errorAt(target.Pos(), "no class context for class var")
 		}
 	case *IndexExpr:
-		obj, err := exec.evalExpression(t.Object, env)
+		defer exec.restore(exec.savedAddressedScope())
+		obj, addressed, err := exec.resolveMutableReceiver(t.Object, env)
+		if !addressed {
+			obj, err = exec.evalExpression(t.Object, env)
+		}
 		if err != nil {
 			return err
 		}
@@ -2660,7 +2723,11 @@ func (exec *Execution) assignToEvaluatedMember(target *MemberExpr, obj, value Va
 		if obj.Kind() == KindHash {
 			key = hashMemberAssignmentKey(obj, target.Property)
 		}
-		return hashSet(obj, key, value)
+		stored, err := exec.detachStoredCollection(value)
+		if err != nil {
+			return err
+		}
+		return hashSet(obj, key, stored)
 	case KindInstance, KindClass:
 		return exec.assignToMember(obj, target.Property, value, target.Pos())
 	default:
@@ -2691,8 +2758,13 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		if pos < 0 || pos >= len(arr) {
 			return exec.errorAt(target.IndexPos(0), "array index out of bounds")
 		}
+		stored, err := exec.detachStoredCollection(value)
+		if err != nil {
+			return err
+		}
+		publishBindingReplacement(arr[pos], stored)
 		bumpMutationEpoch()
-		arr[pos] = value
+		arr[pos] = stored
 		return nil
 	case KindHash, KindObject:
 		if len(indices) != 1 {
@@ -2710,6 +2782,10 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		// and skips the epoch bump, keeping hash-filling loops linear under
 		// the quota (#1129); replacements and every other ineligible write
 		// take the ordinary bumping path.
+		value, err := exec.detachStoredCollection(value)
+		if err != nil {
+			return err
+		}
 		if handled, storeErr := exec.hashStoreCharged(obj, indices[0], value); handled {
 			if storeErr != nil {
 				return exec.wrapError(storeErr, target.IndexPos(0))

@@ -328,7 +328,8 @@ func arrayIdentity(v Value) uintptr { return value.ArrayIdentity(v) }
 
 // setArrayElems replaces an array's element slice in place through its shared
 // wrapper. It is the primitive behind the Ruby-style in-place mutators (push,
-// pop, clear, map!, ...): every Value aliasing the array observes the change.
+// pop, clear, delete_if, ...) after the write has proved the wrapper exclusively
+// held; see collection_values.go.
 func setArrayElems(v Value, elems []Value) { v.SetArrayElems(elems) }
 
 // setArrayWindow narrows an array onto a window of the allocation its elements
@@ -692,7 +693,9 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		cloned := NewInstance(&Instance{Class: clonedClass, Ivars: clonedIvars})
 		state.instances[inst] = cloned
 		for name, ivar := range inst.Ivars {
-			clonedIvars[name] = cloneValueForHostWithState(ivar, state)
+			cloned := cloneValueForHostWithState(ivar, state)
+			publishCollection(cloned)
+			clonedIvars[name] = cloned
 		}
 		return cloned
 	case KindEnum:
@@ -812,7 +815,9 @@ func cloneClassForHostWithState(classDef *ClassDef, state hostValueCloneState) *
 	}
 	state.classes[classDef] = classClone
 	for name, val := range classDef.ClassVars {
-		classClone.ClassVars[name] = cloneValueForHostWithState(val, state)
+		cloned := cloneValueForHostWithState(val, state)
+		publishCollection(cloned)
+		classClone.ClassVars[name] = cloned
 	}
 	for methodName, method := range classDef.Methods {
 		classClone.Methods[methodName] = cloneFunctionForHostWithState(method, state)

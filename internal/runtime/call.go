@@ -860,7 +860,9 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		r.seenInstances[inst] = cloned
 		for name, ivar := range inst.Ivars {
-			clonedIvars[name] = r.rebindValue(ivar)
+			rebound := r.rebindValue(ivar)
+			publishCollection(rebound)
+			clonedIvars[name] = rebound
 		}
 		return cloned
 	case KindClass:
@@ -2697,9 +2699,30 @@ func (exec *Execution) evalBlockGivenCall(call *CallExpr, env *Env) (Value, erro
 }
 
 func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, env *Env) (Value, error) {
-	receiver, err := exec.evalMemberCallReceiver(member, env, func(object Expression, env *Env) bool {
-		return callMemberCallReceiverAutoInvokes(call, object, env)
-	})
+	ordinaryReceiver := func() (Value, error) {
+		return exec.evalMemberCallReceiver(member, env, func(object Expression, env *Env) bool {
+			return callMemberCallReceiverAutoInvokes(call, object, env)
+		})
+	}
+	var (
+		receiver Value
+		err      error
+	)
+	if isCollectionMutator(member.Property) {
+		// A member that writes through its receiver resolves that receiver as
+		// an addressable path, so the write updates the local, instance
+		// variable, or nested path the source names rather than a value the
+		// script cannot see again. A receiver that names no such path is a
+		// temporary and the write is isolated to a copy of it.
+		defer exec.restore(exec.savedAddressedScope())
+		var addressed bool
+		receiver, addressed, err = exec.resolveMutableReceiver(member.Object, env)
+		if !addressed {
+			receiver, err = ordinaryReceiver()
+		}
+	} else {
+		receiver, err = ordinaryReceiver()
+	}
 	if err != nil {
 		return NewNil(), err
 	}
@@ -3627,6 +3650,7 @@ func (exec *Execution) executeGeneratedSetter(fn *ScriptFunction, callEnv *Env) 
 		return NewNil(), exec.errorAt(fn.Pos, "missing property setter value")
 	}
 	bumpMutationEpoch()
+	publishBindingReplacement(valueInstance(self).Ivars[fn.AccessorName], val)
 	valueInstance(self).Ivars[fn.AccessorName] = val
 	val = callEnv.settleArrayAppendResult(val)
 	if err := exec.checkContext(); err != nil {
@@ -3840,6 +3864,7 @@ func (exec *Execution) bindFunctionParamValue(fn *ScriptFunction, env *Env, para
 					return err
 				}
 				bumpMutationEpoch()
+				publishBindingReplacement(inst.Ivars[param.Name], normalized)
 				inst.Ivars[param.Name] = normalized
 			}
 		}
