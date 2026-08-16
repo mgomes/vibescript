@@ -260,7 +260,7 @@ func TestRubyBatchArrayUniqBlockChargesRetainedKeys(t *testing.T) {
 	oneKey := newMemoryEstimator().value(NewString("v0000" + strings.Repeat("x", retainedKeyBytes)))
 	exec.memoryQuota = base + resultSlots + valueSetScratchBytesForCounts(8, 0) + oneKey*8
 
-	_, _, err := arrayUniq(exec, receiver, nil, nil, block, "array.uniq")
+	_, err := arrayUniq(exec, receiver, nil, nil, block, "array.uniq")
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 	if exec.steps >= receiverSize {
 		t.Fatalf("steps = %d, want retained uniq keys to trip memory quota before traversing %d elements", exec.steps, receiverSize)
