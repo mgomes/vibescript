@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -17,20 +16,6 @@ func requireRubyBatchValue(t *testing.T, got, want Value) {
 	if diff := valueDiff(want, got); diff != "" {
 		t.Fatalf("value mismatch (-want +got):\n%s", diff)
 	}
-}
-
-func requireRubyBatchStepQuotaError(t testing.TB, err error) {
-	t.Helper()
-	if errors.Is(err, errStepQuotaExceeded) {
-		return
-	}
-	var runtimeErr *RuntimeError
-	if errors.As(err, &runtimeErr) &&
-		runtimeErr.Type == runtimeErrorTypeLimit &&
-		strings.Contains(runtimeErr.Message, errStepQuotaExceeded.Error()) {
-		return
-	}
-	t.Fatalf("expected step quota error, got %v", err)
 }
 
 func rubyBatchDistinctStrings(count int) Value {
@@ -56,26 +41,6 @@ func rubyBatchConcatStringBlock(suffix string) Value {
 		},
 	}
 	return NewBlock([]Param{{Kind: ParamNormal, Name: "item", Target: target}}, body, newEnv(nil))
-}
-
-func rubyBatchZeroComparatorBlock() Value {
-	pos := Position{Line: 1, Column: 1}
-	left := &Identifier{Name: "left", Position: pos}
-	right := &Identifier{Name: "right", Position: pos}
-	body := []Statement{
-		&ExprStmt{
-			Expr:     &IntegerLiteral{Value: 0, Position: pos},
-			Position: pos,
-		},
-	}
-	return NewBlock(
-		[]Param{
-			{Kind: ParamNormal, Name: "left", Target: left},
-			{Kind: ParamNormal, Name: "right", Target: right},
-		},
-		body,
-		newEnv(nil),
-	)
 }
 
 func TestRubyBatchDynamicDispatchAndInitializePrivacy(t *testing.T) {
