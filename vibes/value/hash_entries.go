@@ -239,6 +239,20 @@ func (v Value) HashGet(key Value) (Value, bool, error) {
 // Ruby-style insertion order: a new key is appended to the recorded order and
 // an existing key keeps its original position while taking the new value.
 func (v Value) HashSet(key, val Value) error {
+	v.publishEntryReplacement(key, val)
+	return v.hashSetInternal(key, val, true)
+}
+
+// HashSetOwned stores key/value without publishing val. It is for the one write
+// that does not create a handle: replacing an entry with a copy of what that
+// same entry already held, which the runtime's copy-on-write path does as it
+// makes a nested collection exclusively held. Publishing there would make the
+// next write through the same path copy again.
+//
+// It is intended for the interpreter's internal use; hosts should not call it,
+// and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func (v Value) HashSetOwned(key, val Value) error {
 	return v.hashSetInternal(key, val, true)
 }
 
@@ -253,7 +267,23 @@ func (v Value) HashSet(key, val Value) error {
 // intended for the interpreter's internal use; hosts should not call it, and
 // it carries no compatibility promise (see docs/embedding-api-stability.md).
 func (v Value) HashSetUnpublished(key, val Value) error {
+	v.publishEntryReplacement(key, val)
 	return v.hashSetInternal(key, val, false)
+}
+
+// publishEntryReplacement counts the handle an entry store creates, unless the
+// entry already names the same wrapper -- `h[k] = h[k].push(x)` stores back what
+// it just updated and duplicates nothing.
+func (v Value) publishEntryReplacement(key, val Value) {
+	if val.refSlot() == nil {
+		return
+	}
+	previous, _, err := v.HashGet(key)
+	if err != nil {
+		val.PublishRef()
+		return
+	}
+	PublishReplacement(previous, val)
 }
 
 func (v Value) hashSetInternal(key, val Value, bump bool) error {
@@ -301,8 +331,8 @@ func (v Value) hashSetInternal(key, val Value, bump bool) error {
 		hd.order = append(hd.order, keyValue)
 	}
 	hd.entries[name] = val
-	if len(hd.entries) > hd.entryCapacity {
-		hd.entryCapacity = len(hd.entries)
+	if len(hd.entries) > int(hd.entryCapacity) {
+		hd.entryCapacity = int32(len(hd.entries))
 	}
 	return nil
 }
@@ -425,7 +455,7 @@ func HashEntryCapacity(v Value) int {
 		return 0
 	}
 	if hd, ok := v.data.(*hashData); ok {
-		return max(hd.entryCapacity, len(hd.entries))
+		return max(int(hd.entryCapacity), len(hd.entries))
 	}
 	return 0
 }
@@ -484,16 +514,16 @@ func (v Value) ReserveHashCapacity(n int) {
 	if hd.entries == nil {
 		BumpMutationEpoch()
 		hd.entries = make(map[string]Value, n)
-		hd.entryCapacity = n
+		hd.entryCapacity = int32(n)
 		v.ReserveHashOrder(n)
 		return
 	}
-	if n > hd.entryCapacity {
+	if n > int(hd.entryCapacity) {
 		BumpMutationEpoch()
 		grown := make(map[string]Value, n)
 		maps.Copy(grown, hd.entries)
 		hd.entries = grown
-		hd.entryCapacity = n
+		hd.entryCapacity = int32(n)
 	}
 	v.ReserveHashOrder(n)
 }

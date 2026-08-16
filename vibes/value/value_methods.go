@@ -1084,33 +1084,20 @@ func (v Value) Identical(other Value) bool {
 			return math.IsNaN(v.Float()) && math.IsNaN(other.Float())
 		}
 		return v.Float() == other.Float()
-	case KindArray:
-		// A KindArray payload is a *arrayData wrapper, so identity is the
-		// wrapper's pointer rather than the current element backing. Identity
-		// must survive in-place mutators (push may reallocate the element slice)
-		// and must distinguish two independently constructed empty arrays:
-		// mutating one never affects the other, so they are distinct objects,
-		// exactly as two empty hashes are.
-		return v.data.(*arrayData) == other.data.(*arrayData)
-	case KindHash:
-		// A KindHash payload is a *hashData wrapper, so identity is the wrapper's
-		// pointer rather than its entry map. Two hashes that share an entry map but
-		// carry different default metadata are distinct objects, and each NewHash
-		// call allocates a fresh wrapper, so independently constructed hashes (even
-		// empty ones) are never identical.
-		return HashIdentity(v) == HashIdentity(other)
-	case KindObject:
-		// The tag is part of a bag's identity, not just of its rendering. Two
-		// wrappers over one entry map that carry different provenance are
-		// different objects: one is immutable and renders its string form,
-		// the other is an ordinary bag. Leaving them identical here would also
-		// contradict containment cloning, which gives them separate copies.
-		if v.ObjectTag() != other.ObjectTag() {
-			return false
-		}
-		left := v.data.(*objectData).entries
-		right := other.data.(*objectData).entries
-		return reflect.ValueOf(left).Pointer() == reflect.ValueOf(right).Pointer()
+	case KindArray, KindHash, KindObject:
+		// Collections are values (ADR-006 item 2), so they have no identity
+		// beyond their contents: two arrays with the same elements are the same
+		// value, and there is no operation that could tell them apart. Whether
+		// the runtime happens to have them naming one wrapper is a
+		// representation detail copy-on-write may change at any write, so
+		// reporting it would make equal? answer a question about storage rather
+		// than about the language. Deferring to value equality is the same
+		// choice floats and strings already make.
+		//
+		// A tagged attribute bag is not exempt: the tag governs rendering and
+		// mutation, not identity, and two bags with the same entries are the
+		// same value however each was built.
+		return v.Equal(other)
 	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance:
 		// These runtime kinds already compare by backing-pointer identity in
 		// Equal (via RuntimeEqualer), which is exactly the identity contract

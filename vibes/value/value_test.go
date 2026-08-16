@@ -1923,32 +1923,25 @@ func TestValueIdentical(t *testing.T) {
 		{"symbols", value.NewSymbol("a"), value.NewSymbol("a"), true},
 		{"nils", value.NewNil(), value.NewNil(), true},
 		{"ranges", value.NewRange(value.Range{Start: 1, End: 3}), value.NewRange(value.Range{Start: 1, End: 3}), true},
-		// Aliasing an array Value (the way `b = a` copies the struct, including
-		// its wrapper pointer) preserves identity, while two NewArray calls that
-		// merely share a backing slice allocate distinct wrappers and are
-		// distinct objects: an in-place mutator growing one never grows the other.
+		// Collections are values (ADR-006 item 2), so equal? asks about contents,
+		// not about which wrapper the runtime happened to hand out. Two arrays
+		// with the same elements are the same value however each was built, and
+		// copy-on-write may replace either wrapper at the next write, so
+		// reporting storage would answer a question the language does not ask.
 		{"arrays_shared_wrapper", sharedArray, sharedArray, true},
-		{"arrays_shared_backing_distinct", value.NewArray(sharedSlice), value.NewArray(sharedSlice), false},
-		{"arrays_distinct_backing", value.NewArray([]value.Value{value.NewInt(1)}), value.NewArray([]value.Value{value.NewInt(1)}), false},
-		// Each array carries its own wrapper, so independently constructed
-		// empties are distinct objects — pushing onto one must never affect the
-		// other — exactly as two empty hashes are distinct.
-		{"empty_arrays_distinct", value.NewArray([]value.Value{}), value.NewArray([]value.Value{}), false},
-		{"empty_array_with_spare_cap_distinct", value.NewArray(make([]value.Value, 0, 4)), value.NewArray([]value.Value{}), false},
+		{"arrays_shared_backing_identical", value.NewArray(sharedSlice), value.NewArray(sharedSlice), true},
+		{"arrays_equal_contents_identical", value.NewArray([]value.Value{value.NewInt(1)}), value.NewArray([]value.Value{value.NewInt(1)}), true},
+		{"empty_arrays_identical", value.NewArray([]value.Value{}), value.NewArray([]value.Value{}), true},
+		{"empty_array_with_spare_cap_identical", value.NewArray(make([]value.Value, 0, 4)), value.NewArray([]value.Value{}), true},
 		{"empty_array_identical_to_itself", sameEmptyArray, sameEmptyArray, true},
 		{"empty_array_vs_nonempty_distinct", value.NewArray([]value.Value{}), value.NewArray([]value.Value{value.NewInt(1)}), false},
-		// Aliasing a hash Value preserves its wrapper, so it is identical to itself.
 		{"hashes_shared_wrapper", sharedHash, sharedHash, true},
-		// Two NewHash calls allocate distinct wrappers even with a shared entry map.
-		{"hashes_shared_entry_map_distinct", value.NewHash(sharedMap), value.NewHash(sharedMap), false},
-		{"hashes_distinct_backing", value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), false},
-		// Each hash carries its own wrapper, so empties are distinct unlike empty slices.
-		{"empty_hashes_distinct_backing", value.NewHash(map[string]value.Value{}), value.NewHash(map[string]value.Value{}), false},
-		// Nil-backed hashes built the way the JSON parser builds {} stay distinct
-		// objects because each NewHash call allocates a fresh wrapper.
-		{"nil_backed_hashes_distinct", value.NewHash(nil), value.NewHash(nil), false},
-		{"nil_backed_objects_distinct", value.NewObject(nil), value.NewObject(nil), false},
-		{"empty_hash_vs_nil_backed_hash_distinct", value.NewHash(map[string]value.Value{}), value.NewHash(nil), false},
+		{"hashes_shared_entry_map_identical", value.NewHash(sharedMap), value.NewHash(sharedMap), true},
+		{"hashes_equal_contents_identical", value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), true},
+		{"empty_hashes_identical", value.NewHash(map[string]value.Value{}), value.NewHash(map[string]value.Value{}), true},
+		{"nil_backed_hashes_identical", value.NewHash(nil), value.NewHash(nil), true},
+		{"nil_backed_objects_identical", value.NewObject(nil), value.NewObject(nil), true},
+		{"empty_hash_vs_nil_backed_hash_identical", value.NewHash(map[string]value.Value{}), value.NewHash(nil), true},
 		{"nil_backed_hash_identical_to_itself", sameEmptyHash, sameEmptyHash, true},
 	}
 

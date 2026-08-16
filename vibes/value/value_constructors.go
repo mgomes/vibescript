@@ -28,11 +28,14 @@ func NewFloat(f float64) Value { return Value{kind: KindFloat, scalar: math.Floa
 func NewString(s string) Value { return Value{kind: KindString, data: s} }
 
 // arrayData backs a KindArray value. Boxing the element slice behind a pointer
-// gives every array a stable object identity and lets Ruby-style mutators
-// (push, pop, clear, map!, ...) grow or shrink the array in place: every Value
-// copy that aliases the same wrapper observes the mutation, matching Ruby's
-// reference semantics for collections. (KindHash gets the same sharing from its
-// *hashData wrapper.)
+// lets the runtime's mutators (push, pop, clear, ...) grow or shrink an array in
+// place while every Value that still names this wrapper keeps describing it.
+//
+// Arrays are values, so naming one wrapper from two places is a representation
+// detail, not language-visible sharing: a mutator may only write through a
+// wrapper it can prove is named from at most one durable slot, and copies the
+// wrapper first when it cannot (see refs). Two wrappers therefore never share an
+// element backing, which is what NewArray's ownership rule already required.
 //
 // head is how many element slots sit between the start of the slice the wrapper
 // was first built over and the start of elems. A shrink that takes elements off
@@ -47,10 +50,14 @@ func NewString(s string) Value { return Value{kind: KindString, data: s} }
 // than a fact: too large means one copy that was not needed, and too small --
 // which is what a wrapper built over a slice that was already a window of
 // something larger starts out with -- means a prefix the host put there stays
-// held, exactly as it would have without any of this.
+// held, exactly as it would have without any of this. It is an int32 so that it
+// and refs share one word and the wrapper stays the size it was before refs
+// existed; a head beyond two billion slots is tens of gigabytes of elements,
+// far past any quota, and saturating there only forgoes a copy heuristic.
 type arrayData struct {
 	elems []Value
-	head  int
+	head  int32
+	refs  uint32
 }
 
 // ArrayDataBytes is the heap footprint of the arrayData wrapper every KindArray
@@ -74,7 +81,16 @@ const ArrayDataBytes = int(unsafe.Sizeof(arrayData{}))
 // storage would find elements it still shows blanked out, and a growing push
 // through one of them reallocates without the other seeing it. Build a second
 // array over the same contents with a copy of the slice, not the slice.
-func NewArray(a []Value) Value { return Value{kind: KindArray, data: &arrayData{elems: a}} }
+//
+// Every collection among the elements is published: an element slot now names
+// it as well as wherever the caller got it from, so a later write through
+// either must copy first. This is the one place array construction can see all
+// of the elements at once, which is why the publish lives here rather than at
+// the hundred builders that call it.
+func NewArray(a []Value) Value {
+	PublishRefElems(a)
+	return Value{kind: KindArray, data: &arrayData{elems: a}}
+}
 
 // SetArrayElems replaces the element slice of an existing array wrapper in
 // place. It is the primitive behind the runtime's Ruby-style mutators: because
@@ -118,7 +134,7 @@ func (v Value) SetArrayWindow(elems []Value, head int) {
 	if ad, ok := v.data.(*arrayData); ok {
 		BumpMutationEpoch()
 		ad.elems = elems
-		ad.head = head
+		ad.head = clampWindowHead(head)
 	}
 }
 
@@ -132,9 +148,22 @@ func ArrayWindowHead(v Value) int {
 		return 0
 	}
 	if ad, ok := v.data.(*arrayData); ok {
-		return ad.head
+		return int(ad.head)
 	}
 	return 0
+}
+
+// clampWindowHead saturates a window head into the int32 the wrapper stores it
+// in. Saturating only forgoes the copy heuristic head feeds, never correctness;
+// see arrayData for why the field is narrow.
+func clampWindowHead(head int) int32 {
+	if head > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if head < 0 {
+		return 0
+	}
+	return int32(head)
 }
 
 // sameElemStart reports whether two element slices begin at the same address,
@@ -206,7 +235,8 @@ func ArrayIdentity(v Value) uintptr {
 // sorted, as it always has.
 type hashData struct {
 	entries       map[string]Value
-	entryCapacity int
+	entryCapacity int32
+	refs          uint32
 	order         []Value
 	// orderUntrusted is set when Hash() hands out the live map, or when
 	// NewHash retains a non-empty caller map. A host can then delete a
@@ -232,7 +262,8 @@ const HashDataBytes = int(unsafe.Sizeof(hashData{}))
 // retained, not copied: if the caller keeps it, later mutation is treated
 // like Hash() exposure and the recorded order stays untrusted.
 func NewHash(h map[string]Value) Value {
-	hd := &hashData{entries: h, entryCapacity: len(h)}
+	PublishRefEntries(h)
+	hd := &hashData{entries: h, entryCapacity: int32(len(h))}
 	if len(h) > 0 {
 		hd.order = sortedMapKeysInto(h, nil)
 		hd.orderUntrusted.Store(true)
@@ -265,9 +296,10 @@ func NewHashWithOrder(entries map[string]Value, order []Value) Value {
 // it, and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
 func NewHashWithTrustedOrder(entries map[string]Value, order []Value) Value {
+	PublishRefEntries(entries)
 	return Value{kind: KindHash, data: &hashData{
 		entries:       entries,
-		entryCapacity: len(entries),
+		entryCapacity: int32(len(entries)),
 		order:         order,
 	}}
 }
@@ -293,7 +325,7 @@ func NewHashWithCapacity(capacity int) Value {
 	}
 	return Value{kind: KindHash, data: &hashData{
 		entries:       make(map[string]Value, capacity),
-		entryCapacity: capacity,
+		entryCapacity: int32(capacity),
 		order:         order,
 	}}
 }
@@ -358,6 +390,7 @@ func NewObject(attrs map[string]Value) Value {
 	if attrs == nil {
 		attrs = map[string]Value{}
 	}
+	PublishRefEntries(attrs)
 	return Value{kind: KindObject, data: &objectData{entries: attrs}}
 }
 
@@ -374,6 +407,7 @@ func NewObject(attrs map[string]Value) Value {
 // who mutates the map afterwards.
 type objectData struct {
 	entries    map[string]Value
+	refs       uint32
 	tag        ObjectTag
 	stringForm string
 }
@@ -413,6 +447,7 @@ func NewTaggedObject(attrs map[string]Value, tag ObjectTag, stringForm string) V
 	if attrs == nil {
 		attrs = map[string]Value{}
 	}
+	PublishRefEntries(attrs)
 	return Value{kind: KindObject, data: &objectData{entries: attrs, tag: tag, stringForm: stringForm}}
 }
 
