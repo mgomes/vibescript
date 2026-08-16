@@ -1,7 +1,5 @@
 package runtime
 
-import "slices"
-
 import "fmt"
 
 // Universal object introspection predicates, available on every value kind the
@@ -104,22 +102,10 @@ func newClassPredicateBuiltin(name string) Value {
 		if receiver.Kind() != KindInstance {
 			return NewBool(false), nil
 		}
-		cl := valueInstance(receiver).Class
-		if cl == want {
-			return NewBool(true), nil
-		}
-		if want.IsModule && name != instanceOfMemberName {
-			return NewBool(classIncludesModule(cl, want.Name)), nil
-		}
-		return NewBool(false), nil
+		// A module names a namespace, not a type: no instance belongs to one,
+		// so every predicate answers on the instance's own class alone.
+		return NewBool(valueInstance(receiver).Class == want), nil
 	})
-}
-
-// classIncludesModule reports whether cl includes the module with the given
-// qualified name. Names are compared rather than definition pointers because
-// each call works on its own clones of both definitions.
-func classIncludesModule(cl *ClassDef, moduleName string) bool {
-	return slices.Contains(cl.IncludedModules, moduleName)
 }
 
 // methodNameArg extracts a method name from a respond_to? argument. Ruby accepts

@@ -203,7 +203,8 @@ func signatureNormalize(exec *Execution, val Value, ty *TypeExpr) (Value, error)
 
 // signatureInstanceMatchesNamed reports whether val is an instance of the
 // class the named type resolves to, comparing definitions the clone-safe way
-// (same name, same owner script) and honoring module contracts by include.
+// (same name, same owner script). A module names a namespace, not a type, so
+// no instance matches one.
 func signatureInstanceMatchesNamed(exec *Execution, val Value, ty *TypeExpr) bool {
 	if ty == nil || ty.Kind != TypeEnum || val.Kind() != KindInstance {
 		return false
@@ -217,7 +218,7 @@ func signatureInstanceMatchesNamed(exec *Execution, val Value, ty *TypeExpr) boo
 		return false
 	}
 	if match.class.IsModule {
-		return classIncludesModule(inst.Class, match.class.Name)
+		return false
 	}
 	if inst.Class.Name != match.class.Name {
 		return false
