@@ -58,36 +58,6 @@ func (c argumentCancelProbeCapability) CapabilityContracts() map[string]Capabili
 	}
 }
 
-func TestTaskResultCloneDoesNotMaskCancellation(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	script := compileScriptDefault(t, `def return_callable(_item)
-  cancel_now()
-  leak
-end
-
-def run()
-  Tasks.map([1], max: 1, with: :return_callable)
-end`)
-	cancelBuiltin := NewBuiltin("cancel_now", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
-		cancel()
-		return NewNil(), nil
-	})
-	leakBuiltin := NewBuiltin("leak", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
-		return NewNil(), nil
-	})
-	_, err := script.Call(ctx, "run", nil, CallOptions{
-		Globals: map[string]Value{
-			"cancel_now": cancelBuiltin,
-			"leak":       leakBuiltin,
-		},
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Script.Call(canceled during task result clone) error = %v, want context.Canceled", err)
-	}
-}
-
 func TestScriptCallChecksCanceledContextBeforeCapabilityBindError(t *testing.T) {
 	t.Parallel()
 

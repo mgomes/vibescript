@@ -27,10 +27,7 @@ import (
 // the memo may hold. Anything else falls back.
 func (exec *Execution) appendArrayCharged(left, right Value) (handled bool, err error) {
 	if exec.memoryQuota <= 0 || exec.baseWalkOpen || exec.builtinDepth > 0 ||
-		len(exec.activeTaskGroups) > 0 || exec.blockRegionActive || baseWalkCacheDisabled.Load() {
-		return false, nil
-	}
-	if taskLazyGlobalsFromContext(exec.Context()) != nil {
+		exec.blockRegionActive || baseWalkCacheDisabled.Load() {
 		return false, nil
 	}
 	c := exec.baseWalkCache
@@ -109,13 +106,10 @@ func (exec *Execution) appendArrayCharged(left, right Value) (handled bool, err 
 // would decline.
 func (exec *Execution) hashStoreCharged(target, key, val Value) (handled bool, err error) {
 	if exec.memoryQuota <= 0 || exec.baseWalkOpen || exec.builtinDepth > 0 ||
-		len(exec.activeTaskGroups) > 0 || exec.blockRegionActive || baseWalkCacheDisabled.Load() {
+		exec.blockRegionActive || baseWalkCacheDisabled.Load() {
 		return false, nil
 	}
 	if target.Kind() != KindHash || !hashHasTypedEntries(target) {
-		return false, nil
-	}
-	if taskLazyGlobalsFromContext(exec.Context()) != nil {
 		return false, nil
 	}
 	c := exec.baseWalkCache
@@ -220,7 +214,7 @@ func (exec *Execution) verifyChargedCommit(op string) {
 	}
 	c := exec.baseWalkCache
 	verify := newMemoryEstimator()
-	if reference := exec.estimateGraphBase(verify, nil); reference != c.graphBytes {
+	if reference := exec.estimateGraphBase(verify); reference != c.graphBytes {
 		panic(fmt.Sprintf("charged %s diverged: memo holds %d bytes, reference walk %d", op, c.graphBytes, reference))
 	}
 }

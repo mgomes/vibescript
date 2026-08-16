@@ -89,9 +89,9 @@ func deepCloneValue(val Value) Value {
 	return deepCloneValueWithState(val, &state)
 }
 
-// deepCloneValueForContainment is the runtime copying a value to isolate it --
-// into a task, across a boundary. The copy stands for the same value, so a
-// recognized provenance tag survives.
+// deepCloneValueForContainment is the runtime copying a value to isolate it
+// across a boundary. The copy stands for the same value, so a recognized
+// provenance tag survives.
 func deepCloneValueForContainment(val Value) Value {
 	state := deepCloneState{preserveTags: true}
 	return deepCloneValueWithState(val, &state)

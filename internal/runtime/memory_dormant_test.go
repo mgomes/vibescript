@@ -24,7 +24,7 @@ func pushFibShapedFrame(exec *Execution, n int64) *Env {
 // against the reference), and returns the total.
 func estimateGraphBaseChecked(exec *Execution) int {
 	exec.memoryEst.reset()
-	return exec.estimateGraphBaseFast(&exec.memoryEst, nil)
+	return exec.estimateGraphBaseFast(&exec.memoryEst)
 }
 
 func TestReconcileDormantCommitsScalarFrames(t *testing.T) {

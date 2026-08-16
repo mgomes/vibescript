@@ -359,10 +359,10 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// swallowed, replaced, aggregated, copied, or tampered — is replaced
 		// by an error rebuilt entirely from execution-held state: the class
 		// and message from the latch, the location data from the snapshot
-		// wrapError captured before any adapter could hold a pointer.
-		// Nothing from the propagated object is trusted.
+		// wrapError captured before any adapter could hold a pointer, which no
+		// adapter ever held. Nothing from the propagated object is trusted.
 		if exec.exhausted != nil {
-			if snapshot := exec.exhaustionDiagnostics(); snapshot != nil {
+			if snapshot := exec.exhaustedWrapped; snapshot != nil {
 				err = &RuntimeError{
 					Type:      classifyRuntimeErrorType(exec.exhausted),
 					Message:   canonicalExhaustionMessage(exec.exhausted),
@@ -1242,45 +1242,44 @@ func (r *callFunctionRebinder) rebindKeywords(kwargs map[string]Value) map[strin
 	return out
 }
 
-// hostCapabilityContracts publishes what this level holds and then asks the
-// adapter what contracts it declares.
+// hostCapabilityContracts refuses an over-quota call and then asks the adapter
+// what contracts it declares.
 //
-// The publication is in here rather than at the call site, and that placement is
-// the point. A publication at a call site can have code inserted after it, and
-// the rule is not "publish somewhere above the call" -- it is that nothing the
-// level has allocated may be unpublished when host code runs. Publishing once
-// per adapter left the contracts this call returns retained and unpublished
-// while the bind after it blocked.
+// The check is in here rather than at the call site, and that placement is the
+// point. A check at a call site can have code inserted after it; the rule is not
+// "check somewhere above the call" but that nothing this call has allocated is
+// unaccounted when host code runs. Checking once per adapter left the contracts
+// the previous iteration returned uncharged while the next adapter ran.
 //
 // Those contracts are host data, not program text. CapabilityContractProvider
-// bounds neither how many entries the map has nor how long its keys are, and the
-// estimator walks both -- capabilityContractsByName is charged per entry and per
-// key length. A host that builds the map when asked is charged whatever it built.
+// bounds neither how many entries the map has nor how long its keys are, and
+// capabilityContractsByName is charged per entry and per key length, so a host
+// that builds the map when asked is charged whatever it built.
 //
 // An adapter that declares no contracts costs no walk: no host code runs, so
-// there is nothing to publish ahead of.
+// there is nothing to check ahead of.
 func hostCapabilityContracts(exec *Execution, adapter CapabilityAdapter) (map[string]CapabilityMethodContract, error) {
 	provider, ok := adapter.(CapabilityContractProvider)
 	if !ok {
 		return nil, nil
 	}
-	if err := exec.publishBeforeHostCode(); err != nil {
+	if err := exec.checkMemory(); err != nil {
 		return nil, err
 	}
 	return provider.CapabilityContracts(), nil
 }
 
-// bindHostCapability publishes what this level holds -- including whatever the
+// bindHostCapability refuses an over-quota call -- including whatever the
 // contract collection before it retained -- and then hands control to the
 // adapter.
 //
 // Two errors, because a caller has to treat them differently and conflating them
-// misreports the cause. refused is this level being refused before the adapter
+// misreports the cause. refused is this call being refused before the adapter
 // ran, and travels as it stands: labeling it a capability failure would send a
 // host to debug an adapter that never executed. bound is the adapter's own
 // failure, which the caller labels in its own terms.
 func bindHostCapability(exec *Execution, adapter CapabilityAdapter, binding CapabilityBinding) (globals map[string]Value, bound, refused error) {
-	if err := exec.publishBeforeHostCode(); err != nil {
+	if err := exec.checkMemory(); err != nil {
 		return nil, nil, err
 	}
 	globals, bound = adapter.Bind(binding)
@@ -1307,17 +1306,14 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 		if adapter == nil {
 			continue
 		}
-		// Both host calls below go through a helper that publishes immediately
+		// Both host calls below go through a helper that checks immediately
 		// before invoking, and neither is invoked here directly. That pairing is
-		// the fix rather than the placement of any one publication.
+		// the rule rather than the placement of any one check.
 		//
-		// Publishing once at the top of this loop body was the previous shape,
-		// and it was wrong for a reason that generalises: a publication merely
-		// sitting somewhere above a host call says nothing about what was
-		// allocated in between. Collecting an adapter's contracts retains
-		// host-supplied data on the execution -- capabilityContractsByName and
-		// this scope, both of which the estimator walks -- and the bind that
-		// follows can then block with none of it published.
+		// A check merely sitting somewhere above a host call says nothing about
+		// what was allocated in between. Collecting an adapter's contracts
+		// retains host-supplied data on the execution, and the bind that follows
+		// would otherwise run with none of it charged.
 		scope := &capabilityContractScope{
 			contracts:     map[string]CapabilityMethodContract{},
 			knownBuiltins: make(map[*Builtin]struct{}),
@@ -1542,68 +1538,7 @@ func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctio
 	return callEnv, nil
 }
 
-type recursionBudgetKey struct{}
-
-// contextWithRecursionBudget publishes the call depth a nested Execution may
-// still use, for a call that continues its caller's Go stack instead of
-// starting one of its own.
-//
-// Zero means the callee starts fresh, and a call that does get its own
-// goroutine has to publish that rather than say nothing: the context it derives
-// from can carry a budget belonging to a stack it is not running on.
-func contextWithRecursionBudget(ctx context.Context, remaining int) context.Context {
-	if remaining == recursionBudgetFromContext(ctx) {
-		return ctx
-	}
-	return context.WithValue(ctx, recursionBudgetKey{}, remaining)
-}
-
-func recursionBudgetFromContext(ctx context.Context) int {
-	if ctx == nil {
-		return 0
-	}
-	remaining, _ := ctx.Value(recursionBudgetKey{}).(int)
-	return remaining
-}
-
-// recursionCapForCall reports the call-depth ceiling one execution runs under.
-//
-// The limit exists to bound one host stack, so a call tree that spreads itself
-// over nested Executions on that same stack has to share it. A task job run
-// inline continues its submitter's goroutine, and took a fresh cap: the limit
-// then bounded each level rather than the stack, which is the same defect as a
-// per-execution sleep total resetting for every task worker (#29).
-//
-// What this buys is that the cap carries rather than resets: a level that
-// descended deeply hands on what is left of it, so the usual shape -- a scope
-// opened and awaited at one depth, as Tasks.map does -- costs one limit across
-// the whole chain. It is a snapshot taken where the scope opens, not a pool the
-// levels debit, so it is not a bound on its own: a Tasks.run block that
-// descends after opening its scope is measured before that descent, and a level
-// holding one frame hands on a budget that has barely shrunk. maxInlineTaskDepth
-// is what bounds the number of levels; this bounds what each of them may spend.
-//
-// The engine's own limit still applies when it is tighter, so an adapter
-// re-entering a script on a stricter engine cannot be lent an allowance that
-// engine's configuration refuses.
-func recursionCapForCall(ctx context.Context, limit int) int {
-	inherited := recursionBudgetFromContext(ctx)
-	if inherited < 1 {
-		return limit
-	}
-	if limit > 0 && limit < inherited {
-		return limit
-	}
-	return inherited
-}
-
 func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts CallOptions) *Execution {
-	// The sleeping budget is established here rather than at the first sleep,
-	// so that every task group formed later inherits it through the context it
-	// captures. Created at the first sleep it would arrive too late: a group is
-	// built before its workers run, so each worker would start its own budget
-	// and the bound would reset per job (#29).
-	ctx, sleeping := sleepBudgetForCall(ctx, script.engine.config.MaxSleepDuration)
 	childCallOptions := CallOptions{
 		Globals:      opts.Globals,
 		Capabilities: opts.Capabilities,
@@ -1615,49 +1550,11 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 		ctx:           ctx,
 		quota:         script.engine.config.StepQuota,
 		memoryQuota:   script.engine.config.MemoryQuotaBytes,
-		recursionCap:  recursionCapForCall(ctx, script.engine.config.RecursionLimit),
+		recursionCap:  script.engine.config.RecursionLimit,
 		root:          root,
 		strictEffects: script.engine.config.StrictEffects,
 		allowRequire:  opts.AllowRequire,
 		callOptions:   childCallOptions,
-		sleepBudget:   sleeping,
-	}
-	// Linked here to whatever node the incoming context carries. This call does
-	// NOT publish its own node: only newTaskGroup does, onto the context a task
-	// group captures. So the ceiling reaches nested tasks and does not reach a
-	// script re-entered through a capability adapter, which gets a fresh
-	// allowance -- what it gets without this mechanism at all. That surface is
-	// deliberately out of scope and has its own follow-up; a comment here
-	// implying otherwise would claim a known-open path is covered.
-	if exec.memChainNode.initForCall(ctx, script.engine.config.MemoryQuotaBytes) {
-		exec.memChain = &exec.memChainNode
-		// An engine with no quota of its own adopts the ceiling it inherited as
-		// its own. Every memory check guards on memoryQuota before doing
-		// anything -- there are some sixty such guards -- so without this a
-		// callee that inherited a bounded chain returned early from all of them
-		// and never published to or enforced the node it was linked into.
-		//
-		// Reaching this needs a callee whose engine differs from its caller's,
-		// which today means a host passing a context that already carries a
-		// chain; the other route, capability re-entry, is out of scope.
-		if exec.memoryQuota <= 0 {
-			exec.memoryQuota = int(exec.memChainNode.limit)
-		}
-	}
-	// The node has now been read out of the context, and it goes no further.
-	// Everything this call hands outward derives from exec.ctx, so a node left
-	// reachable there is inherited by anything the host re-enters with it.
-	//
-	// Gated on having actually inherited one: a chain root's context never
-	// carried a node, so wrapping it would cost an allocation to hide something
-	// that is not there. The field says exactly that, without a second walk of
-	// the context to ask.
-	//
-	// Underneath the task-globals wrapper by construction, since that is applied
-	// after the execution is built (#1203) -- the ordering this design already
-	// depends on, now load-bearing for a second reason.
-	if exec.memChain != nil && exec.memChain.parent != nil {
-		exec.ctx = contextWithoutMemoryChain(exec.ctx)
 	}
 	// The module stacks stay nil: most calls never require a module,
 	// and append allocates them on first use.
@@ -3635,11 +3532,11 @@ func callBuiltinMemberDirect(exec *Execution, receiver Value, property string, a
 
 // hostGlobalLazyBinding defers rebinding one host-provided global until the
 // script first reads it. Binding a global eagerly deep-copies the host value
-// into the call root even when the parent function never touches it (it may
-// exist only for tasks to inherit), so composites bind lazily and the copy
-// happens on first read. The environment stores the materialized clone back
-// into the binding, so the copy runs at most once per call and mutation
-// visibility across repeated reads matches the eager behavior exactly.
+// into the call root even when the function never touches it, so composites
+// bind lazily and the copy happens on first read. The environment stores the
+// materialized clone back into the binding, so the copy runs at most once per
+// call and mutation visibility across repeated reads matches the eager
+// behavior exactly.
 // Strict-effects validation stays eager in bindGlobalsForCallLazy, so a
 // global that would be rejected at bind time is still rejected at bind time.
 type hostGlobalLazyBinding struct {
@@ -3654,10 +3551,20 @@ func (binding hostGlobalLazyBinding) materialize() Value {
 // hostGlobalBindsEagerly reports whether a host global binds its value at call
 // entry. Immutable scalars need no copy, so deferring them buys nothing and
 // would cost a lazy-materialization hop on every first read; enums bind
-// eagerly so they resolve as constants exactly like the per-call enum clones,
-// mirroring the eager-enum rule in bindLazyTaskGlobalsForCall.
+// eagerly so they resolve as constants exactly like the per-call enum clones.
 func hostGlobalBindsEagerly(val Value) bool {
-	return taskImmutableDataValue(val) || val.Kind() == KindEnum
+	return immutableDataValue(val) || val.Kind() == KindEnum
+}
+
+// immutableDataValue reports whether a value's data cannot be mutated through
+// the value, so a binding can share it instead of copying it.
+func immutableDataValue(val Value) bool {
+	switch val.Kind() {
+	case KindNil, KindBool, KindInt, KindFloat, KindString, KindMoney, KindDuration, KindTime, KindSymbol, KindRange, KindRegex:
+		return true
+	default:
+		return false
+	}
 }
 
 // globalsBindLazily reports whether any global would take a lazy binding, in
@@ -3674,7 +3581,7 @@ func globalsBindLazily(globals map[string]Value) bool {
 // bindGlobalsForCall eagerly binds globals into the call root. The plain
 // Script.Call path uses it only when every global binds eagerly (see
 // globalsBindLazily); calls carrying composite globals are routed through
-// callWithLazyTaskGlobals, whose bindGlobalsForCallLazy defers their copies.
+// callWithLazyGlobals, whose bindGlobalsForCallLazy defers their copies.
 // Keeping the lazy-binding store out of this function keeps the rebinder
 // from escaping to the heap on the plain Call hot path.
 func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebinder, globals map[string]Value) error {
@@ -3725,31 +3632,6 @@ func bindGlobalsForCallLazy(exec *Execution, root *Env, rebinder *callFunctionRe
 		rebinder.inboundRegister = true
 	}
 
-	return nil
-}
-
-func bindLazyTaskGlobalsForCall(exec *Execution, root *Env, globals *taskLazyGlobals, rebinder *callFunctionRebinder) error {
-	if err := exec.checkContext(); err != nil {
-		return err
-	}
-
-	if globals == nil || len(globals.values) == 0 {
-		return nil
-	}
-	if exec.strictEffects {
-		if err := globals.ensureStrictValidated(); err != nil {
-			return err
-		}
-	}
-	globals.root = root
-	globals.rebinder = rebinder
-	for name, val := range globals.values {
-		if val.Kind() == KindEnum {
-			root.Define(name, rebinder.rebindValue(val))
-			continue
-		}
-		root.defineLazy(name, taskLazyGlobalBinding{globals: globals, name: name})
-	}
 	return nil
 }
 

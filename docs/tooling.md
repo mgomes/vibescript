@@ -42,18 +42,17 @@ Useful flags:
 
 ### Quota profiles
 
-Every execution runs under four quotas — a **step** quota (aborts runaway
+Every execution runs under three quotas — a **step** quota (aborts runaway
 loops), a **memory** quota (bounds retained heap, enforced by the reachable-graph
-accounting), a **recursion** limit (bounds call depth), and a **max sleep**
-budget (bounds the wall-clock time one run may spend in `sleep`). The CLI selects
-a coherent bundle of all four with `-profile`:
+accounting), and a **recursion** limit (bounds call depth). The CLI selects a
+coherent bundle of all three with `-profile`:
 
-| Profile  | Step quota    | Memory quota | Recursion | Max sleep  | Intended use                                  |
-| -------- | ------------- | ------------ | --------- | ---------- | --------------------------------------------- |
-| `low`    | 1,000,000     | 16 MiB       | 256       | 1 minute   | tight, untrusted embedded budget              |
-| `medium` | 20,000,000    | 128 MiB      | 1,000     | 10 minutes | moderate embedded budget                      |
-| `high`   | 200,000,000   | 512 MiB      | 4,000     | 1 hour     | generous embedded budget                      |
-| `xhigh`  | unlimited     | unlimited    | 10,000    | unlimited  | run like a normal interpreter (CLI default)   |
+| Profile  | Step quota    | Memory quota | Recursion | Intended use                                |
+| -------- | ------------- | ------------ | --------- | ------------------------------------------- |
+| `low`    | 1,000,000     | 16 MiB       | 256       | tight, untrusted embedded budget            |
+| `medium` | 20,000,000    | 128 MiB      | 1,000     | moderate embedded budget                    |
+| `high`   | 200,000,000   | 512 MiB      | 4,000     | generous embedded budget                    |
+| `xhigh`  | unlimited     | unlimited    | 10,000    | run like a normal interpreter (CLI default) |
 
 `vibes run`, `vibes test`, and `vibes repl` default to **`xhigh`**: the CLI
 runs your own scripts on your own machine, so it is not a sandbox — steps and
@@ -62,8 +61,7 @@ recursion. An unlimited memory quota skips the accounting walk entirely, so
 `xhigh` also avoids the sandbox's per-check cost.
 
 Layer `-step-quota`, `-memory-quota`, or `-recursion-limit` on top of a profile
-to override just that quota; unset overrides keep the profile's value. The
-sleeping budget has no override flag, so it always comes from the profile. To
+to override just that quota; unset overrides keep the profile's value. To
 measure or reproduce sandbox behaviour, for example, run under `xhigh` but with
 a real memory cap:
 

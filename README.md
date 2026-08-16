@@ -163,7 +163,6 @@ Representative `.vibe` programs are grouped under `examples/`:
 - `examples/time/` – Time creation, formatting (Go layouts), and duration/time math.
 - `examples/errors/` – patterns that rely on `assert` for validation.
 - `examples/capabilities/` – samples that touch `ctx`, `db`, `events`, and other declared capabilities.
-- `examples/tasks/` – structured concurrency with `Tasks.map`, `Tasks.run`, task handles, and explicit barriers.
 - `examples/background/` – jobs and events workflows using typed capability adapters.
 - `examples/policies/` – authorization helpers consulted by manifest policies.
 
@@ -184,7 +183,6 @@ Long-form guides live in `docs/`:
 - `docs/architecture.md` – internal runtime/parser/module architecture notes for maintainers.
 - `docs/integration.md` – integrating the interpreter in Go applications.
 - `docs/host_cookbook.md` – production integration patterns for embedding hosts.
-- `docs/tasks.md` – structured concurrency with `Tasks.map`, `Tasks.run`, task handles, and host fanout settings.
 - `docs/starter_templates.md` – starter scaffolds for common embedding scenarios.
 - `docs/durations.md` – duration literals, conversions, and arithmetic.
 - `docs/time.md` – Time creation, formatting with Go layouts, accessors, and time/duration math.
@@ -232,14 +230,12 @@ Vibescript runs inside a constrained interpreter to help host applications enfor
 - **Step quota:** Every `Execution` tracks steps (expressions/statements). `Config.StepQuota` caps how much code can run before aborting (default 1M). Useful to prevent unbounded loops; bump for heavy workloads.
 - **Recursion limit:** `Config.RecursionLimit` bounds call depth (default 256) to avoid stack blowups from runaway recursion.
 - **Memory quota:** `Config.MemoryQuotaBytes` limits interpreter allocations (default 16 MiB). Exceeding the limit raises a runtime error instead of consuming host memory. An unlimited quota (`vibes.Unlimited`) skips the reachable-graph accounting entirely.
-- **Max sleep:** `Config.MaxSleepDuration` bounds the wall-clock time one `Call` may spend in `sleep` (default 1 minute). The step and memory quotas do not advance while a worker is parked in a timer, so without this a sandboxed script could hold a host goroutine indefinitely. The budget covers the whole call tree, so concurrent tasks draw on the same allowance rather than each getting their own.
-- **Quota profiles:** For coherent step/memory/recursion/sleep bundles, use the named profiles instead of setting each field by hand — `vibes.ProfileLow` (1M steps / 16 MiB / 256 / 1 minute), `ProfileMedium` (20M / 128 MiB / 1,000 / 10 minutes), `ProfileHigh` (200M / 512 MiB / 4,000 / 1 hour), and `ProfileXHigh` (unlimited / unlimited / 10,000 / unlimited). Apply one with `ProfileHigh.ApplyTo(&cfg)`, or look one up by name with `vibes.QuotaProfileByName`. `ApplyTo` writes every quota field, so layer per-quota overrides after applying a profile rather than before. The `vibes` CLI selects them via `-profile` and defaults to `xhigh` (it runs your own scripts, so it is not a sandbox); see [docs/tooling.md](docs/tooling.md#quota-profiles). A zero-value `Config` (no quotas set) resolves to the `low` budget, so `low` reproduces the default embedding sandbox.
+- **Quota profiles:** For coherent step/memory/recursion bundles, use the named profiles instead of setting each field by hand — `vibes.ProfileLow` (1M steps / 16 MiB / 256), `ProfileMedium` (20M / 128 MiB / 1,000), `ProfileHigh` (200M / 512 MiB / 4,000), and `ProfileXHigh` (unlimited / unlimited / 10,000). Apply one with `ProfileHigh.ApplyTo(&cfg)`, or look one up by name with `vibes.QuotaProfileByName`. `ApplyTo` writes every quota field, so layer per-quota overrides after applying a profile rather than before. The `vibes` CLI selects them via `-profile` and defaults to `xhigh` (it runs your own scripts, so it is not a sandbox); see [docs/tooling.md](docs/tooling.md#quota-profiles). A zero-value `Config` (no quotas set) resolves to the `low` budget, so `low` reproduces the default embedding sandbox.
 - **Effects control:** `Config.StrictEffects` can be set to require explicit capabilities for side-effecting operations (e.g., modules or host adapters), letting embedders keep the sandbox tight.
 - **Module search paths:** `Config.ModulePaths` controls where `require` may load modules from. Only approved directories are searched; invalid paths return an error from `NewEngine`.
 - **Stdlib input guards:** JSON, Regex, and format helpers enforce fixed caps — 1 MiB for `JSON.parse` input, `JSON.stringify` output, and format output, 10,000 nested JSON containers, 1 MiB for regex text/replacements/output, 16 KiB for regex patterns, and 256 MiB for `scan`'s worst-case match-index table. The canonical values live in `internal/runtime/limits.go`; see [docs/stdlib_core_utilities.md](docs/stdlib_core_utilities.md) for details.
 - **Result rendering guard:** The runtime call returns before its result is formatted, so result rendering is outside the step and memory quotas. `Value.StringBounded` renders a value while stopping at a caller-supplied byte budget instead of materializing an unbounded string for a large composite. The `vibes run` CLI uses it with a 1 MiB cap and fails with `result rendering exceeds …` rather than printing a truncated value; see [docs/tooling.md](docs/tooling.md#result-rendering-limit).
 - **Capability gating:** Host code injects safe adapters via `CallOptions.Capabilities`, so scripts can only touch what you expose. Globals can be seeded via `CallOptions.Globals` for per-call isolation.
-- **Task concurrency:** `Config.DefaultTaskConcurrency` controls the default `Tasks` fanout (default 4, or the host cap when lower), and `Config.MaxTaskConcurrency` caps script-provided `max:` values (default 64). Requests above the cap raise a runtime error.
 
 Example with explicit limits:
 
@@ -249,8 +245,6 @@ engine, err := vibes.NewEngine(vibes.Config{
     MemoryQuotaBytes:       256 << 10, // 256 KiB heap cap inside the interpreter
     RecursionLimit:         32,       // shallow recursion allowed
     StrictEffects:          true,     // require capabilities for side effects
-    DefaultTaskConcurrency: 4,        // default Tasks fanout
-    MaxTaskConcurrency:     16,       // reject script max: values above this
     ModulePaths:            []string{"/opt/vibes/modules"},
 })
 if err != nil {
@@ -263,25 +257,5 @@ result, err := script.Call(ctx, "run", nil, vibes.CallOptions{
     Globals:      map[string]value.Value{"tenant": value.NewString("acme")},
 })
 ```
-
-Scripts can use `Tasks` for bounded structured concurrency:
-
-```vibe
-def score_user(user)
-  analytics.score(user)
-end
-
-def run(users)
-  scores = Tasks.map(users, with: :score_user)
-
-  Tasks.run(max: 2) do |tasks|
-    tasks.spawn(:publish_scores, scores)
-  end
-
-  scores
-end
-```
-
-`Tasks.run` waits for spawned work at scope exit, so `tasks.wait` is only needed as an explicit barrier. `Tasks.map` preserves input order and runs only up to the configured concurrency at a time.
 
 These knobs keep embedded Vibescript code in a defensive sandbox while still allowing host-approved capabilities. Adjust quotas per use case; the defaults favor safety over throughput.

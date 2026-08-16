@@ -311,49 +311,6 @@ end`)
 	requireErrorContains(t, err, "strict effects: global hooks must be data-only")
 }
 
-// TestLazyGlobalInheritedByTasks pins the task boundary: a global the parent
-// never reads is still inherited by tasks with the correct value, and a
-// global the parent mutates before spawning is inherited in its mutated
-// state. Host originals stay untouched in both cases.
-func TestLazyGlobalInheritedByTasks(t *testing.T) {
-	t.Parallel()
-
-	script := compileScriptDefault(t, `def read_tag(item)
-  meta[:tag]
-end
-
-def untouched(items)
-  Tasks.map(items, max: 2, with: :read_tag)
-end
-
-def mutated_first(items)
-  meta[:tag] = "parent"
-  Tasks.map(items, max: 2, with: :read_tag)
-end`)
-
-	meta := map[string]Value{"tag": NewString("host")}
-	items := NewArray([]Value{NewInt(1), NewInt(2)})
-
-	result := callScript(t, context.Background(), script, "untouched",
-		[]Value{items}, CallOptions{Globals: map[string]Value{"meta": NewHash(meta)}})
-	for _, tag := range result.Array() {
-		if !tag.Equal(NewString("host")) {
-			t.Fatalf("task read unread parent global = %v, want host", tag)
-		}
-	}
-
-	result = callScript(t, context.Background(), script, "mutated_first",
-		[]Value{items}, CallOptions{Globals: map[string]Value{"meta": NewHash(meta)}})
-	for _, tag := range result.Array() {
-		if !tag.Equal(NewString("parent")) {
-			t.Fatalf("task read parent-mutated global = %v, want parent", tag)
-		}
-	}
-	if !meta["tag"].Equal(NewString("host")) {
-		t.Fatalf("host global mutated to %v, want host", meta["tag"])
-	}
-}
-
 // TestFastPathPayloadIsolatedThroughCapabilityBoundary pins the script-to-host
 // half of the boundary: a data-only host argument (fast-copied at entry) that
 // the script forwards to a contracted capability is cloned again at the

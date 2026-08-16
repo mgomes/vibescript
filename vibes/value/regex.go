@@ -12,7 +12,7 @@ import (
 // (Go RE2 syntax), Flags holds the literal's flag letters in source order, and
 // Compiled is the ready-to-match engine program the runtime compiled with the
 // flags applied. A Regex is immutable once constructed, so values share it
-// freely across clones and task boundaries.
+// freely across clones and call boundaries.
 type Regex struct {
 	Source   string
 	Flags    string

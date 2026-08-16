@@ -1603,7 +1603,7 @@ func runtimeValueStringRuneLen(v Value) (int, bool) {
 // containment clone.
 //
 // The clones the runtime makes to isolate a value -- across the host boundary,
-// into a task, when rebinding call arguments -- rebuild every KindObject with
+// when rebinding call arguments -- rebuild every KindObject with
 // NewObject, which drops the tag. A match result returned by one Script.Call
 // and passed into another therefore rendered as <object> instead of the
 // matched text. These clones are the runtime copying its own value, so the

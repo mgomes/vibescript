@@ -7,8 +7,8 @@ if the interpreter implements it.
 
 The narrative guides ([strings.md](strings.md), [arrays.md](arrays.md),
 [hashes.md](hashes.md), [durations.md](durations.md), [time.md](time.md),
-[builtins.md](builtins.md), [tasks.md](tasks.md)) explain idioms and patterns
-in depth; this page favors compact signatures and one-line descriptions.
+[builtins.md](builtins.md)) explain idioms and patterns in depth; this page
+favors compact signatures and one-line descriptions.
 
 ## How to Read Signatures
 
@@ -1215,8 +1215,6 @@ Global functions and namespaces available in every script. See
   positive integer bound, or integer inside an integer range.
 - `srand(seed = nil) -> int | nil` – seed this script call's `rand` sequence;
   returns the previous explicit seed when one exists.
-- `sleep(seconds) -> int` – pause for non-negative numeric seconds, honoring
-  host context cancellation and deadlines.
 - `uuid -> string` – RFC 9562 version 7 UUID.
 - `random_id(length = 16) -> string` – unbiased alphanumeric token; `length`
   must be between 1 and 1024.
@@ -1369,26 +1367,6 @@ Zone keywords accept IANA names (`"America/New_York"`), `"UTC"`/`"GMT"`,
   without a layout it tries RFC3339/RFC3339Nano, RFC1123/RFC1123Z,
   `YYYY-MM-DD[THH:MM:SS]`, `YYYY-MM-DD HH:MM:SS`, `YYYY/MM/DD[ HH:MM:SS]`,
   and `MM/DD/YYYY[ HH:MM:SS]`.
-
-### Tasks
-
-Structured concurrency entry points; see [tasks.md](tasks.md) for the task
-manager API, retention rules, and concurrency settings.
-
-- `Tasks.run(max: nil) { |tasks| } -> value` – run a block with a task
-  manager for spawning concurrent work; returns the block's value.
-- `Tasks.map(items, with: function_name, max: nil) -> array` – apply a named
-  function to each element concurrently, preserving order.
-
-The manager passed to the `Tasks.run` block exposes two methods, and
-`spawn` returns a task handle with one; all of them raise once the task
-scope has exited:
-
-- `tasks.spawn(function_name, args..., keyword: ...) -> task` – start the
-  named function concurrently with the given arguments; returns a handle.
-- `tasks.wait -> nil` – block until every spawned task has finished.
-- `task.value -> value` – wait for this task and return its result,
-  raising the task's error if it failed.
 
 ## Guard Limits
 

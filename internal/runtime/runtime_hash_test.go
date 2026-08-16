@@ -2384,22 +2384,6 @@ func TestHashInsertionOrder(t *testing.T) {
       h = { b: 2, a: 1 }
       "#{h}"
     end
-
-    def task_argument_order()
-      Tasks.map([{ b: 2, a: 1, c: 3 }], with: :task_probe)[0]
-    end
-
-    def task_probe(h)
-      h.keys
-    end
-
-    def task_result_order()
-      Tasks.map([1], with: :task_build)[0].keys
-    end
-
-    def task_build(n)
-      { z: n, a: 1 }
-    end
     `)
 
 	sym := func(names ...string) []Value {
@@ -2484,12 +2468,6 @@ func TestHashInsertionOrder(t *testing.T) {
 		},
 		{name: "inspect_order", fn: "inspect_order", want: NewString("{b: 2, a: 1}")},
 		{name: "interpolation_order", fn: "interpolation_order", want: NewString("{b: 2, a: 1}")},
-		{
-			name: "task_argument_boundary_preserves_order",
-			fn:   "task_argument_order",
-			want: NewArray(sym("b", "a", "c")),
-		},
-		{name: "task_result_boundary_preserves_order", fn: "task_result_order", want: NewArray(sym("z", "a"))},
 	}
 
 	for _, tc := range tests {

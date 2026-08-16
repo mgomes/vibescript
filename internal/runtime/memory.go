@@ -534,11 +534,9 @@ func (exec *Execution) chargeEstimatorWalk(n int) error {
 // builtin that has not declared non-mutation is on the call stack
 // (undeclaredBuiltinDepth > 0), because such code can mutate reachable
 // containers through raw slice/map writes between its own checks without
-// bumping the epoch; while task groups are active or lazily
-// cloned task globals exist, whose retained memory evolves concurrently with
-// the walk; and under the test-only kill switch. Bypass walks run on the same
-// shared estimator, so they invalidate the memo (valid = false) rather than
-// leave stamps pointing at a clobbered seen-state.
+// bumping the epoch; and under the test-only kill switch. Bypass walks run on
+// the same shared estimator, so they invalidate the memo (valid = false) rather
+// than leave stamps pointing at a clobbered seen-state.
 // baseWalkSessionsAreCheap reports whether beginBaseWalk would resume a
 // memoized or region-prefix walk rather than re-walk the reachable graph, so
 // an incremental accounting caller can afford one session per increment
@@ -547,12 +545,10 @@ func (exec *Execution) baseWalkSessionsAreCheap() bool {
 	if exec.baseWalkOpen {
 		return false
 	}
-	globals := taskLazyGlobalsFromContext(exec.ctx)
-	if exec.blockRegionBaseWalkEngaged(globals) {
+	if exec.blockRegionBaseWalkEngaged() {
 		return true
 	}
-	return exec.undeclaredBuiltinDepth == 0 && len(exec.activeTaskGroups) == 0 && globals == nil &&
-		!baseWalkCacheDisabled.Load()
+	return exec.undeclaredBuiltinDepth == 0 && !baseWalkCacheDisabled.Load()
 }
 
 func (exec *Execution) beginBaseWalk() baseWalkSession {
@@ -563,14 +559,13 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		est := newMemoryEstimator()
 		return baseWalkSession{exec: exec, est: est, base: exec.estimateMemoryUsageBase(est)}
 	}
-	globals := taskLazyGlobalsFromContext(exec.ctx)
 	scalars := exec.estimateScalarBase()
 	est := &exec.memoryEst
 	walked0 := est.walked
-	if exec.blockRegionBaseWalkEngaged(globals) {
+	if exec.blockRegionBaseWalkEngaged() {
 		return exec.beginRegionBaseWalk(est, scalars)
 	}
-	if exec.undeclaredBuiltinDepth > 0 || len(exec.activeTaskGroups) > 0 || globals != nil || baseWalkCacheDisabled.Load() {
+	if exec.undeclaredBuiltinDepth > 0 || baseWalkCacheDisabled.Load() {
 		// The bypass walk clobbers whatever committed state the shared
 		// estimator held, so an existing memo is discarded; a cache that was
 		// never allocated stays unallocated and the bypass costs nothing.
@@ -580,18 +575,17 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		exec.baseWalkOpen = true
 		est.journal = nil
 		est.reset()
-		// The bypass path runs while builtin Go code, concurrent task jobs, or
-		// lazily cloned task globals can mutate reachable state, so it uses the
-		// full reference walk rather than the dormant optimization: the fast path
-		// is reserved for the memoized path below, where the graph is stable and
-		// single-goroutine. popEnv still keeps the committed prefix consistent here
+		// The bypass path runs while builtin Go code can mutate reachable state,
+		// so it uses the full reference walk rather than the dormant
+		// optimization: the fast path is reserved for the memoized path below,
+		// where the graph is stable. popEnv still keeps the committed prefix consistent here
 		// (it retracts on every pop), so the next memoized check resumes correctly.
 		//
 		// Registered driver outputs are walked last, so they deduplicate against
 		// everything the graph walk committed (see memory_output.go). This is the
 		// branch a builtin's own callbacks run on, so it is where the accounting
 		// matters most.
-		base := scalars + exec.estimateGraphBase(est, globals)
+		base := scalars + exec.estimateGraphBase(est)
 		base = saturatingAdd(base, exec.outputWalkBytes(est))
 		return baseWalkSession{
 			exec: exec, est: est, base: base, walked0: walked0,
@@ -619,7 +613,7 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		c.epoch = epoch
 		c.topo = exec.baseTopoVersion
 		c.regionBoundary = noBlockRegion
-		c.graphBytes = exec.estimateGraphBaseFast(est, nil)
+		c.graphBytes = exec.estimateGraphBaseFast(est)
 		// Walked after the graph and committed alongside it, so a driver's later
 		// results deduplicate against everything already counted and a check
 		// between two of them pays nothing (see memory_output.go).
@@ -676,122 +670,38 @@ func (s *baseWalkSession) close() {
 // value goes out of scope, so without the latch a rescuing loop could exceed
 // the quota forever one allocation at a time.
 func (exec *Execution) memoryQuotaExceededError() error {
-	return exec.latchExhaustion(fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.effectiveMemoryLimit()))
-}
-
-// effectiveMemoryLimit reports the bound that actually constrains this
-// execution: its own quota, or the tighter ceiling it inherited from a caller.
-//
-// Naming the local quota alone told a host the wrong number. A script on an
-// 8 MiB engine re-entered from a 1 MiB caller is refused at 1 MiB but reported
-// "8388608 bytes", which sends whoever reads it to tune the engine that was
-// never the constraint.
-func (exec *Execution) effectiveMemoryLimit() int {
-	limit := exec.memoryQuota
-	if chain := exec.memChain; chain != nil && chain.limit > 0 {
-		if inherited := int(chain.limit); limit <= 0 || inherited < limit {
-			limit = inherited
-		}
-	}
-	return limit
+	return exec.latchExhaustion(fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota))
 }
 
 // memoryBudgetBytes reports the largest total graph this execution may hold
-// before a check would refuse it, given what its ancestors already hold.
+// before a check would refuse it.
 //
 // This is what a caller needs when it is about to *size* an allocation rather
 // than admit one already made: a scratch reservation, a projected entry cap, a
-// match table built before any check can see it. Those sites compared against
-// the execution's own quota, which is the wrong number twice over -- it ignores
-// a tighter ceiling inherited from a caller, and it ignores the part of that
-// ceiling the caller is already using. Either way the buffer is allocated first
-// and refused afterwards, which is exactly the spike the bound exists to stop.
+// match table built before any check can see it. Sizing against anything looser
+// allocates the buffer first and refuses it afterwards, which is exactly the
+// spike the bound exists to stop.
 //
-// It mirrors memoryExceeded rather than approximating it: the same contribution
-// rule, the same headroom, solved for the largest `used` that would still pass.
+// An unlimited quota answers with the largest int rather than with zero, so a
+// caller dividing this figure is not told it has no room at all.
 func (exec *Execution) memoryBudgetBytes() int {
-	budget := int64(exec.memoryQuota)
-	if budget <= 0 {
-		budget = math.MaxInt
+	if exec.memoryQuota <= 0 {
+		return math.MaxInt
 	}
-	chain := exec.memChain
-	if chain == nil {
-		return int(budget)
-	}
-	// A level that has not established its baseline contributes nothing, so the
-	// chain cannot refuse it yet and only its own quota applies.
-	if chain.parent != nil && !exec.memBaselineSet {
-		return int(budget)
-	}
-	room := chain.headroom() - chain.ancestorMarginals()
-	if chain.parent != nil {
-		// Contributions are measured from the baseline, so convert the room back
-		// into the graph-size the caller is asking about.
-		room = saturatingAddInt64(room, int64(exec.memBaseline))
-	}
-	if room < 0 {
-		room = 0
-	}
-	if room < budget {
-		budget = room
-	}
-	if budget > math.MaxInt {
-		budget = math.MaxInt
-	}
-	return int(budget)
+	return exec.memoryQuota
 }
 
-func saturatingAddInt64(a, b int64) int64 {
-	if b > 0 && a > math.MaxInt64-b {
-		return math.MaxInt64
-	}
-	return a + b
-}
-
-// memoryExceeded reports whether a just-measured graph estimate breaches either
-// this execution's own quota or the ceiling it shares with its ancestors.
+// memoryExceeded reports whether a just-measured graph estimate breaches this
+// execution's memory quota.
 //
-// It is the single place both bounds are applied, so a check site cannot honor
-// one and forget the other.
+// It is the single place the bound is applied, so a check site cannot compare
+// against something looser and admit an allocation the quota refuses.
 //
-// What this level contributes to the chain is its marginal footprint, what it
-// holds beyond the structure it inherited, because levels' graphs overlap and
-// summing whole estimates counts globals and modules once per level. The chain
-// root has nothing above it to have already charged its inherited structure, so
-// it contributes its estimate whole and the shared part is counted exactly once.
-//
-// The own-quota comparison is guarded on a positive quota rather than relying on
-// callers to have guarded it. Reached with the unlimited quota of zero, a bare
+// The comparison is guarded on a positive quota rather than relying on callers
+// to have guarded it. Reached with the unlimited quota of zero, a bare
 // `used > exec.memoryQuota` refuses every non-empty graph.
 func (exec *Execution) memoryExceeded(used int) bool {
-	if exec.memoryQuota > 0 && used > exec.memoryQuota {
-		return true
-	}
-	chain := exec.memChain
-	if chain == nil {
-		return false
-	}
-	contribution := used
-	if chain.parent != nil {
-		// Before the baseline is established this level is still binding what
-		// it inherited and holds nothing of its own, so it contributes nothing.
-		// The chain's existing total is still checked: an ancestor that is
-		// already over its ceiling must refuse here too.
-		//
-		// No check reaches here with a graph worth charging today -- binding
-		// runs no metered allocation between newExecutionForCall and the
-		// baseline seam, verified by panicking on the path across the whole
-		// suite. The guard is for the next check site added before that seam,
-		// because the failure it prevents is silent and permanent: the level
-		// would publish its whole inherited graph as its own marginal, and a
-		// memory refusal is latched, so the transient would never heal.
-		if !exec.memBaselineSet {
-			contribution = 0
-		} else {
-			contribution = used - exec.memBaseline
-		}
-	}
-	return chain.publishAndExceeds(contribution)
+	return exec.memoryQuota > 0 && used > exec.memoryQuota
 }
 
 func (exec *Execution) checkMemory() error {
@@ -799,89 +709,6 @@ func (exec *Execution) checkMemory() error {
 		return nil
 	}
 	return exec.checkMemoryMetered()
-}
-
-// publishBeforeHostCode publishes everything this level currently holds, and is
-// what has to run before control leaves the level for code it does not control.
-//
-// The rule, stated once because four findings on this branch have now been the
-// same rule discovered at one more site:
-//
-//	A level is invisible to its ancestors until it publishes, so nothing it
-//	has allocated may be left unpublished across an operation that can block.
-//	Every point where control leaves the level needs a publication behind it
-//	covering everything allocated since the last one.
-//
-// The four sites, in the order they were reported. Publish before a capability
-// binder runs, because a binder is allowed to block -- the sleeping binder in
-// this repository's own tests does. Publish for a capability-free job too,
-// because the window is opened by allocating before registration rather than by
-// waiting, and blocking only makes it longer. Register the level before its
-// setup allocations rather than after them. And publish between adapters,
-// because one adapter's bindings are allocations and the next adapter's wait is
-// what hides them.
-//
-// The first three were fixed where they were found. This is the rule instead of
-// a fourth site: it is checkMemory under a name that says why the call is
-// there, so that a scan can find it and so that the next person adding host code
-// to a setup path has something to keep above it.
-// TestHostCapabilityCodeRunsOnlyAfterPublishing fails when host code becomes
-// reachable without one of these in front of it.
-func (exec *Execution) publishBeforeHostCode() error {
-	return exec.checkMemory()
-}
-
-// captureMemoryInheritedBaseline records what this call inherited, which is
-// what its later contributions to the chain are measured from.
-//
-// The baseline is the graph tail: the task globals this level was handed and
-// the modules it arrived with. That -- and only that -- is structure an
-// ancestor already charges, so subtracting it is what keeps one shared global
-// from being counted once per level.
-//
-// Everything else the entry graph holds is this level's own: a root env of its
-// own, its own clones of the call's classes and enums, its own capability
-// bindings. Those are fresh per call and must be charged. Taking the baseline
-// from the whole entry estimate instead subtracted them too, giving every level
-// a free allowance the size of its own definitions -- 17,398 bytes per level
-// for a hundred-class script, 1.06 MiB across a 64-deep chain -- which is a
-// smaller copy of the defect the chain exists to close.
-//
-// Subtracting a separately measured "setup" walk does not work either, and the
-// reason is worth recording: at this point the tail is already charged, so a
-// full walk here contains the inherited globals too, and subtracting it
-// canceled them out and put the chain straight back to charging one global per
-// level. The tail is the quantity to name, not a difference between two walks.
-//
-// Only a level with an ancestor pays for this. A chain root publishes its
-// estimate whole, so its baseline is never consulted.
-// The baseline is the graph tail and deliberately not the call's arguments, so
-// a task payload is charged on both sides of the boundary: once to the group
-// retaining the clone, once to the worker binding it. For a composite that is
-// the exact count, since call entry deep-copies it and two graphs really are
-// live. For a string it over-charges, because the backing is shared even though
-// the header and Value slot are not.
-//
-// Subtracting the shared part was implemented and withdrawn. Its correctness
-// needs an enumeration of which parts of a value are shared, per kind, and being
-// wrong about that admits work past the ceiling rather than refusing work that
-// fits. Three measurements of it were wrong at three granularities -- which
-// members cross, which kinds share, then which parts of a sharing kind share --
-// so the correctness condition was finer than the instrument checking it. The
-// whole benefit was 33% on string payloads: 2,105,228 bytes for a 1 MiB string
-// against 1,577,152, with composites identical at 6,371,368 either way.
-//
-// So the over-charge stands, in the direction that refuses rather than admits.
-// A host passing a large string as a task payload needs roughly twice it in
-// quota, and TestTaskPayloadCostsTwiceItsSize records that price.
-func (exec *Execution) captureMemoryInheritedBaseline() {
-	if exec.memoryQuota <= 0 || exec.memChain == nil || exec.memChain.parent == nil {
-		return
-	}
-	est := newMemoryEstimator()
-	baseline := exec.estimateGraphTail(est, taskLazyGlobalsFromContext(exec.ctx))
-	exec.memBaseline = baseline
-	exec.memBaselineSet = true
 }
 
 // checkMemoryValue charges a single just-produced value against the memory
@@ -907,12 +734,6 @@ func (exec *Execution) checkMemoryMetered() error {
 
 // checkMemoryWith charges current usage plus extras, and is the hard check the
 // per-value sites reach.
-//
-// It measures and consults memoryExceeded directly rather than delegating to
-// memoryFitsWith. Delegating meant every checkMemoryValue site compared only
-// this execution's own quota and never published to the chain, so a parent that
-// allocated while a spawned worker was blocked left its marginal stale and its
-// descendants admitted memory against a total that predated the allocation.
 func (exec *Execution) checkMemoryWith(extras ...Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
@@ -929,19 +750,10 @@ func (exec *Execution) checkMemoryWith(extras ...Value) error {
 // instead of a check function: not fitting is a capacity answer for them, not
 // budget exhaustion.
 //
-// It consults the chain and does not write to it, and the split is between
-// those two rather than between probes and checks.
-//
-// Consulting is required. Whether an answer is advisory is a property of the
-// call site, not of this function, and two of its callers allocate on the answer
-// -- an output map, a comparison memo -- so answering against this execution's
-// own quota let them size against room the chain does not have. It reads
-// memoryBudgetBytes for that reason, which can only make it answer no more
-// often, never yes.
-//
-// Writing is not. A probe asks about a value that may never be built, so
-// publishing its estimate would let a hypothetical allocation refuse a
-// concurrent sibling's real one.
+// It compares against memoryBudgetBytes, the same figure the sizing callers
+// use, because two of its callers allocate on the answer -- an output map, a
+// comparison memo -- so it must not answer yes to anything a refusal would
+// reject.
 func (exec *Execution) memoryFitsWith(extras ...Value) bool {
 	if exec.memoryQuota <= 0 {
 		return true
@@ -1307,8 +1119,8 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 		return nil
 	}
 	// The caller allocates the output map on the strength of this, so it is a
-	// final admission and goes through the chain-aware check rather than through
-	// the probe beside it.
+	// final admission and goes through the check rather than through the probe
+	// beside it.
 	if exec.memoryExceeded(exec.projectedHashTransformBytes(outputEntries, scratchBytes, receiver, args, kwargs, block)) {
 		return exec.memoryQuotaExceededError()
 	}
@@ -2067,8 +1879,8 @@ type hashLiteralBuildAccumulator struct {
 	// snapshot: each check resumes the memoized base and measures only this
 	// entry, so a literal built in a loop costs its own size rather than a
 	// whole-graph walk (#1129). Snapshot mode remains for contexts where a
-	// session cannot resume a memo (builtin depth, task groups, lazy globals)
-	// and would otherwise re-walk the graph once per entry.
+	// session cannot resume a memo (builtin depth) and would otherwise re-walk
+	// the graph once per entry.
 	sessions      bool
 	replacing     bool
 	keyPayloads   map[string]int
@@ -2704,7 +2516,7 @@ func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []
 	// retainedOutputMarginalBytes instead would fall back to a second graph walk
 	// here, because a nested driver has just invalidated the memo by registering.
 	base := exec.estimateScalarBase()
-	base = saturatingAdd(base, exec.estimateGraphBase(rootEst, taskLazyGlobalsFromContext(exec.ctx)))
+	base = saturatingAdd(base, exec.estimateGraphBase(rootEst))
 	// Metered for the same reason the retained-output fallback's basis walk is,
 	// and only while a driver output is registered: that is exactly when this
 	// construction is script-repeatable, because a lookup builds its runner inside
@@ -2952,8 +2764,8 @@ func (exec *Execution) maxProjectedHashEntries(scratchBytes int, receiver Value,
 	if exec.memoryQuota <= 0 {
 		return math.MaxInt
 	}
-	// The budget, not the quota: what an ancestor already holds is room this
-	// merge cannot have, and the dedup set is grown before any check sees it.
+	// The budget a refusal would use, since the dedup set is grown before any
+	// check sees it.
 	budget := exec.memoryBudgetBytes()
 	used := saturatingAdd(exec.projectedHashBaseBytes(receiver, args, kwargs, block), scratchBytes)
 	if used >= budget {
@@ -3090,9 +2902,9 @@ func (exec *Execution) chargeAdoptedConstant(name string) error {
 	}
 	exec.adoptedConstantBytes = saturatingAdd(exec.adoptedConstantBytes,
 		estimatedMapEntryBytes+estimatedValueBytes+estimatedStringHeaderBytes+len(name))
-	// A share of the bound actually in force, so the unchecked overshoot this
-	// deferral allows stays proportionate under an inherited ceiling too.
-	if exec.adoptedConstantBytes < exec.effectiveMemoryLimit()/adoptedConstantCheckShare {
+	// A share of the bound in force, so the unchecked overshoot this deferral
+	// allows stays proportionate to what the host configured.
+	if exec.adoptedConstantBytes < exec.memoryBudgetBytes()/adoptedConstantCheckShare {
 		return nil
 	}
 	exec.adoptedConstantBytes = 0
@@ -3124,26 +2936,8 @@ func newLoopScratchReservation(exec *Execution, receiver Value, args []Value, kw
 // reserveIfFits charges scratchBytes against this execution and reports whether
 // the reservation may stand.
 //
-// It compares against the budget -- what is left of the bound in force after
-// ancestors -- and does not report the accepted reservation to the chain.
-//
-// It did report it, for one round, to close a real race: a nonblocking parent
-// that grows after this budget is read is not visible here, so an accepted
-// reservation can coexist with an allocation the combined path has no room for.
-// Publication turned out to have no consistent configuration. It has to publish
-// to close that race; it must not leave a *rejected* figure published, or
-// ancestors stay constrained by bytes that were never held and the parent is
-// falsely refused and latched; and the escape -- relaxing the ancestors'
-// constraint afterwards -- is the thing this design established cannot be done
-// safely, because the minimum it is stored as races with a sibling tightening.
-// Publish and it latches, do not publish and the race reopens, relax and it
-// races.
-//
-// So the race is left open and bounded rather than half-closed. This level's own
-// quota still binds it, and its next ordinary memory check publishes what it
-// holds; what is lost is only the window between an accepted reservation and
-// that check. See the follow-up issue, which carries the constraint as well as
-// the findings -- the constraint is the part worth inheriting.
+// It compares against the budget, which is the same figure a refusal would use,
+// so a reservation cannot be accepted against room a check would not grant.
 func (r *loopScratchReservation) reserveIfFits(scratchBytes int) bool {
 	if r.exec.memoryQuota <= 0 || scratchBytes <= 0 {
 		return true
@@ -3196,7 +2990,7 @@ func (r *loopScratchReservation) release() {
 // re-walked.
 func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	total := exec.estimateScalarBase()
-	total += exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.ctx))
+	total += exec.estimateGraphBase(est)
 	return saturatingAdd(total, exec.outputWalkBytes(est))
 }
 
@@ -3207,12 +3001,12 @@ func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 // every frame committed in their seen-set, and by estimateGraphBaseFast as the
 // oracle's reference. The per-check memoized and bypass walks use the faster
 // estimateGraphBaseFast instead.
-func (exec *Execution) estimateGraphBase(est *memoryEstimator, globals *taskLazyGlobals) int {
+func (exec *Execution) estimateGraphBase(est *memoryEstimator) int {
 	total := est.env(exec.root)
 	for _, env := range exec.envStack {
 		total += est.env(env)
 	}
-	total += exec.estimateGraphTail(est, globals)
+	total += exec.estimateGraphTail(est)
 	return total
 }
 
@@ -3222,20 +3016,17 @@ func (exec *Execution) estimateGraphBase(est *memoryEstimator, globals *taskLazy
 // fresh-each-check computation that never retains the estimator across stack
 // changes — the per-check memoized and bypass walks. Under the oracle it recomputes
 // the reference and panics on any divergence.
-func (exec *Execution) estimateGraphBaseFast(est *memoryEstimator, globals *taskLazyGlobals) int {
+func (exec *Execution) estimateGraphBaseFast(est *memoryEstimator) int {
 	total := est.env(exec.root)
 	total += exec.envStackGraphBytes(est)
-	total += exec.estimateGraphTail(est, globals)
-	if estimatorVerify && len(exec.activeTaskGroups) == 0 && globals == nil {
+	total += exec.estimateGraphTail(est)
+	if estimatorVerify {
 		// The oracle compares this fast walk against a second, sequential reference
 		// walk, so it is meaningful only while the graph is stable between them.
-		// The caller (the memoized base walk) already guarantees that: it is
-		// reached only when no task groups or lazily cloned globals are live, so
-		// no concurrent job goroutine can mutate the tail under our feet. The guard
-		// restates that invariant defensively so a future caller on the unstable
-		// bypass path cannot turn concurrent tail churn into a spurious panic.
+		// The caller (the memoized base walk) guarantees that: an Execution runs on
+		// one goroutine, so nothing can mutate the tail between the two walks.
 		refEst := newMemoryEstimator()
-		if ref := exec.estimateGraphBase(refEst, globals); ref != total {
+		if ref := exec.estimateGraphBase(refEst); ref != total {
 			panic(fmt.Sprintf(
 				"vibescript: dormant-frame estimator mismatch: fast=%d reference=%d "+
 					"(stackDepth=%d dormantSlots=%d dormantBytes=%d nonBaseParentDepth=%d)",
@@ -3247,11 +3038,11 @@ func (exec *Execution) estimateGraphBaseFast(est *memoryEstimator, globals *task
 }
 
 // estimateGraphTail charges the reachable graph beyond the root and env stack:
-// loaded modules and any active task-group or lazily cloned global retention. It
-// is shared by the fast walk and the differential-verification reference walk so
-// the two can never drift on anything but the env-stack portion they are meant to
-// compare.
-func (exec *Execution) estimateGraphTail(est *memoryEstimator, globals *taskLazyGlobals) int {
+// loaded modules and the array backings this execution still retains. It is
+// shared by the fast walk and the differential-verification reference walk so
+// the two can never drift on anything but the env-stack portion they are meant
+// to compare.
+func (exec *Execution) estimateGraphTail(est *memoryEstimator) int {
 	total := 0
 	for _, mod := range exec.modules {
 		total += est.value(mod)
@@ -3263,15 +3054,6 @@ func (exec *Execution) estimateGraphTail(est *memoryEstimator, globals *taskLazy
 	// module env that is also on the env stack is charged once.
 	for _, env := range exec.initializingModules {
 		total += est.env(env)
-	}
-	for _, group := range exec.activeTaskGroups {
-		total += group.retainedSnapshotMemory(est)
-		total += group.jobPayloadMemory(est)
-		total += group.retainedResultMemory(est)
-	}
-	if globals != nil {
-		total += globals.retainedSourceMemory(est)
-		total += globals.retainedCloneMemory(est)
 	}
 	total += exec.detachedArrayBackingBytes(est)
 	total += exec.retainedArrayBackingBytes(est)
@@ -4066,17 +3848,4 @@ func (exec *Execution) reserveCallerRetainedRoots(blockArgs []Value) (int, bool)
 		return 0, true
 	}
 	return exec.reserveLoopScratch(total - base), true
-}
-
-// releaseMemoryChain retires this execution's chain node as its call returns.
-//
-// A level that has finished holds nothing, so leaving its published figure in
-// place would charge the chain for memory that is gone; and the high-water of
-// what was live below a node has to be dropped once nothing is, or a deep chain
-// that completed would go on refusing its parent's later work.
-func (exec *Execution) releaseMemoryChain() {
-	if exec.memChain == nil {
-		return
-	}
-	exec.memChain.release()
 }

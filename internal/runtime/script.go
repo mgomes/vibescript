@@ -15,7 +15,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	// variant that already pays that cost, keeping the common no-globals /
 	// scalar-globals path allocation-free at this layer.
 	if globalsBindLazily(opts.Globals) {
-		return s.callWithLazyTaskGlobals(ctx, name, args, opts, nil, nil)
+		return s.callWithLazyGlobals(ctx, name, args, opts)
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -53,52 +53,19 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 
 	exec := newExecutionForCall(s, ctx, root, opts)
 	defer exec.releaseBaseWalkCache()
-	defer exec.releaseMemoryChain()
 
-	// Taken before anything binds, and in particular before capabilities do.
-	// A binder is allowed to block -- the sleeping binder in this repository's
-	// own tests does -- and until the baseline exists this level contributes
-	// nothing to the chain, so its fresh root and cloned definitions were
-	// invisible to an ancestor for as long as a binder chose to wait. Nothing
-	// bound between here and the old position changes what this measures: the
-	// baseline is the graph tail, which is the modules and task globals the call
-	// arrived with, and binding writes to the root env rather than to those.
-	exec.captureMemoryInheritedBaseline()
-
-	// Publish this level's own setup before anything else runs.
+	// Refuse before any host code runs. A call builds its root env and clones
+	// the script's classes and enums before its Execution exists, so a
+	// definition-heavy script can exhaust a small quota on setup alone; the
+	// refusal is certain at that point, because nothing later shrinks a
+	// reachable graph. Binding first would run an adapter's Bind -- arbitrary
+	// host code, free to open connections, take locks, or block -- on a call
+	// already decided against.
 	//
-	// The property is about *when this level becomes visible*, not about which
-	// callers can block. A child builds its root env and clones the call's
-	// classes and enums before its execution exists, so there is no node to
-	// publish to while that happens; the first publication after the node exists
-	// is the earliest an ancestor can see any of it. Until then a nonblocking
-	// parent allocates against a total that omits this whole level.
-	//
-	// It was previously gated on there being capabilities to bind, reasoning
-	// that a binder is the only thing on this path that can block. That was
-	// right about blocking and wrong about the property: an ordinary
-	// capability-free job has the same window, because the window is opened by
-	// allocating before registration rather than by waiting. Blocking only makes
-	// it longer.
-	//
-	// A residual remains and is bounded rather than closed. Everything built
-	// before the execution exists -- the root env, the cloned classes and enums
-	// -- cannot be published, because there is no node yet to publish to, so a
-	// nonblocking parent can be admitted against a total omitting it. That
-	// quantity is fixed by the script's own text: measured flat at 19,904 bytes
-	// across task payloads from 1 KiB to 4 MiB, a four-thousand-fold range, and
-	// growing only with definitions, at roughly 745 bytes per class -- 1,040
-	// bytes for a script with none and 298,048 for one with four hundred.
-	//
-	// So the exposure is a property of the program, not of anything the running
-	// script controls, which is what makes it a residual worth documenting
-	// rather than a hole worth a reservation taken before an Execution exists.
-	// The invariant holding that bound static is that nothing on this path
-	// retains argument data: scanInboundCallValues walks the arguments but is a
-	// predicate returning a bool, and the deep copy it enables happens later,
-	// after registration. A change that made this path retain anything derived
-	// from the arguments would make the bound scale with runtime data, and the
-	// measurement above is the one to repeat.
+	// The check arrived with the memory chain, justified as publishing this
+	// level to its ancestors before blocking. That justification went with the
+	// chain; this one does not depend on it, so the check stays.
+	// TestOverQuotaCallRefusesBeforeBindingCapabilities pins it.
 	if err := exec.checkMemory(); err != nil {
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
@@ -160,14 +127,10 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	return val, nil
 }
 
-// callWithLazyTaskGlobals keeps lazy global binding — both task-inherited
-// lazy globals and lazily bound composite host globals — off the public Call
-// hot path, so the per-call rebinder stays stack-allocated for calls that
+// callWithLazyGlobals keeps lazily bound composite host globals off the public
+// Call hot path, so the per-call rebinder stays stack-allocated for calls that
 // bind no deferred globals.
-// observeExhaustion, when non-nil, receives the execution's latched
-// exhaustion as the call returns — the trusted channel the task machinery
-// uses instead of inspecting forgeable error values.
-func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args []Value, opts CallOptions, lazyTaskGlobals *taskLazyGlobals, observeExhaustion *error) (Value, error) {
+func (s *Script) callWithLazyGlobals(ctx context.Context, name string, args []Value, opts CallOptions) (Value, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -182,9 +145,6 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	}
 
 	rootCapacity := len(s.classes) + len(opts.Globals) + len(opts.Capabilities)*2
-	if lazyTaskGlobals != nil {
-		rootCapacity += lazyTaskGlobals.len()
-	}
 	root := newEnvWithCapacity(nil, rootCapacity)
 	s.engine.attachBuiltins(root, len(s.functions)+len(s.enums))
 
@@ -203,73 +163,12 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 		root.DefineStatic(n, NewEnum(enumDef))
 	}
 	rebinder := newCallFunctionRebinder(s, root, callClasses, callEnums)
-	// Lazy task-global sources are excluded from the inbound scan and always
-	// materialize through the slow rebind walk; the fast-path verdict here
-	// covers only the task-cloned args and keywords, whose graphs are
-	// disjoint from those sources.
 	rebinder.inboundDataFast = scanInboundCallValues(args, opts.Keywords)
 
 	exec := newExecutionForCall(s, ctx, root, opts)
-	// Applied to the execution's own context, after it is built, so that this
-	// wrapper stays outermost. taskLazyGlobalsFromContext identifies its context
-	// by a type assertion on the outermost value rather than through ctx.Value,
-	// so anything wrapped on afterwards hides a task's inherited globals -- and
-	// newExecutionForCall wraps, to carry the memory chain the way it carries
-	// the sleeping budget. Binding these before that wrapping made nested tasks
-	// fail with "undefined variable".
-	if lazyTaskGlobals != nil {
-		exec.ctx = contextWithTaskLazyGlobals(exec.ctx, lazyTaskGlobals)
-	}
-	if observeExhaustion != nil {
-		defer func() { *observeExhaustion = exec.observedExhaustion() }()
-	}
 	defer exec.releaseBaseWalkCache()
-	defer exec.releaseMemoryChain()
 
-	// Taken before anything binds, and in particular before capabilities do.
-	// A binder is allowed to block -- the sleeping binder in this repository's
-	// own tests does -- and until the baseline exists this level contributes
-	// nothing to the chain, so its fresh root and cloned definitions were
-	// invisible to an ancestor for as long as a binder chose to wait. Nothing
-	// bound between here and the old position changes what this measures: the
-	// baseline is the graph tail, which is the modules and task globals the call
-	// arrived with, and binding writes to the root env rather than to those.
-	exec.captureMemoryInheritedBaseline()
-
-	// Publish this level's own setup before anything else runs.
-	//
-	// The property is about *when this level becomes visible*, not about which
-	// callers can block. A child builds its root env and clones the call's
-	// classes and enums before its execution exists, so there is no node to
-	// publish to while that happens; the first publication after the node exists
-	// is the earliest an ancestor can see any of it. Until then a nonblocking
-	// parent allocates against a total that omits this whole level.
-	//
-	// It was previously gated on there being capabilities to bind, reasoning
-	// that a binder is the only thing on this path that can block. That was
-	// right about blocking and wrong about the property: an ordinary
-	// capability-free job has the same window, because the window is opened by
-	// allocating before registration rather than by waiting. Blocking only makes
-	// it longer.
-	//
-	// A residual remains and is bounded rather than closed. Everything built
-	// before the execution exists -- the root env, the cloned classes and enums
-	// -- cannot be published, because there is no node yet to publish to, so a
-	// nonblocking parent can be admitted against a total omitting it. That
-	// quantity is fixed by the script's own text: measured flat at 19,904 bytes
-	// across task payloads from 1 KiB to 4 MiB, a four-thousand-fold range, and
-	// growing only with definitions, at roughly 745 bytes per class -- 1,040
-	// bytes for a script with none and 298,048 for one with four hundred.
-	//
-	// So the exposure is a property of the program, not of anything the running
-	// script controls, which is what makes it a residual worth documenting
-	// rather than a hole worth a reservation taken before an Execution exists.
-	// The invariant holding that bound static is that nothing on this path
-	// retains argument data: scanInboundCallValues walks the arguments but is a
-	// predicate returning a bool, and the deep copy it enables happens later,
-	// after registration. A change that made this path retain anything derived
-	// from the arguments would make the bound scale with runtime data, and the
-	// measurement above is the one to repeat.
+	// Refuse before any host code runs; see Call for why.
 	if err := exec.checkMemory(); err != nil {
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
@@ -280,11 +179,6 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 
 	if err := bindGlobalsForCallLazy(exec, root, rebinder, opts.Globals); err != nil {
 		return NewNil(), err
-	}
-	if lazyTaskGlobals != nil {
-		if err := bindLazyTaskGlobalsForCall(exec, root, lazyTaskGlobals, rebinder); err != nil {
-			return NewNil(), err
-		}
 	}
 
 	if err := exec.checkContext(); err != nil {

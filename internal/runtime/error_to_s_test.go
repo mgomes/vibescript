@@ -388,36 +388,7 @@ end`)
 	}
 }
 
-// Task payloads go through deepCloneValue, a separate containment path from
-// the global cloner, so a rescued error passed into a task rendered as
-// <object> instead of its message.
-func TestObjectTagsSurviveTaskPayloadCloning(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `def work(e)
-  "#{e}"
-end
-def run()
-  err = begin
-    raise "boom"
-  rescue => e
-    e
-  end
-  Tasks.run(max: 2) do |tasks|
-    a = tasks.spawn(:work, err)
-    a.value
-  end
-end`)
-	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
-	if got.String() != "boom" {
-		t.Fatalf("a rescued error rendered %q inside a task, want boom", got.String())
-	}
-}
-
-// deepCloneValue backs both the runtime's task containment and the
+// deepCloneValue backs both the runtime's boundary containment and the
 // script-visible dup/clone. Only the containment copy stands for the same
 // value; a bag script code duplicates becomes an ordinary object, so the tag
 // cannot be laundered onto content the script then edits.

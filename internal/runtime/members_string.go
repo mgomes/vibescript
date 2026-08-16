@@ -1881,8 +1881,8 @@ func checkStringReverseTransform(exec *Execution, text string, receiver Value, a
 }
 
 // unicodeUpcase applies full Unicode uppercase mapping. A fresh Caser is built
-// per call because cases.Caser is not safe for concurrent use, and scripts may
-// run member methods from several goroutines via the task system.
+// per call because cases.Caser is not safe for concurrent use, and a host may
+// run concurrent Script.Call invocations.
 func unicodeUpcase(text string) string {
 	return cases.Upper(language.Und).String(text)
 }
@@ -4364,8 +4364,8 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 		// The overshoot the probe can build is one match's worth, and bounded.
 		projected = exec.reserveLoopScratch(worstCaseRegexSubmatchIndexBytes(budget, groups))
 		// Through the roots, not checkMemory: the budget above subtracted the
-		// call roots, so publishing without them lets the chain see the larger
-		// of two figures instead of their coexisting sum.
+		// call roots, so a check without them measures the larger of two figures
+		// instead of their coexisting sum.
 		if err := roots.check(exec); err != nil {
 			exec.releaseLoopScratch(projected)
 			return NewNil(), err
@@ -4535,12 +4535,12 @@ func guardRegexScanIndexFootprint(exec *Execution, pattern, text string, groups 
 // execution's own graph walk cannot see.
 //
 // It is one value rather than four parameters because the budget that *sizes*
-// the table and the check that *publishes* the reservation have to agree about
-// what is live, and all three findings on this table were that disagreement --
-// the nonblocking-parent race, the append's capacity slack, and these call roots
-// -- each one side accounting for something the other did not. Sizing and
-// publication now read the same value through the same two methods, so a
-// discrepancy is not expressible rather than merely corrected.
+// the table and the check that *charges* the reservation have to agree about
+// what is live, and the findings on this table were that disagreement -- the
+// append's capacity slack and these call roots -- each side accounting for
+// something the other did not. Sizing and charging now read the same value
+// through the same two methods, so a discrepancy is not expressible rather than
+// merely corrected.
 type scanRoots struct {
 	receiver Value
 	args     []Value
@@ -4548,13 +4548,13 @@ type scanRoots struct {
 	block    Value
 }
 
-// liveBytes is the quantity the budget subtracts and the check publishes.
+// liveBytes is the quantity the budget subtracts and the check charges.
 func (r scanRoots) liveBytes(exec *Execution) int {
 	return exec.estimateMemoryUsageForCallRoots(NewNil(), r.receiver, r.args, r.kwargs, r.block)
 }
 
-// check publishes that quantity, the current reservation included, and refuses
-// when the chain has no room for it.
+// check charges that quantity, the current reservation included, and refuses
+// when there is no room for it.
 func (r scanRoots) check(exec *Execution) error {
 	return exec.checkMemoryWithCallRoots(NewNil(), r.receiver, r.args, r.kwargs, r.block)
 }
@@ -4576,12 +4576,8 @@ func scanMatchBudget(exec *Execution, groups int, roots scanRoots) (int, bool) {
 	// let an execution already holding most of it request nearly another
 	// quota's worth of rows, which is the pre-accounting spike this bound
 	// exists to stop -- the table coexists with everything already live.
-	// The chain's remaining room, not the ceiling and not the local quota. The
-	// ceiling alone still oversizes the table when an ancestor is already using
-	// most of it -- a parent local held across a task call is not part of this
-	// execution's graph, so subtracting only that graph leaves the ancestor's
-	// share unaccounted. The table is built before any check can see it, so the
-	// number this divides has to be what is actually left.
+	// The table is built before any check can see it, so the number this divides
+	// has to be what is actually left after the roots the builtin already holds.
 	remaining := exec.memoryBudgetBytes() - roots.liveBytes(exec)
 	if remaining <= 0 {
 		// Nothing left to spend: a single match is still requested so an

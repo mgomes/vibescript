@@ -32,11 +32,6 @@ func TestNewEngineRejectsInvalidConfig(t *testing.T) {
 			wantErr: "vibes: max source bytes cannot be negative",
 		},
 		{
-			name:    "default_task_concurrency_exceeds_max",
-			cfg:     vibes.Config{DefaultTaskConcurrency: 8, MaxTaskConcurrency: 2},
-			wantErr: "vibes: default task concurrency cannot exceed max task concurrency",
-		},
-		{
 			name:    "empty_module_path",
 			cfg:     vibes.Config{ModulePaths: []string{"  "}},
 			wantErr: "vibes: module path cannot be empty",
@@ -109,7 +104,7 @@ func TestEngineConfigSummaryDefaults(t *testing.T) {
 	t.Parallel()
 
 	engine := vibes.MustNewEngine(vibes.Config{})
-	want := "steps=1000000 memory=16777216B recursion=256 sleep=1m0s strict_effects=false tasks=4/64"
+	want := "steps=1000000 memory=16777216B recursion=256 strict_effects=false"
 	if got := engine.ConfigSummary(); got != want {
 		t.Fatalf("ConfigSummary() = %q, want %q", got, want)
 	}
@@ -119,7 +114,7 @@ func TestEngineConfigSummaryDevMode(t *testing.T) {
 	t.Parallel()
 
 	engine := vibes.MustNewEngine(vibes.Config{DevMode: true})
-	want := "steps=1000000 memory=16777216B recursion=256 sleep=1m0s strict_effects=false tasks=4/64 dev_mode=true"
+	want := "steps=1000000 memory=16777216B recursion=256 strict_effects=false dev_mode=true"
 	if got := engine.ConfigSummary(); got != want {
 		t.Fatalf("ConfigSummary() = %q, want %q", got, want)
 	}
