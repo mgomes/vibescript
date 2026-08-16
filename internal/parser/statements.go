@@ -793,10 +793,42 @@ func (p *parser) parseOperatorMethodName() (string, bool) {
 	}
 }
 
+// moduleFunctionExample and namespaceCallExample are the two spellings the
+// migration diagnostics recommend. They are named so a diagnostic cannot
+// recommend code the parser rejects without a test noticing: every snippet a
+// message can emit is derived from one of these or from moduleFunctionForm.
+const (
+	moduleFunctionExample = "def self.name"
+	namespaceCallExample  = "Naming.display_name(person)"
+)
+
 // moduleNamespaceReplacement names what replaces every removed form of
 // behavior injection: a module is a namespace, so the code it holds is
 // reached by calling it on the module rather than by copying it into a class.
-const moduleNamespaceReplacement = "define module functions with def self.name and call them on the module (Naming.display_name(person))"
+const moduleNamespaceReplacement = "define module functions with " + moduleFunctionExample +
+	" and call them on the module (" + namespaceCallExample + ")"
+
+// moduleFunctionForm spells the module-function declaration that replaces an
+// instance-style method of the given name, and reports whether that spelling
+// exists at all. A `def self.` name is an identifier, so a method the grammar
+// names with an operator (+, <<, [], []=) has no module-function form and must
+// be recommended something else. The question goes to the lexer rather than to
+// a second copy of the identifier rule, so an operator the grammar gains later
+// is covered without editing this.
+func moduleFunctionForm(name string) (string, bool) {
+	base := strings.TrimSuffix(name, "=")
+	if base == "" {
+		return "", false
+	}
+	l := newLexer(base)
+	if tok := l.NextToken(); tok.Type != ast.TokenIdent || tok.Literal != base {
+		return "", false
+	}
+	if l.NextToken().Type != ast.TokenEOF {
+		return "", false
+	}
+	return "def self." + name, true
+}
 
 // moduleNamespaceHint states the rule and the replacement together, for the
 // diagnostics that need both.
@@ -915,7 +947,11 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 			}
 			fn := fnStmt.(*ast.FunctionStmt)
 			if isModule && !fn.IsClassMethod {
-				p.addParseError(fn.Position, "def %s in module %s must be def self.%s; a module is a namespace, not a method source", srcText(fn.Name), srcText(name), srcText(fn.Name))
+				if form, ok := moduleFunctionForm(fn.Name); ok {
+					p.addParseError(fn.Position, "def %s in module %s must be %s; a module is a namespace, not a method source", srcText(fn.Name), srcText(name), srcText(form))
+				} else {
+					p.addParseError(fn.Position, "operator method %s is not supported in module %s; an operator dispatches on an instance and a module has none, so define %s on a class", srcText(fn.Name), srcText(name), srcText(fn.Name))
+				}
 				break
 			}
 			if fn.IsClassMethod {

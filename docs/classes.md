@@ -396,6 +396,8 @@ Rules and limits:
 - A module is a namespace, not a method source. It declares functions only
   with `def self.name`; a plain `def`, a `property`/`getter`/`setter`, or an
   `alias` in a module body is a compile error naming the `def self.` form.
+  An operator method (`def +`, `def []`) has no module form at all, since an
+  operator dispatches on an instance: it belongs on a class.
 - There is no `include` or `extend`. Reusable behavior stays in its module and
   is called on it, so every dependency is visible where it is used.
 

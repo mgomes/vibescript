@@ -92,9 +92,21 @@ func TestModuleInstanceMembersAreCompileErrors(t *testing.T) {
 			want:   "def display_name in module Naming must be def self.display_name",
 		},
 		{
+			// An operator dispatches on an instance, so it has no module
+			// form at all: `def self.+` is not a spelling the grammar has.
 			name:   "operator method",
 			source: "module Adding\n  def +(other)\n    other\n  end\nend\n",
-			want:   "def + in module Adding must be def self.+",
+			want:   "operator method + is not supported in module Adding",
+		},
+		{
+			name:   "index method",
+			source: "module Indexing\n  def [](index)\n    index\n  end\nend\n",
+			want:   "operator method [] is not supported in module Indexing",
+		},
+		{
+			name:   "setter method",
+			source: "module Named\n  def name=(value)\n    value\n  end\nend\n",
+			want:   "def name= in module Named must be def self.name=",
 		},
 		{
 			name:   "property",
