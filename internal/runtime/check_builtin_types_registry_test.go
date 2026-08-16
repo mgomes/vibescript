@@ -89,7 +89,6 @@ func TestCoreBuiltinTypedContracts(t *testing.T) {
 		"warn":        {result: "nil"},
 		"now":         {result: "string"},
 		"rand":        {params: "int | range | nil", result: "number"},
-		"sleep":       {params: "number", result: "int"},
 		"srand":       {params: "int?", result: "int?"},
 		"uuid":        {result: "string"},
 		"random_id":   {params: "int", result: "string"},
@@ -192,11 +191,6 @@ end
 			warning: "call to money argument 1 expected string, got int",
 		},
 		{
-			name:    "sleep rejects symbol",
-			source:  "def run()\n  sleep(:soon)\nend\n",
-			warning: "call to sleep argument 1 expected number, got symbol",
-		},
-		{
 			name:    "rand rejects float bound",
 			source:  "def run()\n  rand(0.5)\nend\n",
 			warning: "call to rand argument 1 expected int | range | nil, got float",
@@ -265,7 +259,6 @@ func TestCoreBuiltinTypedContractsStayGradual(t *testing.T) {
 		{name: "srand accepts int seed", source: "def run()\n  srand(7)\nend\n"},
 		{name: "money_cents accepts float cents", source: "def run()\n  money_cents(100.0, \"usd\")\nend\n"},
 		{name: "money_cents accepts int cents", source: "def run()\n  money_cents(100, \"usd\")\nend\n"},
-		{name: "sleep accepts int and float", source: "def run()\n  sleep(1)\n  sleep(0.25)\nend\n"},
 		{name: "Math.sqrt accepts int", source: "def run()\n  Math.sqrt(9)\nend\n"},
 		{name: "Duration.build accepts named parts", source: "def run()\n  Duration.build(hours: 2, minutes: 30)\nend\n"},
 		{name: "Duration.build accepts seconds", source: "def run()\n  Duration.build(90)\nend\n"},

@@ -449,7 +449,6 @@ func registerCoreBuiltins(engine *Engine) {
 		{name: "require", fn: builtinRequire},
 		{name: "now", fn: builtinNow, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 0, resultType: checkTypeString}},
 		{name: "rand", fn: builtinRand, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{builtinTypeRandBound}, resultType: checkTypeNumber}},
-		{name: "sleep", fn: builtinSleep, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeNumber}, resultType: checkTypeInt}},
 		{name: "sprintf", fn: builtinSprintf, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: -1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString}, resultType: checkTypeString}},
 		{name: "srand", fn: builtinSrand, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{builtinTypeNullableInt}, resultType: builtinTypeNullableInt}},
 		{name: "uuid", fn: builtinUUID, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, resultType: checkTypeString}},

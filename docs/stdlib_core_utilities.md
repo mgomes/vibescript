@@ -1215,8 +1215,6 @@ Global functions and namespaces available in every script. See
   positive integer bound, or integer inside an integer range.
 - `srand(seed = nil) -> int | nil` – seed this script call's `rand` sequence;
   returns the previous explicit seed when one exists.
-- `sleep(seconds) -> int` – pause for non-negative numeric seconds, honoring
-  host context cancellation and deadlines.
 - `uuid -> string` – RFC 9562 version 7 UUID.
 - `random_id(length = 16) -> string` – unbiased alphanumeric token; `length`
   must be between 1 and 1024.

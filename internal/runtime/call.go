@@ -1482,9 +1482,6 @@ func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctio
 }
 
 func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts CallOptions) *Execution {
-	// The sleeping budget is established here rather than at the first sleep, so
-	// that a nested call on another engine inherits it through the context.
-	ctx, sleeping := sleepBudgetForCall(ctx, script.engine.config.MaxSleepDuration)
 	childCallOptions := CallOptions{
 		Globals:      opts.Globals,
 		Capabilities: opts.Capabilities,
@@ -1501,7 +1498,6 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 		strictEffects: script.engine.config.StrictEffects,
 		allowRequire:  opts.AllowRequire,
 		callOptions:   childCallOptions,
-		sleepBudget:   sleeping,
 	}
 	// The module stacks stay nil: most calls never require a module,
 	// and append allocates them on first use.

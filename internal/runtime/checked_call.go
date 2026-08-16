@@ -27,16 +27,6 @@ func (s *Script) CheckedCall(ctx context.Context, name string, args []Value, opt
 	if err := ctx.Err(); err != nil {
 		return NewNil(), nil, err
 	}
-	// The sleeping budget is published before the preflight bind, not left to
-	// Call further down. An adapter's Bind receives this context on
-	// CapabilityBinding and may synchronously re-enter a looser or unlimited
-	// engine with it; binding first meant that nested script saw no inherited
-	// budget and could park indefinitely, inside a call whose whole purpose is
-	// to be the gate. Call shares this budget rather than chaining a second one,
-	// since both phases are the one call (#29). The plain Call path is already
-	// safe: it builds its Execution, and so its budget, before binding.
-	ctx, _ = sleepBudgetForCall(ctx, s.engine.config.MaxSleepDuration)
-
 	globals, bindErr := checkOptionGlobals(ctx, s, opts)
 	if bindErr != nil {
 		// A failing adapter is a runtime condition, not a static diagnostic:

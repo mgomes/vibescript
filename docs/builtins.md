@@ -123,17 +123,6 @@ like `"+05:30"`. See [Time](time.md) for the full instance-method surface.
 Time.utc(2024).iso8601  # "2024-01-01T00:00:00Z"
 ```
 
-### `sleep(seconds) -> int`
-
-Pauses the current call for a non-negative numeric duration in seconds. Floats
-are accepted for fractional seconds. The call returns the elapsed whole seconds
-and exits early with the call context's cancellation or deadline error when the
-host context is canceled.
-
-```vibe
-sleep(0.25)
-```
-
 ## Control Flow
 
 ### `loop { ... } -> value`
