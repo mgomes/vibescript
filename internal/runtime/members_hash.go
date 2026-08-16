@@ -12,7 +12,7 @@ import (
 // listed name resolves.
 var hashMemberNames = []string{
 	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "to_a",
-	"merge", "update", "merge!", "replace", "store", "delete", "clear", "delete_if", "keep_if", "slice", "except", "flatten", "select", "reject", "map", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
+	"merge", "replace", "store", "delete", "clear", "delete_if", "keep_if", "slice", "except", "flatten", "select", "reject", "map", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
 	"inspect",
 }
 
@@ -55,7 +55,7 @@ func hashMemberBuiltin(property string) (Value, error) {
 	switch property {
 	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "to_a":
 		return hashMemberQuery(property)
-	case "merge", "update", "merge!", "replace", "store", "delete", "clear", "delete_if", "keep_if", "slice", "except", "flatten", "select", "reject", "map", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
+	case "merge", "replace", "store", "delete", "clear", "delete_if", "keep_if", "slice", "except", "flatten", "select", "reject", "map", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
 	case "inspect":
 		return newInspectBuiltin("hash"), nil
@@ -1018,6 +1018,10 @@ func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 	if err != nil {
 		return NewNil(), err
 	}
+	receiver, err = exec.writableCollection(receiver)
+	if err != nil {
+		return NewNil(), err
+	}
 	if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
@@ -1044,84 +1048,6 @@ func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 	for _, key := range dropped {
 		if _, _, err := hashDeleteKey(receiver, key); err != nil {
 			return NewNil(), err
-		}
-	}
-	return receiver, nil
-}
-
-// hashMergeInPlace implements Ruby's Hash#merge! / Hash#update: it folds each
-// argument's entries into the receiver in place, resolving key conflicts
-// through the optional block (invoked with key, old value, new value), and
-// returns the receiver. Argument entries land in insertion order (bare host
-// maps contribute in sorted key order), so new keys append to the receiver's
-// recorded order exactly as index assignment would.
-func hashMergeInPlace(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, name string) (Value, error) {
-	if len(kwargs) > 0 {
-		return NewNil(), fmt.Errorf("hash.%s does not accept keyword arguments", name)
-	}
-	for i, arg := range args {
-		if arg.Kind() != KindHash && arg.Kind() != KindObject {
-			return NewNil(), fmt.Errorf("hash.%s argument %d must be a hash", name, i+1)
-		}
-	}
-	if len(args) == 0 {
-		return receiver, nil
-	}
-	added := 0
-	maxArgLen := 0
-	for _, arg := range args {
-		argLen := arg.HashLen()
-		added = saturatingAdd(added, argLen)
-		if argLen > maxArgLen {
-			maxArgLen = argLen
-		}
-	}
-	// Charge the worst-case growth (every argument entry landing in a fresh
-	// receiver slot) plus the entry scratch the snapshot walk may allocate,
-	// before the receiver grows.
-	if err := exec.checkProjectedHashTransformBytes(added, sortedHashEntryBufferBytes(maxArgLen), receiver, args, kwargs, block); err != nil {
-		return NewNil(), err
-	}
-	var runner *blockCallRunner
-	if valueBlock(block) != nil {
-		r, err := newBlockCallRunner(exec, block, "hash."+name, receiver, args, kwargs)
-		if err != nil {
-			return NewNil(), err
-		}
-		runner = r
-	}
-	var entryBuf [smallHashKeyBufferSize]HashEntry
-	var blockArgs [3]Value
-	for _, arg := range args {
-		// The snapshot buffer also makes h.merge!(h) safe: the walk reads the
-		// copied entries while the writes land in the receiver.
-		for _, entry := range arg.HashEntriesInto(entryBuf[:]) {
-			if err := exec.step(); err != nil {
-				return NewNil(), err
-			}
-			if err := exec.chargeValueKeySteps(entry.Key); err != nil {
-				return NewNil(), err
-			}
-			val := entry.Value
-			if runner != nil {
-				oldValue, conflict, err := hashGet(receiver, entry.Key)
-				if err != nil {
-					return NewNil(), err
-				}
-				if conflict {
-					blockArgs[0] = entry.Key
-					blockArgs[1] = oldValue
-					blockArgs[2] = val
-					merged, err := runner.call(blockArgs[:])
-					if err != nil {
-						return NewNil(), err
-					}
-					val = merged
-				}
-			}
-			if err := hashSet(receiver, entry.Key, val); err != nil {
-				return NewNil(), err
-			}
 		}
 	}
 	return receiver, nil
@@ -1282,15 +1208,6 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			return out, nil
 		}), nil
-	case "update", "merge!":
-		// Ruby's Hash#update / Hash#merge! fold the argument hashes into the
-		// receiver in place (resolving conflicts through the optional block)
-		// and return the receiver. AutoBuiltin so a parenless `hash.merge!`
-		// invokes with zero arguments and is a no-op returning the receiver.
-		name := property
-		return NewAutoBuiltin("hash."+name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return hashMergeInPlace(exec, receiver, args, kwargs, block, name)
-		}), nil
 	case "replace":
 		return NewBuiltin("hash.replace", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			// Reject keyword arguments rather than silently dropping them; the
@@ -1320,6 +1237,10 @@ func hashMemberTransforms(property string) (Value, error) {
 			// copy.
 			var entryBuf [smallHashKeyBufferSize]HashEntry
 			entries := args[0].HashEntriesInto(entryBuf[:])
+			receiver, err := exec.writableCollection(receiver)
+			if err != nil {
+				return NewNil(), err
+			}
 			hashClearEntries(receiver)
 			// Pre-size the entry map and order backing to the adopted entry
 			// count so the rebuilt receiver holds exactly the slots the
@@ -1389,6 +1310,10 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err := exec.checkProjectedHashBytes(1, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
+			receiver, err := exec.writableCollection(receiver)
+			if err != nil {
+				return NewNil(), err
+			}
 			if err := hashSet(receiver, args[0], args[1]); err != nil {
 				return NewNil(), fmt.Errorf("hash.store key is an unsupported hash key: %w", err)
 			}
@@ -1411,6 +1336,10 @@ func hashMemberTransforms(property string) (Value, error) {
 			// Ruby's Hash#delete removes the entry from the receiver in place
 			// and returns the removed value. The removal keeps the surviving
 			// entries in their recorded insertion order and allocates nothing.
+			receiver, err := exec.writableCollection(receiver)
+			if err != nil {
+				return NewNil(), err
+			}
 			removed, existed, err := hashDeleteKey(receiver, args[0])
 			if err != nil {
 				return NewNil(), fmt.Errorf("hash.delete key is an unsupported hash key: %w", err)
@@ -1438,6 +1367,10 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("hash.clear does not accept a block")
 			}
 			// Ruby's Hash#clear empties the receiver in place and returns it.
+			receiver, err := exec.writableCollection(receiver)
+			if err != nil {
+				return NewNil(), err
+			}
 			hashClearEntries(receiver)
 			return receiver, nil
 		}), nil

@@ -132,6 +132,6 @@ func objectTagMutationError(val Value, operation string) error {
 // hashInPlaceMutators are the members that write through to the receiver's own
 // entries, as opposed to returning a new hash.
 var hashInPlaceMutators = map[string]struct{}{
-	"merge!": {}, "update": {}, "replace": {}, "store": {},
+	"replace": {}, "store": {},
 	"delete": {}, "clear": {}, "delete_if": {}, "keep_if": {},
 }

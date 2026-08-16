@@ -56,7 +56,7 @@ const (
 	// user code during dispatch.
 	effectPure
 	// effectMutatesReceiver marks members that may modify their receiver
-	// in place (push, map!, upcase!, ...).
+	// in place (push, delete_if, upcase!, ...).
 	effectMutatesReceiver
 )
 
@@ -456,19 +456,19 @@ func exportedMemberContract(contract memberContract) MemberContract {
 var memberContractExemptions = map[string][]string{
 	"array": {
 		"all?", "any?", "append", "chunk", "chunk_while", "clear", "combination",
-		"compact", "compact!", "count", "cycle", "delete", "delete_if",
+		"compact", "count", "cycle", "delete", "delete_if",
 		"collect_concat", "difference", "dig", "drop", "drop_while", "each", "each_cons",
 		"each_slice", "each_with_index", "empty?", "fill", "filter_map", "find",
 		"find_index", "first", "flat_map", "flatten", "grep", "grep_v", "group_by",
 		"group_by_stable", "include?", "index", "insert", "inspect", "join",
-		"keep_if", "last", "length", "map", "map!", "map_with_index", "max",
+		"keep_if", "last", "length", "map", "map_with_index", "max",
 		"max_by", "min", "min_by", "minmax", "none?", "one?", "partition",
 		"permutation", "pop", "prepend", "product", "push", "reduce", "reject",
-		"reject!", "repeated_combination", "repeated_permutation", "reverse",
-		"reverse!", "reverse_each", "rindex", "rotate", "sample", "select",
-		"select!", "shift", "shuffle", "size", "slice_when", "sort", "sort!",
+		"repeated_combination", "repeated_permutation", "reverse",
+		"reverse_each", "rindex", "rotate", "sample", "select",
+		"shift", "shuffle", "size", "slice_when", "sort",
 		"sort_by", "sum", "take", "take_while", "tally", "to_h", "transpose",
-		"union", "uniq", "uniq!", "unshift", "values_at", "window", "zip",
+		"union", "uniq", "unshift", "values_at", "window", "zip",
 	},
 	"block": {
 		"call", "lambda?",
@@ -497,8 +497,8 @@ var memberContractExemptions = map[string][]string{
 		"each_with_index", "empty?", "except", "fetch", "fetch_values",
 		"flatten", "has_key?", "has_value?", "include?", "inspect", "keep_if",
 		"key?", "keys", "length", "map", "map_with_index", "member?", "merge",
-		"merge!", "reject", "remap_keys", "replace", "select", "size", "slice",
-		"store", "to_a", "transform_keys", "transform_values", "update",
+		"reject", "remap_keys", "replace", "select", "size", "slice",
+		"store", "to_a", "transform_keys", "transform_values",
 		"value?", "values", "values_at",
 	},
 	"int": {
