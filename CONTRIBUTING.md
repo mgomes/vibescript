@@ -20,6 +20,8 @@ enforces, and the conventions reviewers will look for.
 - **`gofumpt`** is applied through `golangci-lint fmt`; you do not need to
   install it separately, but having it on `$PATH` is convenient for editor
   integrations.
+- **`deadcode`** backs `just deadcode` and is optional. Install with
+  `go install golang.org/x/tools/cmd/deadcode@latest`.
 
 Clone, then verify the tree is healthy:
 
@@ -116,6 +118,13 @@ committing.
 The lint contract lives in `.golangci.yml`. Enabled linters: `errcheck`,
 `govet`, `staticcheck`, `ineffassign`, `unused`, `misspell`. Format with
 `gofmt` + `gofumpt` (extra rules on).
+
+### Finding unreachable code
+
+`just deadcode` reports functions no command and no test can reach. It is a
+report, not a gate: CI does not run it, and a hit is a coverage gap as often as
+it is dead code, so check each one before deleting. The `Justfile` comment
+explains why the roots are what they are.
 
 ## Error messages
 
