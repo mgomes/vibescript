@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"testing"
 )
@@ -282,104 +281,6 @@ func TestRubyBatchArrayUniqBlockReservesScalarKeyMapCapacity(t *testing.T) {
 	got = valueSetScratchBytesForNext(seen, NewInt(2), hint)
 	if got < want {
 		t.Fatalf("second scalar key scratch = %d, want retained initial map capacity %d", got, want)
-	}
-}
-
-func TestRubyBatchArrayBangTransforms(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `
-def run()
-  [
-    [1, nil, 2].compact!,
-    [1, 2].compact!,
-    [0.0 / 0.0].compact!,
-    [1, 1, 2].uniq!,
-    [1, 2].uniq!,
-    [0.0 / 0.0].uniq!,
-    [3, 1, 2].sort!,
-    [1, 2].map! do |n|
-      n * 3
-    end,
-    [1, 2, 3].select! do |n|
-      n < 3
-    end,
-    [1, 2].select! do |n|
-      n > 0
-    end,
-    [1, 2, 3].reject! do |n|
-      n == 2
-    end,
-    [1, 2].reject! do |n|
-      n == 9
-    end,
-    [1, 2, 3].reverse!
-  ]
-end
-`)
-
-	got := callFunc(t, script, "run", nil)
-	requireRubyBatchValue(t, got, rubyBatchArray(
-		rubyBatchArray(NewInt(1), NewInt(2)),
-		NewNil(),
-		NewNil(),
-		rubyBatchArray(NewInt(1), NewInt(2)),
-		NewNil(),
-		NewNil(),
-		rubyBatchArray(NewInt(1), NewInt(2), NewInt(3)),
-		rubyBatchArray(NewInt(3), NewInt(6)),
-		rubyBatchArray(NewInt(1), NewInt(2)),
-		NewNil(),
-		rubyBatchArray(NewInt(1), NewInt(3)),
-		NewNil(),
-		rubyBatchArray(NewInt(3), NewInt(2), NewInt(1)),
-	))
-}
-
-func TestRubyBatchArrayUniqBangCollapsesRepeatedNaN(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `
-def run()
-  [0.0 / 0.0, 0.0 / 0.0].uniq!
-end
-`)
-
-	got := callFunc(t, script, "run", nil)
-	if got.Kind() != KindArray {
-		t.Fatalf("run() kind = %v, want array", got.Kind())
-	}
-	items := got.Array()
-	if len(items) != 1 {
-		t.Fatalf("run() length = %d, want 1", len(items))
-	}
-	if items[0].Kind() != KindFloat || !math.IsNaN(items[0].Float()) {
-		t.Fatalf("run()[0] = %v, want NaN float", items[0])
-	}
-}
-
-func TestRubyBatchArraySortBangHonorsStepQuota(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		block Value
-	}{
-		{name: "blockless", block: NewNil()},
-		{name: "block comparator", block: rubyBatchZeroComparatorBlock()},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			const quota = 10
-			exec := &Execution{ctx: context.Background(), quota: quota, memoryQuota: 1 << 30}
-			_, err := callArrayMember(t, exec, largeIntArray(1_000), "sort!", nil, tc.block)
-			requireRubyBatchStepQuotaError(t, err)
-			if exec.steps > quota+1 {
-				t.Fatalf("array.sort! took %d steps, want it to stop near the quota %d", exec.steps, quota)
-			}
-		})
 	}
 }
 

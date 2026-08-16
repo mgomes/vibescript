@@ -266,7 +266,18 @@ func (exec *Execution) detachStoredCollection(val Value) (Value, error) {
 	if id != exec.addressedCollection && !slices.Contains(exec.addressedPath, id) {
 		return val, nil
 	}
-	return exec.copyCollection(val)
+	// The copy must be independent of the container being written, and a
+	// shallow one is not: copying `a` for `a[0].push(a)` produces a second
+	// wrapper that still holds the very element the push is about to write
+	// into, which is the cycle this exists to prevent. A deep copy is also the
+	// right answer rather than a workaround -- what the write stores is the
+	// value the container had, all the way down, not a window onto the value it
+	// is about to have.
+	detached := deepCloneValue(val)
+	if err := exec.checkMemoryValue(detached); err != nil {
+		return NewNil(), err
+	}
+	return detached, nil
 }
 
 // detachStoredCollections applies detachStoredCollection across a mutator's
@@ -376,11 +387,17 @@ func (exec *Execution) resolveMutableReceiver(expr Expression, env *Env) (Value,
 	if !ok {
 		return NewNil(), false, nil
 	}
-	leaf, chain, err := exec.walkMutablePath(path, env)
+	leaf, chain, addressable, err := exec.walkMutablePath(path, env)
 	if err != nil {
 		return NewNil(), true, err
 	}
-	exec.addressCollection(leaf, chain)
+	// A path that left collection storage -- a member of a class instance, an
+	// index into a string -- read the value the ordinary evaluation would have,
+	// so the caller keeps it, but it names no slot the write may update. Leaving
+	// the permission ungranted is what makes that write land on a copy.
+	if addressable {
+		exec.addressCollection(leaf, chain)
+	}
 	return leaf, true, nil
 }
 
@@ -471,7 +488,7 @@ func reverseSteps(steps []mutablePathStep) []mutablePathStep {
 // one is shared by construction and is copied in turn. That is not incidental:
 // after the copy both wrappers name the same child, and only one of them may go
 // on writing through it.
-func (exec *Execution) walkMutablePath(path mutablePath, env *Env) (Value, []uintptr, error) {
+func (exec *Execution) walkMutablePath(path mutablePath, env *Env) (Value, []uintptr, bool, error) {
 	if len(path.steps) == 0 {
 		// A bare local, instance variable, or class variable is the common
 		// case -- `a.push(x)`, `@rows << row` -- and needs neither the reading
@@ -479,23 +496,24 @@ func (exec *Execution) walkMutablePath(path mutablePath, env *Env) (Value, []uin
 		// on the spot.
 		current, ok := path.root.get()
 		if !ok || !isCollection(current) {
-			return current, nil, nil
+			return current, nil, ok, nil
 		}
 		if exec.exclusivelyHeld(current) {
-			return current, nil, nil
+			return current, nil, true, nil
 		}
 		copied, err := exec.copyCollection(current)
 		if err != nil {
-			return NewNil(), nil, err
+			return NewNil(), nil, false, err
 		}
 		path.root.rebind(copied)
-		return copied, nil, nil
+		return copied, nil, true, nil
 	}
 	leaf, addressable, err := exec.readMutablePath(path, env)
 	if err != nil || !addressable || !isCollection(leaf) {
-		return leaf, nil, err
+		return leaf, nil, false, err
 	}
-	return exec.isolateMutablePath(path, env)
+	isolated, chain, err := exec.isolateMutablePath(path, env)
+	return isolated, chain, err == nil, err
 }
 
 // readMutablePath is the reading pass. It reports whether every hop addressed
