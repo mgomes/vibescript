@@ -46,7 +46,7 @@ values, use [`github.com/google/go-cmp/cmp`](https://pkg.go.dev/github.com/googl
 
 ```bash
 just test                       # go test ./...
-just test-race                  # go test -race ./...
+just test-race                  # go test -timeout 30m -race ./...
 just fuzz                       # 10s per fuzz target (default)
 just fuzz fuzztime=30s          # bump per-target fuzz time
 just bench                      # runtime benchmarks
@@ -170,7 +170,7 @@ Do not push directly to `master`; open a pull request from a branch.
   branch and call out the dependency in the description.
 - CI must be green before merge. The required jobs are:
   - `build-and-test` on Linux, macOS, and Windows (`just test`).
-  - `race-detector` (`go test -race ./...`).
+  - `race-detector` (`go test -timeout 30m -race ./...`).
   - `quality-gates` (examples coverage, known-issues bug bar, parser +
     runtime fuzz smoke).
   - `just lint` and `vibes fmt -check`.
