@@ -352,9 +352,13 @@ func (p *parser) addPercentScanExhaustedError() {
 	if pos == (ast.Position{}) {
 		pos = p.curToken.Pos
 	}
-	p.addParseError(pos, "too many ambiguous \"%\" operators to tell percent-array literals from modulo;"+
-		" parenthesize the intended literals, as in foo(%w[a b])")
+	p.addParseError(pos, "%s", percentScanExhaustedMessage)
 }
+
+// percentScanExhaustedMessage is spelled as a constant because it contains
+// literal percent signs, which a format string would read as verbs.
+const percentScanExhaustedMessage = "too many ambiguous \"%\" operators to tell percent-array literals from modulo;" +
+	" parenthesize the intended literals, as in foo(%w[a b])"
 
 const (
 	lowestPrec = iota
@@ -468,10 +472,10 @@ func (p *parser) errorExpected(tok ast.Token, expected string) {
 	// the cause is clear. Plain illegal characters carry only the raw source
 	// rune, so they fall back to the generic "expected X, got invalid token".
 	if tok.Type == ast.TokenIllegal && tok.Diagnostic {
-		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), tok.Literal)
+		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), "%s", srcText(tok.Literal))
 		return
 	}
-	p.addParseErrorSpan(tok.Pos, tokenEnd(tok), fmt.Sprintf("expected %s, got %s", expected, tokenLabel(tok.Type)))
+	p.addParseErrorSpan(tok.Pos, tokenEnd(tok), "expected %s, got %s", expected, tokenLabel(tok.Type))
 }
 
 func (p *parser) errorUnexpected(tok ast.Token) {
@@ -480,20 +484,31 @@ func (p *parser) errorUnexpected(tok ast.Token) {
 	// the cause is clear. Plain illegal characters carry only the raw source
 	// rune, so they fall back to the generic "unexpected token invalid token".
 	if tok.Type == ast.TokenIllegal && tok.Diagnostic {
-		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), tok.Literal)
+		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), "%s", srcText(tok.Literal))
 		return
 	}
-	p.addParseErrorSpan(tok.Pos, tokenEnd(tok), fmt.Sprintf("unexpected token %s", tokenLabel(tok.Type)))
+	p.addParseErrorSpan(tok.Pos, tokenEnd(tok), "unexpected token %s", tokenLabel(tok.Type))
 }
 
-func (p *parser) addParseError(pos ast.Position, msg string) {
-	p.addParseErrorSpan(pos, ast.Position{}, msg)
+// addParseError records a diagnostic at pos. It takes the format and its
+// arguments rather than a finished message so that the error budget is
+// consulted before any of the message is built: parsing runs before any
+// sandbox exists, so an error the cap will discard must cost no work at all,
+// however much source text its message would have quoted. Source text an
+// argument carries into a message belongs in srcText, which bounds how much of
+// it a diagnostic can reproduce.
+func (p *parser) addParseError(pos ast.Position, format string, args ...any) {
+	p.addParseErrorSpan(pos, ast.Position{}, format, args...)
 }
 
-func (p *parser) addParseErrorSpan(pos, end ast.Position, msg string) {
+func (p *parser) addParseErrorSpan(pos, end ast.Position, format string, args ...any) {
 	if len(p.errors) >= maxParseErrors {
 		p.omittedErrors++
 		return
+	}
+	msg := format
+	if len(args) > 0 {
+		msg = fmt.Sprintf(format, args...)
 	}
 	p.errors = append(p.errors, &parseError{pos: pos, end: end, msg: msg, frames: p.codeFrameFormatter()})
 }

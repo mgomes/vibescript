@@ -2,7 +2,6 @@ package parser
 
 import (
 	"errors"
-	"fmt"
 	"math/big"
 	"slices"
 	"strconv"
@@ -404,12 +403,12 @@ func (p *parser) parseRegexLiteral() ast.Expression {
 		switch flag {
 		case 'i', 'm':
 			if seen[flag] {
-				p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), fmt.Sprintf("repeated regex flag %q", string(flag)))
+				p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), "repeated regex flag %q", string(flag))
 				return nil
 			}
 			seen[flag] = true
 		default:
-			p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), fmt.Sprintf("unsupported regex flag %q; supported flags are i and m", string(flag)))
+			p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), "unsupported regex flag %q; supported flags are i and m", string(flag))
 			return nil
 		}
 	}
@@ -923,7 +922,7 @@ func (p *parser) parseIntegerLiteral() ast.Expression {
 		// to an arbitrary-precision value. Anything else stays a parse error.
 		if errors.Is(err, strconv.ErrRange) {
 			if len(p.curToken.Literal) > maxIntegerLiteralDigits {
-				p.addParseError(p.curToken.Pos, fmt.Sprintf("integer literal exceeds %d digits", maxIntegerLiteralDigits))
+				p.addParseError(p.curToken.Pos, "integer literal exceeds %d digits", maxIntegerLiteralDigits)
 				return nil
 			}
 			if big, ok := parseBigIntegerToken(p.curToken.Literal); ok {
@@ -1163,7 +1162,7 @@ func (p *parser) parseStringInterpolationExpression(raw string, pos ast.Position
 	exprParser.l.interpDepth = p.l.interpDepth + 1
 	expr := exprParser.parseLineExpression(lowestPrec)
 	if len(exprParser.errors) > 0 {
-		p.addParseError(pos, fmt.Sprintf("invalid string interpolation: %s", parseErrorMessage(exprParser.errors[0])))
+		p.addParseError(pos, "invalid string interpolation: %s", srcText(parseErrorMessage(exprParser.errors[0])))
 		return nil, false
 	}
 	if expr == nil {
@@ -2160,7 +2159,7 @@ func (p *parser) parseHashPair() ast.HashPair {
 			value := &ast.Identifier{Name: labelKey.Name, Position: labelKey.Position}
 			return ast.HashPair{Key: key, Value: value}
 		}
-		p.addParseError(p.peekToken.Pos, fmt.Sprintf("missing value for hash key %s", hashKeyName(key)))
+		p.addParseError(p.peekToken.Pos, "missing value for hash key %s", srcText(hashKeyName(key)))
 		return ast.HashPair{}
 	}
 

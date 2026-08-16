@@ -1,7 +1,6 @@
 package parser
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 
@@ -103,7 +102,7 @@ func (p *parser) parseStatementModifier(stmt ast.Statement) ast.Statement {
 		p.nextToken()
 		p.nextToken()
 		_ = p.parseLineExpression(lowestPrec)
-		p.addParseError(modifier.Pos, fmt.Sprintf("modifier %s is only supported after expression or assignment statements, or leaf control-flow statements", strings.ToLower(modifier.Type.String())))
+		p.addParseError(modifier.Pos, "modifier %s is only supported after expression or assignment statements, or leaf control-flow statements", strings.ToLower(modifier.Type.String()))
 		return stmt
 	}
 
@@ -493,7 +492,7 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 	var elseBody []ast.Statement
 	if p.curToken.Type == ast.TokenElse {
 		if len(rescues) == 0 {
-			p.addParseError(p.curToken.Pos, fmt.Sprintf("%s else requires rescue", owner))
+			p.addParseError(p.curToken.Pos, "%s else requires rescue", owner)
 			return nil
 		}
 		p.nextToken()
@@ -513,7 +512,7 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 
 	needsHandler := len(rescues) > 0 || owner == "function"
 	if needsHandler && !anyRescueBody && len(ensureBody) == 0 {
-		p.addParseError(pos, fmt.Sprintf("%s requires rescue and/or ensure", owner))
+		p.addParseError(pos, "%s requires rescue and/or ensure", owner)
 		return nil
 	}
 
@@ -651,11 +650,11 @@ func (p *parser) validateRescueTypeExpr(ty *ast.TypeExpr, pos ast.Position) bool
 	}
 
 	if len(ty.TypeArgs) > 0 || len(ty.Shape) > 0 {
-		p.addParseError(pos, fmt.Sprintf("rescue type must be an error class, got %s", ast.FormatTypeExpr(ty)))
+		p.addParseError(pos, "rescue type must be an error class, got %s", typeText{ty})
 		return false
 	}
 	if _, ok := ast.CanonicalRuntimeErrorType(ty.Name); !ok {
-		p.addParseError(pos, fmt.Sprintf("unknown rescue error type %s", ty.Name))
+		p.addParseError(pos, "unknown rescue error type %s", srcText(ty.Name))
 		return false
 	}
 	return true
@@ -678,7 +677,7 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		p.nextToken()
 	} else if opName, ok := p.parseOperatorMethodName(); ok {
 		if !p.insideClass {
-			p.addParseError(pos, fmt.Sprintf("operator method %s must be defined in a class", opName))
+			p.addParseError(pos, "operator method %s must be defined in a class", opName)
 			return nil
 		}
 		isOperatorMethod = true
@@ -916,7 +915,7 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 			}
 			fn := fnStmt.(*ast.FunctionStmt)
 			if isModule && !fn.IsClassMethod {
-				p.addParseError(fn.Position, fmt.Sprintf("def %s in module %s must be def self.%s; a module is a namespace, not a method source", fn.Name, name, fn.Name))
+				p.addParseError(fn.Position, "def %s in module %s must be def self.%s; a module is a namespace, not a method source", srcText(fn.Name), srcText(name), srcText(fn.Name))
 				break
 			}
 			if fn.IsClassMethod {
@@ -935,7 +934,7 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 					}
 					aliasStmt := alias.(*ast.AliasStmt)
 					if isModule {
-						p.addParseError(aliasStmt.Pos(), fmt.Sprintf("alias in module %s is not supported; a module has no instance methods to rename, so %s", name, moduleNamespaceReplacement))
+						p.addParseError(aliasStmt.Pos(), "alias in module %s is not supported; a module has no instance methods to rename, so %s", srcText(name), moduleNamespaceReplacement)
 						break
 					}
 					stmt.Aliases = append(stmt.Aliases, aliasStmt)
@@ -953,7 +952,7 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 				}
 				aliasStmt := alias.(*ast.AliasStmt)
 				if isModule {
-					p.addParseError(aliasStmt.Pos(), fmt.Sprintf("alias_method in module %s is not supported; a module has no instance methods to rename, so %s", name, moduleNamespaceReplacement))
+					p.addParseError(aliasStmt.Pos(), "alias_method in module %s is not supported; a module has no instance methods to rename, so %s", srcText(name), moduleNamespaceReplacement)
 					break
 				}
 				stmt.Aliases = append(stmt.Aliases, aliasStmt)
@@ -1012,7 +1011,7 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 				p.pendingVisibility = ""
 			}
 			if isModule {
-				p.addParseError(decl.Position, fmt.Sprintf("%s in module %s is not supported; a module has no instances, so %s", kind, name, moduleNamespaceReplacement))
+				p.addParseError(decl.Position, "%s in module %s is not supported; a module has no instances, so %s", srcText(kind), srcText(name), moduleNamespaceReplacement)
 				break
 			}
 			stmt.Properties = append(stmt.Properties, decl)
@@ -1061,7 +1060,7 @@ func (p *parser) startsMixinDirective() bool {
 // module list that follows does not produce a second, unrelated error.
 func (p *parser) reportRemovedMixinDirective() {
 	pos := p.curToken.Pos
-	p.addParseError(pos, fmt.Sprintf("%s is not supported; %s", p.curToken.Literal, moduleNamespaceHint))
+	p.addParseError(pos, "%s is not supported; %s", srcText(p.curToken.Literal), moduleNamespaceHint)
 	p.recoverSameLineStatementRemainder(pos.Line)
 }
 
@@ -1133,7 +1132,7 @@ func (p *parser) parseVisibilityMember(stmt *ast.ClassStmt, level string) bool {
 			}
 		}
 	} else if !p.peekEndsStatement(pos) {
-		p.addParseError(p.peekToken.Pos, fmt.Sprintf("%s expects a method definition, symbol method names, or no argument", level))
+		p.addParseError(p.peekToken.Pos, "%s expects a method definition, symbol method names, or no argument", level)
 		p.recoverSameLineStatementRemainder(pos.Line)
 		return false
 	}
@@ -1244,7 +1243,7 @@ func (p *parser) parseEnumStatement() ast.Statement {
 			Position: p.curToken.Pos,
 		}
 		if _, exists := memberNames[member.Name]; exists {
-			p.addParseError(member.Position, fmt.Sprintf("duplicate enum member %s", member.Name))
+			p.addParseError(member.Position, "duplicate enum member %s", srcText(member.Name))
 			return nil
 		}
 		memberNames[member.Name] = struct{}{}
@@ -1253,7 +1252,7 @@ func (p *parser) parseEnumStatement() ast.Statement {
 	}
 
 	if len(stmt.Members) == 0 {
-		p.addParseError(pos, fmt.Sprintf("enum %s must define at least one member", name))
+		p.addParseError(pos, "enum %s must define at least one member", srcText(name))
 		return nil
 	}
 	if p.curToken.Type != ast.TokenEnd {
@@ -1337,7 +1336,8 @@ func (p *parser) parseParamsWithOptions(options paramParseOptions) []ast.Param {
 		switch param.Kind {
 		case ast.ParamNormal:
 			if seenRest || seenKeyword || seenKeywordRest || seenBlock {
-				p.addParseError(paramPos, ordinaryParamOrderMessage(param, params))
+				format, args := ordinaryParamOrderMessage(param, params)
+				p.addParseError(paramPos, format, args...)
 				return params
 			}
 		case ast.ParamRest:
@@ -1444,8 +1444,8 @@ func (p *parser) parseParam(options paramParseOptions) (ast.Param, ast.Position,
 		if param.Type == nil {
 			return ast.Param{}, ast.Position{}, false
 		}
-		if err := captureParamTypeError(param); err != "" {
-			p.addParseError(param.Type.Position, err)
+		if format, args := captureParamTypeError(param); format != "" {
+			p.addParseError(param.Type.Position, format, args...)
 			return ast.Param{}, ast.Position{}, false
 		}
 		if kind == ast.ParamNormal && !param.IsIvar && p.peekToken.Type == ast.TokenColon {
@@ -1473,18 +1473,22 @@ func (p *parser) parseParam(options paramParseOptions) (ast.Param, ast.Position,
 	return param, pos, true
 }
 
-func captureParamTypeError(param ast.Param) string {
+// captureParamTypeError reports the diagnostic for a capture parameter whose
+// annotation cannot hold what it captures, as a format and its arguments so
+// the message is built only under the error budget. An empty format means the
+// annotation is acceptable.
+func captureParamTypeError(param ast.Param) (string, []any) {
 	switch param.Kind {
 	case ast.ParamRest:
 		if !restCaptureTypeAcceptsArray(param.Type) {
-			return fmt.Sprintf("rest parameter %s captures an array; annotate it as array<...> or any", param.Name)
+			return "rest parameter %s captures an array; annotate it as array<...> or any", []any{srcText(param.Name)}
 		}
 	case ast.ParamKeywordRest:
 		if !keywordRestCaptureTypeAcceptsHash(param.Type) {
-			return fmt.Sprintf("keyword rest parameter %s captures a hash; annotate it as hash<...>, object, a shape type, or any", param.Name)
+			return "keyword rest parameter %s captures a hash; annotate it as hash<...>, object, a shape type, or any", []any{srcText(param.Name)}
 		}
 	}
-	return ""
+	return "", nil
 }
 
 func restCaptureTypeAcceptsArray(ty *ast.TypeExpr) bool {
@@ -1991,7 +1995,7 @@ func (p *parser) parsePropertyName() (ast.PropertyName, bool) {
 		// and "expected property name, got symbol" does not say that the
 		// argument shape differs too.
 		if p.curToken.Type == ast.TokenSymbol {
-			p.addParseError(p.curToken.Pos, fmt.Sprintf("property takes a bare name: property %s, not property :%s", p.curToken.Literal, p.curToken.Literal))
+			p.addParseError(p.curToken.Pos, "property takes a bare name: property %s, not property :%s", srcText(p.curToken.Literal), srcText(p.curToken.Literal))
 			return ast.PropertyName{}, false
 		}
 		p.errorExpected(p.curToken, "property name")
@@ -2210,11 +2214,7 @@ func (p *parser) parseDestructureElement(allowType bool, extraAnonymousRestTermi
 			return ast.DestructureElement{}, false
 		}
 		if rest && !restCaptureTypeAcceptsArray(element.Type) {
-			name := ast.FormatDestructureTarget(target)
-			if name == "" {
-				name = "*"
-			}
-			p.addParseError(element.Type.Position, fmt.Sprintf("rest destructuring target %s captures an array; annotate it as array<...> or any", name))
+			p.addParseError(element.Type.Position, "rest destructuring target %s captures an array; annotate it as array<...> or any", targetText{target})
 			return ast.DestructureElement{}, false
 		}
 	}
