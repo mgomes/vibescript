@@ -35,12 +35,18 @@ import (
 // Nothing about this is script-visible. Sharing a wrapper is a representation
 // detail the memory estimator may still measure; the language sees only values.
 
-// alwaysCopyCollections makes every write copy its receiver instead of asking
-// whether the wrapper is exclusively held. Copy-per-write is the reference
-// semantics this file optimizes, so running a suite with it on and off must
-// produce identical results -- and a missing publishCollection call is exactly
-// what makes them differ. It is read once, in the runtime package's test
-// TestMain, and is never on in production.
+// alwaysCopyCollections makes an addressable write copy and rebind its whole
+// path unconditionally, instead of asking whether each level is exclusively
+// held. Copy-per-write is the reference semantics the ref state optimizes, so
+// running a suite with it on and off must produce identical results: a write
+// that mutated in place because refs under-counted is exactly the one the oracle
+// copies instead, and the two runs then disagree.
+//
+// It is the only oracle for this design's one bug class -- a store that creates
+// a durable handle without publishing it -- because such a store is invisible
+// until some later write happens to reach the wrapper it left uncounted. It is
+// read once, in the runtime package's test TestMain, and is never on in
+// production.
 var alwaysCopyCollections = false
 
 // maybeEnableCollectionCopyVerify turns on the always-copy oracle when
@@ -186,14 +192,19 @@ func (exec *Execution) copyCollection(val Value) (Value, error) {
 // records on the execution for the duration of one call; without that record a
 // receiver that lives in a slot is a temporary, and the write goes to a copy
 // nothing else can see.
+//
+// The always-copy oracle deliberately does not reach here. It forces the path
+// walk to copy, which installs a fresh wrapper at the slot being written; making
+// this copy a second time would leave the write in a wrapper installed nowhere
+// and lose it, which is a bug in the oracle rather than a finding.
 func (exec *Execution) writableCollection(val Value) (Value, error) {
 	if !isCollection(val) {
 		return val, nil
 	}
-	if !alwaysCopyCollections && val.Unpublished() {
+	if val.Unpublished() {
 		return val, nil
 	}
-	if !alwaysCopyCollections && val.SoleRef() && exec.addressedCollection != 0 &&
+	if val.SoleRef() && exec.addressedCollection != 0 &&
 		exec.addressedCollection == collectionIdentity(val) {
 		return val, nil
 	}

@@ -238,7 +238,9 @@ func (r *callFunctionRebinder) copyAndRegisterInboundValue(val Value) Value {
 		if r.seenArrays == nil {
 			r.seenArrays = make(map[uintptr]Value)
 		}
-		r.seenArrays[arrayIdentity(val)] = clonedVal
+		id := arrayIdentity(val)
+		r.seenArrays[id] = clonedVal
+		r.noteDeferredGlobalClone(id, clonedVal)
 		for i, item := range items {
 			switch item.Kind() {
 			case KindArray, KindHash, KindObject:
@@ -253,13 +255,16 @@ func (r *callFunctionRebinder) copyAndRegisterInboundValue(val Value) Value {
 		if r.seenHashes == nil {
 			r.seenHashes = make(map[uintptr]Value)
 		}
-		r.seenHashes[hashIdentity(val)] = clonedVal
+		id := hashIdentity(val)
+		r.seenHashes[id] = clonedVal
+		r.noteDeferredGlobalClone(id, clonedVal)
 		if entries != nil {
 			if r.seenHashEntries == nil {
 				r.seenHashEntries = make(map[uintptr]map[string]Value)
 			}
 			r.seenHashEntries[reflect.ValueOf(entries).Pointer()] = clonedEntries
 		}
+		r.shareEntryMapOwners(clonedEntries, clonedVal)
 		return clonedVal
 	case KindObject:
 		entries := val.HashEntryMap()

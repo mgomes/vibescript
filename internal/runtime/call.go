@@ -734,6 +734,21 @@ type callFunctionRebinder struct {
 	// two wrappers have distinct identities -- so the entry-map cache lets both
 	// rebound wrappers point at one cloned entry map and keep the aliasing.
 	seenHashEntries map[uintptr]map[string]Value
+	// sharedEntryOwners records the first rebound wrapper built over each cloned
+	// entry map, keyed on that map. Collections are values, so a second wrapper
+	// over one map must not let a write through either be seen through the
+	// other: both are marked shared the moment the second appears, which makes
+	// each of their writes copy the map first. The storage stays deduplicated --
+	// the estimator still measures one map -- while the aliasing stops being
+	// observable, which is the division ADR-006 item 2 draws.
+	sharedEntryOwners map[uintptr]Value
+	// deferredGlobalIDs holds the source identities of composite globals bound
+	// lazily. Their env slot exists from call setup while their clone is only
+	// built on first read, so the slot would go uncounted until then and a
+	// write through an argument naming the same source would run in place
+	// before the global ever materialized. Registering a clone for one of these
+	// sources marks it shared immediately, which closes that window.
+	deferredGlobalIDs map[uintptr]struct{}
 	// seenMaps caches rebound object entry maps by source map and tag.
 	//
 	// Wrappers sharing one entry map normally rebind to one shared clone, so
@@ -944,6 +959,9 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		items := val.Array()
 		id := arrayIdentity(val)
 		if clone, seen := r.seenArrays[id]; seen {
+			// A second root is about to name this clone, so a write through
+			// either must copy first.
+			clone.MarkSharedRef()
 			return clone
 		}
 		clonedItems := make([]Value, len(items))
@@ -952,6 +970,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			r.seenArrays = make(map[uintptr]Value)
 		}
 		r.seenArrays[id] = clonedArray
+		r.noteDeferredGlobalClone(id, clonedArray)
 		for i := range items {
 			clonedItems[i] = r.rebindValue(items[i])
 		}
@@ -960,6 +979,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		id := hashIdentity(val)
 		if id != 0 {
 			if clone, seen := r.seenHashes[id]; seen {
+				clone.MarkSharedRef()
 				return clone
 			}
 		}
@@ -986,6 +1006,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 				r.seenHashes = make(map[uintptr]Value)
 			}
 			r.seenHashes[id] = cloned
+			r.noteDeferredGlobalClone(id, cloned)
 		}
 		if !sharedSeen && entriesPtr != 0 {
 			if r.seenHashEntries == nil {
@@ -998,13 +1019,16 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 				clonedEntries[key] = r.rebindValue(item)
 			}
 		}
+		r.shareEntryMapOwners(clonedEntries, cloned)
 		return cloned
 	case KindObject:
 		entries := val.HashEntryMap()
 		ptr := reflect.ValueOf(entries).Pointer()
 		key := objectCloneKey{ptr: ptr, tag: val.ObjectTag()}
 		if cloneMap, seen := r.seenMaps[key]; seen {
-			return retagClonedObject(val, cloneMap)
+			reused := retagClonedObject(val, cloneMap)
+			r.shareEntryMapOwners(cloneMap, reused)
+			return reused
 		}
 		clonedEntries := make(map[string]Value, len(entries))
 		if r.seenMaps == nil {
@@ -1016,7 +1040,9 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		for key, item := range entries {
 			clonedEntries[key] = r.rebindValue(item)
 		}
-		return retagClonedObject(val, clonedEntries)
+		bag := retagClonedObject(val, clonedEntries)
+		r.shareEntryMapOwners(clonedEntries, bag)
+		return bag
 	default:
 		return val
 	}
@@ -1167,6 +1193,64 @@ func (r *callFunctionRebinder) inboundValueUnseen(val Value) bool {
 	default:
 		return false
 	}
+}
+
+// noteDeferredGlobalClone marks a clone shared when its source also backs a
+// lazily bound global, so the global's slot is counted from call setup rather
+// than from the first read of it.
+func (r *callFunctionRebinder) noteDeferredGlobalClone(sourceID uintptr, clone Value) {
+	if sourceID == 0 || len(r.deferredGlobalIDs) == 0 {
+		return
+	}
+	if _, deferred := r.deferredGlobalIDs[sourceID]; deferred {
+		clone.MarkSharedRef()
+	}
+}
+
+// deferGlobalSource records a lazily bound global's source and marks any clone
+// already registered for it shared, covering the case where the arguments were
+// rebound before the globals were bound.
+func (r *callFunctionRebinder) deferGlobalSource(val Value) {
+	id := collectionIdentity(val)
+	if id == 0 {
+		return
+	}
+	if r.deferredGlobalIDs == nil {
+		r.deferredGlobalIDs = make(map[uintptr]struct{})
+	}
+	r.deferredGlobalIDs[id] = struct{}{}
+	if clone, seen := r.seenArrays[id]; seen {
+		clone.MarkSharedRef()
+	}
+	if clone, seen := r.seenHashes[id]; seen {
+		clone.MarkSharedRef()
+	}
+}
+
+// shareEntryMapOwners records wrapper as a holder of the cloned entry map, and
+// marks it and the map's first holder shared once there is more than one.
+//
+// The host may deliberately build two wrappers over one map, and the rebinder
+// deduplicates them onto one cloned map so the copy stays a copy rather than
+// two. Under value semantics that shared storage must be invisible, so both
+// wrappers copy on their first write instead of writing through it.
+func (r *callFunctionRebinder) shareEntryMapOwners(entries map[string]Value, wrapper Value) {
+	if entries == nil {
+		return
+	}
+	ptr := reflect.ValueOf(entries).Pointer()
+	if ptr == 0 {
+		return
+	}
+	if owner, seen := r.sharedEntryOwners[ptr]; seen {
+		owner.MarkSharedRef()
+		wrapper.MarkSharedRef()
+		return
+	}
+	if r.sharedEntryOwners == nil {
+		r.sharedEntryOwners = make(map[uintptr]Value)
+	}
+	r.sharedEntryOwners[ptr] = wrapper
 }
 
 // inboundHashUnseen reports whether the slow path has rebound neither this
@@ -3540,6 +3624,7 @@ func bindGlobalsForCallLazy(exec *Execution, root *Env, rebinder *callFunctionRe
 		}
 		root.defineLazy(name, hostGlobalLazyBinding{rebinder: rebinder, value: val})
 		rebinder.pendingGlobalSources = append(rebinder.pendingGlobalSources, val)
+		rebinder.deferGlobalSource(val)
 	}
 	// Deferred globals may be read after the arguments are fast-copied; make
 	// those copies register their composites so the deferred global scan and
