@@ -137,7 +137,6 @@ func TestRegexLiteralBehavior(t *testing.T) {
     def string_sub_literal_stays_literal()
       "a.c".sub(".", "!")
     end
-
     `)
 
 	sym := func(name string) Value { return NewSymbol(name) }

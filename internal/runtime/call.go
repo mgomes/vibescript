@@ -359,10 +359,10 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// swallowed, replaced, aggregated, copied, or tampered — is replaced
 		// by an error rebuilt entirely from execution-held state: the class
 		// and message from the latch, the location data from the snapshot
-		// wrapError captured before any adapter could hold a pointer.
-		// Nothing from the propagated object is trusted.
+		// wrapError captured before any adapter could hold a pointer, which no
+		// adapter ever held. Nothing from the propagated object is trusted.
 		if exec.exhausted != nil {
-			if snapshot := exec.exhaustionDiagnostics(); snapshot != nil {
+			if snapshot := exec.exhaustedWrapped; snapshot != nil {
 				err = &RuntimeError{
 					Type:      classifyRuntimeErrorType(exec.exhausted),
 					Message:   canonicalExhaustionMessage(exec.exhausted),

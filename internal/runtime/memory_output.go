@@ -9,8 +9,9 @@ import (
 // Output-root accounting closes the hole a builtin opens when it accumulates
 // results into a Go local while calling back into script code.
 //
-// The estimator measures what the interpreter can reach: the environments and
-// the modules. A driver's own result slice is neither. So while
+// The estimator measures what the interpreter can reach: the environments, the
+// modules, the array backings an execution retains. A driver's own result slice
+// is none of those. So while
 // Hash#fetch_values, Hash#values_at, hash.map, array.map,
 // Hash#map_with_index and Hash#transform_values run, every check performed
 // inside the callback -- the block's own allocations, its calls, step()'s

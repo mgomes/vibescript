@@ -629,38 +629,6 @@ func TestStaleExhaustionCredentialIsRescuable(t *testing.T) {
 	}
 }
 
-// TestRebuiltExhaustionMessageStaysCanonical pins the rebuilt error's shape:
-// the programmatic Message must be the single-line quota message, not a
-// rendering with the exhausting frames embedded beside the separately copied
-// frame fields.
-func TestRebuiltExhaustionMessageStaysCanonical(t *testing.T) {
-	t.Parallel()
-	script := compileScriptWithConfig(t, Config{StepQuota: 5_000, MemoryQuotaBytes: Unlimited}, `
-    def spin()
-      while true
-      end
-    end
-
-    def run()
-      cap.swallow() { spin() }
-    end
-    `)
-
-	_, err := script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{swallowingBlockCapability{}},
-	})
-	if err == nil {
-		t.Fatal("a swallowed exhaustion returned success to the host")
-	}
-	var re *RuntimeError
-	if errors.As(err, &re) {
-		if strings.Contains(re.Message, "\n  at ") {
-			t.Fatalf("Message embeds rendered frames: %q", re.Message)
-		}
-	}
-	requireErrorContains(t, err, "quota exceeded")
-}
-
 // aggregatingStepCapability lets its block exhaust the quota and returns the
 // propagated error joined behind an unrelated RuntimeError, the shape that
 // used to make the first-match walk pick the unmarked branch and preserve

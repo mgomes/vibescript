@@ -750,9 +750,10 @@ func (exec *Execution) checkMemoryWith(extras ...Value) error {
 // instead of a check function: not fitting is a capacity answer for them, not
 // budget exhaustion.
 //
-// It reads memoryBudgetBytes rather than the raw quota, because two of its
-// callers allocate on the answer -- an output map, a comparison memo -- so the
-// number it compares against has to be the one a refusal would use.
+// It compares against memoryBudgetBytes, the same figure the sizing callers
+// use, because two of its callers allocate on the answer -- an output map, a
+// comparison memo -- so it must not answer yes to anything a refusal would
+// reject.
 func (exec *Execution) memoryFitsWith(extras ...Value) bool {
 	if exec.memoryQuota <= 0 {
 		return true
@@ -2763,8 +2764,8 @@ func (exec *Execution) maxProjectedHashEntries(scratchBytes int, receiver Value,
 	if exec.memoryQuota <= 0 {
 		return math.MaxInt
 	}
-	// The budget, not the quota: what an ancestor already holds is room this
-	// merge cannot have, and the dedup set is grown before any check sees it.
+	// The budget a refusal would use, since the dedup set is grown before any
+	// check sees it.
 	budget := exec.memoryBudgetBytes()
 	used := saturatingAdd(exec.projectedHashBaseBytes(receiver, args, kwargs, block), scratchBytes)
 	if used >= budget {

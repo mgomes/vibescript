@@ -503,8 +503,9 @@ func (exec *Execution) pushEnv(env *Env) {
 		exec.nonBaseParentDepth++
 		// Retract at the push, not at the walk that reads the counter.
 		// envStackGraphBytes is the only reader that retracts, and beginBaseWalk
-		// routes around it whenever a Go builtin or lazily bound composite globals
-		// are live — which is exactly the state a builtin driving a script
+		// routes around it whenever a Go builtin that has not declared
+		// non-mutation is on the call stack — which is exactly the state a
+		// builtin driving a script
 		// block is in, so the retraction never ran for the scope that most needs
 		// it. A block reached through `cb.call` rebound a dormant caller's compact
 		// Int to a 400KB string: the assignment's own check took the bypass

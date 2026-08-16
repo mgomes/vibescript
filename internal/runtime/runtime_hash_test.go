@@ -2384,7 +2384,6 @@ func TestHashInsertionOrder(t *testing.T) {
       h = { b: 2, a: 1 }
       "#{h}"
     end
-
     `)
 
 	sym := func(names ...string) []Value {

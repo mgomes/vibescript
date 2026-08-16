@@ -54,6 +54,22 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	exec := newExecutionForCall(s, ctx, root, opts)
 	defer exec.releaseBaseWalkCache()
 
+	// Refuse before any host code runs. A call builds its root env and clones
+	// the script's classes and enums before its Execution exists, so a
+	// definition-heavy script can exhaust a small quota on setup alone; the
+	// refusal is certain at that point, because nothing later shrinks a
+	// reachable graph. Binding first would run an adapter's Bind -- arbitrary
+	// host code, free to open connections, take locks, or block -- on a call
+	// already decided against.
+	//
+	// The check arrived with the memory chain, justified as publishing this
+	// level to its ancestors before blocking. That justification went with the
+	// chain; this one does not depend on it, so the check stays.
+	// TestOverQuotaCallRefusesBeforeBindingCapabilities pins it.
+	if err := exec.checkMemory(); err != nil {
+		return NewNil(), exec.wrapError(err, fn.Pos)
+	}
+
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
 		return NewNil(), err
 	}
@@ -151,6 +167,11 @@ func (s *Script) callWithLazyGlobals(ctx context.Context, name string, args []Va
 
 	exec := newExecutionForCall(s, ctx, root, opts)
 	defer exec.releaseBaseWalkCache()
+
+	// Refuse before any host code runs; see Call for why.
+	if err := exec.checkMemory(); err != nil {
+		return NewNil(), exec.wrapError(err, fn.Pos)
+	}
 
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
 		return NewNil(), err
