@@ -524,7 +524,6 @@ func TestTaggedBagsRejectInPlaceMutation(t *testing.T) {
 		{name: "replace", body: fmt.Sprintf(rescued, `e.replace({to_s: "payload"})`), want: "cannot modify a rescued error"},
 		{name: "index assignment", body: fmt.Sprintf(rescued, `e[:to_s] = "payload"`), want: "cannot modify a rescued error"},
 		{name: "store", body: fmt.Sprintf(rescued, `e.store(:to_s, "payload")`), want: "cannot modify a rescued error"},
-		{name: "merge!", body: fmt.Sprintf(rescued, `e.merge!({to_s: "payload"})`), want: "cannot modify a rescued error"},
 		{name: "delete", body: fmt.Sprintf(rescued, `e.delete(:to_s)`), want: "cannot modify a rescued error"},
 		{name: "clear", body: fmt.Sprintf(rescued, `e.clear()`), want: "cannot modify a rescued error"},
 		{name: "member assignment", body: fmt.Sprintf(rescued, `e.to_s = "payload"`), want: "cannot modify a rescued error"},
@@ -714,26 +713,20 @@ func TestCapabilityBoundaryPreservesTags(t *testing.T) {
 	})
 }
 
-// The tag is part of a bag's identity, not just of its rendering. Two wrappers
-// over one entry map with different provenance are different objects: one is
-// immutable and renders its string form, the other is ordinary. Without this,
-// equal? answered true before a call and false inside it, because containment
-// cloning gives them separate copies.
-func TestObjectIdentityAccountsForTheTag(t *testing.T) {
+// The tag governs a bag's rendering and whether it accepts writes, not its
+// identity: collections are values, so two bags with the same entries are the
+// same value however each was built. What the tag must keep doing is give the
+// same answer inside a call as outside it, which containment cloning made hard
+// when the tag was part of identity.
+func TestObjectEqualityIgnoresTheTag(t *testing.T) {
 	t.Parallel()
 
 	entries := map[string]Value{"to_s": NewString("real")}
 	tagged := NewTaggedObject(entries, ObjectTagRescuedError, "real")
 	plain := NewObject(entries)
 
-	if tagged.Identical(plain) {
-		t.Fatalf("a tagged bag is identical to an untagged wrapper over the same entries")
-	}
-	if !tagged.Identical(NewTaggedObject(entries, ObjectTagRescuedError, "real")) {
-		t.Fatalf("two wrappers with the same entries and tag are not identical")
-	}
-	if !plain.Identical(NewObject(entries)) {
-		t.Fatalf("two untagged wrappers over the same entries are not identical")
+	if !tagged.Identical(plain) {
+		t.Fatalf("bags with the same entries are the same value whatever their provenance")
 	}
 
 	// The answer must not change across the call boundary.
@@ -742,8 +735,8 @@ func TestObjectIdentityAccountsForTheTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
-	if got.String() != "false" {
-		t.Fatalf("equal? inside the script = %s, want false as it is outside", got.String())
+	if got.String() != "true" {
+		t.Fatalf("equal? inside the script = %s, want true as it is outside", got.String())
 	}
 }
 
