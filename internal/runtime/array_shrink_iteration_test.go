@@ -221,6 +221,9 @@ end`, n, driver)
 // be just as correct and would make this drain quadratic, so the step cost of
 // the copies is what the measurement is really watching.
 func TestShrinkDuringIterationStaysLinear(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	drivers := map[string]string{
@@ -302,6 +305,9 @@ end`)
 // bills its elements: a no-op over 800 elements cost 700 steps more than the
 // same no-op over 100.
 func TestZeroCountShrinkDoesNoWork(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	for _, expr := range []string{"a.pop(0)", "a.shift(0)"} {
@@ -627,6 +633,9 @@ end`)
 // first copy allocates is exempt from the claim, so the rest of the drain zeroes
 // in place.
 func TestShrinkUnderWildcardClaimStaysLinear(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	// pop and shift both have to be measured. shift moves the start of the
@@ -775,6 +784,9 @@ func TestRetainedHeaderRecordIsBounded(t *testing.T) {
 // payloads and cost one element, which is the finding this file exists for
 // arrived at from the other end.
 func TestRetainedBackingIsChargedByCapacity(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	// The hidden payloads are about 6 MiB and the second generation about 4;
@@ -811,6 +823,9 @@ end`)
 // array itself accounts for. A quota that turns away a program which fits is a
 // defect in the same way as one that admits a program which does not.
 func TestRetainedBackingChargesOnlyWhatIsHidden(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	const n = 10000
@@ -892,6 +907,9 @@ func TestRetainedRecordNeverLowersTheQuota(t *testing.T) {
 // twice: the pair needed 773,625 bytes where the second shrink alone needs
 // 517,729, so a shrink that removes one element cost a quarter of a megabyte.
 func TestNestedClaimsChargeOneAllocationOnce(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	const n = 4000

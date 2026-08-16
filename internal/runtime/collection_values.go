@@ -715,3 +715,15 @@ func isCollectionMutator(property string) bool {
 		return false
 	}
 }
+
+// skipUnderCollectionCopyVerify reports whether the always-copy oracle is on,
+// for the tests that measure what a write costs rather than what it means.
+//
+// The oracle copies and rebinds an addressable path on every write instead of
+// asking whether each level is exclusively held. That is the point -- it is how
+// a missed publish shows up as a semantic disagreement -- but it also changes
+// every byte charged, every step taken, and every backing retained, so a test
+// asserting a quota threshold, a linear step count, or a released backing has no
+// stable answer under it. Those tests skip; the semantic ones, which are what
+// the oracle exists to check, all run.
+func skipUnderCollectionCopyVerify() bool { return alwaysCopyCollections }

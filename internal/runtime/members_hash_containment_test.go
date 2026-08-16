@@ -4278,6 +4278,9 @@ func TestHashLookupsRejectDetachedElementsOfAnArrayKey(t *testing.T) {
 // third allocates 700KB. A total captured when the result was produced misses
 // the growth, so only re-deriving the output at each check rejects this.
 func TestHashLookupsRechargeResultsThatGrowAfterBeingProduced(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	body := `
@@ -4320,6 +4323,9 @@ func TestHashLookupsRechargeResultsThatGrowAfterBeingProduced(t *testing.T) {
 // before entering a callback is already stale by the time this allocates, so
 // only a root the estimator walks at the allocation's own check rejects it.
 func TestHashLookupsRejectGrowthAndDetachWithinOneCallback(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	body := `
@@ -4358,6 +4364,9 @@ func TestHashLookupsRejectGrowthAndDetachWithinOneCallback(t *testing.T) {
 // the retained result holds almost nothing, so a charge still pinned at the
 // original size would wrongly reject the call.
 func TestHashLookupsDoNotChargeAResultThatShrank(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	body := `

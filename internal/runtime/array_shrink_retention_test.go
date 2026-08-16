@@ -334,6 +334,9 @@ end`)
 //
 // Not parallel: it forces process-wide GC.
 func TestDrainedArrayReleasesItsSlotBacking(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	cases := []struct {
 		name      string
 		body      string
@@ -526,6 +529,9 @@ const drainedArrayProbeSize = 2048
 //
 // Not parallel: it measures process-wide heap.
 func TestPartialDrainDoesNotAccrueUnchargedSlots(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	const (
 		rounds = 64
 		n      = 4096
@@ -599,6 +605,9 @@ end`)
 // charges one per element it moves, so doubling the array must roughly double
 // them rather than quadruple them.
 func TestDrainStaysLinear(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	drainSteps := func(t *testing.T, n int) int {

@@ -517,6 +517,9 @@ func TestArrayMutatorHostIsolation(t *testing.T) {
 // charge the quota before allocating, so an unbounded accumulation loop is
 // rejected with a limit error rather than allocating past the cap.
 func TestArrayInPlaceGrowthTripsMemoryQuota(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	cases := []struct {
