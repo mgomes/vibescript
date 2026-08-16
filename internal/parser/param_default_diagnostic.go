@@ -1,8 +1,6 @@
 package parser
 
 import (
-	"fmt"
-
 	"github.com/mgomes/vibescript/internal/ast"
 )
 
@@ -19,14 +17,17 @@ import (
 //
 // The parenthesised form is a trivial fix once you know it exists, and the
 // ordering message gives no hint that it does.
-func ordinaryParamOrderMessage(param ast.Param, earlier []ast.Param) string {
+// It returns the format and its arguments rather than a finished message so
+// the caller can hand both to addParseError, which builds the message only if
+// the error budget still has room for it.
+func ordinaryParamOrderMessage(param ast.Param, earlier []ast.Param) (string, []any) {
 	const orderMessage = "ordinary parameters must precede rest, keyword, keyword rest, and block capture parameters"
 	name, ok := bareIdentifierTypeName(param.Type)
 	if !ok || !namesEarlierParam(name, earlier) {
-		return orderMessage
+		return orderMessage, nil
 	}
-	return fmt.Sprintf("%s: %s reads as a type annotation, not a default; write %s: (%s) to default %s to parameter %s",
-		param.Name, name, param.Name, name, param.Name, name)
+	return "%s: %s reads as a type annotation, not a default; write %s: (%s) to default %s to parameter %s",
+		[]any{srcText(param.Name), srcText(name), srcText(param.Name), srcText(name), srcText(param.Name), srcText(name)}
 }
 
 // bareIdentifierTypeName returns the name of a type annotation written as a

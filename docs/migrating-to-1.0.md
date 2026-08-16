@@ -284,9 +284,11 @@ parenless call to a same-named user function could occupy those positions
 (`protected :b` in a class body called `def protected(...)`; `module Config`
 called `def module(...)`).
 
-**What breaks.** A bare visibility or mixin directive that collides with a
-same-named script function is now a compile error naming the collision, and
-reinterpreted `module` shapes fail with targeted parse or resolution errors.
+**What breaks.** A bare visibility directive that collides with a same-named
+script function is now a compile error naming the collision, and reinterpreted
+`module` shapes fail with targeted parse or resolution errors. `include` and
+`extend` are recognized in class-member position only to report that mixins
+were removed (see section 23).
 
 **Fix.** Rename the colliding function, or keep calling it with parentheses —
 parenthesized calls (`public(:b)`), assignments (`public = 1`), and bare local
@@ -703,3 +705,33 @@ help as an error, scrape the former usage text, or pass ignored arguments to
 
 **Fix.** Read successful help from stdout and remove extraneous arguments.
 Place CLI options before the first positional path.
+
+## 23. Modules are namespaces: `include` and `extend` were removed
+
+**What changed.** A module holds constants, nested modules, and `def self.`
+functions, and nothing else. `include` and `extend`, instance-style module
+methods, module accessors and aliases, the constants an include copied into
+the including class, and the `is_a?`/type relationships inclusion created are
+all gone. Classes remain, still without inheritance.
+
+**What breaks.** Any class body with `include` or `extend`, any module with a
+plain `def`, `property`, `getter`, `setter`, or `alias`, any bare read of a
+constant a module used to supply, and any `is_a?(SomeModule)` test or
+`(value: SomeModule)` annotation that relied on module membership.
+
+**Fix.** Move each mixed-in method to `def self.name(receiver, ...)` on the
+module and call it there:
+
+```vibe
+module Naming
+  def self.display_name(person)
+    "I am " + person.name
+  end
+end
+
+Naming.display_name(person)
+```
+
+Read a module's constants through the module (`Limits::MAX`), and replace a
+module type contract or `is_a?(SomeModule)` test with the concrete class, a
+union of classes, or a duck-typed check.

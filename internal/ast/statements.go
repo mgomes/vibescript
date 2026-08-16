@@ -209,43 +209,19 @@ type VisibilityDecl struct {
 	Position Position
 }
 
-// Mixin directive kinds.
-const (
-	MixinInclude = "include"
-	MixinExtend  = "extend"
-)
-
-// MixinRef names one module in an include/extend directive. Name preserves
-// any scope qualification as written (`Support::Naming`).
-type MixinRef struct {
-	Name     string
-	Position Position
-}
-
-// MixinDecl represents an `include` or `extend` directive in a class or
-// module body. Include mixes a module's instance-style methods into the
-// declaring class's instance methods; extend mixes them into its class
-// methods.
-type MixinDecl struct {
-	Kind     string // MixinInclude or MixinExtend
-	Modules  []MixinRef
-	Position Position
-}
-
 // ClassMemberDecl preserves the source order of class-level declarations.
 type ClassMemberDecl struct {
 	Function   *FunctionStmt
 	Alias      *AliasStmt
 	Property   *PropertyDecl
 	Visibility *VisibilityDecl
-	Mixin      *MixinDecl
 }
 
 // ClassStmt represents a class or module definition. Module declarations
 // (`module Name ... end`) share the class statement shape: IsModule is set,
-// instance-style methods land in Methods (mixed into classes via include),
 // `def self.` module functions land in ClassMethods, and nested module
-// declarations are collected in Modules.
+// declarations are collected in Modules. A module is a namespace, so it
+// declares no instance-style members and Methods stays empty for one.
 type ClassStmt struct {
 	Name         string
 	IsModule     bool

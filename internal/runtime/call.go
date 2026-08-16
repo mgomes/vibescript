@@ -1384,7 +1384,7 @@ func initializeClassBodiesForCall(exec *Execution, env *Env, callClasses map[str
 		if _, deferred := skip[name]; deferred {
 			continue
 		}
-		if len(classDef.Body) == 0 && len(classDef.IncludedModules) == 0 {
+		if len(classDef.Body) == 0 {
 			continue
 		}
 		classVal, ok := env.Get(name)
@@ -1413,94 +1413,23 @@ func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, p
 	if classDef == nil || classDef.bodyRan {
 		return nil
 	}
-	if len(classDef.Body) == 0 && len(classDef.IncludedModules) == 0 {
+	if len(classDef.Body) == 0 {
 		return nil
 	}
-	// Included module constants are adopted before the body runs so the body
-	// can read them and its own assignments win; later includes were recorded
-	// after earlier ones, so overwriting in order applies Ruby's precedence.
-	if err := exec.adoptIncludedModuleConstants(classDef, parent); err != nil {
+	env := newEnv(parent)
+	env.classBody = true
+	env.Define("self", classVal)
+	exec.pushReceiver(classVal)
+	defer exec.popReceiver()
+	// A class body is not a method body: a block created here has no
+	// enclosing method to return from, so pin the home to none.
+	exec.pushBlockHomeToken(0)
+	_, _, err := exec.evalLocalScopeStatements(classDef.Body, env)
+	exec.popBlockHomeToken()
+	if err != nil {
 		return err
 	}
-	if len(classDef.Body) > 0 {
-		env := newEnv(parent)
-		env.classBody = true
-		env.Define("self", classVal)
-		exec.pushReceiver(classVal)
-		defer exec.popReceiver()
-		// A class body is not a method body: a block created here has no
-		// enclosing method to return from, so pin the home to none.
-		exec.pushBlockHomeToken(0)
-		_, _, err := exec.evalLocalScopeStatements(classDef.Body, env)
-		exec.popBlockHomeToken()
-		if err != nil {
-			return err
-		}
-	}
 	classDef.bodyRan = true
-	return nil
-}
-
-// adoptIncludedModuleConstants surfaces included module constants as class
-// constants, so Config::LIMIT resolves on the including class and included
-// methods can read the module's constants through self. Sources resolve
-// through the call environment, which binds every per-call class and module
-// clone by (qualified) name, keeping the adoption inside this call's isolated
-// state. Modules always initialize before the classes that include them —
-// include requires the module to be declared earlier in source — so their
-// constants are populated by the time they are adopted.
-//
-// Both loops run over counts a small script sets independently: N classes
-// including a module of M constants perform N*M lookups and permanent map
-// insertions, and every class with an included module reaches here whether or
-// not it has a body. Unmetered, 300 classes including one 4000-constant module
-// — a 139KB script — allocated 263MB before any check ran, and 10,000
-// adoptions completed under a 5,000-step quota. Each module resolution and
-// each copied constant is charged a step, and the copy measures its own growth
-// as it goes rather than after it has finished (#23).
-func (exec *Execution) adoptIncludedModuleConstants(classDef *ClassDef, env *Env) error {
-	for _, moduleName := range classDef.IncludedModules {
-		if err := exec.step(); err != nil {
-			return err
-		}
-		moduleVal, ok := env.Get(moduleName)
-		if !ok || moduleVal.Kind() != KindClass {
-			continue
-		}
-		constants := valueClass(moduleVal).ClassVars
-		if len(constants) == 0 {
-			continue
-		}
-		if err := exec.stepN(len(constants)); err != nil {
-			return err
-		}
-		if err := exec.adoptModuleConstants(classDef.ClassVars, constants); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// adoptModuleConstants copies one module's constants into the including class,
-// charging each new entry as it lands. The copy is written out rather than left
-// to maps.Copy so that a module large enough to matter is measured while it is
-// being inserted rather than only once it is whole: an insertion is a raw map
-// write, invisible to a memoized walk until chargeAdoptedConstant bumps the
-// epoch, and the deferred bump here covers whatever the last batch left
-// unmeasured.
-func (exec *Execution) adoptModuleConstants(into, from map[string]Value) error {
-	defer bumpMutationEpoch()
-	for name, val := range from {
-		_, present := into[name]
-		into[name] = val
-		if present {
-			// An overwrite reuses the entry an earlier include already paid for.
-			continue
-		}
-		if err := exec.chargeAdoptedConstant(name); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 

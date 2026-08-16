@@ -2444,7 +2444,7 @@ const moduleNavigationFixture = `module Billing
   module Codes
     PREFIX = "B"
 
-    def tag
+    def self.tag
       PREFIX
     end
   end
@@ -2455,8 +2455,6 @@ const moduleNavigationFixture = `module Billing
 end
 
 class Account
-  include Billing::Codes
-
   protected def guard
     1
   end
@@ -2508,8 +2506,8 @@ func TestDocumentSymbolsIncludeModulesAndVisibilityPrefixedDefs(t *testing.T) {
 	for _, child := range codes.Children {
 		codesChildren[child.Name] = child
 	}
-	if tag, ok := codesChildren["tag"]; !ok || tag.Kind != 6 {
-		t.Fatalf("Codes children = %v, want method tag", symbolNames(codes.Children))
+	if tag, ok := codesChildren["self.tag"]; !ok || tag.Kind != 6 {
+		t.Fatalf("Codes children = %v, want method self.tag", symbolNames(codes.Children))
 	}
 	if prefix, ok := codesChildren["PREFIX"]; !ok || prefix.Kind != 14 {
 		t.Fatalf("Codes children = %v, want constant PREFIX", symbolNames(codes.Children))
@@ -2568,8 +2566,8 @@ func TestDefinitionResolvesModulesAndVisibilityPrefixedDefs(t *testing.T) {
 		"PREFIX":  4,
 		"tag":     6,
 		"code":    11,
-		"guard":   19,
-		"shown":   23,
+		"guard":   17,
+		"shown":   21,
 	}
 	for word, wantLine := range wantLines {
 		location := definitionLocation(server.programs[uri], uri, server.documentLines(uri), word)
@@ -3312,17 +3310,17 @@ func TestHoverQualifiedAndNestedUserSymbols(t *testing.T) {
 		"module Outer\n" + // 8
 		"  module Inner\n" + // 9
 		"    # Inner helper.\n" + // 10
-		"    def helper\n" + // 11
+		"    def self.helper\n" + // 11
 		"      1\n" +
 		"    end\n" +
 		"  end\n" + // 14
 		"\n" +
 		"  # Outer helper.\n" + // 16
-		"  def helper\n" + // 17
+		"  def self.helper\n" + // 17
 		"    2\n" +
 		"  end\n" +
 		"\n" +
-		"  def run\n" + // 21
+		"  def self.run\n" + // 21
 		"    helper\n" + // 22: call in Outer, after Inner
 		"  end\n" +
 		"end\n" +
@@ -3339,7 +3337,7 @@ func TestHoverQualifiedAndNestedUserSymbols(t *testing.T) {
 		{name: "qualified first enum usage", line: 26, character: 12, want: "First::Draft"},
 		{name: "qualified second enum usage", line: 27, character: 13, want: "Second::Draft"},
 		{name: "outer helper wins after nested module", line: 22, character: 5, want: "Outer helper."},
-		{name: "inner helper at its declaration", line: 11, character: 9, want: "Inner helper."},
+		{name: "inner helper at its declaration", line: 11, character: 14, want: "Inner helper."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

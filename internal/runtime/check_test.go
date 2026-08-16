@@ -1015,24 +1015,6 @@ end
 			want: []string{"Holder.User"},
 		},
 		{
-			name: "included method uses receiver class",
-			source: `module Mutator
-  def self.User=(value)
-    value
-  end
-
-  def stash(value)
-    self.class.User = value
-  end
-end
-
-class Holder
-  include Mutator
-end
-`,
-			want: []string{"Holder.User"},
-		},
-		{
 			name: "class setter effects",
 			source: `def replacement(value)
   value
@@ -1575,14 +1557,10 @@ end`,
 		},
 		{
 			name: "self class setter",
-			definitions: `module Mutator
+			definitions: `class Holder
   def stash(value)
     self.class.User = value
   end
-end
-
-class Holder
-  include Mutator
 
   def self.User=(value)
     JSON.stringify = replacement
@@ -9556,12 +9534,6 @@ func TestCheckWarningsResolveModuleAndDirectiveNames(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `
-module Named
-  def display_name
-    "named"
-  end
-end
-
 module Billing
   LIMIT = 100
 
@@ -9575,9 +9547,6 @@ module Billing
 end
 
 class Invoice
-  include Named
-  extend Billing
-
   protected def guard
     1
   end

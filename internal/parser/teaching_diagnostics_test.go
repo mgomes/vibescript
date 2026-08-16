@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// Inheritance is deliberately absent with mixins as the documented
+// Inheritance is deliberately absent with module functions as the documented
 // alternative, but the parse error said only `unexpected token "<"`, which
 // reads as a syntax slip and leaves the author retrying variants.
-func TestClassInheritanceErrorNamesMixins(t *testing.T) {
+func TestClassInheritanceErrorNamesTheReplacement(t *testing.T) {
 	t.Parallel()
 
 	for _, source := range []string{
@@ -25,8 +25,8 @@ func TestClassInheritanceErrorNamesMixins(t *testing.T) {
 			if !strings.Contains(joined, "inheritance is not supported") {
 				t.Fatalf("error = %s, want it to name the decision", joined)
 			}
-			if !strings.Contains(joined, "include") {
-				t.Fatalf("error = %s, want it to name mixins", joined)
+			if !strings.Contains(joined, "def self.name") {
+				t.Fatalf("error = %s, want it to name the replacement", joined)
 			}
 		})
 	}

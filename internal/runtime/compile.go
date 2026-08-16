@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 	"unicode"
 
@@ -88,10 +87,7 @@ func snippetEntrypointProgram(program *ast.Program, entrypoint string) (*ast.Pro
 			out.Statements = append(out.Statements, typed)
 		case *ClassStmt:
 			out.Statements = append(out.Statements, typed)
-			// Mixin directives defer alongside class bodies: adopting an
-			// included module's constants must wait until the module's own
-			// (possibly deferred) body has run in source order.
-			if (len(typed.Body) > 0 || classStmtHasMixins(typed)) && hasExecutableTopLevel {
+			if len(typed.Body) > 0 && hasExecutableTopLevel {
 				if len(body) == 0 {
 					pos = typed.Pos()
 				}
@@ -110,15 +106,6 @@ func snippetEntrypointProgram(program *ast.Program, entrypoint string) (*ast.Pro
 		deferredClassBodies = nil
 	}
 	return out, deferredClassBodies
-}
-
-func classStmtHasMixins(stmt *ClassStmt) bool {
-	for _, member := range stmt.Members {
-		if member.Mixin != nil {
-			return true
-		}
-	}
-	return false
 }
 
 func snippetHasExecutableTopLevel(program *ast.Program) bool {
@@ -213,12 +200,12 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 
 // checkDirectiveNameCollisions rejects scripts that use a bare word both as a
 // class-body directive and as the name of a script function. Before the
-// contextual directives existed, bare `public :b`, `protected`, or
-// `include Foo` in a class body were parenless calls to the user's function,
-// so compiling both meanings would silently reinterpret existing code. The
-// scan runs before class compilation so the collision diagnostic wins over
-// later mixin-resolution errors, and it consults declaration names directly
-// so a function defined after the class still collides.
+// contextual directives existed, bare `public :b` or `protected` in a class
+// body were parenless calls to the user's function, so compiling both meanings
+// would silently reinterpret existing code. The scan runs before class
+// compilation so the collision diagnostic wins over later errors, and it
+// consults declaration names directly so a function defined after the class
+// still collides.
 func checkDirectiveNameCollisions(statements []ast.Statement) error {
 	names := make(map[string]struct{})
 	for _, stmt := range statements {
@@ -262,10 +249,6 @@ func checkClassDirectiveNameCollisions(stmt *ClassStmt, functions map[string]str
 		case member.Property != nil:
 			if err := visibilityDirectiveCollision(member.Property.Visibility, kind, stmt.Name, functions); err != nil {
 				return err
-			}
-		case member.Mixin != nil:
-			if _, ok := functions[member.Mixin.Kind]; ok {
-				return fmt.Errorf("%s in %s %s is a mixin directive, but this script also defines a function named %s; rename the function", member.Mixin.Kind, kind, stmt.Name, member.Mixin.Kind)
 			}
 		}
 	}
@@ -342,7 +325,7 @@ func registerClassStmt(stmt *ClassStmt, qualifier string, functions map[string]*
 			return nil, err
 		}
 	}
-	classDef, err := compileClassDef(stmt, name, classes)
+	classDef, err := compileClassDef(stmt)
 	if err != nil {
 		return nil, err
 	}
@@ -354,12 +337,8 @@ func registerClassStmt(stmt *ClassStmt, qualifier string, functions map[string]*
 	return append(classOrder, name), nil
 }
 
-// compileClassDef compiles a class or module declaration. qualifiedName is
-// the registration name (Outer::Inner for nested modules) used to resolve
-// mixin references lexically, and classes holds the definitions compiled so
-// far — include/extend can only reference modules declared earlier in source,
-// matching Ruby's execution-order constant resolution.
-func compileClassDef(stmt *ClassStmt, qualifiedName string, classes map[string]*ClassDef) (*ClassDef, error) {
+// compileClassDef compiles a class or module declaration.
+func compileClassDef(stmt *ClassStmt) (*ClassDef, error) {
 	classDef := &ClassDef{
 		Name:         stmt.Name,
 		IsModule:     stmt.IsModule,
@@ -381,41 +360,19 @@ func compileClassDef(stmt *ClassStmt, qualifiedName string, classes map[string]*
 	// Ruby's sticky visibility sections. An inline modifier on a single
 	// definition overrides the section for that definition only.
 	sectionVisibility := ""
-	// own tracks the method names this declaration defines itself (methods,
-	// accessors, aliases). A class's own definitions always win over included
-	// module methods regardless of where the include appears, mirroring
-	// Ruby's ancestor ordering: the class sits closer than any module.
-	own := mixinOwnNames{instance: make(map[string]struct{}), class: make(map[string]struct{})}
 	for _, member := range stmt.Members {
 		if member.Property != nil {
 			compileClassProperty(classDef, *member.Property, sectionVisibility)
-			// Register only the methods the declaration kind actually
-			// defines (mirroring compileClassProperty), so `getter x` still
-			// adopts a module's `x=` and `setter x` a module's `x`.
-			for _, entry := range member.Property.Names {
-				if member.Property.Kind == "property" || member.Property.Kind == "getter" {
-					own.instance[entry.Name] = struct{}{}
-				}
-				if member.Property.Kind == "property" || member.Property.Kind == "setter" {
-					own.instance[entry.Name+"="] = struct{}{}
-				}
-			}
 			continue
 		}
 		if member.Function != nil {
 			compileClassMethod(classDef, member.Function, sectionVisibility)
-			if member.Function.IsClassMethod {
-				own.class[member.Function.Name] = struct{}{}
-			} else {
-				own.instance[member.Function.Name] = struct{}{}
-			}
 			continue
 		}
 		if member.Alias != nil {
 			if err := compileClassAlias(classDef, member.Alias, stmt.Name); err != nil {
 				return nil, err
 			}
-			own.instance[member.Alias.NewName] = struct{}{}
 			continue
 		}
 		if member.Visibility != nil {
@@ -426,106 +383,10 @@ func compileClassDef(stmt *ClassStmt, qualifiedName string, classes map[string]*
 			if err := applyNamedVisibility(classDef, member.Visibility, stmt.Name); err != nil {
 				return nil, err
 			}
-			continue
-		}
-		if member.Mixin != nil {
-			if err := applyMixin(classDef, member.Mixin, qualifiedName, classes, own); err != nil {
-				return nil, err
-			}
 		}
 	}
 	resolvePropertyParamContracts(classDef)
 	return classDef, nil
-}
-
-// mixinOwnNames records the method names a class defines itself, per method
-// namespace, so mixin copies never displace them.
-type mixinOwnNames struct {
-	instance map[string]struct{}
-	class    map[string]struct{}
-}
-
-// applyMixin copies a module's instance-style methods into the declaring
-// definition: include targets the instance methods, extend the class methods.
-// Later include/extend directives overwrite copies made by earlier ones, and
-// within one directive earlier arguments win (`include A, B` behaves as if B
-// were included first), matching Ruby's ancestor ordering as closely as a
-// copy model can. Re-including a module that is already an ancestor is a full
-// no-op, as in Ruby: neither its methods nor its constants regain precedence.
-// The class's own definitions always take precedence.
-func applyMixin(classDef *ClassDef, mixin *ast.MixinDecl, qualifiedName string, classes map[string]*ClassDef, own mixinOwnNames) error {
-	for i := len(mixin.Modules) - 1; i >= 0; i-- {
-		ref := mixin.Modules[i]
-		moduleDef, moduleName, err := resolveMixinModule(mixin.Kind, ref.Name, qualifiedName, classes)
-		if err != nil {
-			return err
-		}
-		switch mixin.Kind {
-		case ast.MixinInclude:
-			if slices.Contains(classDef.IncludedModules, moduleName) {
-				continue
-			}
-			copyMixinMethods(classDef.Methods, moduleDef.Methods, own.instance)
-			// The module's own ancestry joins the includer's ahead of the
-			// module itself, so a directly included module keeps precedence
-			// over what it pulled in, and is_a?/type contracts see the whole
-			// transitive chain. Modules resolve only when declared earlier in
-			// source, so moduleDef's list is already transitively complete,
-			// and self/mutual includes are rejected before this point.
-			for _, transitive := range moduleDef.IncludedModules {
-				if !slices.Contains(classDef.IncludedModules, transitive) {
-					classDef.IncludedModules = append(classDef.IncludedModules, transitive)
-				}
-			}
-			classDef.IncludedModules = append(classDef.IncludedModules, moduleName)
-		case ast.MixinExtend:
-			copyMixinMethods(classDef.ClassMethods, moduleDef.Methods, own.class)
-		default:
-			return fmt.Errorf("unsupported mixin directive %s", mixin.Kind)
-		}
-	}
-	return nil
-}
-
-// resolveMixinModule resolves a mixin reference lexically: a name written
-// inside module Outer tries Outer::Name before the top level, so nested
-// modules can include their siblings by short name.
-func resolveMixinModule(kind, ref, qualifiedName string, classes map[string]*ClassDef) (*ClassDef, string, error) {
-	prefix := qualifiedName
-	for {
-		candidate := ref
-		if prefix != "" {
-			candidate = prefix + "::" + ref
-		}
-		if def, ok := classes[candidate]; ok {
-			if !def.IsModule {
-				return nil, "", fmt.Errorf("%s target %s is not a module", kind, candidate)
-			}
-			return def, candidate, nil
-		}
-		if prefix == "" {
-			return nil, "", fmt.Errorf("%s target module %s is not defined", kind, ref)
-		}
-		if idx := strings.LastIndex(prefix, "::"); idx >= 0 {
-			prefix = prefix[:idx]
-		} else {
-			prefix = ""
-		}
-	}
-}
-
-// copyMixinMethods copies module methods into a destination method map,
-// skipping names the destination's declaration defines itself. Each copy is a
-// fresh ScriptFunction so later visibility directives on the including class
-// never mutate the module's own definition.
-func copyMixinMethods(dest, source map[string]*ScriptFunction, own map[string]struct{}) {
-	for name, fn := range source {
-		if _, isOwn := own[name]; isOwn {
-			continue
-		}
-		copied := *fn
-		dest[name] = &copied
-	}
 }
 
 // applyNamedVisibility applies a named directive (`private :hidden, :other`)

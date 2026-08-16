@@ -258,7 +258,6 @@ func cloneClassMemberDecls(members []ClassMemberDecl) []ClassMemberDecl {
 			Alias:      cloneAliasStmt(member.Alias),
 			Property:   clonePropertyDeclPtr(member.Property),
 			Visibility: cloneVisibilityDecl(member.Visibility),
-			Mixin:      cloneMixinDecl(member.Mixin),
 		}
 	}
 	return out
@@ -271,17 +270,6 @@ func cloneVisibilityDecl(decl *VisibilityDecl) *VisibilityDecl {
 	clone := *decl
 	if decl.Names != nil {
 		clone.Names = append([]string(nil), decl.Names...)
-	}
-	return &clone
-}
-
-func cloneMixinDecl(decl *MixinDecl) *MixinDecl {
-	if decl == nil {
-		return nil
-	}
-	clone := *decl
-	if decl.Modules != nil {
-		clone.Modules = append([]MixinRef(nil), decl.Modules...)
 	}
 	return &clone
 }

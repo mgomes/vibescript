@@ -2865,56 +2865,6 @@ func (exec *Execution) releaseLoopScratch(delta int) {
 	exec.reservedScratchBytes -= delta
 }
 
-// adoptedConstantCheckShare sets how much of the memory quota a mixin's
-// constant adoption may add between two measurements: it measures every time it
-// has inserted a 1/adoptedConstantCheckShare slice of the quota, so the copy
-// runs at most that slice past the limit before it is stopped. The share also
-// bounds the cost, because an adoption that keeps reaching it is itself bounded
-// by the quota: one call pays at most this many walks however many classes
-// include however many modules. An ordinary mixin adds a few hundred bytes of
-// constants, never reaches the first boundary, and so pays none.
-const adoptedConstantCheckShare = 64
-
-// chargeAdoptedConstant accounts for one class constant a mixin adoption has
-// just copied into an including class, and measures the live graph once the
-// entries copied since the last measurement fill a slice of the quota (see
-// adoptIncludedModuleConstants).
-//
-// Each adopted name is one more entry in the class's ClassVars map, which the
-// estimator charges through the class value the call root binds. The per-entry
-// terms mirror mapStructuralBytes so this accounting and the walk it defers to
-// cannot drift. Value payloads are left out on purpose: they are aliases of the
-// module's own constants, which that walk already counts.
-//
-// The measurement is the ordinary whole-graph check, so the adoption is bounded
-// by the quota that remains rather than by the quota. Charging it against the
-// quota in isolation looked cheaper but let a call already holding most of its
-// allowance adopt a second allowance on top: 7 classes including one
-// 30,000-constant module allocated the same 47MB whether the call arrived
-// empty or with 12MB of globals bound. Measuring per entry instead would be far
-// too expensive, since every insertion invalidates the memoized base walk, and
-// measuring per include is not enough either, since one module can carry as
-// many constants as the source can spell. Batching by bytes bounds the
-// overshoot and the walks together (#23).
-func (exec *Execution) chargeAdoptedConstant(name string) error {
-	if exec.memoryQuota <= 0 {
-		return nil
-	}
-	exec.adoptedConstantBytes = saturatingAdd(exec.adoptedConstantBytes,
-		estimatedMapEntryBytes+estimatedValueBytes+estimatedStringHeaderBytes+len(name))
-	// A share of the bound in force, so the unchecked overshoot this deferral
-	// allows stays proportionate to what the host configured.
-	if exec.adoptedConstantBytes < exec.memoryBudgetBytes()/adoptedConstantCheckShare {
-		return nil
-	}
-	exec.adoptedConstantBytes = 0
-	// The insertions this batch counted are raw map writes, so nothing has
-	// invalidated a memoized base walk for them yet; the check below has to see
-	// them rather than resume a memo taken before they landed.
-	bumpMutationEpoch()
-	return exec.checkMemory()
-}
-
 type loopScratchReservation struct {
 	exec     *Execution
 	baseline int

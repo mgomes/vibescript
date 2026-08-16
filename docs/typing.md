@@ -156,8 +156,9 @@ enforce unknown values at runtime contracts**.
 - Resolved named types compare by identity: a `Color` value contradicts a
   `Status` boundary, a class instance contradicts an unrelated class or
   module, and named values contradict primitive and container boundaries.
-  Symbols keep coercing into enums, a class keeps satisfying modules it
-  includes, and unresolved or host-supplied names stay conservative.
+  Symbols keep coercing into enums, and unresolved or host-supplied names stay
+  conservative. A module names a namespace rather than a type, so no value
+  satisfies a module annotation.
 - Control flow narrows nullable locals: truthiness tests, explicit nil
   comparisons, and `nil?` predicates with proven universal dispatch refine the
   local in both branches, including
@@ -174,12 +175,11 @@ enforce unknown values at runtime contracts**.
   on it check their argument shapes and expose their annotated return types.
   Shadowed class names and dynamic constructor dispatch stay unknown.
 - Class predicates narrow nominal unions: `u.is_a?(User)`,
-  `u.kind_of?(Payable)`, and `u.instance_of?(User)` against a statically
-  resolved class or module refine a known union local in both branches,
-  including guard clauses. Narrowing applies only when every arm provably
-  reaches the runtime universal predicate — an arm whose class overrides the
-  predicate, a module-typed arm, or a dynamic argument leaves the fact
-  unchanged.
+  `u.kind_of?(User)`, and `u.instance_of?(User)` against a statically resolved
+  class refine a known union local in both branches, including guard clauses.
+  Narrowing applies only when every arm provably reaches the runtime universal
+  predicate — an arm whose class overrides the predicate or a dynamic argument
+  leaves the fact unchanged.
 - `is_type?` narrows known unions: `value.is_type?(:int)` with a literal
   built-in atom refines a known union local in both branches — the true path
   keeps arms that may satisfy the atom, the false path drops arms that always

@@ -69,7 +69,7 @@ func (p *parser) parseTypeAtom() *ast.TypeExpr {
 
 	if p.peekToken.Type == ast.TokenLT {
 		if ty.Kind != ast.TypeArray && ty.Kind != ast.TypeHash {
-			p.addParseError(p.curToken.Pos, fmt.Sprintf("type %s does not accept type arguments", ty.Name))
+			p.addParseError(p.curToken.Pos, "type %s does not accept type arguments", srcText(ty.Name))
 			return nil
 		}
 		// A nullable suffix on the container name (e.g. array?<int>) is
@@ -79,9 +79,9 @@ func (p *parser) parseTypeAtom() *ast.TypeExpr {
 		// compound type: array<int>?, hash<string, int>?, object<string, int>?.
 		if ty.Nullable {
 			base := strings.TrimSuffix(ty.Name, "?")
-			p.addParseError(p.curToken.Pos, fmt.Sprintf(
+			p.addParseError(p.curToken.Pos,
 				"nullable suffix on %s is misplaced; write the nullable container after its type arguments, e.g. %s<...>?, instead of %s?<...>",
-				base, base, base))
+				srcText(base), srcText(base), srcText(base))
 			return nil
 		}
 		p.nextToken()
@@ -131,7 +131,7 @@ func (p *parser) parseNamedTypeAtom() *ast.TypeExpr {
 		return nil
 	}
 	if strings.HasSuffix(strings.TrimSuffix(p.curToken.Literal, "?"), "?") {
-		p.addParseError(p.curToken.Pos, fmt.Sprintf("duplicate nullable suffix on type %s", p.curToken.Literal))
+		p.addParseError(p.curToken.Pos, "duplicate nullable suffix on type %s", srcText(p.curToken.Literal))
 		return nil
 	}
 	ty := &ast.TypeExpr{Name: p.curToken.Literal, Position: p.curToken.Pos}
@@ -149,7 +149,7 @@ func (p *parser) parseNamedTypeAtom() *ast.TypeExpr {
 		// runtime resolves it through the module namespace. The nullable
 		// suffix belongs on the member, not the qualifier.
 		if ty.Nullable {
-			p.addParseError(p.curToken.Pos, fmt.Sprintf("nullable suffix on %s is misplaced; write %s.Name? instead", ty.Name, strings.TrimSuffix(ty.Name, "?")))
+			p.addParseError(p.curToken.Pos, "nullable suffix on %s is misplaced; write %s.Name? instead", srcText(ty.Name), srcText(strings.TrimSuffix(ty.Name, "?")))
 			return nil
 		}
 		p.nextToken()
@@ -171,13 +171,13 @@ func (p *parser) applyNullableSuffix(ty *ast.TypeExpr) *ast.TypeExpr {
 		return ty
 	}
 	if ty.Nullable {
-		p.addParseError(p.peekToken.Pos, fmt.Sprintf("duplicate nullable suffix on type %s", ast.FormatTypeExpr(ty)))
+		p.addParseError(p.peekToken.Pos, "duplicate nullable suffix on type %s", typeText{ty})
 		return nil
 	}
 	p.nextToken()
 	ty.Nullable = true
 	if p.peekToken.Type == ast.TokenQuestion {
-		p.addParseError(p.peekToken.Pos, fmt.Sprintf("duplicate nullable suffix on type %s", ast.FormatTypeExpr(ty)))
+		p.addParseError(p.peekToken.Pos, "duplicate nullable suffix on type %s", typeText{ty})
 		return nil
 	}
 	return ty
@@ -247,7 +247,7 @@ func (p *parser) parseTypeShape() *ast.TypeExpr {
 			if !p.bracedFieldIsHashDefault(prior) && !p.bracedFieldIsHashDefault(fieldType) {
 				p.shapeStructurallyInvalid = true
 			}
-			p.addParseError(p.curToken.Pos, fmt.Sprintf("duplicate shape field %s", key))
+			p.addParseError(p.curToken.Pos, "duplicate shape field %s", srcText(key))
 			return nil
 		}
 		fields[key] = fieldType
@@ -308,7 +308,7 @@ func (p *parser) parseTypeShapeFieldName() (name string, optional, ok bool) {
 	}
 	name = strings.TrimSuffix(name, "?")
 	if strings.HasSuffix(name, "?") {
-		p.addParseError(p.curToken.Pos, fmt.Sprintf("duplicate optional suffix on shape field %s", p.curToken.Literal))
+		p.addParseError(p.curToken.Pos, "duplicate optional suffix on shape field %s", srcText(p.curToken.Literal))
 		return "", false, false
 	}
 	return name, true, true

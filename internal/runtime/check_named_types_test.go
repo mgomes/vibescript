@@ -135,7 +135,7 @@ end
 			name: "class fact into unrelated module",
 			source: `
 module Nameable
-  def display_name
+  def self.display_name(value)
     "n"
   end
 end
@@ -312,88 +312,6 @@ end
 
 def run(u: User)
   takes_user(u)
-end
-`,
-		},
-		{
-			name: "class satisfies included module",
-			source: `
-module Nameable
-  def display_name
-    "n"
-  end
-end
-
-class User
-  include Nameable
-
-  def initialize()
-  end
-end
-
-def takes_nameable(value: Nameable)
-  value
-end
-
-def run(u: User)
-  takes_nameable(u)
-end
-`,
-		},
-		{
-			name: "class satisfies transitively included module",
-			source: `
-module Printable
-  def print_it
-    "p"
-  end
-end
-
-module Nameable
-  include Printable
-
-  def display_name
-    "n"
-  end
-end
-
-class User
-  include Nameable
-
-  def initialize()
-  end
-end
-
-def takes_printable(value: Printable)
-  value
-end
-
-def run(u: User)
-  takes_printable(u)
-end
-`,
-		},
-		{
-			name: "module facts stay compatible with each other",
-			source: `
-module Nameable
-  def display_name
-    "n"
-  end
-end
-
-module Printable
-  def print_it
-    "p"
-  end
-end
-
-def takes_printable(value: Printable)
-  value
-end
-
-def run(n: Nameable)
-  takes_printable(n)
 end
 `,
 		},

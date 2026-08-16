@@ -8913,12 +8913,6 @@ func (c *scriptChecker) stableAssignedClassConstant(
 	if slices.Contains(owner.NestedModules, name) {
 		return nil, false
 	}
-	for _, included := range owner.IncludedModules {
-		moduleDef := c.script.classes[included]
-		if moduleDef != nil && c.selfClassMayBindConstant(moduleDef, name) {
-			return nil, false
-		}
-	}
 	for _, fn := range owner.ClassMethods {
 		if fn != nil && astAssignsClassName(fn.Body, owner, name, false, true) {
 			return nil, false
@@ -8954,29 +8948,12 @@ func (c *scriptChecker) nestedClassConstantMayChange(classDef *ClassDef, name st
 	if _, ok := classDef.ClassVars[name]; ok {
 		return true
 	}
-	for _, included := range classDef.IncludedModules {
-		moduleDef := c.script.classes[included]
-		if moduleDef == nil {
-			continue
-		}
-		if _, ok := moduleDef.ClassVars[name]; ok {
-			return true
-		}
-		if slices.Contains(moduleDef.NestedModules, name) {
-			return true
-		}
-		if classDefNamespaceAssignsName(moduleDef, name) ||
-			classDefInstanceMethodsAssignName(moduleDef, classDef, name) {
-			return true
-		}
-	}
 	return false
 }
 
 // selfClassMayBindConstant reports whether self's class can supply name
-// ahead of the top-level binding: a class variable, a nested module, a
-// class-body assignment that creates the variable when the body runs, or a
-// constant adopted from an included module.
+// ahead of the top-level binding: a class variable, a nested module, or a
+// class-body assignment that creates the variable when the body runs.
 func (c *scriptChecker) selfClassMayBindConstant(cl *ClassDef, name string) bool {
 	if cl == nil {
 		return false
@@ -8989,24 +8966,6 @@ func (c *scriptChecker) selfClassMayBindConstant(cl *ClassDef, name string) bool
 	}
 	if classDefAssignsName(cl, name) {
 		return true
-	}
-	// IncludedModules is the flattened transitive closure, so one level of
-	// adopted-constant lookup covers every reachable module.
-	for _, included := range cl.IncludedModules {
-		moduleDef, ok := c.script.classes[included]
-		if !ok || moduleDef == nil {
-			continue
-		}
-		if _, ok := moduleDef.ClassVars[name]; ok {
-			return true
-		}
-		if slices.Contains(moduleDef.NestedModules, name) {
-			return true
-		}
-		if classDefNamespaceAssignsName(moduleDef, name) ||
-			classDefInstanceMethodsAssignName(moduleDef, cl, name) {
-			return true
-		}
 	}
 	return false
 }
@@ -9165,8 +9124,7 @@ func classPredicateArmUsesUniversalDispatch(arm *TypeExpr, property string, reso
 // classPredicateArmMatch reports how a value of the arm answers the
 // predicate. The runtime compares class definitions by identity, so the
 // positive direction requires the arm to resolve to the argument's own
-// definition; module membership mirrors the runtime's name-based include
-// walk. A same-named but distinct definition leaves identity unproven —
+// definition. A same-named but distinct definition leaves identity unproven —
 // known=false — and the caller must not narrow.
 func classPredicateArmMatch(arm *TypeExpr, want *ClassDef, exact bool, resolve namedTypeResolver) (matches, known bool) {
 	if arm == nil || arm.Kind != TypeEnum {
@@ -9184,9 +9142,6 @@ func classPredicateArmMatch(arm *TypeExpr, want *ClassDef, exact bool, resolve n
 		return false, false
 	}
 	if classDefsIdentical(match.class, want) {
-		return true, true
-	}
-	if !exact && want.IsModule && classIncludesModule(match.class, want.Name) {
 		return true, true
 	}
 	if match.class.Name == want.Name {
@@ -18102,12 +18057,9 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 		if dm.class == nil || wm.class == nil {
 			return false
 		}
-		if dm.class == wm.class {
-			return true
-		}
-		// A module annotation admits instances of classes that include it,
-		// mirroring runtime named normalization.
-		return dm.class.IsModule && !wm.class.IsModule && classIncludesModule(wm.class, dm.class.Name)
+		// Only the same definition admits: classes have no inheritance and a
+		// module has no instances, mirroring runtime named normalization.
+		return dm.class == wm.class
 	}
 	return false
 }
@@ -18199,9 +18151,8 @@ func typeArmPairDisjoint(x, y *TypeExpr, resolve namedTypeResolver) bool {
 
 // namedArmPairDisjoint decides disjointness for arm pairs involving a named
 // (enum, class, or module) annotation, mirroring runtime named normalization:
-// an enum admits its own values and coercible symbols, a class admits its
-// instances, and a module admits instances of classes that include it.
-// Unresolved names stay conservatively compatible.
+// an enum admits its own values and coercible symbols, and a class admits its
+// instances. Unresolved names stay conservatively compatible.
 func namedArmPairDisjoint(x, y *TypeExpr, resolve namedTypeResolver) bool {
 	if resolve == nil {
 		return false
@@ -18236,10 +18187,9 @@ func namedArmPairDisjoint(x, y *TypeExpr, resolve namedTypeResolver) bool {
 	return true
 }
 
-// namedMatchesDisjoint compares two resolved named definitions. Plain classes
-// have no inheritance, so distinct definitions never share an instance; a
-// module stays compatible with classes that include it and with other modules
-// (one class can include both).
+// namedMatchesDisjoint compares two resolved named definitions. Classes have
+// no inheritance and a module has no instances at all, so distinct
+// definitions never share a value.
 func namedMatchesDisjoint(x, y namedTypeMatch) bool {
 	if x.enum != nil || y.enum != nil {
 		if x.enum != nil && y.enum != nil {
@@ -18252,16 +18202,7 @@ func namedMatchesDisjoint(x, y namedTypeMatch) bool {
 	if cx == nil || cy == nil || cx == cy {
 		return false
 	}
-	switch {
-	case cx.IsModule && cy.IsModule:
-		return false
-	case cx.IsModule:
-		return !classIncludesModule(cy, cx.Name)
-	case cy.IsModule:
-		return !classIncludesModule(cx, cy.Name)
-	default:
-		return true
-	}
+	return true
 }
 
 func shapeValueArmDisjoint(other *TypeExpr) bool {

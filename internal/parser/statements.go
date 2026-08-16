@@ -1,7 +1,6 @@
 package parser
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 
@@ -103,7 +102,7 @@ func (p *parser) parseStatementModifier(stmt ast.Statement) ast.Statement {
 		p.nextToken()
 		p.nextToken()
 		_ = p.parseLineExpression(lowestPrec)
-		p.addParseError(modifier.Pos, fmt.Sprintf("modifier %s is only supported after expression or assignment statements, or leaf control-flow statements", strings.ToLower(modifier.Type.String())))
+		p.addParseError(modifier.Pos, "modifier %s is only supported after expression or assignment statements, or leaf control-flow statements", strings.ToLower(modifier.Type.String()))
 		return stmt
 	}
 
@@ -493,7 +492,7 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 	var elseBody []ast.Statement
 	if p.curToken.Type == ast.TokenElse {
 		if len(rescues) == 0 {
-			p.addParseError(p.curToken.Pos, fmt.Sprintf("%s else requires rescue", owner))
+			p.addParseError(p.curToken.Pos, "%s else requires rescue", owner)
 			return nil
 		}
 		p.nextToken()
@@ -513,7 +512,7 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 
 	needsHandler := len(rescues) > 0 || owner == "function"
 	if needsHandler && !anyRescueBody && len(ensureBody) == 0 {
-		p.addParseError(pos, fmt.Sprintf("%s requires rescue and/or ensure", owner))
+		p.addParseError(pos, "%s requires rescue and/or ensure", owner)
 		return nil
 	}
 
@@ -651,11 +650,11 @@ func (p *parser) validateRescueTypeExpr(ty *ast.TypeExpr, pos ast.Position) bool
 	}
 
 	if len(ty.TypeArgs) > 0 || len(ty.Shape) > 0 {
-		p.addParseError(pos, fmt.Sprintf("rescue type must be an error class, got %s", ast.FormatTypeExpr(ty)))
+		p.addParseError(pos, "rescue type must be an error class, got %s", typeText{ty})
 		return false
 	}
 	if _, ok := ast.CanonicalRuntimeErrorType(ty.Name); !ok {
-		p.addParseError(pos, fmt.Sprintf("unknown rescue error type %s", ty.Name))
+		p.addParseError(pos, "unknown rescue error type %s", srcText(ty.Name))
 		return false
 	}
 	return true
@@ -678,7 +677,7 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		p.nextToken()
 	} else if opName, ok := p.parseOperatorMethodName(); ok {
 		if !p.insideClass {
-			p.addParseError(pos, fmt.Sprintf("operator method %s must be defined in a class", opName))
+			p.addParseError(pos, "operator method %s must be defined in a class", opName)
 			return nil
 		}
 		isOperatorMethod = true
@@ -794,6 +793,55 @@ func (p *parser) parseOperatorMethodName() (string, bool) {
 	}
 }
 
+// moduleFunctionExample and namespaceCallExample are the two spellings the
+// migration diagnostics recommend. They are named so a diagnostic cannot
+// recommend code the parser rejects without a test noticing: every snippet a
+// message can emit is derived from one of these or from moduleFunctionForm.
+const (
+	moduleFunctionExample = "def self.name"
+	namespaceCallExample  = "Naming.display_name(person)"
+)
+
+// moduleNamespaceReplacement names what replaces every removed form of
+// behavior injection: a module is a namespace, so the code it holds is
+// reached by calling it on the module rather than by copying it into a class.
+const moduleNamespaceReplacement = "define module functions with " + moduleFunctionExample +
+	" and call them on the module (" + namespaceCallExample + ")"
+
+// moduleFunctionForm spells the module-function declaration that replaces an
+// instance-style method of the given name, and reports whether that spelling
+// exists at all. A `def self.` name is an identifier, so a method the grammar
+// names with an operator (+, <<, [], []=) has no module-function form and must
+// be recommended something else. The question goes to the lexer rather than to
+// a second copy of the identifier rule, so an operator the grammar gains later
+// is covered without editing this.
+func moduleFunctionForm(name string) (string, bool) {
+	base := strings.TrimSuffix(name, "=")
+	if base == "" {
+		return "", false
+	}
+	l := newLexer(base)
+	if tok := l.NextToken(); tok.Type != ast.TokenIdent || tok.Literal != base {
+		return "", false
+	}
+	if l.NextToken().Type != ast.TokenEOF {
+		return "", false
+	}
+	return "def self." + name, true
+}
+
+// moduleNamespaceHint states the rule and the replacement together, for the
+// diagnostics that need both.
+const moduleNamespaceHint = "modules are namespaces: " + moduleNamespaceReplacement
+
+// The removed behavior-injection directives. The words are contextual, so
+// they are still recognized in class-member position to report the
+// replacement rather than fail as an unknown call.
+const (
+	mixinIncludeWord = "include"
+	mixinExtendWord  = "extend"
+)
+
 func (p *parser) parseClassStatement() ast.Statement {
 	pos := p.curToken.Pos
 	if p.peekToken.Type == ast.TokenShovel {
@@ -804,11 +852,11 @@ func (p *parser) parseClassStatement() ast.Statement {
 		return nil
 	}
 	// `class B < A` is a syntax error that says nothing about why. Inheritance
-	// is deliberately absent and mixins are the documented alternative, so the
-	// error names the decision rather than leaving the author to assume a
-	// syntax slip and retry variants.
+	// is deliberately absent and shared behavior lives in a module namespace,
+	// so the error names the decision rather than leaving the author to assume
+	// a syntax slip and retry variants.
 	if p.peekToken.Type == ast.TokenLT {
-		p.addParseError(p.peekToken.Pos, "class inheritance is not supported; use \"include SomeModule\" to share behavior")
+		p.addParseError(p.peekToken.Pos, "class inheritance is not supported; "+moduleNamespaceHint)
 		return nil
 	}
 	return p.parseClassLikeBody(pos, false)
@@ -898,6 +946,14 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 				return nil
 			}
 			fn := fnStmt.(*ast.FunctionStmt)
+			if isModule && !fn.IsClassMethod {
+				if form, ok := moduleFunctionForm(fn.Name); ok {
+					p.addParseError(fn.Position, "def %s in module %s must be %s; a module is a namespace, not a method source", srcText(fn.Name), srcText(name), srcText(form))
+				} else {
+					p.addParseError(fn.Position, "operator method %s is not supported in module %s; an operator dispatches on an instance and a module has none, so define %s on a class", srcText(fn.Name), srcText(name), srcText(fn.Name))
+				}
+				break
+			}
 			if fn.IsClassMethod {
 				stmt.ClassMethods = append(stmt.ClassMethods, fn)
 			} else {
@@ -913,6 +969,10 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 						return nil
 					}
 					aliasStmt := alias.(*ast.AliasStmt)
+					if isModule {
+						p.addParseError(aliasStmt.Pos(), "alias in module %s is not supported; a module has no instance methods to rename, so %s", srcText(name), moduleNamespaceReplacement)
+						break
+					}
 					stmt.Aliases = append(stmt.Aliases, aliasStmt)
 					stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Alias: aliasStmt})
 				} else {
@@ -927,6 +987,10 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 					return nil
 				}
 				aliasStmt := alias.(*ast.AliasStmt)
+				if isModule {
+					p.addParseError(aliasStmt.Pos(), "alias_method in module %s is not supported; a module has no instance methods to rename, so %s", srcText(name), moduleNamespaceReplacement)
+					break
+				}
 				stmt.Aliases = append(stmt.Aliases, aliasStmt)
 				stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Alias: aliasStmt})
 			case ast.VisibilityPublic, ast.VisibilityProtected:
@@ -956,18 +1020,14 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 						stmt.Body = append(stmt.Body, s)
 					}
 				}
-			case ast.MixinInclude, ast.MixinExtend:
+			case mixinIncludeWord, mixinExtendWord:
 				if p.startsMixinDirective() {
-					mixin := p.parseMixinMember()
-					if mixin == nil {
-						return nil
-					}
-					stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Mixin: mixin})
-				} else {
-					s := p.parseStatement()
-					if s != nil {
-						stmt.Body = append(stmt.Body, s)
-					}
+					p.reportRemovedMixinDirective()
+					break
+				}
+				s := p.parseStatement()
+				if s != nil {
+					stmt.Body = append(stmt.Body, s)
 				}
 			default:
 				s := p.parseStatement()
@@ -980,10 +1040,15 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 				continue
 			}
 		case ast.TokenProperty, ast.TokenGetter, ast.TokenSetter:
+			kind := p.curToken.Literal
 			decl := p.parsePropertyDecl(p.curToken.Type)
 			if p.pendingVisibility != "" {
 				decl.Visibility = p.pendingVisibility
 				p.pendingVisibility = ""
+			}
+			if isModule {
+				p.addParseError(decl.Position, "%s in module %s is not supported; a module has no instances, so %s", srcText(kind), srcText(name), moduleNamespaceReplacement)
+				break
 			}
 			stmt.Properties = append(stmt.Properties, decl)
 			stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Property: &decl})
@@ -1007,14 +1072,15 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 }
 
 // startsMixinDirective reports whether an `include`/`extend` identifier in
-// class-member position begins a mixin directive rather than an ordinary
-// statement. It is a directive when followed on the same line by a module
-// name, an opening paren, or `self` (which gets a targeted diagnostic), or
-// when it stands alone (a bare directive missing its module name, also a
-// targeted diagnostic) — unless a local of that name is in scope, in which
-// case the bare word reads the local as it always has. Anything else — an
-// assignment such as `include = 1` — parses as a normal statement so the
-// words stay usable as identifiers.
+// class-member position is written as a mixin directive rather than as an
+// ordinary statement. Both directives are removed, so the shape is still
+// recognized only to report where behavior injection went; see
+// reportRemovedMixinDirective. It is a directive when followed on the same
+// line by a module name, an opening paren, or `self`, or when it stands alone
+// — unless a local of that name is in scope, in which case the bare word reads
+// the local as it always has. Anything else — an assignment such as
+// `include = 1` — parses as a normal statement so the words stay usable as
+// identifiers.
 func (p *parser) startsMixinDirective() bool {
 	if p.peekToken.Pos.Line == p.curToken.Pos.Line {
 		switch p.peekToken.Type {
@@ -1025,54 +1091,13 @@ func (p *parser) startsMixinDirective() bool {
 	return !p.isLocalName(p.curToken.Literal) && p.peekEndsStatement(p.curToken.Pos)
 }
 
-// parseMixinMember parses an include/extend directive with curToken on the
-// directive word. Module names may be scope-qualified (Support::Naming) and
-// comma-separated; an optional paren group wraps the list.
-func (p *parser) parseMixinMember() *ast.MixinDecl {
-	kind := p.curToken.Literal
+// reportRemovedMixinDirective reports an include/extend directive with
+// curToken on the directive word, and consumes the rest of the line so the
+// module list that follows does not produce a second, unrelated error.
+func (p *parser) reportRemovedMixinDirective() {
 	pos := p.curToken.Pos
-	decl := &ast.MixinDecl{Kind: kind, Position: pos}
-
-	parenthesized := false
-	if p.peekToken.Type == ast.TokenLParen && p.peekToken.Pos.Line == pos.Line {
-		parenthesized = true
-		p.nextToken()
-	}
-	for {
-		if p.peekToken.Type == ast.TokenSelf {
-			p.addParseError(p.peekToken.Pos, fmt.Sprintf("%s self is not supported; define module functions with def self.name", kind))
-			p.recoverSameLineStatementRemainder(pos.Line)
-			return nil
-		}
-		if p.peekToken.Type != ast.TokenIdent {
-			p.addParseError(p.peekToken.Pos, fmt.Sprintf("%s expects a module name", kind))
-			p.recoverSameLineStatementRemainder(pos.Line)
-			return nil
-		}
-		p.nextToken()
-		if !startsUppercaseIdentifier(p.curToken.Literal) {
-			p.addParseError(p.curToken.Pos, "module name must start with an uppercase letter")
-			p.recoverSameLineStatementRemainder(pos.Line)
-			return nil
-		}
-		ref := ast.MixinRef{Name: p.curToken.Literal, Position: p.curToken.Pos}
-		for p.peekToken.Type == ast.TokenScope {
-			p.nextToken()
-			if !p.expectPeek(ast.TokenIdent) {
-				return nil
-			}
-			ref.Name += "::" + p.curToken.Literal
-		}
-		decl.Modules = append(decl.Modules, ref)
-		if p.peekToken.Type != ast.TokenComma {
-			break
-		}
-		p.nextToken()
-	}
-	if parenthesized && !p.expectPeek(ast.TokenRParen) {
-		return nil
-	}
-	return decl
+	p.addParseError(pos, "%s is not supported; %s", srcText(p.curToken.Literal), moduleNamespaceHint)
+	p.recoverSameLineStatementRemainder(pos.Line)
 }
 
 // startsVisibilityDirective reports whether a `public`/`protected` identifier
@@ -1143,7 +1168,7 @@ func (p *parser) parseVisibilityMember(stmt *ast.ClassStmt, level string) bool {
 			}
 		}
 	} else if !p.peekEndsStatement(pos) {
-		p.addParseError(p.peekToken.Pos, fmt.Sprintf("%s expects a method definition, symbol method names, or no argument", level))
+		p.addParseError(p.peekToken.Pos, "%s expects a method definition, symbol method names, or no argument", level)
 		p.recoverSameLineStatementRemainder(pos.Line)
 		return false
 	}
@@ -1254,7 +1279,7 @@ func (p *parser) parseEnumStatement() ast.Statement {
 			Position: p.curToken.Pos,
 		}
 		if _, exists := memberNames[member.Name]; exists {
-			p.addParseError(member.Position, fmt.Sprintf("duplicate enum member %s", member.Name))
+			p.addParseError(member.Position, "duplicate enum member %s", srcText(member.Name))
 			return nil
 		}
 		memberNames[member.Name] = struct{}{}
@@ -1263,7 +1288,7 @@ func (p *parser) parseEnumStatement() ast.Statement {
 	}
 
 	if len(stmt.Members) == 0 {
-		p.addParseError(pos, fmt.Sprintf("enum %s must define at least one member", name))
+		p.addParseError(pos, "enum %s must define at least one member", srcText(name))
 		return nil
 	}
 	if p.curToken.Type != ast.TokenEnd {
@@ -1347,7 +1372,8 @@ func (p *parser) parseParamsWithOptions(options paramParseOptions) []ast.Param {
 		switch param.Kind {
 		case ast.ParamNormal:
 			if seenRest || seenKeyword || seenKeywordRest || seenBlock {
-				p.addParseError(paramPos, ordinaryParamOrderMessage(param, params))
+				format, args := ordinaryParamOrderMessage(param, params)
+				p.addParseError(paramPos, format, args...)
 				return params
 			}
 		case ast.ParamRest:
@@ -1454,8 +1480,8 @@ func (p *parser) parseParam(options paramParseOptions) (ast.Param, ast.Position,
 		if param.Type == nil {
 			return ast.Param{}, ast.Position{}, false
 		}
-		if err := captureParamTypeError(param); err != "" {
-			p.addParseError(param.Type.Position, err)
+		if format, args := captureParamTypeError(param); format != "" {
+			p.addParseError(param.Type.Position, format, args...)
 			return ast.Param{}, ast.Position{}, false
 		}
 		if kind == ast.ParamNormal && !param.IsIvar && p.peekToken.Type == ast.TokenColon {
@@ -1483,18 +1509,22 @@ func (p *parser) parseParam(options paramParseOptions) (ast.Param, ast.Position,
 	return param, pos, true
 }
 
-func captureParamTypeError(param ast.Param) string {
+// captureParamTypeError reports the diagnostic for a capture parameter whose
+// annotation cannot hold what it captures, as a format and its arguments so
+// the message is built only under the error budget. An empty format means the
+// annotation is acceptable.
+func captureParamTypeError(param ast.Param) (string, []any) {
 	switch param.Kind {
 	case ast.ParamRest:
 		if !restCaptureTypeAcceptsArray(param.Type) {
-			return fmt.Sprintf("rest parameter %s captures an array; annotate it as array<...> or any", param.Name)
+			return "rest parameter %s captures an array; annotate it as array<...> or any", []any{srcText(param.Name)}
 		}
 	case ast.ParamKeywordRest:
 		if !keywordRestCaptureTypeAcceptsHash(param.Type) {
-			return fmt.Sprintf("keyword rest parameter %s captures a hash; annotate it as hash<...>, object, a shape type, or any", param.Name)
+			return "keyword rest parameter %s captures a hash; annotate it as hash<...>, object, a shape type, or any", []any{srcText(param.Name)}
 		}
 	}
-	return ""
+	return "", nil
 }
 
 func restCaptureTypeAcceptsArray(ty *ast.TypeExpr) bool {
@@ -2001,7 +2031,7 @@ func (p *parser) parsePropertyName() (ast.PropertyName, bool) {
 		// and "expected property name, got symbol" does not say that the
 		// argument shape differs too.
 		if p.curToken.Type == ast.TokenSymbol {
-			p.addParseError(p.curToken.Pos, fmt.Sprintf("property takes a bare name: property %s, not property :%s", p.curToken.Literal, p.curToken.Literal))
+			p.addParseError(p.curToken.Pos, "property takes a bare name: property %s, not property :%s", srcText(p.curToken.Literal), srcText(p.curToken.Literal))
 			return ast.PropertyName{}, false
 		}
 		p.errorExpected(p.curToken, "property name")
@@ -2220,11 +2250,7 @@ func (p *parser) parseDestructureElement(allowType bool, extraAnonymousRestTermi
 			return ast.DestructureElement{}, false
 		}
 		if rest && !restCaptureTypeAcceptsArray(element.Type) {
-			name := ast.FormatDestructureTarget(target)
-			if name == "" {
-				name = "*"
-			}
-			p.addParseError(element.Type.Position, fmt.Sprintf("rest destructuring target %s captures an array; annotate it as array<...> or any", name))
+			p.addParseError(element.Type.Position, "rest destructuring target %s captures an array; annotate it as array<...> or any", targetText{target})
 			return ast.DestructureElement{}, false
 		}
 	}

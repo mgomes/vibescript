@@ -162,20 +162,17 @@ end
 `, "duplicate module Billing")
 }
 
-func TestModuleInstanceMethodNotCallableOnModule(t *testing.T) {
+// A module is a namespace, so it declares functions with def self.name. A
+// plain def has no receiver to run on and is rejected where it is written.
+func TestModuleInstanceMethodIsACompileError(t *testing.T) {
 	t.Parallel()
-	script := compileScript(t, `
+	requireCompileErrorContainsDefault(t, `
 module Named
   def display_name
     "named"
   end
 end
-
-def call_it
-  Named.display_name
-end
-`)
-	requireCallErrorContains(t, script, "call_it", nil, CallOptions{}, "unknown class member display_name")
+`, "def display_name in module Named must be def self.display_name")
 }
 
 func TestCompileSnippetInitializesModuleBodyInSourceOrder(t *testing.T) {
