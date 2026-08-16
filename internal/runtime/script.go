@@ -53,55 +53,6 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 
 	exec := newExecutionForCall(s, ctx, root, opts)
 	defer exec.releaseBaseWalkCache()
-	defer exec.releaseMemoryChain()
-
-	// Taken before anything binds, and in particular before capabilities do.
-	// A binder is allowed to block -- the sleeping binder in this repository's
-	// own tests does -- and until the baseline exists this level contributes
-	// nothing to the chain, so its fresh root and cloned definitions were
-	// invisible to an ancestor for as long as a binder chose to wait. Nothing
-	// bound between here and the old position changes what this measures: the
-	// baseline is the graph tail, which is the modules and task globals the call
-	// arrived with, and binding writes to the root env rather than to those.
-	exec.captureMemoryInheritedBaseline()
-
-	// Publish this level's own setup before anything else runs.
-	//
-	// The property is about *when this level becomes visible*, not about which
-	// callers can block. A child builds its root env and clones the call's
-	// classes and enums before its execution exists, so there is no node to
-	// publish to while that happens; the first publication after the node exists
-	// is the earliest an ancestor can see any of it. Until then a nonblocking
-	// parent allocates against a total that omits this whole level.
-	//
-	// It was previously gated on there being capabilities to bind, reasoning
-	// that a binder is the only thing on this path that can block. That was
-	// right about blocking and wrong about the property: an ordinary
-	// capability-free job has the same window, because the window is opened by
-	// allocating before registration rather than by waiting. Blocking only makes
-	// it longer.
-	//
-	// A residual remains and is bounded rather than closed. Everything built
-	// before the execution exists -- the root env, the cloned classes and enums
-	// -- cannot be published, because there is no node yet to publish to, so a
-	// nonblocking parent can be admitted against a total omitting it. That
-	// quantity is fixed by the script's own text: measured flat at 19,904 bytes
-	// across task payloads from 1 KiB to 4 MiB, a four-thousand-fold range, and
-	// growing only with definitions, at roughly 745 bytes per class -- 1,040
-	// bytes for a script with none and 298,048 for one with four hundred.
-	//
-	// So the exposure is a property of the program, not of anything the running
-	// script controls, which is what makes it a residual worth documenting
-	// rather than a hole worth a reservation taken before an Execution exists.
-	// The invariant holding that bound static is that nothing on this path
-	// retains argument data: scanInboundCallValues walks the arguments but is a
-	// predicate returning a bool, and the deep copy it enables happens later,
-	// after registration. A change that made this path retain anything derived
-	// from the arguments would make the bound scale with runtime data, and the
-	// measurement above is the one to repeat.
-	if err := exec.checkMemory(); err != nil {
-		return NewNil(), exec.wrapError(err, fn.Pos)
-	}
 
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
 		return NewNil(), err
@@ -200,55 +151,6 @@ func (s *Script) callWithLazyGlobals(ctx context.Context, name string, args []Va
 
 	exec := newExecutionForCall(s, ctx, root, opts)
 	defer exec.releaseBaseWalkCache()
-	defer exec.releaseMemoryChain()
-
-	// Taken before anything binds, and in particular before capabilities do.
-	// A binder is allowed to block -- the sleeping binder in this repository's
-	// own tests does -- and until the baseline exists this level contributes
-	// nothing to the chain, so its fresh root and cloned definitions were
-	// invisible to an ancestor for as long as a binder chose to wait. Nothing
-	// bound between here and the old position changes what this measures: the
-	// baseline is the graph tail, which is the modules and task globals the call
-	// arrived with, and binding writes to the root env rather than to those.
-	exec.captureMemoryInheritedBaseline()
-
-	// Publish this level's own setup before anything else runs.
-	//
-	// The property is about *when this level becomes visible*, not about which
-	// callers can block. A child builds its root env and clones the call's
-	// classes and enums before its execution exists, so there is no node to
-	// publish to while that happens; the first publication after the node exists
-	// is the earliest an ancestor can see any of it. Until then a nonblocking
-	// parent allocates against a total that omits this whole level.
-	//
-	// It was previously gated on there being capabilities to bind, reasoning
-	// that a binder is the only thing on this path that can block. That was
-	// right about blocking and wrong about the property: an ordinary
-	// capability-free job has the same window, because the window is opened by
-	// allocating before registration rather than by waiting. Blocking only makes
-	// it longer.
-	//
-	// A residual remains and is bounded rather than closed. Everything built
-	// before the execution exists -- the root env, the cloned classes and enums
-	// -- cannot be published, because there is no node yet to publish to, so a
-	// nonblocking parent can be admitted against a total omitting it. That
-	// quantity is fixed by the script's own text: measured flat at 19,904 bytes
-	// across task payloads from 1 KiB to 4 MiB, a four-thousand-fold range, and
-	// growing only with definitions, at roughly 745 bytes per class -- 1,040
-	// bytes for a script with none and 298,048 for one with four hundred.
-	//
-	// So the exposure is a property of the program, not of anything the running
-	// script controls, which is what makes it a residual worth documenting
-	// rather than a hole worth a reservation taken before an Execution exists.
-	// The invariant holding that bound static is that nothing on this path
-	// retains argument data: scanInboundCallValues walks the arguments but is a
-	// predicate returning a bool, and the deep copy it enables happens later,
-	// after registration. A change that made this path retain anything derived
-	// from the arguments would make the bound scale with runtime data, and the
-	// measurement above is the one to repeat.
-	if err := exec.checkMemory(); err != nil {
-		return NewNil(), exec.wrapError(err, fn.Pos)
-	}
 
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
 		return NewNil(), err

@@ -101,10 +101,7 @@ func (exec *Execution) equalityScratchGranule() int {
 	if exec.memoryQuota <= 0 {
 		return 0
 	}
-	// A share of the bound actually in force, so the granule -- and therefore the
-	// scratch held between checks -- stays proportionate under an inherited
-	// ceiling rather than to a local quota the chain will not honor.
-	return exec.effectiveMemoryLimit() >> equalityScratchQuotaShift
+	return exec.memoryBudgetBytes() >> equalityScratchQuotaShift
 }
 
 // syncEqualityScratchReservation moves the execution's reserved scratch to the

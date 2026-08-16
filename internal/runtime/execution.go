@@ -99,29 +99,6 @@ type Execution struct {
 	// Lazily created by the first sleep and inherited through the call
 	// context, the way the task concurrency pool is.
 	sleepBudget *sleepBudget
-	// memChain bounds live memory across this chain of nested calls. Each
-	// nested task level runs on its own Execution and read memoryQuota fresh,
-	// so the host's quota was handed out again in full per level and live
-	// memory multiplied with depth. See memoryChain.
-	memChain *memoryChain
-	// memChainNode is this execution's own node, stored inline so that linking
-	// into the chain costs no allocation on the task spawn path. memChain
-	// points at it when the chain is active and is nil otherwise.
-	memChainNode memoryChain
-	// memBaseline is what this execution inherited: the task globals it was
-	// handed and the modules it arrived with, which is the structure an
-	// ancestor already charges. Subtracting it keeps one shared global from
-	// being counted once per level. It deliberately excludes this call's own
-	// root env, cloned classes and enums, and capability bindings, which are
-	// fresh per level and are charged. See captureMemoryInheritedBaseline.
-	memBaseline int
-	// memBaselineSet marks the baseline as established. Until it is, this
-	// execution has nothing of its own by definition -- it is still binding the
-	// structure it inherited -- so it contributes nothing to the chain. Without
-	// the guard, a memory check firing during binding published the whole
-	// inherited graph as this level's marginal, and since a quota refusal is
-	// latched, that transient over-charge became permanent.
-	memBaselineSet bool
 	// exhausted latches the first genuine budget-exhaustion error (step
 	// quota, memory quota, or output limit) raised on this execution. Once
 	// set, step() fails immediately with it and no rescue clause matches any
@@ -730,13 +707,6 @@ func (exec *Execution) currentRescuedError() error {
 // that have been carved into sibling packages (vibes/capability/...)
 // rely on it to forward cancellation and request-scoped values to host
 // callbacks without reaching into unexported runtime fields.
-//
-// It deliberately does not carry the memory-chain node. Publishing the node
-// here reached everything the call drives, including a context an adapter can
-// retain and re-enter with, and that surface produced four defects in as many
-// review rounds. Capability re-entry is left to its own design; a callee
-// re-entered that way gets a fresh allowance, which is what it gets without
-// this change at all.
 func (exec *Execution) Context() context.Context {
 	return exec.ctx
 }
