@@ -354,8 +354,9 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 			return err
 		}
 		first := true
-		var keyBuf [smallHashIterationBuffer]string
-		for _, k := range v.hashIterationKeys(keyBuf[:]) {
+		var keyBuf [smallHashIterationBuffer]Value
+		for _, key := range v.hashIterationKeys(keyBuf[:]) {
+			k := key.data.(string)
 			val := entries[k]
 			if !first {
 				// The entry separator counts against the budget like any other

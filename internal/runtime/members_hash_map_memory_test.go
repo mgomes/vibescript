@@ -23,15 +23,15 @@ func TestHashMapDoesNotChargeTheResultBackingTwice(t *testing.T) {
 
 	// Each quota sits between the correct threshold and the double-charged one:
 	// the 400-entry output backing (map slots plus the insertion-order slots
-	// beside them) is about 38KB, and charging it twice moved every threshold
+	// beside them) is about 45KB, and charging it twice moved every threshold
 	// by that much.
 	tests := []struct {
 		name  string
 		body  string
 		quota int
 	}{
-		{name: "separate key and value", body: "h.map { |k, v| v }", quota: 84000},
-		{name: "collapsed pair", body: "h.map { |p| p }", quota: 156000},
+		{name: "separate key and value", body: "h.map { |k, v| v }", quota: 91000},
+		{name: "collapsed pair", body: "h.map { |p| p }", quota: 163000},
 	}
 
 	for _, tc := range tests {

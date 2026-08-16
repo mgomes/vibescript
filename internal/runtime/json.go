@@ -667,11 +667,14 @@ func jsonObjectIdentity(val Value) uintptr {
 // Ruby's JSON.generate does, and sorted keys for a bare host map or an object,
 // which record no order.
 func jsonObjectEntries(val Value) ([]jsonObjectEntry, error) {
-	hashEntries := val.HashEntries()
-	entries := make([]jsonObjectEntry, len(hashEntries))
-	for i, entry := range hashEntries {
-		entries[i] = jsonObjectEntry{key: entry.Key.String(), value: entry.Value}
-	}
+	// Filled through RangeHashEntries rather than HashEntries so stringify does
+	// not allocate an intermediate entry slice per object on top of the one it
+	// returns. Stringify never re-enters script code, so walking in place
+	// cannot observe a mutation mid-walk.
+	entries := make([]jsonObjectEntry, 0, val.HashLen())
+	val.RangeHashEntries(func(key string, item Value) {
+		entries = append(entries, jsonObjectEntry{key: key, value: item})
+	})
 	return entries, nil
 }
 

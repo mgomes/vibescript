@@ -1907,14 +1907,15 @@ func (acc *hashLiteralBuildAccumulator) reserveBacking(capacity int) error {
 }
 
 // hashOrderBackingBytes is the heap footprint of the insertion-order backing a
-// hash of capacity slots retains: the slice base plus one string header per
-// slot. The key strings the slots hold alias the entry map's own keys, which
-// the entry accounting already charges.
+// hash of capacity slots retains: the slice base plus one key Value per slot.
+// The slots hold the key Values iteration hands out, so walking a hash boxes
+// nothing per entry; their string payloads alias the entry map's own keys,
+// which the entry accounting already charges.
 func hashOrderBackingBytes(capacity int) int {
 	if capacity <= 0 {
 		return 0
 	}
-	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(capacity, estimatedStringHeaderBytes))
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(capacity, estimatedValueBytes))
 }
 
 func (acc *hashLiteralBuildAccumulator) addDistinctEntry(current map[string]hashLiteralEntry, key string, val Value) error {
@@ -2679,7 +2680,7 @@ func (exec *Execution) maxProjectedHashEntries(scratchBytes int, receiver Value,
 		return 0
 	}
 	// Each admitted entry costs a map slot and an insertion-order slot.
-	return (budget - used) / (estimatedMapEntryStructuralBytes + estimatedStringHeaderBytes)
+	return (budget - used) / (estimatedMapEntryStructuralBytes + estimatedValueBytes)
 }
 
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {

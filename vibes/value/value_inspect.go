@@ -151,21 +151,22 @@ func (v Value) appendInspectHash(buf *strings.Builder, state *valueStringState, 
 		return err
 	}
 	first := true
-	var keyBuf [smallHashIterationBuffer]string
-	for _, k := range v.hashIterationKeys(keyBuf[:]) {
+	var keyBuf [smallHashIterationBuffer]Value
+	for _, key := range v.hashIterationKeys(keyBuf[:]) {
 		if !first {
 			if err := appendBounded(buf, elementSeparator, limit); err != nil {
 				return err
 			}
 		}
 		first = false
-		if err := appendInspectHashKeyBounded(buf, k, limit); err != nil {
+		name := key.data.(string)
+		if err := appendInspectHashKeyBounded(buf, name, limit); err != nil {
 			return err
 		}
 		if err := appendBounded(buf, keyValueSeparator, limit); err != nil {
 			return err
 		}
-		if err := entries[k].appendInspect(buf, state, limit); err != nil {
+		if err := entries[name].appendInspect(buf, state, limit); err != nil {
 			return err
 		}
 	}

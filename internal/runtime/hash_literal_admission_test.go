@@ -84,7 +84,7 @@ func TestSessionLiteralAdmissionWeighsNewEntryStructure(t *testing.T) {
 	// One entry's structure either side of wherever the boundary falls, so the
 	// sweep straddles it whatever the estimator's constants are.
 	_, held := buildLiteralThroughReplacement(t, 1<<20)
-	structure := estimatedMapEntryStructuralBytes + estimatedStringHeaderBytes
+	structure := estimatedMapEntryStructuralBytes + estimatedValueBytes
 	admittedAny := false
 	for quota := held - 2*structure; quota <= held+structure; quota++ {
 		admitted, used := buildLiteralThroughReplacement(t, quota)

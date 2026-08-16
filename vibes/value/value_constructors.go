@@ -1,9 +1,7 @@
 package value
 
 import (
-	"maps"
 	"math"
-	"slices"
 	"time"
 	"unsafe"
 )
@@ -200,14 +198,15 @@ func ArrayIdentity(v Value) uintptr {
 // insertion order of its keys; KindObject keeps a bare map because an
 // attribute bag records no order.
 //
-// order lists each entry key exactly once: HashSet appends a new key and keeps
-// an overwritten key at its original position. A bare Go map handed to NewHash
-// carries no insertion record, so NewHash seeds order from its sorted keys and
-// the hash iterates sorted, as it always has.
+// order lists each entry key exactly once, as the KindString Value iteration
+// hands out: HashSet appends a new key and keeps an overwritten key at its
+// original position. A bare Go map handed to NewHash carries no insertion
+// record, so NewHash seeds order from its sorted keys and the hash iterates
+// sorted, as it always has.
 type hashData struct {
 	entries       map[string]Value
 	entryCapacity int
-	order         []string
+	order         []Value
 }
 
 // HashDataBytes is the heap footprint of the hashData wrapper every KindHash
@@ -224,7 +223,7 @@ const HashDataBytes = int(unsafe.Sizeof(hashData{}))
 func NewHash(h map[string]Value) Value {
 	hd := &hashData{entries: h, entryCapacity: len(h)}
 	if len(h) > 0 {
-		hd.order = slices.Sorted(maps.Keys(h))
+		hd.order = sortedMapKeysInto(h, nil)
 	}
 	return Value{kind: KindHash, data: hd}
 }
@@ -237,7 +236,7 @@ func NewHash(h map[string]Value) Value {
 // It is intended for the interpreter's internal use; hosts should not call
 // it, and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
-func NewHashWithOrder(entries map[string]Value, order []string) Value {
+func NewHashWithOrder(entries map[string]Value, order []Value) Value {
 	return Value{kind: KindHash, data: &hashData{
 		entries:       entries,
 		entryCapacity: len(entries),
@@ -248,9 +247,9 @@ func NewHashWithOrder(entries map[string]Value, order []string) Value {
 // NewHashWithCapacity returns an empty hash whose entry map and insertion-order
 // backing are pre-sized for capacity entries.
 func NewHashWithCapacity(capacity int) Value {
-	var order []string
+	var order []Value
 	if capacity > 0 {
-		order = make([]string, 0, capacity)
+		order = make([]Value, 0, capacity)
 	}
 	return Value{kind: KindHash, data: &hashData{
 		entries:       make(map[string]Value, capacity),

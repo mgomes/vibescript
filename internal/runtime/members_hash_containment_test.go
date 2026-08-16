@@ -782,7 +782,7 @@ func TestMaxProjectedHashEntriesAgreesWithProjection(t *testing.T) {
 	scratch := sortedHashEntryBufferBytes(2_000)
 	// Each admitted entry costs a map slot and an insertion-order slot; the
 	// order backing's own base rides in the fixed part of the budget.
-	perEntry := estimatedMapEntryStructuralBytes + estimatedStringHeaderBytes
+	perEntry := estimatedMapEntryStructuralBytes + estimatedValueBytes
 
 	// Pick a quota that admits some entries beyond the base plus scratch so the cap
 	// is a positive number bounded by the byte budget.
@@ -2052,7 +2052,7 @@ func TestHashMergeZeroArgWithBlockOverLargeReceiverSucceeds(t *testing.T) {
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, NewNil())
 	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	outputStructure := estimatedEmptyOutputHashBytes + count*perEntry
+	outputStructure := estimatedEmptyOutputHashBytes + count*perEntry + hashOrderBackingBytes(count)
 	scratch := sortedHashEntryBufferBytes(count)
 	quota := liveWithRoots + outputStructure + scratch/2
 

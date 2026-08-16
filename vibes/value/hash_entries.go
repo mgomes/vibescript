@@ -1,6 +1,7 @@
 package value
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -63,7 +64,7 @@ func (v Value) HashEntriesInto(buf []HashEntry) []HashEntry {
 		entries = make([]HashEntry, 0, len(m))
 	}
 	for _, key := range v.hashIterationKeys(nil) {
-		entries = append(entries, HashEntry{Key: NewString(key), Value: m[key]})
+		entries = append(entries, HashEntry{Key: key, Value: m[key.data.(string)]})
 	}
 	return entries
 }
@@ -83,7 +84,8 @@ func (v Value) RangeHashEntries(visit func(key string, val Value)) {
 		return
 	}
 	for _, key := range v.hashIterationKeys(nil) {
-		visit(key, m[key])
+		name := key.data.(string)
+		visit(name, m[name])
 	}
 }
 
@@ -93,7 +95,7 @@ func (v Value) RangeHashEntries(visit func(key string, val Value)) {
 // It is intended for the interpreter's internal use; hosts should not call
 // it, and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
-func (v Value) HashKeyOrder() []string {
+func (v Value) HashKeyOrder() []Value {
 	return slices.Clone(v.hashIterationKeys(nil))
 }
 
@@ -116,7 +118,11 @@ func (v Value) hashEntryMap() map[string]Value {
 // or a bare map a host handed to NewHash and then mutated through Hash() —
 // iterates in sorted key order, so iteration is deterministic rather than
 // exposing Go's randomized map traversal.
-func (v Value) hashIterationKeys(buf []string) []string {
+//
+// The order slots hold the key Values themselves rather than bare strings, so
+// walking a hash hands out the stored key instead of boxing a fresh string
+// Value per entry on every iteration.
+func (v Value) hashIterationKeys(buf []Value) []Value {
 	if v.kind == KindHash {
 		hd := v.data.(*hashData)
 		if len(hd.order) == len(hd.entries) {
@@ -126,15 +132,17 @@ func (v Value) hashIterationKeys(buf []string) []string {
 	return sortedMapKeysInto(v.hashEntryMap(), buf)
 }
 
-func sortedMapKeysInto(m map[string]Value, buf []string) []string {
+func sortedMapKeysInto(m map[string]Value, buf []Value) []Value {
 	keys := buf[:0]
 	if cap(keys) < len(m) {
-		keys = make([]string, 0, len(m))
+		keys = make([]Value, 0, len(m))
 	}
 	for key := range m {
-		keys = append(keys, key)
+		keys = append(keys, NewString(key))
 	}
-	slices.Sort(keys)
+	slices.SortFunc(keys, func(a, b Value) int {
+		return cmp.Compare(a.data.(string), b.data.(string))
+	})
 	return keys
 }
 
@@ -197,7 +205,16 @@ func (v Value) hashSetInternal(key, val Value, bump bool) error {
 		hd.entries = make(map[string]Value)
 	}
 	if _, exists := hd.entries[name]; !exists {
-		hd.order = append(hd.order, name)
+		// Store the normalized key Value so iteration hands out this one rather
+		// than boxing a fresh string Value per entry per walk. A key that is
+		// already a string is stored as-is, so copying entries between hashes
+		// (select, merge, transform_values) boxes nothing at all; only a symbol
+		// pays one boxing as it normalizes.
+		keyValue := key
+		if key.kind != KindString {
+			keyValue = NewString(name)
+		}
+		hd.order = append(hd.order, keyValue)
 	}
 	hd.entries[name] = val
 	if len(hd.entries) > hd.entryCapacity {
@@ -228,7 +245,10 @@ func (v Value) HashDeleteKey(key Value) (Value, bool, error) {
 	delete(m, name)
 	if v.kind == KindHash {
 		hd := v.data.(*hashData)
-		if i := slices.Index(hd.order, name); i >= 0 {
+		i := slices.IndexFunc(hd.order, func(key Value) bool {
+			return key.data.(string) == name
+		})
+		if i >= 0 {
 			hd.order = append(hd.order[:i], hd.order[i+1:]...)
 		}
 	}
@@ -257,7 +277,7 @@ func (v Value) HashClearEntries() {
 // HashOrderCapacity returns the capacity of the insertion-order backing a hash
 // retains alongside its entries, or 0 when v is not a hash or tracks no order.
 // Memory-quota accounting charges the backing's structural bytes; the key
-// strings inside it alias keys the entry storage already charges.
+// Values inside it alias key strings the entry storage already charges.
 // It is intended for the interpreter's internal use; hosts should not call
 // it, and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
@@ -322,7 +342,7 @@ func (v Value) reserveHashOrderInternal(n int, bump bool) {
 	if bump {
 		BumpMutationEpoch()
 	}
-	grown := make([]string, len(hd.order), n)
+	grown := make([]Value, len(hd.order), n)
 	copy(grown, hd.order)
 	hd.order = grown
 }

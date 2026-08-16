@@ -175,7 +175,7 @@ func (exec *Execution) hashStoreCharged(target, key, val Value) (handled bool, e
 		return true, setErr
 	}
 	if orderCapAfter := value.HashOrderCapacity(target); orderCapAfter != orderCapBefore {
-		growth := saturatingMul(orderCapAfter-orderCapBefore, estimatedStringHeaderBytes)
+		growth := saturatingMul(orderCapAfter-orderCapBefore, estimatedValueBytes)
 		if orderCapBefore == 0 {
 			growth = saturatingAdd(growth, estimatedSliceBaseBytes)
 		}
