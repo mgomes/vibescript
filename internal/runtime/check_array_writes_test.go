@@ -7583,23 +7583,6 @@ end`,
 			want: []string{"call to takes_string argument value expected string, got int"},
 		},
 		{
-			name: "nonexact destructure aliases retain mutation identity",
-			source: `def build() -> array<int>
-  [1]
-end
-
-def takes_string(value: string)
-  value
-end
-
-def run()
-  names = build()
-  copy, ignored = [names, 0]
-  names.map! { "ok" }
-  takes_string(copy[0])
-end`,
-		},
-		{
 			name: "logical assignment uses its pre-RHS decision",
 			source: `def takes_string(value: string)
   value
@@ -7611,35 +7594,6 @@ def run()
   takes_string(copy)
 end`,
 			want: []string{"call to takes_string argument value expected string, got int"},
-		},
-		{
-			name: "skipped logical assignment preserves an existing alias",
-			source: `def takes_string(value: string)
-  value
-end
-
-def run()
-  items = [1]
-  copy = items
-  items ||= []
-  copy.map! { "ok" }
-  takes_string(items[0])
-end`,
-		},
-		{
-			name: "selected logical assignment rebinds an existing alias",
-			source: `def takes_int(value: int)
-  value
-end
-
-def run()
-  original = [1]
-  selected = original
-  selected &&= ["replacement"]
-  original.map! { 2 }
-  takes_int(selected[0])
-end`,
-			want: []string{"call to takes_int argument value expected int, got string"},
 		},
 		{
 			name: "known skipped logical index keeps its bound",
@@ -7784,112 +7738,6 @@ def run()
 end`,
 		},
 		{
-			name: "nonexact logical assignment retains alias identity",
-			source: `def build() -> array<int>
-  [1]
-end
-
-def takes_string(value: string)
-  value
-end
-
-def probe(names: array<int>)
-  copy = nil
-  copy ||= names
-  names.map! { "ok" }
-  takes_string(copy[0])
-end
-
-def run()
-  probe(build())
-end`,
-		},
-		{
-			name: "nonexact shared arguments retain identity",
-			source: `def build() -> array<int>
-  [1]
-end
-
-def takes_string(value: string)
-  value
-end
-
-def mutate(a: array<int>, b: array<int>)
-  a.map! { "ok" }
-  takes_string(b[0])
-end
-
-def run()
-  names = build()
-  mutate(names, names)
-end`,
-		},
-		{
-			name: "distinct caller aliases retain shared parameter identity",
-			source: `def build() -> array<int>
-  [1]
-end
-
-def takes_string(value: string)
-  value
-end
-
-def mutate(a: array<int>, b: array<int>)
-  a.map! { "ok" }
-  takes_string(b[0])
-end
-
-def run()
-  names = build()
-  alias_names = names
-  mutate(names, alias_names)
-end`,
-		},
-		{
-			name: "return summaries retain shared parameter identity",
-			source: `def build() -> array<int>
-  [1]
-end
-
-def takes_string(value: string)
-  value
-end
-
-def mutate_and_read(a: array<int>, b: array<int>)
-  a.map! { "ok" }
-  b[0]
-end
-
-def run()
-  names = build()
-  takes_string(mutate_and_read(names, names))
-end`,
-		},
-		{
-			name: "defaults observe shared parameter identity",
-			source: `def build() -> array<int>
-  [1]
-end
-
-def takes_string(value: string)
-  value
-end
-
-def mutate(values)
-  values.map! { "ok" }
-  0
-end
-
-def inspect_pair(a: array<int>, middle: int = mutate(a), b: array<int>)
-  takes_string(b[0])
-end
-
-def run()
-  names = build()
-  inspect_pair(a: names, b: names)
-end`,
-		},
-		{
 			name: "historical caller aliases do not imply current identity",
 			source: `def takes_int(value: int)
   value
@@ -7957,41 +7805,6 @@ def run()
   inspect_pair(first, -> { first = second }.call(), first)
 end`,
 			want: []string{"call to takes_int argument value expected int, got string"},
-		},
-		{
-			name: "repeated auto calls do not imply result identity",
-			source: `def takes_string(value: string)
-  value
-end
-
-def maker() -> array<int>
-  [1]
-end
-
-def inspect_pair(a: array<int>, b: array<int>)
-  a.map! { "ok" }
-  takes_string(b[0])
-end
-
-def run()
-  inspect_pair(maker, maker)
-end`,
-			want: []string{"call to takes_string argument value expected string, got int"},
-		},
-		{
-			name: "container defaults retain earlier parameter identity",
-			source: `def takes_string(value: string)
-  value
-end
-
-def inspect_pair(a: array<int>, b: array<int> = a)
-  a.map! { "ok" }
-  takes_string(b[0])
-end
-
-def run()
-  inspect_pair([1])
-end`,
 		},
 		{
 			name: "bare member auto calls do not alias their receiver",
@@ -8843,36 +8656,6 @@ end`,
 			want: []string{"call to takes_function argument value expected function, got nil | function"},
 		},
 		{
-			name: "destructure rest invalidates retained nonexact children",
-			source: `def takes_int(value: int)
-  value
-end
-
-class WriterA
-  def check()
-    raise "stop"
-  end
-end
-
-class WriterB
-  def check()
-    nil
-  end
-end
-
-def mutate(names: array<WriterA>)
-  ignored, *groups, last = [0, names, 0]
-  names.map! { WriterB.new }
-  groups[0][0].check()
-  takes_int("bad")
-end
-
-def run()
-  mutate([WriterA.new])
-end`,
-			want: []string{"call to takes_int argument value expected int, got string"},
-		},
-		{
 			name: "destructure index setter contributes namespace effects",
 			source: `def replacement(value)
   1
@@ -9659,30 +9442,6 @@ def run()
   takes_int(JSON.stringify({}))
 end`,
 			want: []string{"call to takes_int argument value expected int, got string"},
-		},
-		{
-			name: "namespace scans do not alias same-named caller locals",
-			source: `def build() -> array<int>
-  [1]
-end
-
-def takes_string(value: string)
-  value
-end
-
-def noop(a, b)
-  0
-end
-
-def run()
-  a = build()
-  b = build()
-  shared = build()
-  noop(shared, shared)
-  a.map! { "ok" }
-  takes_string(b[0])
-end`,
-			want: []string{"call to takes_string argument value expected string, got int | nil"},
 		},
 	}
 

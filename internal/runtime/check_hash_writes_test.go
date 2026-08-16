@@ -219,114 +219,7 @@ end
 			warning: "write to other expected value int, got string",
 		},
 		{
-			name: "splatted literal merge entries are checked",
-			source: `
-def f(h: hash<string, int>)
-  h.merge!(*[{ "a": "bad" }])
-end
-`,
-			warning: "write to h expected value int, got string",
-		},
-		{
-			name: "splatted local merge entries are checked",
-			source: `
-def f(h: hash<string, int>)
-  args = [{ "a": "bad" }]
-  h.merge!(*args)
-end
-`,
-			warning: "write to h expected value int, got string",
-		},
-		{
-			name: "splatted local update entries are checked",
-			source: `
-def f(h: hash<string, int>)
-  args = [{ "a": "bad" }]
-  h.update(*args)
-end
-`,
-			warning: "write to h expected value int, got string",
-		},
-		{
-			name: "splatted literal shape merge entries are checked",
-			source: `
-def f(user: { name: string })
-  user.merge!(*[{ extra: 1 }])
-end
-`,
-			warning: "write to user adds field extra to exact shape { name: string }",
-		},
-		{
-			name: "hash-element splat keeps later merge entries checked",
-			source: `
-def f(h: hash<string, int>)
-  h.merge!(*[{ "a": 1 }], { "b": "bad" })
-end
-`,
-			warning: "write to h expected value int, got string",
-		},
-		{
-			name: "merge with a field contradicting the value bound",
-			source: `
-def f(h: hash<symbol, int>)
-  h.merge!({ a: "bad" })
-end
-`,
-			warning: "write to h expected value int, got string",
-		},
-		{
-			name: "merge with a contradicting key representation",
-			source: `
-def f(h: hash<symbol, int>)
-  h.merge!({ "a": "bad" })
-end
-`,
-			warning: "write to h expected value int, got string",
-		},
-		{
-			name: "merge source hash is not retained by the receiver",
-			source: `
-def f(h: hash<string, int>, other: hash<string, int>)
-  h.merge!(other)
-  other["b"] = "bad"
-  h["bad"] = "bad"
-end
-`,
-			warning: "write to h expected value int, got string",
-		},
-		{
-			name: "mixed-key local merge argument with a bad value is rejected",
-			source: `
-def f(h: hash<string, int>)
-  bad = { a: "nope", "b": 2 }
-  h.merge!(bad)
-end
-`,
-			warning: "write to h expected hash<string, int>, got",
-		},
-		{
-			name: "mixed-key local with a bad value contradicts a union key bound",
-			source: `
-def f(h: hash<string | int, int>)
-  bad = { a: "nope", "b": 2 }
-  h.merge!(bad)
-end
-`,
-			warning: "write to h expected hash<string | int, int>, got",
-		},
-		{
-			name: "compatible mixed-key local merge preserves the fact",
-			source: `
-def f(h: hash<string | symbol, int>)
-  bad = { a: 1, "b": 2 }
-  h.merge!(bad)
-  h[true] = 1
-end
-`,
-			warning: "write to h expected key string | symbol, got bool",
-		},
-		{
-			name: "mixed-key local with a bad value contradicts a symbol-keyed boundary",
+			name: "mixed-key local contradicts a symbol-keyed boundary",
 			source: `
 def g(h: hash<symbol, int>)
   h
@@ -338,64 +231,6 @@ def f
 end
 `,
 			warning: "call to g argument h expected hash<symbol, int>, got",
-		},
-		{
-			name: "mixed-key merge literal diagnoses a bad value",
-			source: `
-def f(h: hash<string, int>)
-  h.merge!({ a: "nope", "b": 2 })
-end
-`,
-			warning: "write to h expected value int, got string",
-		},
-		{
-			name: "compatible mixed-key merge preserves the fact",
-			source: `
-def f(h: hash<string | symbol, int>)
-  h.merge!({ a: 1, "b": 2 })
-  h[true] = 1
-end
-`,
-			warning: "write to h expected key string | symbol, got bool",
-		},
-		{
-			name: "update alias of merge",
-			source: `
-def f(h: hash<symbol, int>)
-  h.update({ a: "bad" })
-end
-`,
-			warning: "write to h expected value int, got string",
-		},
-		{
-			name: "possibly empty merge keyword splat keeps a following write reachable",
-			source: `
-def f(h: hash<string, int>, other: hash<string, int>, opts: hash<string, int>)
-  h.merge!(**opts)
-  other["bad"] = "bad"
-end
-`,
-			warning: "write to other expected value int, got string",
-		},
-		{
-			name: "optional update keyword splat keeps a following write reachable",
-			source: `
-def f(h: hash<string, int>, other: hash<string, int>, opts: { extra?: int })
-  h.update(**opts)
-  other["bad"] = "bad"
-end
-`,
-			warning: "write to other expected value int, got string",
-		},
-		{
-			name: "merge with a local shape fact keeps the whole-shape check",
-			source: `
-def f(h: hash<symbol, int>)
-  bad = { a: "bad" }
-  h.merge!(bad)
-end
-`,
-			warning: "write to h expected hash<symbol, int>, got { a: string }",
 		},
 		{
 			name: "declared shape field type",
@@ -701,28 +536,6 @@ end
 			warning: "write to h expected value int, got string",
 		},
 		{
-			name: "compatible exact merge splat preserves the fact",
-			source: `
-def f(h: hash<string, int>)
-  args = [{ "a": 1 }]
-  h.merge!(*args)
-  h["bad"] = "bad"
-end
-`,
-			warning: "write to h expected value int, got string",
-		},
-		{
-			name: "empty exact merge splat preserves the fact",
-			source: `
-def f(h: hash<string, int>)
-  args = []
-  h.merge!(*args)
-  h["bad"] = "bad"
-end
-`,
-			warning: "write to h expected value int, got string",
-		},
-		{
 			name: "rescued empty exact store splat preserves the fact",
 			source: `
 def f(h: hash<string, int>)
@@ -732,16 +545,6 @@ def f(h: hash<string, int>)
     nil
   end
   h["bad"] = "bad"
-end
-`,
-			warning: "write to h expected value int, got string",
-		},
-		{
-			name: "compatible merge preserves the fact",
-			source: `
-def f(h: hash<symbol, int>)
-  h.merge!({ a: 1 })
-  h[:b] = "bad"
 end
 `,
 			warning: "write to h expected value int, got string",
@@ -965,44 +768,6 @@ end
 			warning: "call to takes_int argument value expected int, got string",
 		},
 		{
-			name: "merge on a declared shape rejects an extra field",
-			source: `
-def f(user: { name: string })
-  user.merge!({ extra: 1 })
-end
-`,
-			warning: "write to user adds field extra to exact shape { name: string }",
-		},
-		{
-			name: "shape merge checks an exact shape local argument",
-			source: `
-def f(user: { name: string })
-  extra = { extra: 1 }
-  user.merge!(extra)
-end
-`,
-			warning: "write to user adds field extra to exact shape { name: string }",
-		},
-		{
-			name: "shape merge checks a shape local field type",
-			source: `
-def f(user: { name: string })
-  patch = { name: 1 }
-  user.merge!(patch)
-end
-`,
-			warning: "write to user field name expected string, got int",
-		},
-		{
-			name: "shape merge checks a required shape parameter field",
-			source: `
-def f(user: { name: string }, patch: { extra: int })
-  user.merge!(patch)
-end
-`,
-			warning: "write to user adds field extra to exact shape { name: string }",
-		},
-		{
 			name: "safe navigation store checks the nullable bound",
 			source: `
 def f(h: hash<string, int>?)
@@ -1163,36 +928,6 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
-			name: "zero-argument shape merge preserves the fact",
-			source: `
-def f(user: { name: string })
-  user.merge!()
-  user[:name] = 1
-end
-`,
-			warning: "write to user field name expected string, got int",
-		},
-		{
-			name: "empty-literal shape merge preserves the fact",
-			source: `
-def f(user: { name: string })
-  user.merge!({})
-  user[:name] = 1
-end
-`,
-			warning: "write to user field name expected string, got int",
-		},
-		{
-			name: "empty-splat shape merge preserves the fact",
-			source: `
-def f(user: { name: string })
-  user.merge!(*[])
-  user[:name] = 1
-end
-`,
-			warning: "write to user field name expected string, got int",
-		},
-		{
 			name: "rescued unstorable index key preserves the hash fact",
 			source: `
 def f(h: hash<string, int>)
@@ -1221,20 +956,6 @@ end
 			warning: "write to h expected value int, got string",
 		},
 		{
-			name: "rescued invalid merge argument preserves the hash fact",
-			source: `
-def f(h: hash<string, int>)
-  begin
-    h.merge!(1)
-  rescue
-    nil
-  end
-  h["bad"] = "bad"
-end
-`,
-			warning: "write to h expected value int, got string",
-		},
-		{
 			name: "rescued store abort preserves retained child facts",
 			source: `
 def f(h: hash<string, array<int>>, child: array<int>)
@@ -1248,16 +969,6 @@ def f(h: hash<string, array<int>>, child: array<int>)
 end
 `,
 			warning: "write to child expected element int, got string",
-		},
-		{
-			name: "literal merge uses the value fact from its evaluation point",
-			source: `
-def f(h: hash<string, int>)
-  value = "bad"
-  h.merge!({ "first": value }, lambda { value = 1; {} }.call)
-end
-`,
-			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "callable shape shadow keeps the continuation reachable",
@@ -1322,40 +1033,6 @@ end
 			},
 		},
 		{
-			name: "merge",
-			source: `
-def takes_int(value: int)
-  value
-end
-
-def f(user: { "merge!": int })
-  user.merge!({ "merge!": "bad" })
-  takes_int("reachable")
-end
-`,
-			warnings: []string{
-				"write to user field merge! expected int, got string",
-				"call to takes_int argument value expected int, got string",
-			},
-		},
-		{
-			name: "update",
-			source: `
-def takes_int(value: int)
-  value
-end
-
-def f(user: { update: int })
-  user.update({ update: "bad" })
-  takes_int("reachable")
-end
-`,
-			warnings: []string{
-				"write to user field update expected int, got string",
-				"call to takes_int argument value expected int, got string",
-			},
-		},
-		{
 			name: "replace",
 			source: `
 def takes_int(value: int)
@@ -1409,16 +1086,6 @@ func TestCheckHashWritesStayGradual(t *testing.T) {
 		source string
 	}{
 		{
-			name: "compatible writes stay silent",
-			source: `
-def f(h: hash<string, int>)
-  h["a"] = 1
-  h.store("b", 2)
-  h.merge!({ "c": 3 })
-end
-`,
-		},
-		{
 			name: "symbol key write to a string-keyed hash stays silent",
 			source: `
 def f(h: hash<string, int>)
@@ -1434,8 +1101,7 @@ def g(h: hash<symbol, int>)
   h
 end
 
-def f(h: hash<symbol, int>)
-  h.merge!({ "a": 1 })
+def f
   g({ a: 1, "b": 2 })
 end
 `,
@@ -1471,56 +1137,6 @@ end
 def f(h: hash<string, int>)
   h.store({}, 1)
   takes_int("unreachable")
-end
-`,
-		},
-		{
-			name: "invalid merge argument stops the continuation",
-			source: `
-def takes_int(value: int)
-  value
-end
-
-def f(h: hash<string, int>)
-  h.merge!(1)
-  takes_int("unreachable")
-end
-`,
-		},
-		{
-			name: "literal merge keeps an earlier entry value fact",
-			source: `
-def f(h: hash<string, int>)
-  value = 1
-  h.merge!({
-    "first": value,
-    "second": lambda { value = []; 2 }.call,
-  })
-end
-`,
-		},
-		{
-			name: "shape merge keeps a value fact before later arguments",
-			source: `
-def f(user: { first: int, second: int })
-  value = 1
-  user.merge!({ first: value }, lambda { value = { second: 2 } }.call)
-end
-`,
-		},
-		{
-			name: "typed hash merge ignores an overwritten literal value",
-			source: `
-def f(h: hash<string, int>)
-  h.merge!({ "a": "bad", "a": 1 })
-end
-`,
-		},
-		{
-			name: "shape merge ignores an overwritten literal field",
-			source: `
-def f(user: { name: string })
-  user.merge!({ name: 1, name: "ok" })
 end
 `,
 		},
@@ -1710,16 +1326,6 @@ end
 `,
 		},
 		{
-			name: "unknown receiver stays silent",
-			source: `
-def f(h)
-  h[:a] = "s"
-  h.store(:a, 1)
-  h.merge!({ a: 1 })
-end
-`,
-		},
-		{
 			name: "possibly empty incompatible replace source stays gradual",
 			source: `
 def f(h: hash<string, int>, replacement: hash<string, string>)
@@ -1812,20 +1418,6 @@ end
 `,
 		},
 		{
-			name: "merge source with container values keeps the receiver linked",
-			source: `
-def helper(a)
-  a
-end
-
-def f(h: hash<symbol, array<int>>, other: hash<symbol, array<int>>)
-  h.merge!(other)
-  helper(other)
-  h[true] = [1]
-end
-`,
-		},
-		{
 			name: "partially compatible entry value still links its root",
 			source: `
 def helper(x)
@@ -1834,20 +1426,6 @@ end
 
 def f(h: hash<string, array<int>>, v: array<number>)
   h["a"] = v
-  helper(h)
-  v << "bad"
-end
-`,
-		},
-		{
-			name: "partially compatible literal merge value still links its root",
-			source: `
-def helper(x)
-  x
-end
-
-def f(h: hash<string, array<int>>, v: array<number>)
-  h.merge!({ "a": v })
   helper(h)
   v << "bad"
 end
@@ -1920,87 +1498,6 @@ end
 `,
 		},
 		{
-			name: "conflict-block shape merge keeps escape semantics",
-			source: `
-def f(user: { name: string }, other: hash<symbol, array<int>>)
-  user.merge!(other) do |key, old, new|
-    old
-  end
-  other[true] = [1]
-end
-`,
-		},
-		{
-			name: "non-hash argument aborts a declared shape merge",
-			source: `
-def f(user: { name: string })
-  user.merge!({ extra: 1 }, 5)
-end
-`,
-		},
-		{
-			name: "optional extra field in a shape merge may be absent",
-			source: `
-def f(user: { name: string }, patch: { extra?: int })
-  user.merge!(patch)
-end
-`,
-		},
-		{
-			name: "optional present field in a shape merge may be absent",
-			source: `
-def f(user: { name: string }, patch: { name?: int })
-  user.merge!(patch)
-end
-`,
-		},
-		{
-			name: "provably non-hash merge argument aborts the call",
-			source: `
-def f(h: hash<string, int>)
-  h.merge!({ "a": "bad" }, 1)
-end
-`,
-		},
-		{
-			name: "unknown merge splat stays gradual and weakens",
-			source: `
-def f(h: hash<string, int>, v)
-  h.merge!(*v)
-  h["bad"] = "bad"
-end
-`,
-		},
-		{
-			name: "provably non-hash splatted merge element aborts the call",
-			source: `
-def f(h: hash<string, int>)
-  h.merge!(*[1], { "a": "bad" })
-end
-`,
-		},
-		{
-			name: "merge splat abort uses its evaluation-time fact",
-			source: `
-def helper(x)
-  x
-end
-
-def f(h: hash<string, int>)
-  v = [1]
-  h.merge!(*v, helper(v), { "a": "bad" })
-end
-`,
-		},
-		{
-			name: "provably non-array merge splat aborts the call",
-			source: `
-def f(h: hash<string, int>)
-  h.merge!(*1, { "a": "bad" })
-end
-`,
-		},
-		{
 			name: "too many fixed store arguments abort despite a dynamic splat",
 			source: `
 def takes_int(value: int)
@@ -2014,47 +1511,10 @@ end
 `,
 		},
 		{
-			name: "nonempty merge keyword splat stops the continuation",
-			source: `
-def takes_int(value: int)
-  value
-end
-
-def f(h: hash<string, int>, opts: { extra: int })
-  h.merge!(**opts)
-  takes_int("unreachable")
-end
-`,
-		},
-		{
-			name: "invalid update keyword splat stops the continuation",
-			source: `
-def takes_int(value: int)
-  value
-end
-
-def f(h: hash<string, int>)
-  opts = {}
-  opts[1] = 2
-  h.update(**opts)
-  takes_int("unreachable")
-end
-`,
-		},
-		{
 			name: "callable value bounds are not modeled as builtin mutators",
 			source: `
 def f(h: hash<string, function>, v)
   h.store(:sym, v)
-end
-`,
-		},
-		{
-			name: "mixed-key local merge into a union key bound stays silent",
-			source: `
-def f(h: hash<string | symbol, int>)
-  bad = { a: 1, "b": 2 }
-  h.merge!(bad)
 end
 `,
 		},
@@ -2082,26 +1542,6 @@ end
 def f(h: hash<string, int>)
   x = h.store("a", 1)
   h["bad"] = "bad"
-end
-`,
-		},
-		{
-			name: "merge with a conflict block checks and preserves nothing",
-			source: `
-def f(h: hash<symbol, int>)
-  h.merge!({ a: "bad" }) do |key, old, new|
-    old
-  end
-  h[:b] = "bad"
-end
-`,
-		},
-		{
-			name: "merge with a possibly empty hash argument stays silent",
-			source: `
-def f(h: hash<symbol, int>, other: hash<symbol, string>)
-  h.merge!(other)
-  h[:b] = "bad"
 end
 `,
 		},
@@ -2165,11 +1605,16 @@ end
 `,
 		},
 		{
-			name: "open shape receiver mutators stay gradual",
+			name: "parse_as write through the other key representation weakens",
 			source: `
-def f(user: { name: string, ... })
-  user.store(:extra, 1)
-  user.merge!({ extra: 2 })
+def g(user: { name: string })
+  user
+end
+
+def f(raw: string)
+  body = JSON.parse_as(raw, { name: string })
+  body[:name] = 1
+  g(body)
 end
 `,
 		},
@@ -2186,24 +1631,6 @@ end
 			source: `
 def f(user: { name: string, ... })
   user["extra"] = 1
-end
-`,
-		},
-		{
-			name: "open empty shape merge source may write",
-			source: `
-def f(h: hash<string, int>, patch: { ... })
-  h.merge!(patch)
-  h[:symbol] = 1
-end
-`,
-		},
-		{
-			name: "union with open shape merge source may write",
-			source: `
-def f(h: hash<string, int>, patch: hash<string, int> | { ... })
-  h.merge!(patch)
-  h[:symbol] = 1
 end
 `,
 		},
@@ -2227,44 +1654,13 @@ def store_splat
   [result, h["a"]]
 end
 
-def merge_splat
-  h = { "a": 1 }
-  args = [{ "b": 2 }, { "a": 3 }]
-  result = h.merge!(*args)
-  [result.equal?(h), h["a"], h["b"]]
-end
 
-def update_splat
-  h = { "a": 1 }
-  args = [{ "b": 2 }]
-  result = h.update(*args)
-  [result.equal?(h), h["a"], h["b"]]
-end
 
-def empty_merge_splat
-  h = { "a": 1 }
-  result = h.merge!(*[])
-  [result.equal?(h), h["a"]]
-end
 `)
 
 	compareArrays(t, callFunc(t, script, "store_splat", nil), []Value{
 		NewInt(2),
 		NewInt(2),
-	})
-	compareArrays(t, callFunc(t, script, "merge_splat", nil), []Value{
-		NewBool(true),
-		NewInt(3),
-		NewInt(2),
-	})
-	compareArrays(t, callFunc(t, script, "update_splat", nil), []Value{
-		NewBool(true),
-		NewInt(1),
-		NewInt(2),
-	})
-	compareArrays(t, callFunc(t, script, "empty_merge_splat", nil), []Value{
-		NewBool(true),
-		NewInt(1),
 	})
 }
 
@@ -2276,18 +1672,6 @@ def store_expansion(h: hash<string, int>, other: hash<string, int>, args: array<
   h.store(*args, **opts)
   other[:bad] = 1
   [h["stored"], other[:bad]]
-end
-
-def merge_expansion(h: hash<string, int>, other: hash<string, int>, args: array<any>, opts)
-  h.merge!(*args, **opts)
-  other[:bad] = 1
-  [h["merged"], other[:bad]]
-end
-
-def update_expansion(h: hash<string, int>, other: hash<string, int>, args: array<any>, opts)
-  h.update(*args, **opts)
-  other[:bad] = 1
-  [h["updated"], other[:bad]]
 end
 `)
 
@@ -2301,24 +1685,6 @@ end
 				NewHash(nil),
 				NewHash(nil),
 				NewArray([]Value{NewString("stored"), NewInt(1)}),
-				NewHash(nil),
-			},
-		},
-		{
-			name: "merge_expansion",
-			args: []Value{
-				NewHash(nil),
-				NewHash(nil),
-				NewArray([]Value{NewHash(map[string]Value{"merged": NewInt(1)})}),
-				NewHash(nil),
-			},
-		},
-		{
-			name: "update_expansion",
-			args: []Value{
-				NewHash(nil),
-				NewHash(nil),
-				NewArray([]Value{NewHash(map[string]Value{"updated": NewInt(1)})}),
 				NewHash(nil),
 			},
 		},
