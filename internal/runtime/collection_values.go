@@ -387,9 +387,15 @@ func (exec *Execution) resolveMutableReceiver(expr Expression, env *Env) (Value,
 	if !ok {
 		return NewNil(), false, nil
 	}
-	leaf, chain, addressable, err := exec.walkMutablePath(path, env)
+	leaf, chain, addressable, resolved, err := exec.walkMutablePath(path, env)
 	if err != nil {
 		return NewNil(), true, err
+	}
+	if !resolved {
+		// The walk read nothing the caller can use -- a bare name bound to a
+		// function is invoked where a receiver is expected, so what the slot
+		// holds is not what the expression denotes. Ordinary evaluation owns it.
+		return NewNil(), false, nil
 	}
 	// A path that left collection storage -- a member of a class instance, an
 	// index into a string -- read the value the ordinary evaluation would have,
@@ -399,6 +405,19 @@ func (exec *Execution) resolveMutableReceiver(expr Expression, env *Env) (Value,
 		exec.addressCollection(leaf, chain)
 	}
 	return leaf, true, nil
+}
+
+// rootAutoInvokes reports whether reading this root the ordinary way would call
+// it rather than yield it. A bare name bound to a function or builtin is invoked
+// where a receiver is expected, so the value a path walk would find there is not
+// the one the expression denotes; such a root is left to ordinary evaluation.
+func rootAutoInvokes(val Value) bool {
+	switch val.Kind() {
+	case KindFunction, KindBuiltin:
+		return true
+	default:
+		return false
+	}
 }
 
 // mutablePathFor decomposes expr into a rebindable root and the hops from it,
@@ -488,57 +507,62 @@ func reverseSteps(steps []mutablePathStep) []mutablePathStep {
 // one is shared by construction and is copied in turn. That is not incidental:
 // after the copy both wrappers name the same child, and only one of them may go
 // on writing through it.
-func (exec *Execution) walkMutablePath(path mutablePath, env *Env) (Value, []uintptr, bool, error) {
+func (exec *Execution) walkMutablePath(path mutablePath, env *Env) (Value, []uintptr, bool, bool, error) {
 	if len(path.steps) == 0 {
 		// A bare local, instance variable, or class variable is the common
 		// case -- `a.push(x)`, `@rows << row` -- and needs neither the reading
 		// pass nor an ancestor list, so it reads the slot once and isolates it
 		// on the spot.
 		current, ok := path.root.get()
-		if !ok || !isCollection(current) {
-			return current, nil, ok, nil
+		if !ok || rootAutoInvokes(current) {
+			return NewNil(), nil, false, false, nil
 		}
-		if exec.exclusivelyHeld(current) {
-			return current, nil, true, nil
+		if !isCollection(current) || exec.exclusivelyHeld(current) {
+			return current, nil, true, true, nil
 		}
 		copied, err := exec.copyCollection(current)
 		if err != nil {
-			return NewNil(), nil, false, err
+			return NewNil(), nil, false, true, err
 		}
 		path.root.rebind(copied)
-		return copied, nil, true, nil
+		return copied, nil, true, true, nil
 	}
-	leaf, addressable, err := exec.readMutablePath(path, env)
-	if err != nil || !addressable || !isCollection(leaf) {
-		return leaf, nil, false, err
+	leaf, addressable, resolved, err := exec.readMutablePath(path, env)
+	if err != nil || !resolved {
+		return NewNil(), nil, false, resolved, err
+	}
+	if !addressable || !isCollection(leaf) {
+		return leaf, nil, false, true, nil
 	}
 	isolated, chain, err := exec.isolateMutablePath(path, env)
-	return isolated, chain, err == nil, err
+	return isolated, chain, err == nil, true, err
 }
 
 // readMutablePath is the reading pass. It reports whether every hop addressed
-// collection storage, which is what makes the isolating pass safe to run.
-func (exec *Execution) readMutablePath(path mutablePath, env *Env) (Value, bool, error) {
+// collection storage, which is what makes the isolating pass safe to run, and
+// whether it resolved anything at all -- a root that would be invoked rather
+// than read belongs to ordinary evaluation.
+func (exec *Execution) readMutablePath(path mutablePath, env *Env) (Value, bool, bool, error) {
 	current, ok := path.root.get()
-	if !ok {
-		return NewNil(), false, nil
+	if !ok || rootAutoInvokes(current) {
+		return NewNil(), false, false, nil
 	}
 	for i := range path.steps {
 		step := &path.steps[i]
 		if !isCollection(current) {
 			tail, err := exec.readPathTailOrdinarily(current, path.steps[i:], env)
-			return tail, false, err
+			return tail, false, true, err
 		}
 		child, found, err := exec.readCollectionStep(current, step, env)
 		if err != nil {
-			return NewNil(), false, err
+			return NewNil(), false, true, err
 		}
 		if !found {
-			return NewNil(), true, nil
+			return NewNil(), true, true, nil
 		}
 		current = child
 	}
-	return current, true, nil
+	return current, true, true, nil
 }
 
 // isolateMutablePath is the isolating pass: it descends an addressable path

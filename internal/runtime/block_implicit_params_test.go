@@ -143,6 +143,8 @@ end`)
 func TestImplicitBlockParamsInAssignmentTargets(t *testing.T) {
 	t.Parallel()
 
+	// The implicit parameter is a binding like any other, so it holds its own
+	// value: the write reaches _1 and not the element it was yielded from.
 	script := compileScript(t, `def run
   records = [{seen: false}]
   records.each { _1[:seen] = true }
@@ -150,8 +152,8 @@ func TestImplicitBlockParamsInAssignmentTargets(t *testing.T) {
 end`)
 
 	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
-	if !got.Equal(NewBool(true)) {
-		t.Fatalf("run = %#v, want true", got)
+	if !got.Equal(NewBool(false)) {
+		t.Fatalf("run = %#v, want false", got)
 	}
 }
 

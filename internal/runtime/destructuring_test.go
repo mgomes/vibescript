@@ -1120,6 +1120,9 @@ def run
   [values[1], record[:slot], record[:count]]
 end`)
 
+	// bump updates the parameter it addresses, which is the caller's record as
+	// a value: the caller's own record keeps count 0 while both targets of the
+	// parallel assignment take the returned pair.
 	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
-	compareArrays(t, got, []Value{NewInt(1), NewInt(2), NewInt(1)})
+	compareArrays(t, got, []Value{NewInt(1), NewInt(2), NewInt(0)})
 }

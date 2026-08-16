@@ -161,8 +161,8 @@ func TestArrayPushAppendAssignmentZeroArgs(t *testing.T) {
 	compareArrays(t, callFunc(t, script, "empty_parens", nil), []Value{NewInt(1), NewInt(2)})
 
 	aliased := callFunc(t, script, "alias_visibility", nil).Hash()
-	compareArrays(t, aliased["a"], []Value{NewInt(9), NewInt(2)})
-	compareArrays(t, aliased["b"], []Value{NewInt(9), NewInt(2)})
+	compareArrays(t, aliased["a"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, aliased["b"], []Value{NewInt(9)})
 }
 
 func TestArrayAppendAssignmentAccumulation(t *testing.T) {
@@ -1723,7 +1723,9 @@ func TestArrayAndHashHelpers(t *testing.T) {
 
 	requireCallErrorContains(t, script, "bad_hash_remap", nil, CallOptions{}, "hash.remap_keys mapping value is an unsupported hash key")
 	requireCallErrorContains(t, script, "bad_deep_transform", nil, CallOptions{}, "hash.deep_transform_keys block returned an unsupported hash key")
-	requireCallErrorContains(t, script, "bad_deep_transform_cycle", nil, CallOptions{}, "hash.deep_transform_keys does not support cyclic structures")
+	// A collection can no longer contain itself (ADR-006 item 2), so
+	// bad_deep_transform_cycle walks a finite snapshot and succeeds; the guard
+	// it used to trip is unreachable from script code.
 }
 
 // TestArrayFirstLastArity confirms first and last keep their zero-argument and

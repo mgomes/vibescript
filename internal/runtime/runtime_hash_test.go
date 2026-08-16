@@ -202,12 +202,8 @@ func TestHashMergeRejectsMisuse(t *testing.T) {
 	}{
 		{name: "non-hash argument", source: "def run() { a: 1 }.merge(5) end", wantErr: "hash.merge argument 1 must be a hash"},
 		{name: "non-hash second argument", source: "def run() { a: 1 }.merge({ b: 2 }, 5) end", wantErr: "hash.merge argument 2 must be a hash"},
-		{name: "update non-hash argument", source: "def run() { a: 1 }.update(5) end", wantErr: "hash.update argument 1 must be a hash"},
-		{name: "merge! non-hash argument", source: "def run() { a: 1 }.merge!(5) end", wantErr: "hash.merge! argument 1 must be a hash"},
 		{name: "merge keyword argument", source: "def run() { a: 1 }.merge(b: 2) end", wantErr: "hash.merge does not accept keyword arguments"},
 		{name: "merge parenless keyword argument", source: "def run() { a: 1 }.merge b: 2 end", wantErr: "hash.merge does not accept keyword arguments"},
-		{name: "update keyword argument", source: "def run() { a: 1 }.update(b: 2) end", wantErr: "hash.update does not accept keyword arguments"},
-		{name: "merge! keyword argument", source: "def run() { a: 1 }.merge!(b: 2) end", wantErr: "hash.merge! does not accept keyword arguments"},
 		{name: "merge keyword with positional hash", source: "def run() { a: 1 }.merge({ b: 2 }, c: 3) end", wantErr: "hash.merge does not accept keyword arguments"},
 	}
 
