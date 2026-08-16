@@ -208,6 +208,7 @@ This repository uses [Just](https://github.com/casey/just) for common tasks:
 - `just test-race` runs the full Go test suite with the race detector (`go test -timeout 30m -race ./...`).
 - `just bench` runs the core execution benchmarks (`go test ./vibes -run '^$' -bench '^BenchmarkExecution' -benchmem`).
 - `just lint` checks formatting (`gofmt`) and runs `golangci-lint` with a generous timeout.
+- `just deadcode` reports functions that neither the CLI nor any test can reach (`deadcode -test ./...`); it is a report, not a CI gate.
 - `just install` installs the `vibes` binary to `$GOBIN` (or `$GOPATH/bin` when `GOBIN` is unset); pass a custom directory with `just install /usr/local/bin`.
 - `vibes check <script.vibe>` statically checks typed boundaries across the whole script without executing it.
 - `vibes fmt <path>` applies canonical formatting to `.vibe` files (`-check` for CI, `-w` to write).

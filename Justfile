@@ -105,6 +105,25 @@ lint-fix:
 	golangci-lint fmt
 	golangci-lint run --timeout=10m --fix
 
+# deadcode roots its reachability analysis at main functions, so the choice of
+# roots decides the answer. ./... supplies the only non-test main (./cmd/vibes)
+# and -test adds every package's test binary; together they cover the surface
+# that actually runs. ./cmd/vibes alone is not enough: the CLI reaches only the
+# part of the library it happens to need, so the rest of the embedder-facing
+# API under vibes/ would be condemned for having no in-repo caller but its own
+# tests, which is exactly what an embedding library looks like.
+#
+# The price of -test is that code only a test reaches counts as live. What is
+# still reported is API that neither a command nor a test touches, which is a
+# coverage gap as often as it is dead code, so judge each hit before deleting.
+# The recipe reports and exits 0; it is not a gate. Analysis is valid for one
+# GOOS/GOARCH at a time, so prefix the recipe (GOOS=linux just deadcode) to
+# cover build-tagged files for another platform, and follow up on a single
+# function with `deadcode -whylive=<pkg>.<func> -test ./...`.
+[doc("Report functions no command and no test can reach")]
+deadcode:
+	deadcode -test ./...
+
 precommit-install:
 	#!/usr/bin/env bash
 	set -euo pipefail
