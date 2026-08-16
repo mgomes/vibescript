@@ -352,3 +352,102 @@ end
 		t.Fatalf("source[1] = %s, want [\"ok\", \"b\"]", got[1].String())
 	}
 }
+
+// TestConcatAccumulatorReuseStaysInvisible covers the one place two array
+// wrappers can still share an element backing: the `x = x + [...]` accumulator
+// appends into a hidden buffer across iterations, so a binding taken mid-loop
+// keeps a wrapper whose backing the next iteration goes on filling.
+//
+// That reuse is a storage economy and must stay one. Every case here writes
+// through the older binding -- growing it, shrinking it, and overwriting an
+// element -- because those are the three ways a shared backing could show.
+func TestConcatAccumulatorReuseStaysInvisible(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ name, body, want string }{
+		{
+			name: "element write through the older binding",
+			body: `a = []
+  a = a + [1]
+  a = a + [2]
+  b = a
+  a = a + [3]
+  b[0] = 99
+  b.inspect + " " + a.inspect`,
+			want: "[99, 2] [1, 2, 3]",
+		},
+		{
+			name: "growth through the older binding",
+			body: `c = []
+  c = c + [1]
+  d = c
+  c = c + [2]
+  d.push(9)
+  c.inspect + " " + d.inspect`,
+			want: "[1, 2] [1, 9]",
+		},
+		{
+			name: "shrink through the older binding",
+			body: `e = []
+  e = e + [1]
+  e = e + [2]
+  f = e
+  e = e + [3]
+  f.pop
+  e.inspect + " " + f.inspect`,
+			want: "[1, 2, 3] [1]",
+		},
+		{
+			name: "element extracted before the parent regrows",
+			body: `g = [[1]]
+  inner = g[0]
+  g = g + [[2]]
+  inner.push(5)
+  g.inspect + " " + inner.inspect`,
+			want: "[[1], [2]] [1, 5]",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  "+tc.body+"\nend\n")
+			if got := callFunc(t, script, "run", nil).String(); got != tc.want {
+				t.Fatalf("%s = %s, want %s", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOneSourceArrayGivesEachInstanceItsOwn pins that constructing two objects
+// from one array leaves each holding its own value, so a method that updates
+// one instance's variable cannot reach the other's or the caller's.
+func TestOneSourceArrayGivesEachInstanceItsOwn(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `class Box
+  def initialize(v)
+    @v = v
+  end
+  def v()
+    @v
+  end
+  def add(x)
+    @v.push(x)
+    self
+  end
+end
+
+def run()
+  shared = [1]
+  first = Box.new(shared)
+  second = Box.new(shared)
+  first.add(2)
+  shared.inspect + " " + first.v.inspect + " " + second.v.inspect
+end
+`)
+
+	if got := callFunc(t, script, "run", nil).String(); got != "[1] [1, 2] [1]" {
+		t.Fatalf("run() = %s, want [1] [1, 2] [1]", got)
+	}
+}
