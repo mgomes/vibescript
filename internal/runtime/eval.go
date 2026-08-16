@@ -5297,9 +5297,7 @@ func (exec *Execution) canRescueRuntimeError(err error, rescueTy *TypeExpr) bool
 	// matter which error value is propagating or how the clause is typed. The
 	// latch, not the error's identity, carries the verdict because wrapError
 	// flattens the quota sentinels into ordinary LimitError-classified
-	// RuntimeErrors that a forged raise LimitError could imitate — and a task
-	// worker's kill reaches the parent latch through the group's trusted
-	// channel before its error can meet a rescue clause, so error-value
+	// RuntimeErrors that a forged raise LimitError could imitate, so error-value
 	// credentials play no part here (a stale one could be replayed).
 	return exec.exhausted == nil &&
 		!isLoopControlSignal(err) &&

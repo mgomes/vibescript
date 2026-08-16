@@ -477,26 +477,12 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 	return wrapped
 }
 
-// observedExhaustion is what the trusted out-of-band channel exports: the
-// latched exhaustion enriched with the code frame and stack wrapError
-// captured, when evaluation got far enough to wrap it.
-func (exec *Execution) observedExhaustion() error {
-	if exec.exhausted == nil {
-		return nil
-	}
-	if exec.exhaustedWrapped != nil {
-		return exec.exhaustedWrapped
-	}
-	return exec.exhausted
-}
-
 // canonicalExhaustionMessage extracts the underlying quota message from a
-// latched exhaustion error. A task-boundary latch holds a wrapper whose
-// Error() renders the worker's code frame and stack; surfacing that rendering
-// as a RuntimeError Message — beside separately copied frames — printed every
-// frame twice and made the programmatic message multiline. Wrapper context
-// like the task name survives: only the inner error's rendering collapses to
-// its single-line message.
+// latched exhaustion error. A latch can hold a wrapper whose Error() renders
+// the exhausting code frame and stack; surfacing that rendering as a
+// RuntimeError Message — beside separately copied frames — printed every frame
+// twice and made the programmatic message multiline. Wrapper context survives:
+// only the inner error's rendering collapses to its single-line message.
 func canonicalExhaustionMessage(exhausted error) string {
 	re, ok := errors.AsType[*RuntimeError](exhausted)
 	if !ok {
@@ -512,9 +498,8 @@ func canonicalExhaustionMessage(exhausted error) string {
 
 // exhaustionDiagnostics returns the trusted RuntimeError carrying the
 // exhaustion's location data: the execution's own snapshot when its wrapError
-// captured one, else a RuntimeError inside the latch chain — for a task
-// latch, the worker's snapshot, which crossed the boundary through runtime
-// code only. Adapters never held either pointer.
+// captured one, else a RuntimeError inside the latch chain. Adapters never held
+// either pointer.
 func (exec *Execution) exhaustionDiagnostics() *RuntimeError {
 	if re, ok := errors.AsType[*RuntimeError](exec.exhausted); ok {
 		return re

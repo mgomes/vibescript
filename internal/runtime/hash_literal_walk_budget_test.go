@@ -73,9 +73,9 @@ func TestWideHashLiteralDoesNotRewalkTheReachableGraph(t *testing.T) {
 	}
 }
 
-// Sessions are unavailable while a builtin, a task group, or lazily cloned task
-// globals are live, so the snapshot mode's whole-graph walk survives for those
-// contexts and has to be paid for rather than avoided. The charge is what let
+// Sessions are unavailable while a builtin is on the call stack, so the
+// snapshot mode's whole-graph walk survives for those contexts and has to be
+// paid for rather than avoided. The charge is what let
 // the width cap go: it prices the union replay the cap was standing in for, and
 // it bounds every other estimator walk a literal can drive. Before it, the same
 // literal cost 551 steps whether the retained array held 100 elements or 10,000.

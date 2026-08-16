@@ -835,7 +835,7 @@ func namespaceDocs() map[string]string {
 }
 
 // namespaceDocMarkdown renders the hover for a bare namespace word
-// (Tasks, JSON): the section intro from the builtins reference plus a
+// (JSON, Math): the section intro from the builtins reference plus a
 // member list generated from the parsed doc table, so the list can
 // never drift from what qualified hovers serve.
 func namespaceDocMarkdown(catalog builtinCatalog, word string) string {

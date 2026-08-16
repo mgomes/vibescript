@@ -218,9 +218,9 @@ func (exec *Execution) retractDormantBeyond(length int) {
 //
 // pushEnv calls it as such a scope enters the stack rather than leaving it to the
 // walk that reads nonBaseParentDepth, because most walks never reach that read:
-// beginBaseWalk routes past envStackGraphBytes whenever a builtin, a task group,
-// or lazy task globals are live, and a builtin driving a script block is the
-// commonest way to put a rebinding scope on the stack at all (#20).
+// beginBaseWalk routes past envStackGraphBytes whenever a builtin is live, and a
+// builtin driving a script block is the commonest way to put a rebinding scope
+// on the stack at all (#20).
 // envStackGraphBytes still calls it so a walk that does get there first cannot
 // serve a prefix the push has not yet retracted.
 func (exec *Execution) retractAllDormant() {

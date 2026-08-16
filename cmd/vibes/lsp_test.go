@@ -445,8 +445,8 @@ func TestParseBuiltinDocs(t *testing.T) {
 		"- `Math.hypot(x, y)` / `Math.atan2(y, x)` – two-argument helpers\n" +
 		"  spanning a continuation line.\n" +
 		"- prose bullet with `inline(code)` that must not register.\n\n" +
-		"### `Tasks.run(max: nil) { |tasks| ... }`\n\n" +
-		"Opens a task scope.\n"
+		"### `Hash.new { |hash, key| ... }`\n\n" +
+		"Builds a hash with a default proc.\n"
 	entries := parseBuiltinDocs(markdown)
 
 	format, ok := entries["format"]
@@ -486,17 +486,17 @@ func TestParseBuiltinDocs(t *testing.T) {
 		t.Fatal("Math.atan2 should share the bullet entry")
 	}
 
-	run, ok := entries["Tasks.run"]
+	newHash, ok := entries["Hash.new"]
 	if !ok {
-		t.Fatal("want a Tasks.run entry")
+		t.Fatal("want a Hash.new entry")
 	}
-	if run.Signature != "`Tasks.run(max: nil) { |tasks| ... }`" {
-		t.Fatalf("Tasks.run signature = %q", run.Signature)
+	if newHash.Signature != "`Hash.new { |hash, key| ... }`" {
+		t.Fatalf("Hash.new signature = %q", newHash.Signature)
 	}
 
 	for name := range entries {
 		switch name {
-		case "format", "sprintf", "Math.PI", "Math.hypot", "Math.atan2", "Tasks.run":
+		case "format", "sprintf", "Math.PI", "Math.hypot", "Math.atan2", "Hash.new":
 		default:
 			t.Errorf("unexpected entry %q (fenced or prose code spans must not register)", name)
 		}

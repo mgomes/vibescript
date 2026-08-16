@@ -217,7 +217,6 @@ func NewEngine(cfg Config) (*Engine, error) {
 	registerMathBuiltins(engine)
 	registerDurationBuiltins(engine)
 	registerTimeBuiltins(engine)
-	registerTaskBuiltins(engine)
 
 	return engine, nil
 }

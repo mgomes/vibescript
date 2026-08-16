@@ -133,8 +133,7 @@ type Execution struct {
 	exhausted error
 	// exhaustedWrapped snapshots the first RuntimeError wrapError built from
 	// the latched exhaustion, deep-copied before any adapter can hold its
-	// pointer; the dispatch rebuild and the task machinery's trusted
-	// channel use only this copy for diagnostics.
+	// pointer; the dispatch rebuild uses only this copy for diagnostics.
 	exhaustedWrapped *RuntimeError
 	callStack        []callFrame
 	root             *Env
@@ -160,7 +159,6 @@ type Execution struct {
 	capabilityContractsByName map[string]CapabilityMethodContract
 	receiverStack             []Value
 	envStack                  []*Env
-	activeTaskGroups          []*taskGroup
 	validatedCapabilityArgs   []string
 	capabilityReturnProof     capabilityReturnProof
 	memoryEst                 memoryEstimator
@@ -218,8 +216,8 @@ type Execution struct {
 	// journal backing. baseWalkOpen marks a base-walk session in flight (both
 	// memoized and bypass sessions), guarding against nested sessions on the
 	// shared estimator without touching the cache. baseTopoVersion invalidates
-	// the memo whenever the walk's root set changes shape (env stack push/pop,
-	// task group push/pop); the process-wide mutation epoch invalidates it
+	// the memo whenever the walk's root set changes shape (env stack push/pop);
+	// the process-wide mutation epoch invalidates it
 	// whenever any reachable state mutates. builtinDepth counts the Go builtins
 	// currently on the call stack: while it is non-zero the memo is neither
 	// used nor refreshed, because builtin Go code can mutate containers through
@@ -353,9 +351,9 @@ type Execution struct {
 	// (ScriptFunction.reuseCallEnv). acquireCallEnv borrows a frame and
 	// recycleCallEnv returns it once the call has fully unwound and any escaping
 	// array-append result has settled. Like argBufferPool it lives on the
-	// Execution, which is single-goroutine (each task job builds its own via
-	// newExecutionForCall), so the pool never needs synchronization. The memory
-	// estimator does not walk it, so pooled dead frames never inflate the quota.
+	// Execution, which is single-goroutine, so the pool never needs
+	// synchronization. The memory estimator does not walk it, so pooled dead
+	// frames never inflate the quota.
 	callEnvFreeList []*Env
 }
 
@@ -444,25 +442,6 @@ func (exec *Execution) assignTargetProtectedAccessAllowed(obj Value) bool {
 	default:
 		return false
 	}
-}
-
-// remainingRecursionBudget reports how many more frames this execution may push
-// before its cap refuses, for a callee that will continue this goroutine's Go
-// stack. Zero means there is nothing to hand on: a host that disabled the limit
-// has no budget to share, and has accepted that deep recursion grows the host
-// stack.
-func (exec *Execution) remainingRecursionBudget() int {
-	if exec == nil || exec.recursionCap < 1 {
-		return 0
-	}
-	// Never below one, because zero is how "nothing published" reads on the
-	// other side, and a callee handed a fresh cap there would be the reset this
-	// exists to stop. One lets a callee run a leaf and refuse anything deeper.
-	// It is also a floor a caller holding a single frame never leaves, which is
-	// why the inline depth limit counts levels separately (see
-	// maxInlineTaskDepth): this budget bounds what a level may do, not how many
-	// levels there may be.
-	return max(exec.recursionCap-len(exec.callStack), 1)
 }
 
 func (exec *Execution) pushFrame(function string, pos Position, callSiteScript, functionScript *Script) error {
@@ -554,8 +533,8 @@ func (exec *Execution) pushEnv(env *Env) {
 		exec.nonBaseParentDepth++
 		// Retract at the push, not at the walk that reads the counter.
 		// envStackGraphBytes is the only reader that retracts, and beginBaseWalk
-		// routes around it whenever a Go builtin, a task group, or lazy task
-		// globals are live — which is exactly the state a builtin driving a script
+		// routes around it whenever a Go builtin or lazily bound composite globals
+		// are live — which is exactly the state a builtin driving a script
 		// block is in, so the retraction never ran for the scope that most needs
 		// it. A block reached through `cb.call` rebound a dormant caller's compact
 		// Int to a 400KB string: the assignment's own check took the bypass
@@ -677,19 +656,6 @@ func (exec *Execution) popEnv() {
 	}
 }
 
-func (exec *Execution) pushTaskGroup(group *taskGroup) {
-	exec.baseTopoVersion++
-	exec.activeTaskGroups = append(exec.activeTaskGroups, group)
-}
-
-func (exec *Execution) popTaskGroup() {
-	if len(exec.activeTaskGroups) == 0 {
-		return
-	}
-	exec.baseTopoVersion++
-	exec.activeTaskGroups = exec.activeTaskGroups[:len(exec.activeTaskGroups)-1]
-}
-
 // pushInitializingModule roots a module's environment for the estimator while
 // the module initializes. Until require finishes, that environment is only a Go
 // local: its parent is exec.root, but the base walk goes root-outward, and the
@@ -770,36 +736,9 @@ func (exec *Execution) currentRescuedError() error {
 // retain and re-enter with, and that surface produced four defects in as many
 // review rounds. Capability re-entry is left to its own design; a callee
 // re-entered that way gets a fresh allowance, which is what it gets without
-// this change at all. The node reaches nested tasks through the context a task
-// group captures; see newTaskGroup.
+// this change at all.
 func (exec *Execution) Context() context.Context {
 	return exec.ctx
-}
-
-// detachMemoryChainNode moves this execution's chain node onto the heap before
-// the node can escape into a context.
-//
-// The node lives inside the Execution so that a level which never nests costs no
-// allocation. But a pointer to a field keeps the whole containing object alive
-// in Go, so publishing &exec.memChainNode into a context pins the entire
-// Execution -- root env, module graphs, estimator caches -- for as long as
-// anything holds that context. A memory-quota mechanism retaining memory
-// outside the quota defeats its own purpose.
-//
-// The context a task group captures outlives the jobs it drives, so this runs
-// before the group publishes. Moving the node is safe precisely there: a child
-// links to it by reading it out of the published context, so at the moment of
-// first publication no child exists to hold the old address, and nothing else
-// takes the node's address.
-func (exec *Execution) detachMemoryChainNode() {
-	if exec.memChain != &exec.memChainNode {
-		return
-	}
-	escaped := &memoryChain{parent: exec.memChainNode.parent, limit: exec.memChainNode.limit}
-	escaped.marginal.Store(exec.memChainNode.marginal.Load())
-	escaped.descendantHeadroom.Store(exec.memChainNode.descendantHeadroom.Load())
-	escaped.liveDescendants.Store(exec.memChainNode.liveDescendants.Load())
-	exec.memChain = escaped
 }
 
 // Step accounts for one interpreter step against quota and memory

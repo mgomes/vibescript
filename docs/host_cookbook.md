@@ -13,8 +13,6 @@ engine, err := vibes.NewEngine(vibes.Config{
     MemoryQuotaBytes:       256 << 10, // 256 KiB
     RecursionLimit:         32,
     StrictEffects:          true,
-    DefaultTaskConcurrency: 4,
-    MaxTaskConcurrency:     16,
     ModulePaths:            []string{"/srv/vibes/modules"},
 })
 if err != nil {
@@ -23,9 +21,7 @@ if err != nil {
 ```
 
 Why: this keeps runaway scripts bounded and forces side effects through approved
-capability adapters. The task settings let scripts express bounded fanout
-without exceeding host pool sizes or upstream rate limits. If a host sets only a
-lower `MaxTaskConcurrency`, the implicit default fanout follows that lower cap.
+capability adapters.
 
 ## 2. Request-Scoped Execution
 

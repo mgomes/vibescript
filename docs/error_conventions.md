@@ -34,7 +34,7 @@ script author typed or could type:
   `string.sub`, `array.pop`, `hash.fetch`, `int.times`, `float.clamp`,
   `time.eql?`, `duration.eql?`.
 - **Namespaced builtins** carry the namespace: `JSON.parse`,
-  `Regex.match`, `Time.parse`, `Duration.build`, `Tasks.run`.
+  `Regex.match`, `Time.parse`, `Duration.build`.
 - **Global builtins** use their bare name: `uuid`, `random_id`,
   `to_int`, `now`, `assert`, `require`.
 - **Module loader errors** are prefixed `require: `.
@@ -75,7 +75,7 @@ a semantic that already has one.
 | Unsupported operation | `unsupported X` | The language defines no behavior for this combination (`unsupported addition operands`, `unsupported member access on int`). Use for refused operations, not malformed input. |
 | Unknown lookup | `unknown X NAME` | A member, method, type, or enum lookup failed (`unknown string method foo`, `unknown type Foo`). Variables use the dedicated spelling `undefined variable NAME`; functions and modules use `... not found` (`function foo not found`, `require: module "foo" not found`). |
 | Invalid input | `invalid X` / `X invalid Y: DETAIL` | A value is malformed for its purpose (`invalid assignment target`, `JSON.parse invalid JSON: ...`, `string.match invalid regex: ...`). |
-| Forbidden state | `cannot X` | An operation is forbidden on this value or in this state (`cannot index int`, `cannot iterate over nil`, `break cannot cross call boundary`, `task handle cannot be used after task scope exits`). |
+| Forbidden state | `cannot X` | An operation is forbidden on this value or in this state (`cannot index int`, `cannot iterate over nil`, `break cannot cross call boundary`). |
 | Guard limits | `X exceeds limit N bytes` / `... quota exceeded (N)` / `... exceeded (limit N)` | Sandbox limits. These messages were audited recently; keep their exact shapes (`step quota exceeded (50000)`, `memory quota exceeded (1048576 bytes)`, `recursion depth exceeded (limit 200)`, `string.gsub output exceeds limit 1048576 bytes`). |
 | Duplicate | `duplicate X NAME` | Compile-time redefinition (`duplicate function foo`, `duplicate top-level name Foo`). |
 | Domain-specific | fixed strings | Arithmetic and bounds keep their conventional short forms: `division by zero`, `modulo by zero`, `array index out of bounds` (raised only by array assignment, since reads return `nil` out of range like Ruby), `money currency mismatch` (arithmetic, from vibes/value), `money currency mismatch for comparison` (comparisons, from the runtime). |

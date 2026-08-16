@@ -19,7 +19,7 @@ import (
 //
 // Instead of tracking per-value alias state during the copy, the scanner
 // verifies up front that the whole inbound set (positional args, keyword args,
-// globals, and lazy task-global sources) is data-only and alias-free: every
+// and globals) is data-only and alias-free: every
 // composite wrapper — and every legacy hash entry map, which two distinct
 // wrappers may intentionally share — appears exactly once. Then the copier
 // needs no dedup state at all. Anything else (a runtime value anywhere, a
@@ -159,11 +159,7 @@ func (s *inboundDataScanner) scanTopLevel(val Value) bool {
 // CallOptions.Globals are deliberately NOT part of this scan: composite
 // globals bind lazily, so their sources are scanned only if one is actually
 // read (see rebindGlobalValue), and cross-aliasing between a global source
-// and an argument is caught there through the rebinder's seen-maps. Lazy
-// task-global sources always materialize through the slow rebind walk (see
-// taskLazyGlobals.materialize), so they need no entry-time scan; their graphs
-// cannot alias a task call's arguments or keywords because those are freshly
-// built task clones.
+// and an argument is caught there through the rebinder's seen-maps.
 func scanInboundCallValues(args []Value, keywords map[string]Value) bool {
 	var scanner inboundDataScanner
 	for _, val := range args {

@@ -534,11 +534,9 @@ func (exec *Execution) chargeEstimatorWalk(n int) error {
 // builtin that has not declared non-mutation is on the call stack
 // (undeclaredBuiltinDepth > 0), because such code can mutate reachable
 // containers through raw slice/map writes between its own checks without
-// bumping the epoch; while task groups are active or lazily
-// cloned task globals exist, whose retained memory evolves concurrently with
-// the walk; and under the test-only kill switch. Bypass walks run on the same
-// shared estimator, so they invalidate the memo (valid = false) rather than
-// leave stamps pointing at a clobbered seen-state.
+// bumping the epoch; and under the test-only kill switch. Bypass walks run on
+// the same shared estimator, so they invalidate the memo (valid = false) rather
+// than leave stamps pointing at a clobbered seen-state.
 // baseWalkSessionsAreCheap reports whether beginBaseWalk would resume a
 // memoized or region-prefix walk rather than re-walk the reachable graph, so
 // an incremental accounting caller can afford one session per increment
@@ -547,12 +545,10 @@ func (exec *Execution) baseWalkSessionsAreCheap() bool {
 	if exec.baseWalkOpen {
 		return false
 	}
-	globals := taskLazyGlobalsFromContext(exec.ctx)
-	if exec.blockRegionBaseWalkEngaged(globals) {
+	if exec.blockRegionBaseWalkEngaged() {
 		return true
 	}
-	return exec.undeclaredBuiltinDepth == 0 && len(exec.activeTaskGroups) == 0 && globals == nil &&
-		!baseWalkCacheDisabled.Load()
+	return exec.undeclaredBuiltinDepth == 0 && !baseWalkCacheDisabled.Load()
 }
 
 func (exec *Execution) beginBaseWalk() baseWalkSession {
@@ -563,14 +559,13 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		est := newMemoryEstimator()
 		return baseWalkSession{exec: exec, est: est, base: exec.estimateMemoryUsageBase(est)}
 	}
-	globals := taskLazyGlobalsFromContext(exec.ctx)
 	scalars := exec.estimateScalarBase()
 	est := &exec.memoryEst
 	walked0 := est.walked
-	if exec.blockRegionBaseWalkEngaged(globals) {
+	if exec.blockRegionBaseWalkEngaged() {
 		return exec.beginRegionBaseWalk(est, scalars)
 	}
-	if exec.undeclaredBuiltinDepth > 0 || len(exec.activeTaskGroups) > 0 || globals != nil || baseWalkCacheDisabled.Load() {
+	if exec.undeclaredBuiltinDepth > 0 || baseWalkCacheDisabled.Load() {
 		// The bypass walk clobbers whatever committed state the shared
 		// estimator held, so an existing memo is discarded; a cache that was
 		// never allocated stays unallocated and the bypass costs nothing.
@@ -580,18 +575,17 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		exec.baseWalkOpen = true
 		est.journal = nil
 		est.reset()
-		// The bypass path runs while builtin Go code, concurrent task jobs, or
-		// lazily cloned task globals can mutate reachable state, so it uses the
-		// full reference walk rather than the dormant optimization: the fast path
-		// is reserved for the memoized path below, where the graph is stable and
-		// single-goroutine. popEnv still keeps the committed prefix consistent here
+		// The bypass path runs while builtin Go code can mutate reachable state,
+		// so it uses the full reference walk rather than the dormant
+		// optimization: the fast path is reserved for the memoized path below,
+		// where the graph is stable. popEnv still keeps the committed prefix consistent here
 		// (it retracts on every pop), so the next memoized check resumes correctly.
 		//
 		// Registered driver outputs are walked last, so they deduplicate against
 		// everything the graph walk committed (see memory_output.go). This is the
 		// branch a builtin's own callbacks run on, so it is where the accounting
 		// matters most.
-		base := scalars + exec.estimateGraphBase(est, globals)
+		base := scalars + exec.estimateGraphBase(est)
 		base = saturatingAdd(base, exec.outputWalkBytes(est))
 		return baseWalkSession{
 			exec: exec, est: est, base: base, walked0: walked0,
@@ -619,7 +613,7 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		c.epoch = epoch
 		c.topo = exec.baseTopoVersion
 		c.regionBoundary = noBlockRegion
-		c.graphBytes = exec.estimateGraphBaseFast(est, nil)
+		c.graphBytes = exec.estimateGraphBaseFast(est)
 		// Walked after the graph and committed alongside it, so a driver's later
 		// results deduplicate against everything already counted and a check
 		// between two of them pays nothing (see memory_output.go).
@@ -879,7 +873,7 @@ func (exec *Execution) captureMemoryInheritedBaseline() {
 		return
 	}
 	est := newMemoryEstimator()
-	baseline := exec.estimateGraphTail(est, taskLazyGlobalsFromContext(exec.ctx))
+	baseline := exec.estimateGraphTail(est)
 	exec.memBaseline = baseline
 	exec.memBaselineSet = true
 }
@@ -2067,8 +2061,8 @@ type hashLiteralBuildAccumulator struct {
 	// snapshot: each check resumes the memoized base and measures only this
 	// entry, so a literal built in a loop costs its own size rather than a
 	// whole-graph walk (#1129). Snapshot mode remains for contexts where a
-	// session cannot resume a memo (builtin depth, task groups, lazy globals)
-	// and would otherwise re-walk the graph once per entry.
+	// session cannot resume a memo (builtin depth) and would otherwise re-walk
+	// the graph once per entry.
 	sessions      bool
 	replacing     bool
 	keyPayloads   map[string]int
@@ -2704,7 +2698,7 @@ func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []
 	// retainedOutputMarginalBytes instead would fall back to a second graph walk
 	// here, because a nested driver has just invalidated the memo by registering.
 	base := exec.estimateScalarBase()
-	base = saturatingAdd(base, exec.estimateGraphBase(rootEst, taskLazyGlobalsFromContext(exec.ctx)))
+	base = saturatingAdd(base, exec.estimateGraphBase(rootEst))
 	// Metered for the same reason the retained-output fallback's basis walk is,
 	// and only while a driver output is registered: that is exactly when this
 	// construction is script-repeatable, because a lookup builds its runner inside
@@ -3196,7 +3190,7 @@ func (r *loopScratchReservation) release() {
 // re-walked.
 func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	total := exec.estimateScalarBase()
-	total += exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.ctx))
+	total += exec.estimateGraphBase(est)
 	return saturatingAdd(total, exec.outputWalkBytes(est))
 }
 
@@ -3207,12 +3201,12 @@ func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 // every frame committed in their seen-set, and by estimateGraphBaseFast as the
 // oracle's reference. The per-check memoized and bypass walks use the faster
 // estimateGraphBaseFast instead.
-func (exec *Execution) estimateGraphBase(est *memoryEstimator, globals *taskLazyGlobals) int {
+func (exec *Execution) estimateGraphBase(est *memoryEstimator) int {
 	total := est.env(exec.root)
 	for _, env := range exec.envStack {
 		total += est.env(env)
 	}
-	total += exec.estimateGraphTail(est, globals)
+	total += exec.estimateGraphTail(est)
 	return total
 }
 
@@ -3222,20 +3216,17 @@ func (exec *Execution) estimateGraphBase(est *memoryEstimator, globals *taskLazy
 // fresh-each-check computation that never retains the estimator across stack
 // changes — the per-check memoized and bypass walks. Under the oracle it recomputes
 // the reference and panics on any divergence.
-func (exec *Execution) estimateGraphBaseFast(est *memoryEstimator, globals *taskLazyGlobals) int {
+func (exec *Execution) estimateGraphBaseFast(est *memoryEstimator) int {
 	total := est.env(exec.root)
 	total += exec.envStackGraphBytes(est)
-	total += exec.estimateGraphTail(est, globals)
-	if estimatorVerify && len(exec.activeTaskGroups) == 0 && globals == nil {
+	total += exec.estimateGraphTail(est)
+	if estimatorVerify {
 		// The oracle compares this fast walk against a second, sequential reference
 		// walk, so it is meaningful only while the graph is stable between them.
-		// The caller (the memoized base walk) already guarantees that: it is
-		// reached only when no task groups or lazily cloned globals are live, so
-		// no concurrent job goroutine can mutate the tail under our feet. The guard
-		// restates that invariant defensively so a future caller on the unstable
-		// bypass path cannot turn concurrent tail churn into a spurious panic.
+		// The caller (the memoized base walk) guarantees that: an Execution runs on
+		// one goroutine, so nothing can mutate the tail between the two walks.
 		refEst := newMemoryEstimator()
-		if ref := exec.estimateGraphBase(refEst, globals); ref != total {
+		if ref := exec.estimateGraphBase(refEst); ref != total {
 			panic(fmt.Sprintf(
 				"vibescript: dormant-frame estimator mismatch: fast=%d reference=%d "+
 					"(stackDepth=%d dormantSlots=%d dormantBytes=%d nonBaseParentDepth=%d)",
@@ -3247,11 +3238,11 @@ func (exec *Execution) estimateGraphBaseFast(est *memoryEstimator, globals *task
 }
 
 // estimateGraphTail charges the reachable graph beyond the root and env stack:
-// loaded modules and any active task-group or lazily cloned global retention. It
-// is shared by the fast walk and the differential-verification reference walk so
-// the two can never drift on anything but the env-stack portion they are meant to
-// compare.
-func (exec *Execution) estimateGraphTail(est *memoryEstimator, globals *taskLazyGlobals) int {
+// loaded modules and the array backings this execution still retains. It is
+// shared by the fast walk and the differential-verification reference walk so
+// the two can never drift on anything but the env-stack portion they are meant
+// to compare.
+func (exec *Execution) estimateGraphTail(est *memoryEstimator) int {
 	total := 0
 	for _, mod := range exec.modules {
 		total += est.value(mod)
@@ -3263,15 +3254,6 @@ func (exec *Execution) estimateGraphTail(est *memoryEstimator, globals *taskLazy
 	// module env that is also on the env stack is charged once.
 	for _, env := range exec.initializingModules {
 		total += est.env(env)
-	}
-	for _, group := range exec.activeTaskGroups {
-		total += group.retainedSnapshotMemory(est)
-		total += group.jobPayloadMemory(est)
-		total += group.retainedResultMemory(est)
-	}
-	if globals != nil {
-		total += globals.retainedSourceMemory(est)
-		total += globals.retainedCloneMemory(est)
 	}
 	total += exec.detachedArrayBackingBytes(est)
 	total += exec.retainedArrayBackingBytes(est)

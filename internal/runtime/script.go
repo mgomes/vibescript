@@ -15,7 +15,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	// variant that already pays that cost, keeping the common no-globals /
 	// scalar-globals path allocation-free at this layer.
 	if globalsBindLazily(opts.Globals) {
-		return s.callWithLazyTaskGlobals(ctx, name, args, opts, nil, nil)
+		return s.callWithLazyGlobals(ctx, name, args, opts)
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -160,14 +160,10 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	return val, nil
 }
 
-// callWithLazyTaskGlobals keeps lazy global binding — both task-inherited
-// lazy globals and lazily bound composite host globals — off the public Call
-// hot path, so the per-call rebinder stays stack-allocated for calls that
+// callWithLazyGlobals keeps lazily bound composite host globals off the public
+// Call hot path, so the per-call rebinder stays stack-allocated for calls that
 // bind no deferred globals.
-// observeExhaustion, when non-nil, receives the execution's latched
-// exhaustion as the call returns — the trusted channel the task machinery
-// uses instead of inspecting forgeable error values.
-func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args []Value, opts CallOptions, lazyTaskGlobals *taskLazyGlobals, observeExhaustion *error) (Value, error) {
+func (s *Script) callWithLazyGlobals(ctx context.Context, name string, args []Value, opts CallOptions) (Value, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -182,9 +178,6 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	}
 
 	rootCapacity := len(s.classes) + len(opts.Globals) + len(opts.Capabilities)*2
-	if lazyTaskGlobals != nil {
-		rootCapacity += lazyTaskGlobals.len()
-	}
 	root := newEnvWithCapacity(nil, rootCapacity)
 	s.engine.attachBuiltins(root, len(s.functions)+len(s.enums))
 
@@ -203,26 +196,9 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 		root.DefineStatic(n, NewEnum(enumDef))
 	}
 	rebinder := newCallFunctionRebinder(s, root, callClasses, callEnums)
-	// Lazy task-global sources are excluded from the inbound scan and always
-	// materialize through the slow rebind walk; the fast-path verdict here
-	// covers only the task-cloned args and keywords, whose graphs are
-	// disjoint from those sources.
 	rebinder.inboundDataFast = scanInboundCallValues(args, opts.Keywords)
 
 	exec := newExecutionForCall(s, ctx, root, opts)
-	// Applied to the execution's own context, after it is built, so that this
-	// wrapper stays outermost. taskLazyGlobalsFromContext identifies its context
-	// by a type assertion on the outermost value rather than through ctx.Value,
-	// so anything wrapped on afterwards hides a task's inherited globals -- and
-	// newExecutionForCall wraps, to carry the memory chain the way it carries
-	// the sleeping budget. Binding these before that wrapping made nested tasks
-	// fail with "undefined variable".
-	if lazyTaskGlobals != nil {
-		exec.ctx = contextWithTaskLazyGlobals(exec.ctx, lazyTaskGlobals)
-	}
-	if observeExhaustion != nil {
-		defer func() { *observeExhaustion = exec.observedExhaustion() }()
-	}
 	defer exec.releaseBaseWalkCache()
 	defer exec.releaseMemoryChain()
 
@@ -280,11 +256,6 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 
 	if err := bindGlobalsForCallLazy(exec, root, rebinder, opts.Globals); err != nil {
 		return NewNil(), err
-	}
-	if lazyTaskGlobals != nil {
-		if err := bindLazyTaskGlobalsForCall(exec, root, lazyTaskGlobals, rebinder); err != nil {
-			return NewNil(), err
-		}
 	}
 
 	if err := exec.checkContext(); err != nil {

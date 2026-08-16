@@ -503,67 +503,8 @@ func TestAdapterErrorEchoingQuotaMessageIsOverridden(t *testing.T) {
 	}
 }
 
-// TestTaskWorkerExhaustionIsNotRescuable pins the task boundary: a worker
-// runs under its own execution, so its genuine quota kill reaches the parent
-// as a wrapped error rather than through the parent's latch — and the rescue
-// gate must refuse it by its unforgeable credential, or a surrounding
-// rescue(LimitError) absorbs a genuine termination.
-func TestTaskWorkerExhaustionIsNotRescuable(t *testing.T) {
-	t.Parallel()
-	script := compileScriptWithConfig(t, Config{StepQuota: 5_000, MemoryQuotaBytes: Unlimited}, `
-    def spin(x)
-      while true
-      end
-    end
-
-    def run()
-      begin
-        Tasks.map([1], with: :spin)
-      rescue(LimitError)
-        "rescued"
-      end
-    end
-    `)
-
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "step quota exceeded")
-	// The trusted channel carries the worker's diagnostics: the host error
-	// must name the worker function and the task context, not only the
-	// Tasks.map call site.
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "task spin failed")
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "at spin")
-}
-
-// TestTaskWorkerForgedLimitErrorRemainsRescuable pins the boundary of the
-// task credential: a worker that raises LimitError itself was not quota
-// killed, so the parent may still rescue it.
-func TestTaskWorkerForgedLimitErrorRemainsRescuable(t *testing.T) {
-	t.Parallel()
-	script := compileScriptWithConfig(t, Config{StepQuota: 100_000, MemoryQuotaBytes: Unlimited}, `
-    def fail(x)
-      raise LimitError, "synthetic"
-    end
-
-    def run()
-      begin
-        Tasks.map([1], with: :fail)
-      rescue(LimitError)
-        "rescued"
-      end
-    end
-    `)
-
-	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
-	if got.String() != "rescued" {
-		t.Fatalf("run() = %q, want %q", got.String(), "rescued")
-	}
-}
-
 // swallowingBlockCapability drives its block through CallBlock and reports
-// success no matter what the block returned — the composition of the adapter
-// and task attack surfaces.
+// success no matter what the block returned.
 type swallowingBlockCapability struct{}
 
 func (swallowingBlockCapability) Bind(CapabilityBinding) (map[string]Value, error) {
@@ -575,33 +516,6 @@ func (swallowingBlockCapability) Bind(CapabilityBinding) (map[string]Value, erro
 			}),
 		}),
 	}, nil
-}
-
-// TestAdapterCannotSwallowTaskExhaustion pins the composed case: a task
-// worker exhausts inside an adapter-driven block, and the adapter discards
-// the CallBlock error. The parent latch must have been set when the worker's
-// authenticated exhaustion crossed the task boundary, so the dispatch check
-// still surfaces it.
-func TestAdapterCannotSwallowTaskExhaustion(t *testing.T) {
-	t.Parallel()
-	script := compileScriptWithConfig(t, Config{StepQuota: 5_000, MemoryQuotaBytes: Unlimited}, `
-    def spin(x)
-      while true
-      end
-    end
-
-    def run()
-      cap.swallow() { Tasks.map([1], with: :spin) }
-    end
-    `)
-
-	_, err := script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{swallowingBlockCapability{}},
-	})
-	if err == nil {
-		t.Fatal("a swallowed task exhaustion returned success to the host")
-	}
-	requireErrorContains(t, err, "step quota exceeded")
 }
 
 // tamperingStepCapability lets its block exhaust the quota, shallow-copies
@@ -646,96 +560,6 @@ func TestAdapterCannotTamperAuthenticatedExhaustion(t *testing.T) {
 	}
 	requireErrorContains(t, err, "step quota exceeded")
 	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
-}
-
-// TestGroupRetainsExhaustionBehindFirstError pins the group's separate
-// exhaustion retention with the arrival order a script cannot produce
-// deterministically (the first failure cancels the group, racing the
-// spinner's kill): an ordinary failure wins the first-error slot, a worker's
-// exhaustion arrives second through the trusted channel, and the parent must
-// still latch so rescue refuses everything.
-func TestGroupRetainsExhaustionBehindFirstError(t *testing.T) {
-	t.Parallel()
-
-	group := &taskGroup{cancel: func() {}}
-	group.recordErr(errors.New("ordinary failure"))
-
-	worker := &Execution{ctx: context.Background(), quota: 1}
-	worker.steps = 1
-	quotaErr := worker.step()
-	requireErrorIs(t, quotaErr, errStepQuotaExceeded)
-	group.recordErr(fmt.Errorf("task worker failed: %w", quotaErr))
-	group.recordExhaustion(worker.exhausted)
-
-	if group.exhaustion() == nil {
-		t.Fatal("the group discarded a worker exhaustion reported after an ordinary failure")
-	}
-	requireErrorContains(t, group.err(), "ordinary failure")
-
-	parent := &Execution{ctx: context.Background()}
-	requireErrorContains(t, parent.latchGroupTaskExhaustion(group, group.err()), "ordinary failure")
-	if parent.exhausted == nil {
-		t.Fatal("the parent latch was not set from the group's retained exhaustion")
-	}
-	if parent.canRescueRuntimeError(errors.New("ordinary failure"), nil) {
-		t.Fatal("a latched parent must refuse every rescue")
-	}
-}
-
-// TestEnqueueReobservesExhaustionAfterClone pins the admission-side gap: the
-// spawn entry check predates the payload clone, so a worker exhaustion
-// published during the clone must be re-observed before the job is admitted
-// to the queue — otherwise the enqueue spends a fresh worker budget after
-// the kill.
-func TestEnqueueReobservesExhaustionAfterClone(t *testing.T) {
-	t.Parallel()
-
-	group := &taskGroup{cancel: func() {}}
-	worker := &Execution{ctx: context.Background(), quota: 1}
-	worker.steps = 1
-	requireErrorIs(t, worker.step(), errStepQuotaExceeded)
-	group.recordExhaustion(fmt.Errorf("task work failed: %w", worker.exhausted))
-
-	parent := &Execution{ctx: context.Background()}
-	handle, err := group.enqueue(parent, "f", nil, NewInt(1), true, nil)
-	if err == nil || handle != nil {
-		t.Fatalf("enqueue = (%v, %v), want a refused admission after an observed exhaustion", handle, err)
-	}
-	requireErrorContains(t, err, "task work failed")
-	if group.running != 0 || len(group.deferred) != 0 {
-		t.Fatal("a refused admission must not start or defer a job")
-	}
-	if parent.exhausted == nil {
-		t.Fatal("the parent latch was not set by the re-observation")
-	}
-}
-
-// TestObservedExhaustionStopsSpawnsBeforeGroupError pins the publish window a
-// worker leaves between recordExhaustion and recordErr: a spawn that reads a
-// nil group error while the exhaustion is already visible must be refused,
-// not allowed to keep cloning and enqueuing jobs — each with a fresh worker
-// budget — after the quota kill.
-func TestObservedExhaustionStopsSpawnsBeforeGroupError(t *testing.T) {
-	t.Parallel()
-
-	group := &taskGroup{cancel: func() {}}
-	worker := &Execution{ctx: context.Background(), quota: 1}
-	worker.steps = 1
-	quotaErr := worker.step()
-	requireErrorIs(t, quotaErr, errStepQuotaExceeded)
-	// The worker has published its exhaustion but not yet its group error —
-	// the window between runJob's two lock acquisitions.
-	group.recordExhaustion(fmt.Errorf("task work failed: %w", worker.exhausted))
-
-	parent := &Execution{ctx: context.Background()}
-	err := parent.latchGroupTaskExhaustion(group, group.err())
-	if err == nil {
-		t.Fatal("a spawn observing the exhaustion behind a nil group error must be refused")
-	}
-	requireErrorContains(t, err, "task work failed")
-	if parent.exhausted == nil {
-		t.Fatal("the parent latch was not set from the observed exhaustion")
-	}
 }
 
 // replayingCapability saves whatever error its block produces on the first
@@ -806,19 +630,19 @@ func TestStaleExhaustionCredentialIsRescuable(t *testing.T) {
 }
 
 // TestRebuiltExhaustionMessageStaysCanonical pins the rebuilt error's shape:
-// the programmatic Message must be the single-line quota message, not the
-// task wrapper's rendering with the worker's frames embedded beside the
-// separately copied frame fields.
+// the programmatic Message must be the single-line quota message, not a
+// rendering with the exhausting frames embedded beside the separately copied
+// frame fields.
 func TestRebuiltExhaustionMessageStaysCanonical(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StepQuota: 5_000, MemoryQuotaBytes: Unlimited}, `
-    def spin(x)
+    def spin()
       while true
       end
     end
 
     def run()
-      cap.swallow() { Tasks.map([1], with: :spin) }
+      cap.swallow() { spin() }
     end
     `)
 
@@ -826,7 +650,7 @@ func TestRebuiltExhaustionMessageStaysCanonical(t *testing.T) {
 		Capabilities: []CapabilityAdapter{swallowingBlockCapability{}},
 	})
 	if err == nil {
-		t.Fatal("a swallowed task exhaustion returned success to the host")
+		t.Fatal("a swallowed exhaustion returned success to the host")
 	}
 	var re *RuntimeError
 	if errors.As(err, &re) {

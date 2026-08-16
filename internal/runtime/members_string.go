@@ -1881,8 +1881,8 @@ func checkStringReverseTransform(exec *Execution, text string, receiver Value, a
 }
 
 // unicodeUpcase applies full Unicode uppercase mapping. A fresh Caser is built
-// per call because cases.Caser is not safe for concurrent use, and scripts may
-// run member methods from several goroutines via the task system.
+// per call because cases.Caser is not safe for concurrent use, and a host may
+// run concurrent Script.Call invocations.
 func unicodeUpcase(text string) string {
 	return cases.Upper(language.Und).String(text)
 }
@@ -4578,10 +4578,8 @@ func scanMatchBudget(exec *Execution, groups int, roots scanRoots) (int, bool) {
 	// exists to stop -- the table coexists with everything already live.
 	// The chain's remaining room, not the ceiling and not the local quota. The
 	// ceiling alone still oversizes the table when an ancestor is already using
-	// most of it -- a parent local held across a task call is not part of this
-	// execution's graph, so subtracting only that graph leaves the ancestor's
-	// share unaccounted. The table is built before any check can see it, so the
-	// number this divides has to be what is actually left.
+	// most of it. The table is built before any check can see it, so the number
+	// this divides has to be what is actually left.
 	remaining := exec.memoryBudgetBytes() - roots.liveBytes(exec)
 	if remaining <= 0 {
 		// Nothing left to spend: a single match is still requested so an

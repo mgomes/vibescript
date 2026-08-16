@@ -163,7 +163,6 @@ Representative `.vibe` programs are grouped under `examples/`:
 - `examples/time/` – Time creation, formatting (Go layouts), and duration/time math.
 - `examples/errors/` – patterns that rely on `assert` for validation.
 - `examples/capabilities/` – samples that touch `ctx`, `db`, `events`, and other declared capabilities.
-- `examples/tasks/` – structured concurrency with `Tasks.map`, `Tasks.run`, task handles, and explicit barriers.
 - `examples/background/` – jobs and events workflows using typed capability adapters.
 - `examples/policies/` – authorization helpers consulted by manifest policies.
 
@@ -184,7 +183,6 @@ Long-form guides live in `docs/`:
 - `docs/architecture.md` – internal runtime/parser/module architecture notes for maintainers.
 - `docs/integration.md` – integrating the interpreter in Go applications.
 - `docs/host_cookbook.md` – production integration patterns for embedding hosts.
-- `docs/tasks.md` – structured concurrency with `Tasks.map`, `Tasks.run`, task handles, and host fanout settings.
 - `docs/starter_templates.md` – starter scaffolds for common embedding scenarios.
 - `docs/durations.md` – duration literals, conversions, and arithmetic.
 - `docs/time.md` – Time creation, formatting with Go layouts, accessors, and time/duration math.
@@ -239,7 +237,6 @@ Vibescript runs inside a constrained interpreter to help host applications enfor
 - **Stdlib input guards:** JSON, Regex, and format helpers enforce fixed caps — 1 MiB for `JSON.parse` input, `JSON.stringify` output, and format output, 10,000 nested JSON containers, 1 MiB for regex text/replacements/output, 16 KiB for regex patterns, and 256 MiB for `scan`'s worst-case match-index table. The canonical values live in `internal/runtime/limits.go`; see [docs/stdlib_core_utilities.md](docs/stdlib_core_utilities.md) for details.
 - **Result rendering guard:** The runtime call returns before its result is formatted, so result rendering is outside the step and memory quotas. `Value.StringBounded` renders a value while stopping at a caller-supplied byte budget instead of materializing an unbounded string for a large composite. The `vibes run` CLI uses it with a 1 MiB cap and fails with `result rendering exceeds …` rather than printing a truncated value; see [docs/tooling.md](docs/tooling.md#result-rendering-limit).
 - **Capability gating:** Host code injects safe adapters via `CallOptions.Capabilities`, so scripts can only touch what you expose. Globals can be seeded via `CallOptions.Globals` for per-call isolation.
-- **Task concurrency:** `Config.DefaultTaskConcurrency` controls the default `Tasks` fanout (default 4, or the host cap when lower), and `Config.MaxTaskConcurrency` caps script-provided `max:` values (default 64). Requests above the cap raise a runtime error.
 
 Example with explicit limits:
 
@@ -249,8 +246,6 @@ engine, err := vibes.NewEngine(vibes.Config{
     MemoryQuotaBytes:       256 << 10, // 256 KiB heap cap inside the interpreter
     RecursionLimit:         32,       // shallow recursion allowed
     StrictEffects:          true,     // require capabilities for side effects
-    DefaultTaskConcurrency: 4,        // default Tasks fanout
-    MaxTaskConcurrency:     16,       // reject script max: values above this
     ModulePaths:            []string{"/opt/vibes/modules"},
 })
 if err != nil {
@@ -263,25 +258,5 @@ result, err := script.Call(ctx, "run", nil, vibes.CallOptions{
     Globals:      map[string]value.Value{"tenant": value.NewString("acme")},
 })
 ```
-
-Scripts can use `Tasks` for bounded structured concurrency:
-
-```vibe
-def score_user(user)
-  analytics.score(user)
-end
-
-def run(users)
-  scores = Tasks.map(users, with: :score_user)
-
-  Tasks.run(max: 2) do |tasks|
-    tasks.spawn(:publish_scores, scores)
-  end
-
-  scores
-end
-```
-
-`Tasks.run` waits for spawned work at scope exit, so `tasks.wait` is only needed as an explicit barrier. `Tasks.map` preserves input order and runs only up to the configured concurrency at a time.
 
 These knobs keep embedded Vibescript code in a defensive sandbox while still allowing host-approved capabilities. Adjust quotas per use case; the defaults favor safety over throughput.

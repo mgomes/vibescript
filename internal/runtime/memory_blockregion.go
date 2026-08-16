@@ -120,17 +120,13 @@ func (scope blockRegionScope) end() {
 // blockRegionBaseWalkEngaged reports whether the current check should take the
 // region base walk: a region is active, the check is running in the block body
 // that region drives directly (not a deeper builtin), the boundary still indexes
-// the live stack, and the memo's stability preconditions hold (no concurrent task
-// groups or lazily cloned globals evolving the tail, and the test kill switch is
-// off, so a cache-disabled differential run falls through to the unmemoized
-// reference walk).
-func (exec *Execution) blockRegionBaseWalkEngaged(globals *taskLazyGlobals) bool {
+// the live stack, and the test kill switch is off, so a cache-disabled
+// differential run falls through to the unmemoized reference walk.
+func (exec *Execution) blockRegionBaseWalkEngaged() bool {
 	return exec.blockRegionActive &&
 		exec.blockRegionDriverDepth() == exec.blockRegionBuiltinDepth &&
 		exec.blockRegionBoundary >= 0 &&
 		exec.blockRegionBoundary <= len(exec.envStack) &&
-		len(exec.activeTaskGroups) == 0 &&
-		globals == nil &&
 		!baseWalkCacheDisabled.Load()
 }
 
@@ -165,7 +161,7 @@ func (exec *Execution) beginRegionBaseWalk(est *memoryEstimator, scalars int) ba
 		c.epoch = epoch
 		c.topo = exec.baseTopoVersion
 		c.regionBoundary = boundary
-		c.graphBytes = exec.estimateGraphBasePrefix(est, boundary, nil)
+		c.graphBytes = exec.estimateGraphBasePrefix(est, boundary)
 		// Walked after the prefix and committed alongside it, so the driver's
 		// later results deduplicate against everything already counted and the
 		// checks between two of them pay nothing (see memory_output.go).
@@ -201,7 +197,7 @@ func (exec *Execution) beginRegionBaseWalk(est *memoryEstimator, scalars int) ba
 		// prefix and the suffix; the estimator's total is a deduplicated union
 		// over identities, so the two orders agree.
 		refEst := newMemoryEstimator()
-		ref := exec.estimateGraphBase(refEst, nil) + exec.outputWalkBytes(refEst)
+		ref := exec.estimateGraphBase(refEst) + exec.outputWalkBytes(refEst)
 		if got := c.graphBytes + c.outputBytes + suffix; ref != got {
 			// On divergence, recompute the prefix and suffix fresh so the panic can
 			// attribute the gap: a cachedPrefix below freshPrefix means the memo went
@@ -209,7 +205,7 @@ func (exec *Execution) beginRegionBaseWalk(est *memoryEstimator, scalars int) ba
 			// suffix that differs from freshSuffix points at the re-walk itself. This
 			// runs only on the failure path, so it costs nothing in a passing run.
 			freshEst := newMemoryEstimator()
-			freshPrefix := exec.estimateGraphBasePrefix(freshEst, boundary, nil)
+			freshPrefix := exec.estimateGraphBasePrefix(freshEst, boundary)
 			freshOutputs := exec.outputWalkBytes(freshEst)
 			freshSuffix := 0
 			for _, env := range exec.envStack[boundary:] {
@@ -236,11 +232,11 @@ func (exec *Execution) beginRegionBaseWalk(est *memoryEstimator, scalars int) ba
 // tail. It is the region counterpart of estimateGraphBase, which walks the whole
 // stack; the frames at or above the boundary are the active suffix the region
 // session re-walks fresh instead of memoizing.
-func (exec *Execution) estimateGraphBasePrefix(est *memoryEstimator, boundary int, globals *taskLazyGlobals) int {
+func (exec *Execution) estimateGraphBasePrefix(est *memoryEstimator, boundary int) int {
 	total := est.env(exec.root)
 	for _, env := range exec.envStack[:boundary] {
 		total += est.env(env)
 	}
-	total += exec.estimateGraphTail(est, globals)
+	total += exec.estimateGraphTail(est)
 	return total
 }

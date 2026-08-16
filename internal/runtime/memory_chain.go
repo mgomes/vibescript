@@ -298,32 +298,7 @@ func (c *memoryChain) initForCall(ctx context.Context, quota int) bool {
 	return true
 }
 
-// newMemoryChain builds a node outside a call, for tests. The zero value of
-// descendantHeadroom means "no room", not "no constraint", so a node must never
-// be built by struct literal alone.
-func newMemoryChain(parent *memoryChain, limit int64) *memoryChain {
-	c := &memoryChain{parent: parent, limit: limit}
-	c.descendantHeadroom.Store(noDescendantConstraint)
-	return c
-}
-
 type memoryChainKey struct{}
-
-// contextWithMemoryChain publishes a node as the parent of every chain built by
-// the calls this context drives.
-//
-// It is called where the nesting is created -- where a task group captures the
-// context its workers will run under -- rather than lazily at the first
-// allocation, for the same reason the sleeping budget is established early: a
-// group captures its context before any worker runs, so a node published later
-// would arrive after the group already held a context without one, and every
-// worker would start a chain of its own. That is the defect.
-func contextWithMemoryChain(ctx context.Context, chain *memoryChain) context.Context {
-	if chain == nil {
-		return ctx
-	}
-	return context.WithValue(ctx, memoryChainKey{}, chain)
-}
 
 func memoryChainFromContext(ctx context.Context) *memoryChain {
 	if ctx == nil {

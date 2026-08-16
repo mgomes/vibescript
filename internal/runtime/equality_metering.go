@@ -113,7 +113,8 @@ func (exec *Execution) equalityScratchGranule() int {
 //
 // One reservation is tracked per execution, which assumes comparisons on an
 // execution do not nest. They do not today: the walk is pure Go and never
-// re-enters evaluation, and concurrent tasks each get their own execution. If
+// re-enters evaluation, and concurrent Script.Call invocations each get their
+// own execution. If
 // that ever changes, an inner walk would retire the outer's reservation early
 // and the outer would restore it at its next allocation.
 func (exec *Execution) syncEqualityScratchReservation(held int) {

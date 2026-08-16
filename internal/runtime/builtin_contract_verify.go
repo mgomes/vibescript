@@ -167,7 +167,7 @@ func (v contractVerification) check(exec *Execution, builtin *Builtin) {
 // committed seen-state the memo is built on.
 func (exec *Execution) builtinGraphFingerprint() builtinGraphFingerprint {
 	est := newMemoryEstimator()
-	bytes := exec.estimateGraphBase(est, nil)
+	bytes := exec.estimateGraphBase(est)
 	return builtinGraphFingerprint{
 		bytes:      bytes,
 		identities: est.identityDigest(),

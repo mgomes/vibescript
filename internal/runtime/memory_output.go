@@ -9,9 +9,9 @@ import (
 // Output-root accounting closes the hole a builtin opens when it accumulates
 // results into a Go local while calling back into script code.
 //
-// The estimator measures what the interpreter can reach: the environments, the
-// modules, the task-group retention. A driver's own result slice is none of
-// those. So while Hash#fetch_values, Hash#values_at, hash.map, array.map,
+// The estimator measures what the interpreter can reach: the environments and
+// the modules. A driver's own result slice is neither. So while
+// Hash#fetch_values, Hash#values_at, hash.map, array.map,
 // Hash#map_with_index and Hash#transform_values run, every check performed
 // inside the callback -- the block's own allocations, its calls, step()'s
 // periodic walk -- measured a graph that omitted everything the loop had
@@ -279,7 +279,7 @@ func (exec *Execution) retainedOutputMarginalBytes() int {
 		return c.outputBytes
 	}
 	est := newMemoryEstimator()
-	exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.Context()))
+	exec.estimateGraphBase(est)
 	return exec.outputWalkBytes(est)
 }
 
@@ -289,7 +289,7 @@ func (exec *Execution) retainedOutputMarginalBytes() int {
 // would be added to a total the next check discards, so the caller invalidates
 // instead.
 func (exec *Execution) currentWalkBoundary() int {
-	if exec.blockRegionBaseWalkEngaged(taskLazyGlobalsFromContext(exec.Context())) {
+	if exec.blockRegionBaseWalkEngaged() {
 		return exec.blockRegionBoundary
 	}
 	return noBlockRegion
@@ -315,9 +315,9 @@ func (exec *Execution) verifyRetainedOutputCommit(c *baseWalkCache) {
 	ref := newMemoryEstimator()
 	var graph int
 	if c.regionBoundary == noBlockRegion {
-		graph = exec.estimateGraphBase(ref, nil)
+		graph = exec.estimateGraphBase(ref)
 	} else {
-		graph = exec.estimateGraphBasePrefix(ref, c.regionBoundary, nil)
+		graph = exec.estimateGraphBasePrefix(ref, c.regionBoundary)
 	}
 	reference := graph + exec.outputWalkBytes(ref)
 	if memoized := c.graphBytes + c.outputBytes; memoized != reference {

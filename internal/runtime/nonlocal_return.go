@@ -82,8 +82,8 @@ func (exec *Execution) popReturnToken() {
 
 // returnTokenLive reports whether the invocation identified by token is still
 // on this execution's call stack. A block whose home invocation is not live —
-// its method already returned, it was created outside any method, or it ran
-// in a different execution (a task worker) — has no frame to return to, so
+// its method already returned, or it was created outside any method — has no
+// frame to return to, so
 // its return raises LocalJumpError at the invocation site instead of
 // emitting a signal.
 func (exec *Execution) returnTokenLive(token uint64) bool {

@@ -465,36 +465,6 @@ Hash.new { |hash, key| hash[key] = key }["a"]      # "a"
 Hash.new                                           # {} with a nil default
 ```
 
-## Tasks
-
-`Tasks` runs independent named functions concurrently while the runtime keeps
-the work bounded and scoped: a task cannot outlive the scope that created it,
-and leaving a scope waits for every spawned task. See [Tasks](tasks.md).
-
-### `Tasks.map(items, with:, max: nil)`
-
-Runs the named function (`with:` accepts a symbol or string) concurrently over
-each item of the array and returns the results in input order. `max:` lowers
-the concurrency level for one call.
-
-```vibe
-Tasks.map(users, with: :score_user)
-```
-
-### `Tasks.run(max: nil) { |tasks| ... }`
-
-Opens a task scope. The block spawns tasks with `tasks.spawn(:name, args...)`,
-reads individual results with `task.value`, and the scope waits for every
-spawned task at exit. Returns the block value.
-
-```vibe
-Tasks.run(max: 2) do |tasks|
-  left = tasks.spawn(:prepare_user, first)
-  right = tasks.spawn(:prepare_user, second)
-  [left.value, right.value]
-end
-```
-
 ## Module Loading
 
 ### `require(module_name, as: nil) -> object`

@@ -137,45 +137,6 @@ end`)
 	}
 }
 
-// TestSleepBudgetIsSharedWithTaskWorkers pins that the budget covers the whole
-// call tree rather than each execution in it.
-//
-// A task worker runs on a fresh Execution, so a total kept per execution reset
-// for every queued job: Tasks.map over a hundred items each sleeping the whole
-// budget parked the host for a hundred times the bound while every individual
-// sleep looked permitted (#29).
-func TestSleepBudgetIsSharedWithTaskWorkers(t *testing.T) {
-	t.Parallel()
-
-	script := compileScriptWithConfig(t,
-		Config{MaxSleepDuration: 30 * time.Millisecond, MaxTaskConcurrency: 2},
-		`def nap(n)
-  sleep(0.01)
-  n
-end
-
-def run()
-  Tasks.map([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], max: 1, with: :nap)
-end`)
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := script.Call(context.Background(), "run", nil, CallOptions{})
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("ten workers each sleeping must exhaust the tree's shared budget")
-		}
-		if !strings.Contains(err.Error(), "exceeds the") {
-			t.Fatalf("rejected for the wrong reason: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the tree is still sleeping, so the budget is not shared")
-	}
-}
-
 // TestNestedEngineKeepsItsOwnTighterSleepBudget pins that a call re-entered on
 // another engine is bound by that engine's limit, not by whatever the outer one
 // allowed.
@@ -268,9 +229,9 @@ end`)
 // TestChainedBudgetsSpendAtomically pins that a refusal above leaves nothing
 // deducted below.
 //
-// Task workers share a chained budget concurrently, so publishing the child's
-// deduction before the parent accepted it would let one worker see capacity
-// spent on a sleep that never happened.
+// Chained budgets are read concurrently, so publishing the child's deduction
+// before the parent accepted it would let one reader see capacity spent on a
+// sleep that never happened.
 func TestChainedBudgetsSpendAtomically(t *testing.T) {
 	t.Parallel()
 
@@ -351,59 +312,6 @@ func TestRefundReturnsUnusedTimeToEveryLevel(t *testing.T) {
 	}
 	if got := parent.remaining; got != time.Second {
 		t.Fatalf("parent holds %s, want its 1s limit", got)
-	}
-}
-
-// TestCanceledSleepKeepsWhatItDidNotUse pins that a sleep cut short by a
-// sibling's failure gives its reservation back.
-//
-// The budget is spent before the sleep, since a sleep has to be refused before
-// it happens rather than measured after. A worker canceled mid-sleep therefore
-// left the whole reservation deducted for time the tree never spent, and because
-// a task failure is rescuable, the script that carried on was refused sleeps its
-// host would have allowed (#29).
-func TestCanceledSleepKeepsWhatItDidNotUse(t *testing.T) {
-	t.Parallel()
-
-	script := compileScriptWithConfig(t,
-		Config{MaxSleepDuration: 700 * time.Millisecond, MaxTaskConcurrency: 4},
-		`def nap(n)
-  if n == 0
-    raise "boom"
-  end
-  sleep(0.5)
-  n
-end
-
-def run()
-  begin
-    Tasks.map([0, 1], max: 2, with: :nap)
-  rescue
-    nil
-  end
-  sleep(0.4)
-  :finished
-end`)
-
-	done := make(chan Value, 1)
-	failed := make(chan error, 1)
-	go func() {
-		result, err := script.Call(context.Background(), "run", nil, CallOptions{})
-		if err != nil {
-			failed <- err
-			return
-		}
-		done <- result
-	}()
-	select {
-	case result := <-done:
-		if result.Kind() != KindSymbol || result.String() != "finished" {
-			t.Fatalf("run returned %s, want :finished", result.String())
-		}
-	case err := <-failed:
-		t.Fatalf("the sleep after the canceled one was refused, so its reservation was never returned: %v", err)
-	case <-time.After(30 * time.Second):
-		t.Fatal("the call is still running")
 	}
 }
 

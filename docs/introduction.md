@@ -28,8 +28,6 @@ dives on specific topics.
   before/after examples and fixes.
 - `control-flow.md` – conditionals, loops, and ranges.
 - `blocks.md` – using block literals for map/select/reduce style patterns.
-- `tasks.md` – structured concurrency with `Tasks.map`, `Tasks.run`, and
-  host-controlled fanout.
 - `tooling.md` – CLI workflows for running, checking, formatting, analyzing,
   testing, editor integration, and the REPL.
 - `architecture.md` – internal runtime/parser/module architecture map for maintainers.

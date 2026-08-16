@@ -138,13 +138,6 @@ func TestRegexLiteralBehavior(t *testing.T) {
       "a.c".sub(".", "!")
     end
 
-    def task_boundary(re)
-      Tasks.map(["cabbb"], with: :task_probe)[0]
-    end
-
-    def task_probe(text)
-      text =~ /b+/
-    end
     `)
 
 	sym := func(name string) Value { return NewSymbol(name) }
@@ -219,7 +212,6 @@ func TestRegexLiteralBehavior(t *testing.T) {
 		{name: "string_gsub_regex", fn: "string_gsub_regex", want: NewString("N12 N34")},
 		{name: "string_sub_regex_block", fn: "string_sub_regex_block", want: NewString("hellO world")},
 		{name: "string_sub_literal_stays_literal", fn: "string_sub_literal_stays_literal", want: NewString("a!c")},
-		{name: "task_boundary_passthrough", fn: "task_boundary", args: []Value{NewNil()}, want: NewInt(2)},
 	}
 
 	for _, tc := range tests {
