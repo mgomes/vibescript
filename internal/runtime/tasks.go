@@ -1548,9 +1548,20 @@ func (binding taskLazyGlobalBinding) materialize() Value {
 	return binding.globals.materialize(binding.name)
 }
 
+type taskLazyGlobalsContextKey struct{}
+
+var taskLazyGlobalsKey = taskLazyGlobalsContextKey{}
+
 type taskLazyGlobalsContext struct {
 	context.Context
 	globals *taskLazyGlobals
+}
+
+func (c taskLazyGlobalsContext) Value(key any) any {
+	if key == taskLazyGlobalsKey {
+		return c.globals
+	}
+	return c.Context.Value(key)
 }
 
 func contextWithTaskLazyGlobals(ctx context.Context, globals *taskLazyGlobals) context.Context {
@@ -1564,11 +1575,13 @@ func taskLazyGlobalsFromContext(ctx context.Context) *taskLazyGlobals {
 	if ctx == nil {
 		return nil
 	}
-	taskCtx, ok := ctx.(taskLazyGlobalsContext)
-	if !ok {
-		return nil
+	if taskCtx, ok := ctx.(taskLazyGlobalsContext); ok {
+		return taskCtx.globals
 	}
-	return taskCtx.globals
+	if globals, ok := ctx.Value(taskLazyGlobalsKey).(*taskLazyGlobals); ok {
+		return globals
+	}
+	return nil
 }
 
 type taskGlobalCloner struct {

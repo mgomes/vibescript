@@ -649,6 +649,83 @@ end`)
 	compareArrays(t, result, []Value{NewInt(11), NewInt(12)})
 }
 
+func TestTaskLazyGlobalsContextWrapped(t *testing.T) {
+	t.Parallel()
+	globals := newTaskLazyGlobals(map[string]Value{"x": NewInt(42)}, false, false)
+
+	type otherKey struct{}
+	type secondKey struct{}
+
+	baseCtx := context.WithValue(context.Background(), otherKey{}, "base-val")
+	ctx := contextWithTaskLazyGlobals(baseCtx, globals)
+
+	// Direct taskLazyGlobalsContext lookup
+	if got := taskLazyGlobalsFromContext(ctx); got != globals {
+		t.Fatalf("taskLazyGlobalsFromContext(direct) = %v, want %v", got, globals)
+	}
+
+	// Inner context key lookup delegation
+	if got := ctx.Value(otherKey{}); got != "base-val" {
+		t.Fatalf("ctx.Value(otherKey) = %v, want base-val", got)
+	}
+
+	// Wrapped context lookup
+	wrapped := context.WithValue(ctx, secondKey{}, "outer-val")
+	if got := taskLazyGlobalsFromContext(wrapped); got != globals {
+		t.Fatalf("taskLazyGlobalsFromContext(wrapped) = %v, want %v", got, globals)
+	}
+	if got := wrapped.Value(otherKey{}); got != "base-val" {
+		t.Fatalf("wrapped.Value(otherKey) = %v, want base-val", got)
+	}
+	if got := wrapped.Value(secondKey{}); got != "outer-val" {
+		t.Fatalf("wrapped.Value(secondKey) = %v, want outer-val", got)
+	}
+
+	// Double wrapped
+	type thirdKey struct{}
+	doubleWrapped := context.WithValue(wrapped, thirdKey{}, "extra")
+	if got := taskLazyGlobalsFromContext(doubleWrapped); got != globals {
+		t.Fatalf("taskLazyGlobalsFromContext(doubleWrapped) = %v, want %v", got, globals)
+	}
+
+	// Nil context
+	if got := taskLazyGlobalsFromContext(nil); got != nil {
+		t.Fatalf("taskLazyGlobalsFromContext(nil) = %v, want nil", got)
+	}
+
+	// Context without globals
+	if got := taskLazyGlobalsFromContext(context.Background()); got != nil {
+		t.Fatalf("taskLazyGlobalsFromContext(plain) = %v, want nil", got)
+	}
+}
+
+func TestNestedTasksInheritLazyGlobalsWithWrappedContext(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_shared(item)
+  shared[:seed] + item
+end
+
+def spawn_read(item)
+  Tasks.run(max: 1) do |tasks|
+    tasks.spawn(:read_shared, item).value
+  end
+end
+
+def run()
+  Tasks.map([1, 2], max: 1, with: :spawn_read)
+end`)
+
+	type customCtxKey struct{}
+	customCtx := context.WithValue(context.Background(), customCtxKey{}, "custom-data")
+
+	result := callScript(t, customCtx, script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"shared": NewHash(map[string]Value{"seed": NewInt(20)}),
+		},
+	})
+	compareArrays(t, result, []Value{NewInt(21), NewInt(22)})
+}
+
 func TestNestedTasksInheritMaterializedGlobalMutations(t *testing.T) {
 	t.Parallel()
 	script := compileScriptDefault(t, `def read_shared(item)
