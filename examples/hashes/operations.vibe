@@ -13,7 +13,7 @@ def layer_settings(base, environment, request)
 end
 
 def apply_patch(record, patch)
-  record.update(patch)
+  record.merge(patch)
 end
 
 def reset_record(record, replacement)

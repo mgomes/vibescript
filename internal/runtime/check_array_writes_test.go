@@ -2427,7 +2427,11 @@ end
 	}
 }
 
-func TestArrayMutatorExactSplatsRetainNestedAliases(t *testing.T) {
+// TestArrayMutatorExactSplatsGraftValuesNotAliases inverts what this used to
+// pin. A splatted element grafted into a receiver is another value from the
+// moment it lands there, so a later write through the argument array's own
+// element cannot reach the row the mutator stored.
+func TestArrayMutatorExactSplatsGraftValuesNotAliases(t *testing.T) {
 	t.Parallel()
 
 	script := compileScriptDefault(t, `
@@ -2470,25 +2474,25 @@ end
 	want := NewArray([]Value{
 		NewArray([]Value{
 			NewArray([]Value{NewInt(0)}),
-			NewArray([]Value{NewInt(1), NewInt(2)}),
+			NewArray([]Value{NewInt(1)}),
 		}),
 		NewArray([]Value{
 			NewArray([]Value{NewInt(0)}),
-			NewArray([]Value{NewInt(1), NewInt(2)}),
+			NewArray([]Value{NewInt(1)}),
 		}),
 		NewArray([]Value{
-			NewArray([]Value{NewInt(1), NewInt(2)}),
+			NewArray([]Value{NewInt(1)}),
 			NewArray([]Value{NewInt(0)}),
 		}),
 		NewArray([]Value{
-			NewArray([]Value{NewInt(1), NewInt(2)}),
+			NewArray([]Value{NewInt(1)}),
 			NewArray([]Value{NewInt(0)}),
 		}),
 		NewArray([]Value{
-			NewArray([]Value{NewInt(1), NewInt(2)}),
+			NewArray([]Value{NewInt(1)}),
 		}),
 		NewArray([]Value{
-			NewArray([]Value{NewInt(1), NewInt(2)}),
+			NewArray([]Value{NewInt(1)}),
 			NewArray([]Value{NewInt(0)}),
 		}),
 	})

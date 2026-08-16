@@ -96,8 +96,6 @@ func TestArrayBlockFiltersReserveEmptyResultBackingBeforeBlockCalls(t *testing.T
 	}{
 		{method: "delete_if", block: constantBoolBlockValue(true)},
 		{method: "keep_if", block: constantBoolBlockValue(false)},
-		{method: "select!", block: constantBoolBlockValue(false)},
-		{method: "reject!", block: constantBoolBlockValue(true)},
 	}
 
 	for _, tc := range tests {

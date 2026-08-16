@@ -157,7 +157,6 @@ func TestEveryOrderingMemberPreservesSandboxErrors(t *testing.T) {
 	for _, body := range []string{
 		"rows.sort.length",
 		"rows.sort_by { |r| r }.length",
-		"rows.sort!.length",
 		"rows.min.length",
 		"rows.max.length",
 		"rows.minmax.length",
@@ -342,7 +341,6 @@ func TestOrderingMembersGetTheMemoToo(t *testing.T) {
 	for _, body := range []string{
 		"rows.sort.length",
 		"rows.sort_by { |r| r }.length",
-		"rows.sort!.length",
 		"rows.min.length",
 		"rows.max.length",
 		"rows.minmax.length",
