@@ -8035,17 +8035,17 @@ func (c *scriptChecker) staticLiteralProjectionFrom(object, indexExpr Expression
 		if object.ShapeType != nil && !c.hashShapeStaticallyShadowed(object) {
 			return nil, false
 		}
-		want, ok := staticLiteralValue(indexExpr)
+		want, ok := staticLiteralHashIdentity(indexExpr)
 		if !ok {
 			return nil, false
 		}
 		var projected Expression
 		for _, pair := range object.Pairs {
-			key, ok := staticLiteralValue(pair.Key)
+			key, ok := staticLiteralHashIdentity(pair.Key)
 			if !ok {
 				return nil, false
 			}
-			if key.Equal(want) {
+			if key == want {
 				projected = pair.Value
 			}
 		}
@@ -15520,23 +15520,18 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 	case TypeShape:
 		key, ok := staticLiteralHashKey(index)
 		if !ok {
+			if objectType.Name == shapeKeysStringMarker || objectType.Name == shapeKeysSymbolMarker {
+				if _, isLit := staticLiteralValue(index); isLit {
+					return checkTypeNil
+				}
+			}
 			return nil
 		}
 		fieldType, present := objectType.Shape[key]
-		indexKeyMarker := ""
-		switch index.(type) {
-		case *SymbolLiteral:
-			indexKeyMarker = shapeKeysSymbolMarker
-		case *StringLiteral:
-			indexKeyMarker = shapeKeysStringMarker
-		}
 		switch objectType.Name {
 		case shapeKeysStringMarker, shapeKeysSymbolMarker:
-			// Known store representation: a lookup of the other key kind
-			// (or a non-string, non-symbol key) always misses.
-			if indexKeyMarker != objectType.Name {
-				return checkTypeNil
-			}
+			// String and symbol keys address one entry, so a lookup of
+			// either kind is a hit when the spelling is present.
 			if present {
 				// An optional field may be absent, so its read joins nil.
 				if shapeFieldOptional(fieldType) {

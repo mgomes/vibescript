@@ -103,6 +103,25 @@ def f(row: { name?: string }) -> string
 end`), "expected string, got string | nil")
 }
 
+func TestStaticHashProjectionUsesUnifiedKeyspace(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `def f() -> int
+  {name: "old", "name": 1}[:name]
+end`))
+
+	requireNoCheckWarnings(t, compileScript(t, `def f() -> string
+  {name: "Ada"}["name"]
+end`))
+
+	script := compileScriptDefault(t, `def run()
+  {name: "old", "name": 1}[:name]
+end`)
+	if got := callFunc(t, script, "run", nil); got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("{name: \"old\", \"name\": 1}[:name] = %v, want 1", got)
+	}
+}
+
 // A later argument that mutates the shape an earlier one read must not lose the
 // explanation. This passes with or without the captured-hint change -- none of
 // delete, clear, merge!, or a mutating call poisons the fact enough to drop it
