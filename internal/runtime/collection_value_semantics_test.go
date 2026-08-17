@@ -770,6 +770,29 @@ end
 	}
 }
 
+func TestFillEmptyWindowDoesNotCopyASharedReceiver(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 240 << 10, StepQuota: Unlimited}, `
+    def run()
+      a = []
+      i = 0
+      while i < 2000
+        a << "xxxxxxxxxxxxxxxx"
+        i += 1
+      end
+      b = a
+      a.fill(0, 0, 0)
+      [a, b]
+    end
+    `)
+	got := callFunc(t, script, "run", nil).Array()
+	if arrayIdentity(got[0]) != arrayIdentity(got[1]) {
+		t.Fatalf("a.fill(0, 0, 0) copied a shared receiver: identities %d and %d",
+			arrayIdentity(got[0]), arrayIdentity(got[1]))
+	}
+}
+
 func TestPushSelfRejectsWhenTheCloneWouldExceedQuota(t *testing.T) {
 	t.Parallel()
 
@@ -883,6 +906,7 @@ func TestMutatorNoOpDoesNotIsolateASharedReceiver(t *testing.T) {
   a.delete(99)
   a.delete_if { false }
   a.keep_if { true }
+  a.fill(0, 0, 0)
   h.delete("missing")
   h.delete_if { false }
   h.keep_if { true }

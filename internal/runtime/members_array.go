@@ -3390,6 +3390,11 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	if err != nil {
 		return NewNil(), err
 	}
+	// An empty window inside the current length changes nothing, so do not
+	// rebuild or isolate a shared receiver for a semantic no-op.
+	if span.begin == span.end && span.finalLength == len(arr) {
+		return receiver, nil
+	}
 
 	// Reject an oversized result up front so a window far past the receiver
 	// cannot reserve a huge backing array before the per-element checks below
