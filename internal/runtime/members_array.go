@@ -3283,7 +3283,7 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		pair := item
 		if runner != nil {
 			blockArg[0] = item
-			mapped, err := runner.callRetained(blockArg[:])
+			mapped, err := runner.call(blockArg[:])
 			if err != nil {
 				return NewNil(), err
 			}

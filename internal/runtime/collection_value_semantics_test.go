@@ -743,6 +743,21 @@ end
 // mutator's path does not copy before the mutator decides whether it will
 // write. a.pop(0) and a.push() on a shared receiver must leave both bindings
 // on the same wrapper.
+func TestToHDoesNotRetainTheReturnedPairWrapper(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  pair = ["k", 1]
+  [0].to_h { pair }
+  pair
+end
+`)
+	got := callFunc(t, script, "run", nil)
+	if !got.SoleRef() {
+		t.Fatalf("[0].to_h { pair } left pair shared, SoleRef() = false, want true")
+	}
+}
+
 func TestMutatorNoOpDoesNotIsolateASharedReceiver(t *testing.T) {
 	t.Parallel()
 
