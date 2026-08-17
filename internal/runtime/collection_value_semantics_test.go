@@ -653,9 +653,6 @@ end
 	}
 }
 
-// TestCompoundAssignmentStillReachesItsRoot is the other half: isolating must
-// not cost the update. A loop that accumulates through one path has to land
-// every time, or value semantics would just be a way to lose writes.
 func TestCompoundAssignmentKeepsAReboundIntermediateIntact(t *testing.T) {
 	t.Parallel()
 
