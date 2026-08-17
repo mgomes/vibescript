@@ -63,9 +63,24 @@ func (v Value) HashEntriesInto(buf []HashEntry) []HashEntry {
 	if cap(entries) < len(m) {
 		entries = make([]HashEntry, 0, len(m))
 	}
-	for _, key := range v.hashIterationKeys(nil) {
-		entries = append(entries, HashEntry{Key: key, Value: m[key.data.(string)]})
+	if v.kind == KindHash {
+		hd := v.data.(*hashData)
+		if hd.orderCoversEntries() {
+			for _, key := range hd.order {
+				entries = append(entries, HashEntry{Key: key, Value: m[key.data.(string)]})
+			}
+			return entries
+		}
 	}
+	// Sort the entry buffer in place. Building a separate key slice here
+	// would allocate on top of entries, and the runtime's hash walks only
+	// preflight the entry buffer (sortedHashEntryBufferBytes).
+	for key, val := range m {
+		entries = append(entries, HashEntry{Key: NewString(key), Value: val})
+	}
+	slices.SortFunc(entries, func(a, b HashEntry) int {
+		return cmp.Compare(a.Key.data.(string), b.Key.data.(string))
+	})
 	return entries
 }
 
@@ -83,7 +98,8 @@ func (v Value) RangeHashEntries(visit func(key string, val Value)) {
 	if m == nil {
 		return
 	}
-	for _, key := range v.hashIterationKeys(nil) {
+	var keyBuf [smallHashIterationBuffer]Value
+	for _, key := range v.hashIterationKeys(keyBuf[:]) {
 		name := key.data.(string)
 		visit(name, m[name])
 	}

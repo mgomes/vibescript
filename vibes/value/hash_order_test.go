@@ -222,3 +222,33 @@ func TestHostKeySwapThroughLiveMapFallsBackToSortedKeys(t *testing.T) {
 		t.Fatalf("entry value after swap = %s, want 2", got.Inspect())
 	}
 }
+
+func TestHostKeySwapFallbackSortsTheEntryBuffer(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{})
+	for _, name := range []string{"m", "k", "z"} {
+		if err := hash.HashSet(value.NewString(name), value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet(%s) error = %v, want nil", name, err)
+		}
+	}
+	live := hash.Hash()
+	delete(live, "m")
+	live["a"] = value.NewInt(2)
+	live["c"] = value.NewInt(3)
+
+	var buf [8]value.HashEntry
+	entries := hash.HashEntriesInto(buf[:])
+	requireKeyOrder(t, hash, []value.Value{
+		value.NewString("a"),
+		value.NewString("c"),
+		value.NewString("k"),
+		value.NewString("z"),
+	})
+	if len(entries) != 4 {
+		t.Fatalf("HashEntriesInto after key swap = %d entries, want 4", len(entries))
+	}
+	if got, want := entries[0].Key.String(), "a"; got != want {
+		t.Fatalf("HashEntriesInto[0] = %q, want %q", got, want)
+	}
+}
