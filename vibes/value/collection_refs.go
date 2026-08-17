@@ -45,11 +45,7 @@ const (
 // docs/embedding-api-stability.md).
 func (v Value) PublishRef() {
 	if slot := v.refSlot(); slot != nil {
-		if atomic.LoadUint32(slot) == refsFresh {
-			atomic.StoreUint32(slot, refsSole)
-			return
-		}
-		atomic.StoreUint32(slot, refsShared)
+		advanceRef(slot)
 	}
 }
 
@@ -69,11 +65,28 @@ func PublishReplacement(previous, next Value) {
 	if slot == nil || slot == previous.refSlot() {
 		return
 	}
-	if atomic.LoadUint32(slot) == refsFresh {
-		atomic.StoreUint32(slot, refsSole)
-		return
+	advanceRef(slot)
+}
+
+// advanceRef moves a wrapper's publication state one step along
+// fresh → sole → shared. The transition is a CAS so two concurrent
+// publishers cannot both observe fresh and both land on sole, and so a
+// MarkSharedRef cannot be overwritten back to sole.
+func advanceRef(slot *uint32) {
+	for {
+		switch current := atomic.LoadUint32(slot); current {
+		case refsFresh:
+			if atomic.CompareAndSwapUint32(slot, refsFresh, refsSole) {
+				return
+			}
+		case refsSole:
+			if atomic.CompareAndSwapUint32(slot, refsSole, refsShared) {
+				return
+			}
+		default:
+			return
+		}
 	}
-	atomic.StoreUint32(slot, refsShared)
 }
 
 // AdoptSoleRef records that exactly one durable slot names the collection v.
@@ -170,9 +183,8 @@ func (v Value) MarkSharedRef() {
 //
 // The counter is read and written atomically because a value can be reachable
 // from state an engine shares across concurrent Script.Call invocations, where
-// two executions may publish the same wrapper at once. The operations are a
-// plain load and a plain store on every architecture the runtime targets, so
-// the ordering guarantee costs nothing over an unsynchronized field.
+// two executions may publish the same wrapper at once. Publication advances
+// with a CAS so the state only moves fresh → sole → shared.
 func (v Value) refSlot() *uint32 {
 	switch v.kind {
 	case KindArray:
