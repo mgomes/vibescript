@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -540,6 +541,31 @@ func TestArrayInsertErrors(t *testing.T) {
 		"array.insert index -4 out of range")
 	requireCallErrorContains(t, script, "keyword", base, CallOptions{},
 		"array.insert does not take keyword arguments")
+}
+
+func TestInsertRejectsOutOfRangeBeforeIsolating(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 240 << 10, StepQuota: Unlimited}, `
+    def run()
+      a = []
+      i = 0
+      while i < 2000
+        a << "xxxxxxxxxxxxxxxx"
+        i += 1
+      end
+      b = a
+      a.insert(-1000000, 1)
+    end
+    `)
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatal("a.insert(-1000000, 1) must error")
+	}
+	requireErrorContains(t, err, "array.insert index -1000000 out of range")
+	if strings.Contains(err.Error(), "quota") {
+		t.Fatalf("out-of-range insert reported as quota: %v", err)
+	}
 }
 
 // TestArrayInsertMemoryQuota confirms a nil-padded growth far past the end trips

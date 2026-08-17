@@ -4363,6 +4363,18 @@ func arrayInsert(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	if len(values) == 0 {
 		return receiver, nil
 	}
+	// Resolve the insertion point against the receiver as it stands, before
+	// isolation copies a shared array. A negative index inserts after the
+	// element it names, so it normalizes to (index + len + 1); Ruby rejects
+	// a negative index whose magnitude exceeds the length.
+	arr := receiver.Array()
+	at := index
+	if at < 0 {
+		at += len(arr) + 1
+		if at < 0 {
+			return NewNil(), fmt.Errorf("array.insert index %d out of range", index)
+		}
+	}
 	values, err = exec.detachStoredCollections(values)
 	if err != nil {
 		return NewNil(), err
@@ -4372,17 +4384,7 @@ func arrayInsert(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		return NewNil(), err
 	}
 	publishCollectionElems(values)
-	arr := receiver.Array()
-	// Resolve the insertion point. A negative index inserts after the element it
-	// names, so it normalizes to (index + len + 1); Ruby rejects a negative index
-	// whose magnitude exceeds the length.
-	at := index
-	if at < 0 {
-		at += len(arr) + 1
-		if at < 0 {
-			return NewNil(), fmt.Errorf("array.insert index %d out of range", index)
-		}
-	}
+	arr = receiver.Array()
 	// A non-negative index past the end pads the gap with nil, growing the array
 	// so the inserted values land exactly at the requested position.
 	pad := 0
