@@ -3253,9 +3253,9 @@ end
 func TestCheckInferShapeFactsRespectKeyKinds(t *testing.T) {
 	t.Parallel()
 
-	// A label-keyed hash literal is a symbol-keyed store: a string lookup is
-	// known to miss (reads nil), a symbol lookup yields the exact field.
-	script := compileScript(t, `
+	// String and symbol keys address one entry, so a label-keyed literal
+	// yields the field under either lookup spelling.
+	requireNoCheckWarnings(t, compileScript(t, `
 def takes_string(value: string)
   value
 end
@@ -3264,8 +3264,7 @@ def run()
   h = { name: "Ada" }
   takes_string(h["name"])
 end
-`)
-	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got nil")
+`))
 
 	requireNoCheckWarnings(t, compileScript(t, `
 def takes_string(value: string)
@@ -3278,9 +3277,8 @@ def run()
 end
 `))
 
-	// JSON stores are string-keyed, so a symbol lookup on a parse_as result
-	// is known to miss.
-	parseAs := compileScript(t, `
+	// JSON.parse_as is the same keyspace: a symbol lookup finds the field.
+	requireNoCheckWarnings(t, compileScript(t, `
 def takes_string(value: string)
   value
 end
@@ -3289,8 +3287,7 @@ def run(raw: string)
   body = JSON.parse_as(raw, { name: string })
   takes_string(body[:name])
 end
-`)
-	requireCheckWarningContains(t, parseAs, "call to takes_string argument value expected string, got nil")
+`))
 
 	// An annotated shape parameter has an unknown key representation: a
 	// present field reads as field-or-nil, so it still contradicts a
