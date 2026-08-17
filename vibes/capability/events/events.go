@@ -99,7 +99,7 @@ func (c *Capability) Publish(ctx context.Context, args []value.Value, kwargs map
 func (c *Capability) PublishValidated(ctx context.Context, args []value.Value, kwargs map[string]value.Value, blockProvided bool) (value.Value, error) {
 	req := PublishRequest{
 		Topic:   args[0].String(),
-		Payload: cloneHash(args[1].Hash()),
+		Payload: cloneHash(args[1].HashEntryMap()),
 		Options: cloneKwargs(kwargs),
 	}
 	result, err := c.Publisher.Publish(ctx, req)
@@ -210,14 +210,14 @@ func deepClone(val value.Value) value.Value {
 		}
 		return value.NewArray(cloned)
 	case value.KindHash:
-		hash := val.Hash()
+		hash := val.HashEntryMap()
 		cloned := make(map[string]value.Value, len(hash))
 		for k, v := range hash {
 			cloned[k] = deepClone(v)
 		}
 		return value.NewHashWithTrustedOrder(cloned, val.HashKeyOrder())
 	case value.KindObject:
-		obj := val.Hash()
+		obj := val.HashEntryMap()
 		cloned := make(map[string]value.Value, len(obj))
 		for k, v := range obj {
 			cloned[k] = deepClone(v)

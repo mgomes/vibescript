@@ -108,14 +108,14 @@ func DeepCloneValue(val value.Value) value.Value {
 		}
 		return value.NewArray(cloned)
 	case value.KindHash:
-		hash := val.Hash()
+		hash := val.HashEntryMap()
 		cloned := make(map[string]value.Value, len(hash))
 		for k, v := range hash {
 			cloned[k] = DeepCloneValue(v)
 		}
 		return value.NewHashWithTrustedOrder(cloned, val.HashKeyOrder())
 	case value.KindObject:
-		obj := val.Hash()
+		obj := val.HashEntryMap()
 		cloned := make(map[string]value.Value, len(obj))
 		for k, v := range obj {
 			cloned[k] = DeepCloneValue(v)
@@ -296,7 +296,7 @@ func (s *traversalDepthScanner) check(label string, val value.Value, depth int) 
 			s.seen.arrays[id] = remainingDepth
 		}
 	case value.KindHash, value.KindObject:
-		entries := val.Hash()
+		entries := val.HashEntryMap()
 		ptr := value.HashIdentity(val)
 		if ptr == 0 {
 			ptr = reflect.ValueOf(entries).Pointer()
@@ -379,7 +379,7 @@ func validateDataOnly(val value.Value, visiting, seen *seenSet) dataOnlyResult {
 		seen.arrays[id] = struct{}{}
 		return issue
 	case value.KindHash, value.KindObject:
-		entries := val.Hash()
+		entries := val.HashEntryMap()
 		// A KindHash's default metadata lives outside its entry map, so two
 		// wrappers can share one map yet carry different defaults. Key the
 		// seen/visiting sets on the whole hash wrapper (or the entry-map pointer
@@ -451,7 +451,7 @@ func cloneDataOnlyValue(val value.Value, visiting *seenSet, depth int) (value.Va
 	case value.KindHash:
 		return cloneDataOnlyHash(val, visiting, depth)
 	case value.KindObject:
-		return cloneDataOnlyMap(val.Hash(), visiting, value.NewObject, depth)
+		return cloneDataOnlyMap(val.HashEntryMap(), visiting, value.NewObject, depth)
 	default:
 		return val, dataOnlyOK
 	}
@@ -463,7 +463,7 @@ func cloneDataOnlyValue(val value.Value, visiting *seenSet, depth int) (value.Va
 // value is cloned and preserved on the result so the isolated copy keeps the
 // same missing-key behavior.
 func cloneDataOnlyHash(val value.Value, visiting *seenSet, depth int) (value.Value, dataOnlyResult) {
-	entries := val.Hash()
+	entries := val.HashEntryMap()
 	// Track the whole hash wrapper, not just the entry map: two wrappers can
 	// share one entry map yet carry distinct defaults, and the cycle check must
 	// follow each wrapper's own default graph.

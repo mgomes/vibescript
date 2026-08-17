@@ -198,14 +198,14 @@ func deepCloneValue(v value.Value) value.Value {
 		}
 		return value.NewArray(cloned)
 	case value.KindHash:
-		hash := v.Hash()
+		hash := v.HashEntryMap()
 		cloned := make(map[string]value.Value, len(hash))
 		for k, val := range hash {
 			cloned[k] = deepCloneValue(val)
 		}
 		return value.NewHashWithTrustedOrder(cloned, v.HashKeyOrder())
 	case value.KindObject:
-		obj := v.Hash()
+		obj := v.HashEntryMap()
 		cloned := make(map[string]value.Value, len(obj))
 		for k, val := range obj {
 			cloned[k] = deepCloneValue(val)
