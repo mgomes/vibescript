@@ -323,6 +323,19 @@ func (v Value) HashClearEntries() {
 	}
 }
 
+// HashUsesRecordedOrder reports whether v iterates in a recorded insertion
+// order. Objects and hashes whose live map no longer matches that record
+// iterate in sorted key order instead.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func (v Value) HashUsesRecordedOrder() bool {
+	if v.kind != KindHash {
+		return false
+	}
+	return v.data.(*hashData).orderCoversEntries()
+}
+
 // HashOrderCapacity returns the capacity of the insertion-order backing a hash
 // retains alongside its entries, or 0 when v is not a hash or tracks no order.
 // Memory-quota accounting charges the backing's structural bytes; the key

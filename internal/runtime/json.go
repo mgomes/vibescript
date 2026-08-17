@@ -675,19 +675,18 @@ func jsonObjectEntries(val Value) ([]jsonObjectEntry, error) {
 	// checks never reserved.
 	n := val.HashLen()
 	entries := make([]jsonObjectEntry, 0, n)
-	if val.Kind() == KindHash {
-		var buf [smallHashKeyBufferSize]HashEntry
-		for _, entry := range val.HashEntriesInto(buf[:]) {
-			entries = append(entries, jsonObjectEntry{key: entry.Key.String(), value: entry.Value})
-		}
-		return entries, nil
-	}
-	for key, item := range val.Hash() {
+	val.RangeHashEntries(func(key string, item Value) {
 		entries = append(entries, jsonObjectEntry{key: key, value: item})
-	}
-	slices.SortFunc(entries, func(a, b jsonObjectEntry) int {
-		return cmp.Compare(a.key, b.key)
 	})
+	// RangeHashEntries walks recorded insertion order when it still covers
+	// the live entries. Objects and host-mutated maps have no such record,
+	// so sort the JSON buffer in place rather than allocating a second
+	// []HashEntry on top of it.
+	if !val.HashUsesRecordedOrder() {
+		slices.SortFunc(entries, func(a, b jsonObjectEntry) int {
+			return cmp.Compare(a.key, b.key)
+		})
+	}
 	return entries, nil
 }
 

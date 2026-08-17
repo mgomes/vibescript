@@ -1181,6 +1181,23 @@ func TestJSONParseObjectDataExposesEntries(t *testing.T) {
 	}
 }
 
+func TestJSONStringifyFollowsHashInsertionOrder(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def run()
+      h = {}
+      h["z"] = 1
+      h["m"] = 2
+      h["a"] = 3
+      JSON.stringify(h)
+    end
+    `)
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindString || got.String() != `{"z":1,"m":2,"a":3}` {
+		t.Fatalf("JSON.stringify(insertion-ordered hash) = %s, want {\"z\":1,\"m\":2,\"a\":3}", got.String())
+	}
+}
+
 func TestJSONStringifyEscaping(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
