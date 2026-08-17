@@ -260,16 +260,16 @@ func NewHashWithOrder(entries map[string]Value, order []Value) Value {
 }
 
 func orderNamesUnique(order []Value) bool {
-	if len(order) <= 1 {
-		return true
-	}
-	seen := make(map[string]struct{}, len(order))
-	for _, key := range order {
-		name := key.data.(string)
-		if _, dup := seen[name]; dup {
-			return false
+	// Allocation-free: NewHashWithOrder sits on the Script.Call inbound
+	// clone path, and a map here showed up as tens of KB per 1000-key
+	// hash in HashEachHostBuilt / HashSelectHostBuilt.
+	for i := range order {
+		name := order[i].data.(string)
+		for j := i + 1; j < len(order); j++ {
+			if order[j].data.(string) == name {
+				return false
+			}
 		}
-		seen[name] = struct{}{}
 	}
 	return true
 }
