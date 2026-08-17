@@ -643,6 +643,33 @@ end
 // TestCompoundAssignmentStillReachesItsRoot is the other half: isolating must
 // not cost the update. A loop that accumulates through one path has to land
 // every time, or value semantics would just be a way to lose writes.
+func TestCompoundAssignmentKeepsAReboundIntermediateIntact(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `class Box
+  def run()
+    @a = [[1]]
+    @a[0][0] += replace_child()
+    @a.inspect
+  end
+  def replace_child()
+    @a[0] = [9]
+    1
+  end
+end
+
+def run()
+  Box.new.run
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "[[9]]" {
+		t.Fatalf("run() = %s, want [[9]]", got)
+	}
+}
+
+// TestCompoundAssignmentStillReachesItsRoot is the other half: isolating must
+// not cost the update. A loop that accumulates through one path has to land
+// every time, or value semantics would just be a way to lose writes.
 func TestCompoundAssignmentStillReachesItsRoot(t *testing.T) {
 	t.Parallel()
 

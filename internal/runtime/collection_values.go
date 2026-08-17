@@ -429,22 +429,37 @@ type mutablePathStep struct {
 // mutablePath is an addressable receiver: a rebindable root plus the hops that
 // reach the value being written.
 //
-// capturedRoot is the wrapper the path named when it was first resolved. A
-// later write isolates that wrapper, not whatever the root slot names now:
-// `a[0] += (a = [9]; 1)` must leave the newly assigned a intact and apply the
-// pending write to the array that was already evaluated.
+// captured is the wrapper at each level when the path was first resolved, root
+// first and leaf last. A later write isolates those wrappers, not whatever the
+// live slots name now: `a[0] += (a = [9]; 1)` must leave the newly assigned a
+// intact, and `@a[0][0] += (@a[0] = [9]; 1)` must leave the newly assigned
+// child intact, applying the pending write to the receiver that was already
+// evaluated.
 type mutablePath struct {
-	root         mutableRoot
-	steps        []mutablePathStep
-	capturedRoot Value
-	hasCapture   bool
+	root     mutableRoot
+	steps    []mutablePathStep
+	captured []Value
 }
 
-func (path *mutablePath) captureRoot() {
-	if val, ok := path.root.get(); ok {
-		path.capturedRoot = val
-		path.hasCapture = true
+// captureEvaluated records the wrappers the path names now, using keys the
+// reading pass already resolved so nothing is evaluated twice.
+func (exec *Execution) captureEvaluatedPath(path *mutablePath, env *Env) {
+	current, ok := path.root.get()
+	if !ok {
+		path.captured = nil
+		return
 	}
+	captured := make([]Value, 0, 1+len(path.steps))
+	captured = append(captured, current)
+	for i := range path.steps {
+		child, found, err := exec.readCollectionStep(current, &path.steps[i], env)
+		if err != nil || !found {
+			break
+		}
+		captured = append(captured, child)
+		current = child
+	}
+	path.captured = captured
 }
 
 // resolveMutableReceiver evaluates expr as the receiver of an in-place write,
@@ -478,7 +493,7 @@ func (exec *Execution) resolveMutableReceiver(expr Expression, env *Env) (Value,
 	// so the caller keeps it, but it names no slot the write may update. Leaving
 	// the permission ungranted is what makes that write land on a copy.
 	if addressable {
-		path.captureRoot()
+		exec.captureEvaluatedPath(&path, env)
 		exec.addressCollection(leaf, chain, path, env)
 	}
 	return leaf, true, nil
@@ -501,7 +516,7 @@ func (exec *Execution) addressMutableReceiver(expr Expression, env *Env) (Value,
 		return NewNil(), false, nil
 	}
 	if addressable {
-		path.captureRoot()
+		exec.captureEvaluatedPath(&path, env)
 		exec.addressCollection(leaf, chain, path, env)
 	}
 	return leaf, true, nil
@@ -549,7 +564,7 @@ func (exec *Execution) resolveMutableTarget(expr Expression, env *Env) (Value, m
 	if !addressable {
 		return leaf, mutablePath{}, false, nil
 	}
-	path.captureRoot()
+	exec.captureEvaluatedPath(&path, env)
 	return leaf, path, true, nil
 }
 
@@ -752,16 +767,13 @@ func (exec *Execution) readAddressablePath(path mutablePath, env *Env) (Value, [
 // copying and rebinding every level a second slot can still reach.
 func (exec *Execution) isolateMutablePath(path mutablePath, env *Env) (Value, []uintptr, error) {
 	current, ok := path.root.get()
-	rebindRoot := true
-	if path.hasCapture {
-		capturedID := collectionIdentity(path.capturedRoot)
+	if len(path.captured) > 0 {
+		capturedID := collectionIdentity(path.captured[0])
 		if !ok || capturedID != 0 && collectionIdentity(current) != capturedID {
 			// The root slot no longer names the receiver that was evaluated.
 			// Isolate that receiver as a temporary; the live slot belongs to
 			// whatever the right side (or an argument) just bound there.
-			current = path.capturedRoot
-			ok = true
-			rebindRoot = false
+			return exec.isolateCapturedLeaf(path)
 		}
 	}
 	if !ok {
@@ -772,11 +784,7 @@ func (exec *Execution) isolateMutablePath(path mutablePath, env *Env) (Value, []
 		if err != nil {
 			return NewNil(), nil, err
 		}
-		if rebindRoot {
-			path.root.rebind(copied)
-		} else {
-			copied.AdoptSoleRef()
-		}
+		path.root.rebind(copied)
 		current = copied
 	}
 	// The chain lists the containers above the leaf, which the leaf's own
@@ -789,6 +797,14 @@ func (exec *Execution) isolateMutablePath(path mutablePath, env *Env) (Value, []
 		child, found, err := exec.readCollectionStep(current, step, env)
 		if err != nil || !found {
 			return NewNil(), nil, err
+		}
+		if i+1 < len(path.captured) {
+			want := collectionIdentity(path.captured[i+1])
+			if want != 0 && collectionIdentity(child) != want {
+				// An intermediate slot was rebound. The pending write belongs
+				// to the receiver already evaluated, not the replacement.
+				return exec.isolateCapturedLeaf(path)
+			}
 		}
 		if isCollection(child) && !exec.exclusivelyHeld(child) {
 			copied, err := exec.copyCollection(child)
@@ -804,6 +820,26 @@ func (exec *Execution) isolateMutablePath(path mutablePath, env *Env) (Value, []
 		current = child
 	}
 	return current, chain, nil
+}
+
+// isolateCapturedLeaf isolates the receiver the path evaluated as a temporary:
+// the live slots now name something else, so the pending write must not land
+// in them.
+func (exec *Execution) isolateCapturedLeaf(path mutablePath) (Value, []uintptr, error) {
+	leaf := path.captured[len(path.captured)-1]
+	if isCollection(leaf) && !exec.exclusivelyHeld(leaf) {
+		copied, err := exec.copyCollection(leaf)
+		if err != nil {
+			return NewNil(), nil, err
+		}
+		copied.AdoptSoleRef()
+		leaf = copied
+	}
+	chain := make([]uintptr, 0, len(path.captured)-1)
+	for _, val := range path.captured[:len(path.captured)-1] {
+		chain = append(chain, collectionIdentity(val))
+	}
+	return leaf, chain, nil
 }
 
 // exclusivelyHeld reports whether a collection reached through the path that
