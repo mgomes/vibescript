@@ -464,8 +464,12 @@ func hashKeyTypeSatisfies(written, declared *TypeExpr, resolve namedTypeResolver
 func hashKeyTypesDisjoint(a, b *TypeExpr, resolve namedTypeResolver) bool {
 	decidedA, matchesA := typeAllowsStringHashKey(a)
 	decidedB, matchesB := typeAllowsStringHashKey(b)
-	if decidedA && decidedB && (matchesA || matchesB) {
-		return matchesA != matchesB
+	if decidedA && decidedB {
+		if matchesA || matchesB {
+			return matchesA != matchesB
+		}
+		// Neither type admits a runtime hash key, so no key can satisfy both.
+		return true
 	}
 	return typeExprsDisjoint(a, b, resolve)
 }

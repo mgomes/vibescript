@@ -88,6 +88,9 @@ func TestHashKeyTypeRelationsTreatStringAndSymbolAlike(t *testing.T) {
 	if !hashKeyTypesDisjoint(checkTypeSymbol, checkTypeInt, nil) {
 		t.Fatal("hashKeyTypesDisjoint(symbol, int) = false, want true")
 	}
+	if !hashKeyTypesDisjoint(checkTypeInt, checkTypeInt, nil) {
+		t.Fatal("hashKeyTypesDisjoint(int, int) = false, want true")
+	}
 
 	stringHash := &TypeExpr{Kind: TypeHash, TypeArgs: []*TypeExpr{checkTypeString, checkTypeInt}}
 	symbolHash := &TypeExpr{Kind: TypeHash, TypeArgs: []*TypeExpr{checkTypeSymbol, checkTypeInt}}
@@ -130,6 +133,15 @@ def f(h: hash<string, int>)
 end
 `,
 			warning: "write to h expected key string, got bool",
+		},
+		{
+			name: "integer key on an int-keyed hash is a guaranteed mismatch",
+			source: `
+def f(h: hash<int, string>)
+  h[1] = "x"
+end
+`,
+			warning: "write to h expected key int, got int",
 		},
 		{
 			name: "value write to typed hash",
