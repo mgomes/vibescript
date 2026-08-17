@@ -790,6 +790,48 @@ func TestFillSelfEmptyWindowDoesNotCloneTheReceiver(t *testing.T) {
 	}
 }
 
+func TestSharedClearDoesNotCopyDiscardedContents(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 240 << 10, StepQuota: Unlimited}, `
+    def run()
+      a = []
+      i = 0
+      while i < 2000
+        a << "xxxxxxxxxxxxxxxx"
+        i += 1
+      end
+      b = a
+      a.clear
+      a.inspect + " " + b.size.to_s
+    end
+    `)
+	if got := callFunc(t, script, "run", nil).String(); got != "[] 2000" {
+		t.Fatalf("a.clear with sibling b = %s, want [] 2000", got)
+	}
+}
+
+func TestSharedHashClearDoesNotCopyDiscardedContents(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 400 << 10, StepQuota: Unlimited}, `
+    def run()
+      h = {}
+      i = 0
+      while i < 2000
+        h[i.to_s] = "xxxxxxxxxxxxxxxx"
+        i += 1
+      end
+      g = h
+      h.clear
+      h.inspect + " " + g.size.to_s
+    end
+    `)
+	if got := callFunc(t, script, "run", nil).String(); got != "{} 2000" {
+		t.Fatalf("h.clear with sibling g = %s, want {} 2000", got)
+	}
+}
+
 func TestFillEmptyWindowDoesNotCopyASharedReceiver(t *testing.T) {
 	t.Parallel()
 

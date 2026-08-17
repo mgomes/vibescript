@@ -231,6 +231,9 @@ func publishCollectionElems(elems []Value) {
 // write -- a block, an argument expression -- cannot forget to look again,
 // because looking again is what writing is.
 func (exec *Execution) writeArrayElems(receiver Value, elems []Value) (Value, error) {
+	if len(elems) == 0 {
+		return exec.writeClearedCollection(receiver)
+	}
 	target, err := exec.writableCollection(receiver)
 	if err != nil {
 		return NewNil(), err
@@ -242,12 +245,48 @@ func (exec *Execution) writeArrayElems(receiver Value, elems []Value) (Value, er
 // writeHashClear empties the hash a mutator is updating, checking writability at
 // the write for the same reason writeArrayElems does.
 func (exec *Execution) writeHashClear(receiver Value) (Value, error) {
-	target, err := exec.writableCollection(receiver)
-	if err != nil {
-		return NewNil(), err
+	return exec.writeClearedCollection(receiver)
+}
+
+// writeClearedCollection empties an addressed collection without copying the
+// contents that clear is about to discard. A sole wrapper is emptied in
+// place so identity is preserved; a shared one is rebound to a fresh empty
+// collection after isolating only the ancestors that must be rewritten.
+func (exec *Execution) writeClearedCollection(receiver Value) (Value, error) {
+	if !isCollection(receiver) {
+		return receiver, nil
 	}
-	hashClearEntries(target)
-	return target, nil
+	if receiver.Unpublished() || (receiver.SoleRef() && exec.addressed.valid && exec.addressed.leaf == collectionIdentity(receiver)) {
+		clearCollectionInPlace(receiver)
+		return receiver, nil
+	}
+	empty := emptyCollectionLike(receiver)
+	if exec.addressed.valid && exec.addressed.leaf == collectionIdentity(receiver) {
+		return exec.replaceMutableLeaf(empty)
+	}
+	return empty, nil
+}
+
+func clearCollectionInPlace(val Value) {
+	switch val.Kind() {
+	case KindArray:
+		setArrayElems(val, []Value{})
+	case KindHash, KindObject:
+		hashClearEntries(val)
+	}
+}
+
+func emptyCollectionLike(val Value) Value {
+	switch val.Kind() {
+	case KindArray:
+		return NewArray([]Value{})
+	case KindHash:
+		return NewHashWithCapacity(0)
+	case KindObject:
+		return NewObject(map[string]Value{})
+	default:
+		return val
+	}
 }
 
 // collectionIdentity returns the wrapper identity of a collection, or 0 for
@@ -997,6 +1036,71 @@ func (exec *Execution) isolateMutablePath(path mutablePath, env *Env) (Value, []
 		current = child
 	}
 	return current, chain, nil
+}
+
+// replaceMutableLeaf installs replacement at the addressed slot without
+// copying the leaf's contents. Ancestors that are shared are still isolated
+// so the rebind is visible only through this path.
+func (exec *Execution) replaceMutableLeaf(replacement Value) (Value, error) {
+	path := exec.addressed.target
+	env := exec.addressed.env
+	current, ok := path.root.get()
+	if len(path.captured) > 0 && (!ok || !capturedReceiverUnchanged(path.captured[0], current)) {
+		replacement.AdoptSoleRef()
+		return replacement, nil
+	}
+	if !ok {
+		return replacement, nil
+	}
+	if len(path.steps) == 0 {
+		if exec.exclusivelyHeld(current) {
+			clearCollectionInPlace(current)
+			return current, nil
+		}
+		replacement.AdoptSoleRef()
+		path.root.rebind(replacement)
+		return replacement, nil
+	}
+	if isCollection(current) && !exec.exclusivelyHeld(current) {
+		copied, err := exec.copyCollection(current)
+		if err != nil {
+			return NewNil(), err
+		}
+		path.root.rebind(copied)
+		current = copied
+	}
+	for i := range path.steps[:len(path.steps)-1] {
+		step := &path.steps[i]
+		child, found, err := exec.readCollectionStep(current, step, env)
+		if err != nil || !found {
+			return NewNil(), err
+		}
+		if len(path.captured) > 0 && i+1 >= len(path.captured) {
+			return NewNil(), nil
+		}
+		if i+1 < len(path.captured) && !capturedReceiverUnchanged(path.captured[i+1], child) {
+			replacement.AdoptSoleRef()
+			return replacement, nil
+		}
+		if isCollection(child) && !exec.exclusivelyHeld(child) {
+			copied, err := exec.copyCollection(child)
+			if err != nil {
+				return NewNil(), err
+			}
+			if err := exec.storeMutableStep(current, step, copied); err != nil {
+				return NewNil(), err
+			}
+			copied.AdoptSoleRef()
+			child = copied
+		}
+		current = child
+	}
+	last := &path.steps[len(path.steps)-1]
+	if err := exec.storeMutableStep(current, last, replacement); err != nil {
+		return NewNil(), err
+	}
+	replacement.AdoptSoleRef()
+	return replacement, nil
 }
 
 // isolateCapturedLeaf isolates the receiver the path evaluated as a temporary:
