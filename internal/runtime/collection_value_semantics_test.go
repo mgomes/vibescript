@@ -328,6 +328,23 @@ func TestCapabilityClonePublishesRepeatedChildren(t *testing.T) {
 	}
 }
 
+func TestCapabilityClonePublishesRepeatedObjectAttributes(t *testing.T) {
+	t.Parallel()
+
+	child := NewArray([]Value{NewInt(1)})
+	cloned, err := cloneCapabilityDataOnlyValue("probe.result", NewObject(map[string]Value{"a": child, "b": child}))
+	if err != nil {
+		t.Fatalf("cloneCapabilityDataOnlyValue(probe.result, {a: child, b: child}) error = %v", err)
+	}
+	entries := cloned.Hash()
+	if arrayIdentity(entries["a"]) != arrayIdentity(entries["b"]) {
+		t.Fatalf("cloneCapabilityDataOnlyValue({a: child, b: child}) = distinct children, want one shared clone")
+	}
+	if entries["a"].SoleRef() {
+		t.Fatal("cloneCapabilityDataOnlyValue({a: child, b: child}) left the child sole; mutating one attribute would change the other")
+	}
+}
+
 // TestRemovedCollectionBangMembersStayRemoved fails if a bang variant that
 // duplicates a non-bang transformation is ever registered again, and names the
 // replacement in the message so a reintroduction is answered where it happens.
@@ -954,6 +971,22 @@ end
 `)
 	if got := callFunc(t, script, "run", nil).String(); got != "[[1, 2], [1]]" {
 		t.Fatalf("[child, child].dup then copy[0].push(2) = %s, want [[1, 2], [1]]", got)
+	}
+}
+
+func TestDupPublishesRepeatedObjectAttributes(t *testing.T) {
+	t.Parallel()
+
+	child := NewArray([]Value{NewInt(1)})
+	obj := NewObject(map[string]Value{"a": child, "b": child})
+	script := compileScriptDefault(t, `def run(obj)
+  copy = obj.dup
+  copy.a.push(2)
+  copy.a.inspect + " " + copy.b.inspect
+end
+`)
+	if got := callFunc(t, script, "run", []Value{obj}).String(); got != "[1, 2] [1]" {
+		t.Fatalf("obj.dup then copy.a.push(2) = %s, want [1, 2] [1]", got)
 	}
 }
 

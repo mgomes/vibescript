@@ -150,6 +150,12 @@ func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 		for k, v := range obj {
 			cloned[k] = deepCloneValueWithState(v, state)
 		}
+		// NewObject published the empty map, not these later inserts.
+		// Two attributes naming one child must share that child, not leave
+		// it fresh so a write through one name also changes the other.
+		for _, item := range cloned {
+			publishCollection(item)
+		}
 		return clonedValue
 	default:
 		return val
@@ -500,6 +506,10 @@ func (s *capabilityDataCloneScanner) cloneObject(val Value) (Value, error) {
 			return NewNil(), err
 		}
 		clonedEntries[key] = clonedItem
+	}
+	// retagClonedObject published the empty map, not these later inserts.
+	for _, item := range clonedEntries {
+		publishCollection(item)
 	}
 	if ptr != 0 {
 		delete(s.visitingMaps, ptr)
