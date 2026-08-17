@@ -992,6 +992,52 @@ func TestReduceShovelDoesNotMutateTheSourceElement(t *testing.T) {
 	}
 }
 
+func TestHostBuiltinPublishesARetainedArgument(t *testing.T) {
+	t.Parallel()
+
+	var kept Value
+	engine := MustNewEngine(Config{})
+	engine.RegisterBuiltin("save", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+		kept = args[0]
+		return NewNil(), nil
+	})
+	script := compileScriptWithEngine(t, engine, `def run()
+  a = []
+  save(a)
+  a.push(1)
+  a.inspect
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "[1]" {
+		t.Fatalf("save(a); a.push(1) = %s, want [1]", got)
+	}
+	if got := kept.Inspect(); got != "[]" {
+		t.Fatalf("host-retained save(a) after a.push(1) = %s, want []", got)
+	}
+}
+
+func TestHostBuiltinIsolatesASharedArgument(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	engine.RegisterBuiltin("host_mutate", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+		if err := args[0].HashSet(NewString("x"), NewInt(9)); err != nil {
+			return NewNil(), err
+		}
+		return args[0], nil
+	})
+	script := compileScriptWithEngine(t, engine, `def run()
+  a = { x: 1 }
+  b = a
+  host_mutate(a)
+  a.inspect + " " + b.inspect
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "{x: 1} {x: 1}" {
+		t.Fatalf("host_mutate(a) with sibling b = %s, want {x: 1} {x: 1}", got)
+	}
+}
+
 func TestFetchValuesPublishesPresentEntries(t *testing.T) {
 	t.Parallel()
 

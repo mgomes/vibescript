@@ -1093,10 +1093,6 @@ func (b *Builtin) declaredNonMutating() bool { return b != nil && b.nonMutating 
 // the second can mutate it in a way attributed to that execution alone. A
 // builtin that mutates without retaining is harmless to the retention side and
 // fatal to the dispatch side.
-//
-// No caller reads this yet. It is the half of the contract that the execution-
-// scoped walk memo needs (#1199), and it is recorded here so that change has a
-// declaration to consume rather than having to introduce one and use it at once.
 func (b *Builtin) declaredNonRetaining() bool { return b != nil && b.nonRetaining }
 
 // BuiltinFunc is the Go function signature for built-in Vibescript functions.
@@ -1269,9 +1265,9 @@ func DeclareNonMutating(v Value) Value {
 // keeping a container reached through an argument counts as keeping the
 // argument.
 //
-// Nothing consults this promise yet: it is recorded and no more, so declaring
-// it changes no behavior today. It is published ahead of the change that reads
-// it (#1199), so hosts are not asked to adopt an API mid-flight.
+// Host-driven dispatch consults this promise: a builtin that has not made it
+// has its collection inputs and result published, so a later script write
+// copies instead of mutating a wrapper the host retained.
 //
 // It is stated as a safety promise rather than a hint because of what it will
 // mean once consulted: an execution calling a builtin that makes it keeps

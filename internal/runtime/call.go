@@ -322,6 +322,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// alone. Arguments are claimed alongside the receiver because an
 		// adapter or global builtin is dispatched without one and drives its
 		// block from an argument (see array_shrink.go).
+		if builtin.hostDriven {
+			var prepErr error
+			receiver, args, kwargs, prepErr = exec.prepareHostDrivenCollections(builtin, receiver, args, kwargs)
+			if prepErr != nil {
+				return NewNil(), prepErr
+			}
+		}
 		heldBackings := exec.holdArrayBackings(receiver, args, kwargs, builtin.hostDriven)
 		// Record what this frame holds, so a block it drives through CallBlock
 		// can be charged for it. The values sit on this frame's Go stack for as
@@ -337,6 +344,9 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// accuracy.
 		contractCheck := exec.beginContractVerification(builtin)
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
+		if err == nil && builtin.hostDriven && !builtin.declaredNonRetaining() {
+			publishCollection(result)
+		}
 		contractCheck.check(exec, builtin)
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = prevReceiver, prevArgs, prevKwargs
 		exec.builtinFrameRootsReserved = prevReserved

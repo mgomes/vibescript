@@ -85,6 +85,65 @@ func publishCollection(val Value) {
 	}
 }
 
+// prepareHostDrivenCollections applies value-semantics obligations a host
+// or capability builtin owes its collection inputs: publish anything a
+// retaining call may keep, then isolate anything a mutating call may write
+// so a sibling binding cannot observe the Go body's HashSet/Array stores.
+func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver Value, args []Value, kwargs map[string]Value) (Value, []Value, map[string]Value, error) {
+	if builtin == nil || !builtin.hostDriven {
+		return receiver, args, kwargs, nil
+	}
+	var err error
+	if !builtin.declaredNonMutating() {
+		receiver, err = exec.isolateHostCollection(receiver)
+		if err != nil {
+			return NewNil(), nil, nil, err
+		}
+		if len(args) > 0 {
+			args = slices.Clone(args)
+			for i, arg := range args {
+				args[i], err = exec.isolateHostCollection(arg)
+				if err != nil {
+					return NewNil(), nil, nil, err
+				}
+			}
+		}
+		if len(kwargs) > 0 {
+			kwargs = maps.Clone(kwargs)
+			for key, arg := range kwargs {
+				kwargs[key], err = exec.isolateHostCollection(arg)
+				if err != nil {
+					return NewNil(), nil, nil, err
+				}
+			}
+		}
+	}
+	if !builtin.declaredNonRetaining() {
+		// Publish the wrappers the host will actually see, after isolation,
+		// so a later script write copies instead of mutating a retained
+		// handle. Publishing first would mark a sole argument shared and
+		// force a copy the host then mutates invisibly.
+		publishCollection(receiver)
+		for _, arg := range args {
+			publishCollection(arg)
+		}
+		for _, arg := range kwargs {
+			publishCollection(arg)
+		}
+	}
+	return receiver, args, kwargs, nil
+}
+
+// isolateHostCollection returns a wrapper the host may write through. A
+// shared collection is copied; a sole or unpublished one is already only
+// reachable from this call.
+func (exec *Execution) isolateHostCollection(val Value) (Value, error) {
+	if !isCollection(val) || val.Unpublished() || val.SoleRef() {
+		return val, nil
+	}
+	return exec.copyCollection(val)
+}
+
 // publishBindingReplacement counts the handle a store into an already-occupied
 // slot creates, unless the slot already names the same wrapper. Writing a
 // mutator's result back over the receiver it updated -- `items = items.push(x)`,
