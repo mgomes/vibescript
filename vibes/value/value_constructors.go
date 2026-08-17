@@ -245,11 +245,33 @@ func NewHash(h map[string]Value) Value {
 // it, and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
 func NewHashWithOrder(entries map[string]Value, order []Value) Value {
-	return Value{kind: KindHash, data: &hashData{
+	hd := &hashData{
 		entries:       entries,
 		entryCapacity: len(entries),
 		order:         order,
-	}}
+	}
+	if !orderNamesUnique(order) {
+		// A caller-supplied order that repeats a name can match the
+		// entry count while omitting another live key. Drop it so
+		// iteration takes the sorted fallback.
+		hd.order = nil
+	}
+	return Value{kind: KindHash, data: hd}
+}
+
+func orderNamesUnique(order []Value) bool {
+	if len(order) <= 1 {
+		return true
+	}
+	seen := make(map[string]struct{}, len(order))
+	for _, key := range order {
+		name := key.data.(string)
+		if _, dup := seen[name]; dup {
+			return false
+		}
+		seen[name] = struct{}{}
+	}
+	return true
 }
 
 // NewHashWithCapacity returns an empty hash whose entry map and insertion-order
