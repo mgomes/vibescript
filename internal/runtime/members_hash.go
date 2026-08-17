@@ -1042,7 +1042,12 @@ func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 		}
 	}
 	// Writability is checked here rather than before the loop: the block is
-	// script code and can bind the receiver somewhere new while it runs.
+	// script code and can bind the receiver somewhere new while it runs. A
+	// predicate that drops nothing changes nothing, so isolation would copy
+	// a shared receiver for a no-op.
+	if len(dropped) == 0 {
+		return receiver, nil
+	}
 	receiver, err = exec.writableCollection(receiver)
 	if err != nil {
 		return NewNil(), err

@@ -2980,7 +2980,11 @@ func arrayFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs ma
 	// half-filtered receiver, and delete_if/keep_if return the updated
 	// receiver. Writability is checked here rather than before the loop: the
 	// block is script code and can bind the receiver somewhere new while it
-	// runs.
+	// runs. A predicate that keeps every element changes nothing, so isolation
+	// would copy a shared receiver for a no-op.
+	if len(out) == len(arr) {
+		return receiver, nil
+	}
 	return exec.writeArrayElems(receiver, out)
 }
 

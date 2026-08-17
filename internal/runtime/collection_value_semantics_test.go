@@ -712,7 +712,11 @@ func TestMutatorNoOpDoesNotIsolateASharedReceiver(t *testing.T) {
   a.push()
   a.insert(0)
   a.delete(99)
+  a.delete_if { false }
+  a.keep_if { true }
   h.delete("missing")
+  h.delete_if { false }
+  h.keep_if { true }
   [a, b, h, g]
 end
 `)
