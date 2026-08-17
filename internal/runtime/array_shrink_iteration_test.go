@@ -428,16 +428,19 @@ func (arrayArgDriver) Bind(CapabilityBinding) (map[string]Value, error) {
 		_, err := exec.CallBlock(block, []Value{NewArray(elems[:1])})
 		return NewNil(), err
 	}
+	pure := func(name string, fn BuiltinFunc) Value {
+		return DeclareNonRetaining(DeclareNonMutating(NewBuiltin(name, fn)))
+	}
 	return map[string]Value{
 		"driver": NewObject(map[string]Value{
-			"walk_spare":       NewBuiltin("driver.walk_spare", walkSpare),
-			"walk_aliased":     NewBuiltin("driver.walk_aliased", walkAliased),
-			"walk_aliased_big": NewBuiltin("driver.walk_aliased_big", walkAliasedBig),
-			"walk":             NewBuiltin("driver.walk", walk),
-			"walk_kw":          NewBuiltin("driver.walk_kw", walk),
-			"walk_in":          NewBuiltin("driver.walk_in", walkNested),
-			"walk_inner":       NewBuiltin("driver.walk_inner", walkNested),
-			"walk_returned":    NewBuiltin("driver.walk_returned", walkReturned),
+			"walk_spare":       pure("driver.walk_spare", walkSpare),
+			"walk_aliased":     pure("driver.walk_aliased", walkAliased),
+			"walk_aliased_big": pure("driver.walk_aliased_big", walkAliasedBig),
+			"walk":             pure("driver.walk", walk),
+			"walk_kw":          pure("driver.walk_kw", walk),
+			"walk_in":          pure("driver.walk_in", walkNested),
+			"walk_inner":       pure("driver.walk_inner", walkNested),
+			"walk_returned":    pure("driver.walk_returned", walkReturned),
 		}),
 	}, nil
 }

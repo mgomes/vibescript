@@ -458,6 +458,13 @@ func TestDrainedArrayReleasesItsSlotBacking(t *testing.T) {
 				backing = weak.Make(&elems[0])
 				return NewNil(), nil
 			})
+			// keep is a measurement probe, not a logical second binding.
+			// Declaring the contract keeps drain in-place so the weak
+			// pointer still names the storage being measured.
+			if b := valueBuiltin(engine.builtins["keep"]); b != nil {
+				b.nonRetaining = true
+				b.nonMutating = true
+			}
 
 			script, err := engine.Compile(fmt.Sprintf(`def run(n)
   a = []
