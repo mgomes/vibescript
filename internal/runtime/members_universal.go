@@ -402,6 +402,17 @@ func meteredEqlCompare(exec *Execution, left, right Value) (bool, error) {
 // operands of the same kind and the same length are charged.
 func identicalCompare(exec *Execution, left, right Value) (bool, error) {
 	if exec != nil && left.Kind() == right.Kind() {
+		switch left.Kind() {
+		case KindArray, KindHash, KindObject:
+			// Collections compare by contents, so the walk must consume the
+			// same step and scratch budget == uses.
+			ctx := exec.meteredEquality()
+			eq := ctx.Equal(left, right)
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			return eq, nil
+		}
 		switch {
 		case stringLikeOperand(left) && len(left.String()) == len(right.String()):
 			if err := exec.chargeStringScan(len(left.String())); err != nil {

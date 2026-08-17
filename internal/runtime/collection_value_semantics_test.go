@@ -738,11 +738,32 @@ end
 	}
 }
 
-
 // TestMutatorNoOpDoesNotIsolateASharedReceiver checks that recording a
 // mutator's path does not copy before the mutator decides whether it will
 // write. a.pop(0) and a.push() on a shared receiver must leave both bindings
 // on the same wrapper.
+func TestEqualPredicateMetersCollectionWalks(t *testing.T) {
+	t.Parallel()
+
+	n := 8_000
+	left := make([]Value, n)
+	right := make([]Value, n)
+	for i := range n {
+		left[i] = NewString("x")
+		right[i] = NewString("x")
+	}
+	script := compileScriptWithConfig(t, Config{StepQuota: 20, MemoryQuotaBytes: Unlimited}, `
+    def run(a, b)
+      a.equal?(b)
+    end
+    `)
+	_, err := script.Call(context.Background(), "run", []Value{NewArray(left), NewArray(right)}, CallOptions{})
+	if err == nil {
+		t.Fatal("large_a.equal?(large_b) must consume the step quota")
+	}
+	requireErrorContains(t, err, "quota exceeded")
+}
+
 func TestToHDoesNotRetainTheReturnedPairWrapper(t *testing.T) {
 	t.Parallel()
 
