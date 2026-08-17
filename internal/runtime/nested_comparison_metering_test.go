@@ -407,7 +407,7 @@ func TestTypedReceiverCopiesChargeKeyPayloads(t *testing.T) {
 	}
 }
 
-// The tally capacity sampler canonicalizes the leading elements of a large
+// The tally capacity sampler meters the leading string keys of a large
 // blockless receiver; its key charge must land before that work and surface
 // quota errors as quota errors, not as unsupported-key failures.
 func TestTallySamplerChargesBeforeCanonicalizing(t *testing.T) {
@@ -415,10 +415,10 @@ func TestTallySamplerChargesBeforeCanonicalizing(t *testing.T) {
 
 	script := compileScriptWithConfig(t, Config{StepQuota: 40, MemoryQuotaBytes: Unlimited}, `
     def run(s)
-      a = [[s]]
+      a = [s]
       j = 0
       while j < 300
-        a << 1
+        a << s
         j = j + 1
       end
       a.tally.length
@@ -432,6 +432,26 @@ func TestTallySamplerChargesBeforeCanonicalizing(t *testing.T) {
 	requireErrorContains(t, err, "quota exceeded")
 	if strings.Contains(err.Error(), "unsupported hash key") {
 		t.Fatalf("quota error mislabeled as unsupported key: %v", err)
+	}
+}
+
+// A group_by block that returns a large array must fail as unsupported before
+// the leftover canonicalization walk can turn it into a quota error.
+func TestGroupByRejectsUnsupportedKeyBeforeMetering(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 40, MemoryQuotaBytes: Unlimited}, `
+    def run(k)
+      [1].group_by { k }
+    end
+    `)
+	key := NewArray(make([]Value, valueKeyCostNodeBudget+1))
+	_, err := script.Call(context.Background(), "run", []Value{key}, CallOptions{})
+	if err == nil {
+		t.Fatal("[1].group_by { large_array } must error")
+	}
+	requireErrorContains(t, err, "unsupported hash key")
+	if strings.Contains(err.Error(), "quota") {
+		t.Fatalf("unsupported key reported as quota: %v", err)
 	}
 }
 
@@ -526,27 +546,20 @@ func TestUnsupportedArrayKeyKeepsItsError(t *testing.T) {
 	requireErrorContains(t, err, "unsupported hash key type")
 }
 
-// A nested reslice shares its parent's starting pointer but is a distinct
-// key canonicalization copies in full; a pointer-only cycle guard misread it
-// as a cycle and stopped charging. The guard keys on the full slice header,
-// so the shared payload is billed once per occurrence.
-func TestOverlappingResliceKeyIsChargedPerOccurrence(t *testing.T) {
+// A long string key is billed at the scan rate. Composite keys are no longer
+// accepted, so the charge does not walk nested payloads.
+func TestStringKeyIsChargedAtTheScanRate(t *testing.T) {
 	t.Parallel()
 
 	payload := strings.Repeat("ab", 32<<10)
-	elems := make([]Value, 2)
-	elems[0] = NewString(payload)
-	elems[1] = NewArray(elems[:1])
-	key := NewArray(elems)
+	key := NewString(payload + payload)
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30}
 	if err := exec.chargeValueKeySteps(key); err != nil {
 		t.Fatalf("chargeValueKeySteps: %v", err)
 	}
-	// The payload appears once directly and once through the reslice; both
-	// occurrences must be billed at the scan rate.
-	if want := 2 * len(payload) / 64; exec.steps < want {
-		t.Fatalf("charged %d steps, want at least %d (both occurrences of the shared payload)", exec.steps, want)
+	if want := len(key.String()) / 64; exec.steps < want {
+		t.Fatalf("charged %d steps, want at least %d (string key scan)", exec.steps, want)
 	}
 }
 
