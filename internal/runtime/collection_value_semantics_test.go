@@ -992,6 +992,37 @@ func TestReduceShovelDoesNotMutateTheSourceElement(t *testing.T) {
 	}
 }
 
+func TestArrayRangeMutatorWritesATemporary(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ name, body, want string }{
+		{"push", "out = a[0..1].push(9)\n  a.inspect + \" \" + out.inspect", "[1, 2, 3] [1, 2, 9]"},
+		{"shovel", "out = a[0..1] << 9\n  a.inspect + \" \" + out.inspect", "[1, 2, 3] [1, 2, 9]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  a = [1, 2, 3]\n  "+tc.body+"\nend\n")
+			if got := callFunc(t, script, "run", nil).String(); got != tc.want {
+				t.Fatalf("a[0..1] %s = %s, want %s", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestJSONParseDoesNotShareASoleObjectElement(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  JSON.parse("[{}]")[0]
+end
+`)
+	got := callFunc(t, script, "run", nil)
+	if !got.SoleRef() {
+		t.Fatal("JSON.parse(\"[{}]\")[0] SoleRef() = false, want true")
+	}
+}
+
 func TestFillPublishesEachRepeatedSlot(t *testing.T) {
 	t.Parallel()
 

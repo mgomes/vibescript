@@ -771,6 +771,9 @@ func (exec *Execution) readMutablePath(path mutablePath, env *Env) (Value, bool,
 			return NewNil(), false, true, err
 		}
 		if !found {
+			if temp, ok, err := exec.arrayRangeTemporary(current, step, path.steps[i+1:], env); ok {
+				return temp, false, true, err
+			}
 			return NewNil(), true, true, nil
 		}
 		current = child
@@ -807,6 +810,9 @@ func (exec *Execution) readAddressablePath(path mutablePath, env *Env) (Value, [
 			return NewNil(), nil, false, true, err
 		}
 		if !found {
+			if temp, ok, err := exec.arrayRangeTemporary(current, step, path.steps[i+1:], env); ok {
+				return temp, nil, false, true, err
+			}
 			return NewNil(), chain, true, true, nil
 		}
 		current = child
@@ -950,6 +956,21 @@ func (exec *Execution) readPathTailOrdinarily(current Value, steps []mutablePath
 	return current, nil
 }
 
+// arrayRangeTemporary evaluates a range index as an ordinary slice, then
+// finishes any remaining hops the same way. The slice is a temporary, so the
+// path is no longer addressable.
+func (exec *Execution) arrayRangeTemporary(container Value, step *mutablePathStep, tail []mutablePathStep, env *Env) (Value, bool, error) {
+	if container.Kind() != KindArray || !step.indexed || step.index.Kind() != KindRange {
+		return NewNil(), false, nil
+	}
+	sliced, err := exec.evalIndexValue(step.expr, container, []Value{step.index})
+	if err != nil {
+		return NewNil(), true, err
+	}
+	result, err := exec.readPathTailOrdinarily(sliced, tail, env)
+	return result, true, err
+}
+
 // readCollectionStep reads one hop that addresses collection storage, caching
 // the hop's key the first time so the isolating pass and the write-back address
 // the same slot the read did.
@@ -984,6 +1005,10 @@ func (exec *Execution) readCollectionStep(container Value, step *mutablePathStep
 	}
 	switch container.Kind() {
 	case KindArray:
+		// A range produces a fresh subarray, not a slot the write can rebind.
+		if step.index.Kind() == KindRange {
+			return NewNil(), false, nil
+		}
 		i, err := exec.indexSelectorToInt(step.expr, step.index, 0)
 		if err != nil {
 			return NewNil(), false, err
