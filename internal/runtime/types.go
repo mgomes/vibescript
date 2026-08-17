@@ -261,7 +261,6 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 				return false, matchErr
 			}
 			return ok, nil
-			return true, nil
 		}
 		if decided, keyMatches := typeAllowsStringHashKey(keyType); decided {
 			if !keyMatches {
