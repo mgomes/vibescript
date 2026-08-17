@@ -55,14 +55,14 @@ Tier 2 below. Concretely:
   literals — no replacement is needed, the extra validation pass is the
   intended behavior.
 - **`vibes/value`**: `Value`, `ValueKind` and the `Kind*` constants; the
-  typed constructors (`NewNil` ... `NewRegex`, `NewBigInt`, `NewTypedHash`,
-  `NewHashWithDefault`, `NewMoneyFromCents`); the typed accessors
+  typed constructors (`NewNil` ... `NewRegex`, `NewBigInt`, `NewHash`,
+  `NewMoneyFromCents`); the typed accessors
   (`Kind`, `IsNil`, `Truthy`, `Bool`, `Int`, `Float`, `BigInt`, `IsBigInt`,
   `String`, `Inspect`, `Array`, `Money`, `Duration`, `Time`, `Range`,
   `Regex`, `Data`); the hash surface (`Hash`, `HashGet`, `HashSet`, `HashLen`,
-  `HashEntries`, `HashDeleteKey`, `HashClearEntries`, `HashEntry`,
-  `HashDefaultValue`, `HashDefaultProc`); equality (`Equal`, `Eql`,
-  `Identical`, `Truthy`); the opaque payload markers (`BlockPayload`,
+  `HashEntries`, `HashDeleteKey`, `HashClearEntries`, `HashEntry`);
+  equality (`Equal`, `Eql`, `Identical`, `Truthy`); the opaque payload
+  markers (`BlockPayload`,
   `BuiltinPayload`, `ClassPayload`, `EnumPayload`, `EnumValuePayload`,
   `FunctionPayload`, `InstancePayload`) and their accessors; bounded
   rendering (`StringBounded`, `InspectBounded`,
