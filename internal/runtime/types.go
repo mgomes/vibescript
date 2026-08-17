@@ -237,24 +237,30 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 			if decided && !keyMatches {
 				return false, nil
 			}
-			for _, entry := range val.HashEntries() {
+			var matchErr error
+			ok := true
+			val.RangeHashEntries(func(key string, item Value) {
+				if !ok || matchErr != nil {
+					return
+				}
 				if !decided {
-					matches, err := s.matches(entry.Key, keyType)
-					if err != nil {
-						return false, err
+					var matches bool
+					matches, matchErr = s.matches(NewString(key), keyType)
+					if matchErr != nil || !matches {
+						ok = false
+						return
 					}
-					if !matches {
-						return false, nil
-					}
 				}
-				valueMatches, err := s.matches(entry.Value, valueType)
-				if err != nil {
-					return false, err
+				var valueMatches bool
+				valueMatches, matchErr = s.matches(item, valueType)
+				if matchErr != nil || !valueMatches {
+					ok = false
 				}
-				if !valueMatches {
-					return false, nil
-				}
+			})
+			if matchErr != nil {
+				return false, matchErr
 			}
+			return ok, nil
 			return true, nil
 		}
 		if decided, keyMatches := typeAllowsStringHashKey(keyType); decided {
