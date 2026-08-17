@@ -1342,6 +1342,16 @@ func hashMemberTransforms(property string) (Value, error) {
 			// Ruby's Hash#delete removes the entry from the receiver in place
 			// and returns the removed value. The removal keeps the surviving
 			// entries in their recorded insertion order and allocates nothing.
+			// Isolation waits until a removal will occur, so a miss on a
+			// shared receiver does not copy.
+			if _, existed, err := hashGet(receiver, args[0]); err != nil {
+				return NewNil(), fmt.Errorf("hash.delete key is an unsupported hash key: %w", err)
+			} else if !existed {
+				if valueBlock(block) != nil {
+					return exec.CallBlock(block, []Value{args[0]})
+				}
+				return NewNil(), nil
+			}
 			receiver, err := exec.writableCollection(receiver)
 			if err != nil {
 				return NewNil(), err

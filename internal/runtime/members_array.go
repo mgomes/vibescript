@@ -4273,10 +4273,6 @@ func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		return NewNil(), fmt.Errorf("array.delete expects exactly one value")
 	}
 	target := args[0]
-	receiver, err := exec.writableCollection(receiver)
-	if err != nil {
-		return NewNil(), err
-	}
 	arr := receiver.Array()
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	out := make([]Value, 0)
@@ -4306,6 +4302,11 @@ func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		}
 	}
 	if found {
+		var err error
+		receiver, err = exec.writableCollection(receiver)
+		if err != nil {
+			return NewNil(), err
+		}
 		setArrayElems(receiver, out)
 		return matched, nil
 	}
