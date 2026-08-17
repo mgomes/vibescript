@@ -11129,9 +11129,8 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 			(repr == shapeKeysStringMarker || repr == shapeKeysSymbolMarker) {
 			marker = repr
 		}
-		if repr != marker {
-			return false
-		}
+		// String and symbol keys address one entry, so a write through the
+		// other spelling still replaces this field.
 		receiverAliased := len(c.typeAliases[name]) != 0
 		written := c.inferExpressionType(value)
 		// The store retains the written value even when aliasing, a mutation
@@ -11236,8 +11235,15 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 		if typedWriteRejected(written, field, c.checkNamedTypeResolver()) {
 			c.add(function, pos, "write to %s field %s expected %s, got %s",
 				name, key, formatTypeExpr(field), formatTypeExpr(written))
+			return false
 		}
-		return false
+		// A compatible write replaces the same unified-key field. Keep the
+		// declared fact so later reads still see the required field type.
+		receiverAliased := len(c.typeAliases[name]) != 0
+		if c.mutationRegionDepth != 0 || receiverAliased || !intact {
+			return false
+		}
+		return true
 	}
 	return false
 }

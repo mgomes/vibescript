@@ -3447,12 +3447,9 @@ end
 func TestCheckInferMutationPoisonsContainerFacts(t *testing.T) {
 	t.Parallel()
 
-	// An index write or member call may restructure the container, so its
-	// shape facts must stop holding (no stale-field diagnostics afterwards).
-	// The declared shape's key representation is unknown, so even the
-	// compatible write weakens the fact. (An incompatible write is reported
-	// at the write site; see check_hash_writes_test.go.)
-	requireNoCheckWarnings(t, compileScript(t, `
+	// A compatible write replaces the same unified-key field, so the
+	// declared shape fact still describes the required field afterwards.
+	requireCheckWarningContains(t, compileScript(t, `
 def takes_int(value: int)
   value
 end
@@ -3461,8 +3458,9 @@ def run(user: { name: string })
   user["name"] = "x"
   takes_int(user["name"])
 end
-`))
+`), "call to takes_int argument value expected int, got string")
 
+	// delete removes the field, so the later read is no longer a known string.
 	requireNoCheckWarnings(t, compileScript(t, `
 def takes_int(value: int)
   value

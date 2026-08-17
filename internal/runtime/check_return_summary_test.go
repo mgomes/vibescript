@@ -1912,7 +1912,7 @@ def build_user()
   begin
     return user
   ensure
-    user["name"] = 42
+    user.delete("name")
   end
 end
 

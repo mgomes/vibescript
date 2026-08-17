@@ -1072,6 +1072,36 @@ end
 			warning: "call to g argument user expected { name: string }, got { name: int }",
 		},
 		{
+			name: "parse_as write through the other key spelling refines",
+			source: `
+def g(user: { name: string })
+  user
+end
+
+def f(raw: string)
+  body = JSON.parse_as(raw, { name: string })
+  body[:name] = 1
+  g(body)
+end
+`,
+			warning: "call to g argument user expected { name: string }, got { name: int }",
+		},
+		{
+			name: "literal write through the other key spelling refines",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f
+  h = {name: "old"}
+  h["name"] = 1
+  takes_string(h[:name])
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
 			name: "string write to an empty literal adopts the representation",
 			source: `
 def takes_string(value: string)
@@ -1752,7 +1782,7 @@ end
 `,
 		},
 		{
-			name: "write through the other representation after adoption weakens",
+			name: "write through the other spelling after adoption refines",
 			source: `
 def takes_string(value: string)
   value
@@ -2116,20 +2146,6 @@ def f(raw: string, v)
   body = JSON.parse_as(raw, { name: string })
   body["name"] = v
   takes_string(body["name"])
-end
-`,
-		},
-		{
-			name: "parse_as write through the other key representation weakens",
-			source: `
-def g(user: { name: string })
-  user
-end
-
-def f(raw: string)
-  body = JSON.parse_as(raw, { name: string })
-  body[:name] = 1
-  g(body)
 end
 `,
 		},
