@@ -274,7 +274,7 @@ func rangeMemberMap() Value {
 		if err != nil {
 			return NewNil(), err
 		}
-		return NewArray(out), nil
+		return adoptArray(out), nil
 	})
 }
 

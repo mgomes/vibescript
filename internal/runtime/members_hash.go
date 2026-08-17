@@ -639,7 +639,7 @@ func hashMemberQuery(property string) (Value, error) {
 				produced = out[:i+1]
 				exec.addRetainedOutput(blockValue)
 			}
-			return NewArray(out), nil
+			return adoptArray(out), nil
 		}), nil
 	case "dig":
 		return NewAutoBuiltin("hash.dig", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1666,7 +1666,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				retained.reserve(acc.accumulatedBytes(cap(out)))
 			}
-			return NewArray(out), nil
+			return adoptArray(out), nil
 		}), nil
 	case "map_with_index":
 		return NewAutoBuiltin("hash.map_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1729,7 +1729,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				retained.reserve(acc.accumulatedBytes(cap(out)))
 			}
-			return NewArray(out), nil
+			return adoptArray(out), nil
 		}), nil
 	case "transform_keys":
 		return NewAutoBuiltin("hash.transform_keys", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1916,7 +1916,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 					return NewNil(), err
 				}
-				if err := hashSet(out, entry.Key, entry.Value); err != nil {
+				if err := out.HashSetOwned(entry.Key, entry.Value); err != nil {
 					return NewNil(), err
 				}
 			}

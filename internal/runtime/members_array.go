@@ -1210,7 +1210,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 			}
-			return NewArray(result), nil
+			return adoptArray(result), nil
 		}), nil
 	case "map_with_index":
 		return NewAutoBuiltin("array.map_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1266,7 +1266,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 			}
-			return NewArray(out), nil
+			return adoptArray(out), nil
 		}), nil
 	case "flat_map", "collect_concat":
 		return NewAutoBuiltin("array.flat_map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1400,7 +1400,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					}
 				}
 			}
-			return NewArray(out), nil
+			return adoptArray(out), nil
 		}), nil
 	case "select":
 		return NewAutoBuiltin("array.select", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -2755,7 +2755,7 @@ func arrayMemberGrep(property string) (Value, error) {
 			copy(trimmed, out)
 			out = trimmed
 		}
-		return NewArray(out), nil
+		return adoptArray(out), nil
 	}), nil
 }
 

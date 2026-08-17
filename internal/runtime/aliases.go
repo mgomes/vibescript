@@ -302,6 +302,10 @@ func NewString(s string) Value { return value.NewString(s) }
 // NewArray returns an array Value.
 func NewArray(a []Value) Value { return value.NewArray(a) }
 
+// adoptArray wraps a without publishing. The caller already published every
+// collection it stored in a.
+func adoptArray(a []Value) Value { return value.AdoptArray(a) }
+
 // NewHash returns a hash (map) Value.
 func NewHash(h map[string]Value) Value { return value.NewHash(h) }
 

@@ -293,6 +293,19 @@ end
 	}
 }
 
+func TestMapDoesNotDoublePublishAFreshBlockResult(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  [1].map { [] }[0]
+end
+`)
+	got := callFunc(t, script, "run", nil)
+	if !got.SoleRef() {
+		t.Fatalf("[1].map { [] }[0] SoleRef() = false, want true")
+	}
+}
+
 func TestCapabilityClonePublishesRepeatedChildren(t *testing.T) {
 	t.Parallel()
 

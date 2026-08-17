@@ -92,6 +92,18 @@ func NewArray(a []Value) Value {
 	return Value{kind: KindArray, data: &arrayData{elems: a}}
 }
 
+// AdoptArray wraps a without publishing its elements. Callers use it when
+// those elements were already published as they entered the slice — a map
+// that counted each block result at insert time — so wrapping the finished
+// slice must not count the same slots again.
+//
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func AdoptArray(a []Value) Value {
+	return Value{kind: KindArray, data: &arrayData{elems: a}}
+}
+
 // SetArrayElems replaces the element slice of an existing array wrapper in
 // place. It is the primitive behind the runtime's Ruby-style mutators: because
 // the wrapper is shared by every Value that aliases the array, the new elements
