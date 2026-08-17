@@ -3270,7 +3270,7 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		}
 	}
 
-	out := NewHash(make(map[string]Value, len(arr)))
+	out := NewHashWithCapacity(len(arr))
 	var blockArg [1]Value
 	for _, item := range arr {
 		// Charge a step per element so even the bare form, where runner is nil and
