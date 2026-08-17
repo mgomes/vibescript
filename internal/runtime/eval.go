@@ -1002,11 +1002,8 @@ func (exec *Execution) indexHash(e *IndexExpr, obj Value, indices []Value) (Valu
 		return NewNil(), exec.errorAt(e.Position, "%s index expects a single key", obj.Kind())
 	}
 	idx := indices[0]
-	// The lookup hashes the key's whole text; charge before it so key-heavy
-	// loops stay inside the step quota.
-	if err := exec.chargeValueKeySteps(idx); err != nil {
-		return NewNil(), err
-	}
+	// MatchData keeps integer capture indexes; resolve those before the
+	// string/symbol key check so m[0] is not reported as an unsupported key.
 	if obj.Kind() == KindObject {
 		if val, handled, err := matchDataIndex(obj, idx); handled || err != nil {
 			if err != nil {
@@ -1014,6 +1011,17 @@ func (exec *Execution) indexHash(e *IndexExpr, obj Value, indices []Value) (Valu
 			}
 			return val, nil
 		}
+	}
+	// Reject unsupported keys before metering. chargeValueKeySteps still
+	// models the old arbitrary-key walk, so a large array key can exhaust
+	// the step quota instead of naming to_s.
+	if _, err := hashKeyString(idx); err != nil {
+		return NewNil(), exec.errorAt(e.IndexPos(0), "%s", err.Error())
+	}
+	// The lookup hashes the key's whole text; charge before it so key-heavy
+	// loops stay inside the step quota.
+	if err := exec.chargeValueKeySteps(idx); err != nil {
+		return NewNil(), err
 	}
 	val, ok, err := hashGet(obj, idx)
 	if err != nil {

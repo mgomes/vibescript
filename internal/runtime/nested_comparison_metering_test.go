@@ -487,6 +487,27 @@ func TestKeyChargeStopsWhereCanonicalizationStops(t *testing.T) {
 	}
 }
 
+// A host-supplied array key must fail as unsupported before the leftover
+// canonicalization walk can turn it into a quota error.
+func TestHashIndexRejectsUnsupportedKeyBeforeMetering(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 40, MemoryQuotaBytes: Unlimited}, `
+    def run(k)
+      h = { a: 1 }
+      h[k]
+    end
+    `)
+	key := NewArray(make([]Value, valueKeyCostNodeBudget+1))
+	_, err := script.Call(context.Background(), "run", []Value{key}, CallOptions{})
+	if err == nil {
+		t.Fatal("h[large_array] must error")
+	}
+	requireErrorContains(t, err, "unsupported hash key type")
+	if strings.Contains(err.Error(), "quota") {
+		t.Fatalf("unsupported key reported as quota: %v", err)
+	}
+}
+
 // An unsupported array key must still fail with the canonicalization error,
 // not a quota error manufactured by the charge walking past it.
 func TestUnsupportedArrayKeyKeepsItsError(t *testing.T) {
