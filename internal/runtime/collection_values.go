@@ -828,6 +828,12 @@ func (exec *Execution) isolateMutablePath(path mutablePath, env *Env) (Value, []
 		if err != nil || !found {
 			return NewNil(), nil, err
 		}
+		if len(path.captured) > 0 && i+1 >= len(path.captured) {
+			// This hop was missing when the path was evaluated. A later
+			// selector may have installed a child; the write still belongs
+			// to the miss, not that newly created receiver.
+			return NewNil(), nil, nil
+		}
 		if i+1 < len(path.captured) {
 			want := collectionIdentity(path.captured[i+1])
 			if want != 0 && collectionIdentity(child) != want {

@@ -697,6 +697,35 @@ end
 	}
 }
 
+func TestIndexAssignmentDoesNotFollowAFilledMissingPath(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `class Box
+  def run()
+    @a = {}
+    begin
+      @a["x"][install()] = 1
+    rescue
+      return @a.inspect
+    end
+    @a.inspect
+  end
+  def install()
+    @a["x"] = []
+    0
+  end
+end
+
+def run()
+  Box.new.run
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "{x: []}" {
+		t.Fatalf("@a[\"x\"][install()] = 1 = %s, want {x: []}", got)
+	}
+}
+
+
 // TestMutatorNoOpDoesNotIsolateASharedReceiver checks that recording a
 // mutator's path does not copy before the mutator decides whether it will
 // write. a.pop(0) and a.push() on a shared receiver must leave both bindings
