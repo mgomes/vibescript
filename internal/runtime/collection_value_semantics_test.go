@@ -1038,6 +1038,61 @@ end
 	}
 }
 
+func TestHostBuiltinIsolatesANestedArgument(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	engine.RegisterBuiltin("host_mutate_nested", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+		child := args[0].Hash()["child"]
+		if err := child.HashSet(NewString("x"), NewInt(9)); err != nil {
+			return NewNil(), err
+		}
+		return args[0], nil
+	})
+
+	t.Run("shared child", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptWithEngine(t, engine, `def run()
+  child = { x: 1 }
+  a = { child: child }
+  host_mutate_nested(a)
+  child.inspect + " " + a[:child].inspect
+end
+`)
+		if got := callFunc(t, script, "run", nil).String(); got != "{x: 1} {x: 1}" {
+			t.Fatalf("host_mutate_nested(a) with sibling child = %s, want {x: 1} {x: 1}", got)
+		}
+	})
+
+	t.Run("shared parent", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptWithEngine(t, engine, `def run()
+  child = { x: 1 }
+  a = { child: child }
+  b = a
+  host_mutate_nested(a)
+  child.inspect + " " + a[:child].inspect + " " + b[:child].inspect
+end
+`)
+		if got := callFunc(t, script, "run", nil).String(); got != "{x: 1} {x: 1} {x: 1}" {
+			t.Fatalf("host_mutate_nested(a) with sibling b = %s, want {x: 1} {x: 1} {x: 1}", got)
+		}
+	})
+
+	t.Run("exclusive nested", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptWithEngine(t, engine, `def run()
+  a = { child: { x: 1 } }
+  host_mutate_nested(a)
+  a[:child].inspect
+end
+`)
+		if got := callFunc(t, script, "run", nil).String(); got != "{x: 9}" {
+			t.Fatalf("host_mutate_nested(a) exclusive child = %s, want {x: 9}", got)
+		}
+	})
+}
+
 func TestFetchValuesPublishesPresentEntries(t *testing.T) {
 	t.Parallel()
 

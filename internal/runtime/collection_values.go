@@ -134,14 +134,72 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 	return receiver, args, kwargs, nil
 }
 
-// isolateHostCollection returns a wrapper the host may write through. A
-// shared collection is copied; a sole or unpublished one is already only
-// reachable from this call.
+// isolateHostCollection returns a wrapper the host may write through. Host
+// contracts treat mutation as a write to any reachable container, so a
+// shallow copy of the root is not enough: `child = {x: 1}; a = {child: child}`
+// leaves `a` exclusive while `child` is still shared, and a host HashSet
+// through `args[0].Hash()["child"]` would otherwise change the sibling.
+//
+// An exclusive graph is already only reachable from this call and is left
+// in place. Any shared wrapper in the graph deep-copies the whole argument
+// so the host cannot reach a wrapper a sibling binding still names.
 func (exec *Execution) isolateHostCollection(val Value) (Value, error) {
-	if !isCollection(val) || val.Unpublished() || val.SoleRef() {
+	if !isCollection(val) {
 		return val, nil
 	}
-	return exec.copyCollection(val)
+	needed, err := exec.hostCollectionNeedsIsolation(val, make(map[uintptr]struct{}))
+	if err != nil || !needed {
+		return val, err
+	}
+	if err := exec.preflightDeepClone(val); err != nil {
+		return NewNil(), err
+	}
+	cloned := deepCloneValueForContainment(val)
+	if err := exec.checkMemoryValue(cloned); err != nil {
+		return NewNil(), err
+	}
+	return cloned, nil
+}
+
+// hostCollectionNeedsIsolation reports whether val or any collection it
+// reaches is named from more than one durable slot. A cycle is a single
+// visit, not a reason to copy.
+func (exec *Execution) hostCollectionNeedsIsolation(val Value, seen map[uintptr]struct{}) (bool, error) {
+	if !isCollection(val) {
+		return false, nil
+	}
+	if id := collectionIdentity(val); id != 0 {
+		if _, ok := seen[id]; ok {
+			return false, nil
+		}
+		seen[id] = struct{}{}
+	}
+	if err := exec.chargeScanSteps(1); err != nil {
+		return false, err
+	}
+	if !val.Unpublished() && !val.SoleRef() {
+		return true, nil
+	}
+	switch val.Kind() {
+	case KindArray:
+		for _, elem := range val.Array() {
+			needed, err := exec.hostCollectionNeedsIsolation(elem, seen)
+			if err != nil || needed {
+				return needed, err
+			}
+		}
+	case KindHash, KindObject:
+		var needed bool
+		var walkErr error
+		val.RangeHashEntries(func(_ string, item Value) {
+			if needed || walkErr != nil {
+				return
+			}
+			needed, walkErr = exec.hostCollectionNeedsIsolation(item, seen)
+		})
+		return needed, walkErr
+	}
+	return false, nil
 }
 
 // publishBindingReplacement counts the handle a store into an already-occupied
