@@ -85,25 +85,12 @@ values.delete_if { |v| v > 1 } # was values.reject!
 settings = settings.merge(overrides) # was settings.merge!(overrides)
 ```
 
-## 2. `equal?` is object identity; empty collections are distinct objects
+## 2. `equal?` is content equality
 
-**What changed.** `equal?` reports object identity, matching Ruby. Every
-independently constructed collection — including every empty array, empty
-hash, and empty object (even `{}` from `JSON.parse("{}")`) — is a distinct
-object. Previously, any two empty arrays were `equal?`.
-
-**What breaks.** Code that used `equal?` as a cheap emptiness or content
-comparison.
-
-**Fix.** Use `==` for content equality and `empty?` for emptiness; reserve
-`equal?` for genuine identity checks:
-
-```vibe
-[].equal?([])   # => false: two distinct objects
-[] == []        # => true: same contents
-a = []
-a.equal?(a)     # => true: same object
-```
+**What changed.** Covered in section 1: `equal?` now answers the same question
+as `==`. Collections have no identity, so `[].equal?([])` is true. The earlier
+interning of empty collections is gone, but it is no longer observable through
+`equal?`.
 
 ## 3. Hashes iterate in insertion order
 
