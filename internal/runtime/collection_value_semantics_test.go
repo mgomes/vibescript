@@ -811,6 +811,20 @@ func TestSharedClearDoesNotCopyDiscardedContents(t *testing.T) {
 	}
 }
 
+func TestEmptyFilterDoesNotOverwriteAReboundNestedSlot(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  a = { x: [1] }
+  a[:x].delete_if { a[:x] = [9]; true }
+  a[:x].inspect
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "[9]" {
+		t.Fatalf("a[:x].delete_if rebound then emptied = %s, want [9]", got)
+	}
+}
+
 func TestSharedHashClearDoesNotCopyDiscardedContents(t *testing.T) {
 	t.Parallel()
 

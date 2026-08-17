@@ -1096,6 +1096,20 @@ func (exec *Execution) replaceMutableLeaf(replacement Value) (Value, error) {
 		current = child
 	}
 	last := &path.steps[len(path.steps)-1]
+	child, found, err := exec.readCollectionStep(current, last, env)
+	if err != nil || !found {
+		return NewNil(), err
+	}
+	if len(path.captured) > 0 && len(path.steps) >= len(path.captured) {
+		// This hop was missing when the path was evaluated.
+		return NewNil(), nil
+	}
+	if len(path.captured) > len(path.steps) && !capturedReceiverUnchanged(path.captured[len(path.steps)], child) {
+		// The leaf slot was rebound. The pending empty write belongs to
+		// the previously evaluated receiver, not the replacement.
+		replacement.AdoptSoleRef()
+		return replacement, nil
+	}
 	if err := exec.storeMutableStep(current, last, replacement); err != nil {
 		return NewNil(), err
 	}
