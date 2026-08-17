@@ -223,6 +223,30 @@ func TestHostKeySwapThroughLiveMapFallsBackToSortedKeys(t *testing.T) {
 	}
 }
 
+func TestHostDeleteReinsertThenDirectInsertFallsBackToSortedKeys(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{})
+	if err := hash.HashSet(value.NewString("a"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(a) error = %v, want nil", err)
+	}
+	if err := hash.HashSet(value.NewString("b"), value.NewInt(2)); err != nil {
+		t.Fatalf("HashSet(b) error = %v, want nil", err)
+	}
+	live := hash.Hash()
+	delete(live, "a")
+	if err := hash.HashSet(value.NewString("a"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(a) after delete error = %v, want nil", err)
+	}
+	live["c"] = value.NewInt(3)
+
+	requireKeyOrder(t, hash, []value.Value{
+		value.NewString("a"),
+		value.NewString("b"),
+		value.NewString("c"),
+	})
+}
+
 func TestHostKeySwapFallbackSortsTheEntryBuffer(t *testing.T) {
 	t.Parallel()
 

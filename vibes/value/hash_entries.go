@@ -167,16 +167,26 @@ func (v Value) hashIterationKeys(buf []Value) []Value {
 }
 
 // orderCoversEntries reports whether the recorded order still names exactly the
-// live entry set. See hashIterationKeys for why membership plus length is
-// exact rather than approximate.
+// live entry set. Length plus membership is not enough: a duplicate recorded
+// name can hide a live key that is not in the record. See hashIterationKeys.
 func (hd *hashData) orderCoversEntries() bool {
 	if len(hd.order) != len(hd.entries) {
 		return false
 	}
+	// Length plus membership is not enough: a host can delete a key through
+	// Hash(), reinsert it with HashSet (which appends), then add a new key
+	// through the live map. The record then names a twice and omits the new
+	// key while lengths still match.
+	seen := make(map[string]struct{}, len(hd.order))
 	for i := range hd.order {
-		if _, ok := hd.entries[hd.order[i].data.(string)]; !ok {
+		name := hd.order[i].data.(string)
+		if _, ok := hd.entries[name]; !ok {
 			return false
 		}
+		if _, dup := seen[name]; dup {
+			return false
+		}
+		seen[name] = struct{}{}
 	}
 	return true
 }
