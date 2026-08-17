@@ -1018,10 +1018,6 @@ func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 	if err != nil {
 		return NewNil(), err
 	}
-	receiver, err = exec.writableCollection(receiver)
-	if err != nil {
-		return NewNil(), err
-	}
 	if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
@@ -1044,6 +1040,12 @@ func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 		if include.Truthy() != keepTruthy {
 			dropped = append(dropped, entry.Key)
 		}
+	}
+	// Writability is checked here rather than before the loop: the block is
+	// script code and can bind the receiver somewhere new while it runs.
+	receiver, err = exec.writableCollection(receiver)
+	if err != nil {
+		return NewNil(), err
 	}
 	for _, key := range dropped {
 		if _, _, err := hashDeleteKey(receiver, key); err != nil {
@@ -1366,13 +1368,8 @@ func hashMemberTransforms(property string) (Value, error) {
 			if valueBlock(block) != nil {
 				return NewNil(), fmt.Errorf("hash.clear does not accept a block")
 			}
-			// Ruby's Hash#clear empties the receiver in place and returns it.
-			receiver, err := exec.writableCollection(receiver)
-			if err != nil {
-				return NewNil(), err
-			}
-			hashClearEntries(receiver)
-			return receiver, nil
+			// Ruby's Hash#clear empties the receiver and returns it.
+			return exec.writeHashClear(receiver)
 		}), nil
 	case "delete_if", "keep_if":
 		name := "hash." + property

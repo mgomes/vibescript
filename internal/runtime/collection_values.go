@@ -104,6 +104,35 @@ func publishCollectionElems(elems []Value) {
 	value.PublishRefElems(elems)
 }
 
+// writeArrayElems installs elems as the elements of the array a mutator is
+// updating, checking writability at the write rather than trusting a check made
+// earlier in the call. It returns the wrapper actually written, which is the
+// value the mutator returns.
+//
+// Every in-place array mutator ends here, which is what makes the check
+// structural: a mutator that runs script code between its first check and its
+// write -- a block, an argument expression -- cannot forget to look again,
+// because looking again is what writing is.
+func (exec *Execution) writeArrayElems(receiver Value, elems []Value) (Value, error) {
+	target, err := exec.writableCollection(receiver)
+	if err != nil {
+		return NewNil(), err
+	}
+	setArrayElems(target, elems)
+	return target, nil
+}
+
+// writeHashClear empties the hash a mutator is updating, checking writability at
+// the write for the same reason writeArrayElems does.
+func (exec *Execution) writeHashClear(receiver Value) (Value, error) {
+	target, err := exec.writableCollection(receiver)
+	if err != nil {
+		return NewNil(), err
+	}
+	hashClearEntries(target)
+	return target, nil
+}
+
 // collectionIdentity returns the wrapper identity of a collection, or 0 for
 // anything else. It identifies the wrapper rather than its storage, so it
 // survives an in-place growth that reallocates the backing.
@@ -204,9 +233,25 @@ func (exec *Execution) writableCollection(val Value) (Value, error) {
 	if val.Unpublished() {
 		return val, nil
 	}
-	if val.SoleRef() && exec.addressedCollection != 0 &&
-		exec.addressedCollection == collectionIdentity(val) {
+	if val.SoleRef() && exec.addressed.leaf != 0 && exec.addressed.leaf == collectionIdentity(val) {
 		return val, nil
+	}
+	// The receiver was resolved as an addressable path, and script code has
+	// published it since -- an argument expression, this mutator's own block, a
+	// right side. Isolating again through the recorded path both restores
+	// exclusive ownership and reinstalls the result where the source names it,
+	// which a bare copy would not: the write would land somewhere nothing can
+	// reach and the update would simply be lost.
+	if exec.addressed.valid && exec.addressed.leaf == collectionIdentity(val) {
+		leaf, chain, err := exec.isolateMutablePath(exec.addressed.target, exec.addressed.env)
+		if err != nil {
+			return NewNil(), err
+		}
+		if isCollection(leaf) {
+			exec.addressed.leaf = collectionIdentity(leaf)
+			exec.addressed.path = chain
+			return leaf, nil
+		}
 	}
 	return exec.copyCollection(val)
 }
@@ -215,30 +260,44 @@ func (exec *Execution) writableCollection(val Value) (Value, error) {
 // so the write about to run may proceed in place. The returned restore function
 // must run before control leaves the call, which is what keeps the record from
 // vouching for a later expression that reached the same wrapper another way.
-func (exec *Execution) addressCollection(val Value, chain []uintptr) {
-	exec.addressedCollection = collectionIdentity(val)
-	exec.addressedPath = chain
+func (exec *Execution) addressCollection(val Value, chain []uintptr, target mutablePath, env *Env) {
+	exec.addressed = addressedScope{
+		leaf:   collectionIdentity(val),
+		path:   chain,
+		target: target,
+		env:    env,
+		valid:  true,
+	}
 }
 
 // savedAddressedScope snapshots the permission currently in force. Callers take
 // it before resolving a receiver and defer restoring it, which withdraws the
 // permission on every exit without a closure to allocate.
 func (exec *Execution) savedAddressedScope() addressedScope {
-	return addressedScope{leaf: exec.addressedCollection, path: exec.addressedPath}
+	return exec.addressed
 }
 
 // addressedScope is the permission state a write displaced, so that restoring it
 // is a plain struct copy passed to a deferred call. A closure here allocated on
 // every mutating write, which the shovel-in-a-loop benchmarks saw.
+//
+// It carries the resolved path, not just the leaf, because the permission has to
+// survive script code running between the moment it was granted and the moment
+// the write lands -- an argument expression, a mutator's block, a compound
+// assignment's right side. Any of those can bind the receiver somewhere new, and
+// the write then has to isolate again. Holding the path is what lets the write
+// do that itself instead of trusting that nothing happened.
 type addressedScope struct {
-	leaf uintptr
-	path []uintptr
+	leaf   uintptr
+	path   []uintptr
+	target mutablePath
+	env    *Env
+	valid  bool
 }
 
 // restore withdraws the permission addressCollection granted.
 func (exec *Execution) restore(saved addressedScope) {
-	exec.addressedCollection = saved.leaf
-	exec.addressedPath = saved.path
+	exec.addressed = saved
 }
 
 // detachStoredCollection returns the value a write should place in a slot of the
@@ -256,14 +315,14 @@ func (exec *Execution) restore(saved addressedScope) {
 // published it, and the write that isolated the receiver already copied
 // everything the two had in common.
 func (exec *Execution) detachStoredCollection(val Value) (Value, error) {
-	if !isCollection(val) || exec.addressedCollection == 0 {
+	if !isCollection(val) || exec.addressed.leaf == 0 {
 		return val, nil
 	}
 	id := collectionIdentity(val)
 	if id == 0 {
 		return val, nil
 	}
-	if id != exec.addressedCollection && !slices.Contains(exec.addressedPath, id) {
+	if id != exec.addressed.leaf && !slices.Contains(exec.addressed.path, id) {
 		return val, nil
 	}
 	// The copy must be independent of the container being written, and a
@@ -284,7 +343,7 @@ func (exec *Execution) detachStoredCollection(val Value) (Value, error) {
 // arguments, returning the original slice untouched when none of them names a
 // container on the write's own path.
 func (exec *Execution) detachStoredCollections(vals []Value) ([]Value, error) {
-	if exec.addressedCollection == 0 {
+	if exec.addressed.leaf == 0 {
 		return vals, nil
 	}
 	var detached []Value
@@ -402,7 +461,7 @@ func (exec *Execution) resolveMutableReceiver(expr Expression, env *Env) (Value,
 	// so the caller keeps it, but it names no slot the write may update. Leaving
 	// the permission ungranted is what makes that write land on a copy.
 	if addressable {
-		exec.addressCollection(leaf, chain)
+		exec.addressCollection(leaf, chain, path, env)
 	}
 	return leaf, true, nil
 }
@@ -459,7 +518,7 @@ func (exec *Execution) writeThroughMutablePath(path mutablePath, env *Env, write
 		return err
 	}
 	saved := exec.savedAddressedScope()
-	exec.addressCollection(leaf, chain)
+	exec.addressCollection(leaf, chain, path, env)
 	defer exec.restore(saved)
 	return write(leaf)
 }

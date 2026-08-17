@@ -105,16 +105,13 @@ type Execution struct {
 	// the latched exhaustion, deep-copied before any adapter can hold its
 	// pointer; the dispatch rebuild uses only this copy for diagnostics.
 	exhaustedWrapped *RuntimeError
-	// addressedCollection is the wrapper identity of the receiver the current
-	// in-place write reached through the path that owns it (see
-	// collection_values.go). It vouches for exactly one call and is restored
-	// when that call returns, so a later expression reaching the same wrapper
-	// another way cannot inherit the permission.
-	addressedCollection uintptr
-	// addressedPath is that receiver together with every container the write
-	// reached it through, so a value being stored into it can be recognized as
-	// one of them and copied rather than made into a cycle.
-	addressedPath    []uintptr
+	// addressed records the receiver the current in-place write reached through
+	// the path that owns it, together with that path (see collection_values.go).
+	// It vouches for exactly one call and is restored when that call returns, so
+	// a later expression reaching the same wrapper another way cannot inherit
+	// the permission, and the write can isolate again through the path when
+	// script code has published the receiver since the permission was granted.
+	addressed        addressedScope
 	callStack        []callFrame
 	root             *Env
 	modules          map[string]Value

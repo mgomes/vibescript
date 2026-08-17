@@ -2658,12 +2658,19 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		}
 	case *IndexExpr:
 		defer exec.restore(exec.savedAddressedScope())
-		obj, addressed, err := exec.resolveMutableReceiver(t.Object, env)
-		if !addressed {
-			obj, err = exec.evalExpression(t.Object, env)
-		}
+		// The index selectors are expressions, so evaluating them runs script
+		// code between resolving the receiver and writing through it: `b[f(b)]
+		// = 9` can bind b somewhere new while choosing where to write. The
+		// write isolates again for that reason.
+		obj, path, addressed, err := exec.resolveMutableTarget(t.Object, env)
 		if err != nil {
 			return err
+		}
+		if !addressed {
+			obj, err = exec.evalExpression(t.Object, env)
+			if err != nil {
+				return err
+			}
 		}
 		if err := exec.checkMemoryValue(obj); err != nil {
 			return err
@@ -2672,7 +2679,12 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err != nil {
 			return err
 		}
-		return exec.assignToEvaluatedIndex(t, obj, indices, value)
+		if !addressed {
+			return exec.assignToEvaluatedIndex(t, obj, indices, value)
+		}
+		return exec.writeThroughMutablePath(path, env, func(leaf Value) error {
+			return exec.assignToEvaluatedIndex(t, leaf, indices, value)
+		})
 	default:
 		return exec.errorAt(target.Pos(), "invalid assignment target")
 	}

@@ -569,3 +569,115 @@ end
 		t.Fatalf("run() = %s, want {n: 5}", got)
 	}
 }
+
+// TestWritesIsolateAfterScriptCodeRuns closes the class the compound-assignment
+// finding opened. A write is licensed by an isolation check, and between that
+// check and the write itself script code can run and bind the receiver somewhere
+// new -- so the license goes stale. Every way script code can get in between is
+// covered here.
+//
+// The two failure modes are different and both matter. A write that finds a
+// published receiver and merely copies loses the update, because the copy is
+// installed nowhere; a write that does not look again at all leaks to the
+// sibling binding. Each case asserts both halves: the update landed, and the
+// binding taken mid-flight holds what it was given.
+func TestWritesIsolateAfterScriptCodeRuns(t *testing.T) {
+	t.Parallel()
+
+	const prelude = `class Capture
+  def keep(x)
+    @kept = x
+    0
+  end
+  def kept()
+    @kept
+  end
+end
+
+`
+
+	cases := []struct{ name, body, want string }{
+		{
+			name: "mutator argument expression",
+			body: `c = Capture.new
+  a = [1]
+  a.push(c.keep(a))
+  a.inspect + " " + c.kept.inspect`,
+			want: "[1, 0] [1]",
+		},
+		{
+			name: "shovel right operand",
+			body: `c = Capture.new
+  a = [1]
+  a << c.keep(a)
+  a.inspect + " " + c.kept.inspect`,
+			want: "[1, 0] [1]",
+		},
+		{
+			name: "array filter block",
+			body: `c = Capture.new
+  a = [1, 2, 3]
+  a.delete_if { |x| c.keep(a); x == 2 }
+  a.inspect + " " + c.kept.inspect`,
+			want: "[1, 3] [1, 2, 3]",
+		},
+		{
+			name: "array fill block",
+			body: `c = Capture.new
+  a = [1, 2]
+  a.fill { |i| c.keep(a); 9 }
+  a.inspect + " " + c.kept.inspect`,
+			want: "[9, 9] [1, 2]",
+		},
+		{
+			name: "hash filter block",
+			body: `c = Capture.new
+  h = { x: 1, y: 2 }
+  h.delete_if { |k, v| c.keep(h); v == 2 }
+  h.inspect + " " + c.kept.inspect`,
+			want: "{x: 1} {x: 1, y: 2}",
+		},
+		{
+			name: "index selector expression",
+			body: `c = Capture.new
+  a = [1, 2]
+  a[c.keep(a)] = 9
+  a.inspect + " " + c.kept.inspect`,
+			want: "[9, 2] [1, 2]",
+		},
+		{
+			name: "assigned value expression",
+			body: `c = Capture.new
+  a = [1, 2]
+  a[0] = c.keep(a)
+  a.inspect + " " + c.kept.inspect`,
+			want: "[0, 2] [1, 2]",
+		},
+		{
+			name: "member assigned value expression",
+			body: `c = Capture.new
+  h = { n: 1 }
+  h.n = c.keep(h)
+  h.inspect + " " + c.kept.inspect`,
+			want: "{n: 0} {n: 1}",
+		},
+		{
+			name: "compound assignment right side",
+			body: `c = Capture.new
+  a = [1, 2]
+  a[0] += c.keep(a) + 10
+  a.inspect + " " + c.kept.inspect`,
+			want: "[11, 2] [1, 2]",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, prelude+"def run()\n  "+tc.body+"\nend\n")
+			if got := callFunc(t, script, "run", nil).String(); got != tc.want {
+				t.Fatalf("%s = %s, want %s", tc.name, got, tc.want)
+			}
+		})
+	}
+}

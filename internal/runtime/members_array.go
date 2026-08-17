@@ -2950,10 +2950,6 @@ func arrayFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs ma
 	if err != nil {
 		return NewNil(), err
 	}
-	receiver, err = exec.writableCollection(receiver)
-	if err != nil {
-		return NewNil(), err
-	}
 	arr := receiver.Array()
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	initialCap := boundedFilterCap(len(arr))
@@ -2982,9 +2978,10 @@ func arrayFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs ma
 	// The kept elements are swapped into the receiver only after the block has
 	// visited every (snapshot) element, so the block never observes a
 	// half-filtered receiver, and delete_if/keep_if return the updated
-	// receiver.
-	setArrayElems(receiver, out)
-	return receiver, nil
+	// receiver. Writability is checked here rather than before the loop: the
+	// block is script code and can bind the receiver somewhere new while it
+	// runs.
+	return exec.writeArrayElems(receiver, out)
 }
 
 type arrayChunkControl int
@@ -3144,10 +3141,6 @@ func arrayAdjacentSlices(exec *Execution, receiver Value, args []Value, kwargs m
 		return NewNil(), fmt.Errorf("%s does not take keyword arguments", method)
 	}
 	runner, err := newBlockCallRunner(exec, block, method, receiver, nil, kwargs)
-	if err != nil {
-		return NewNil(), err
-	}
-	receiver, err = exec.writableCollection(receiver)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -3364,11 +3357,7 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	if len(kwargs) > 0 {
 		return NewNil(), fmt.Errorf("array.fill does not take keyword arguments")
 	}
-	receiver, err := exec.writableCollection(receiver)
-	if err != nil {
-		return NewNil(), err
-	}
-	args, err = exec.detachStoredCollections(args)
+	args, err := exec.detachStoredCollections(args)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -3486,9 +3475,9 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 
 	// Swap the filled elements into the receiver only after the (optional)
 	// block has produced every element, so the block never observes a
-	// half-filled receiver. Returns the receiver, matching Ruby's Array#fill.
-	setArrayElems(receiver, out)
-	return receiver, nil
+	// half-filled receiver. Writability is checked at the write because that
+	// block can bind the receiver somewhere new while it runs.
+	return exec.writeArrayElems(receiver, out)
 }
 
 // arrayFillResolveSpan parses the window selectors shared by both fill forms and
@@ -3773,12 +3762,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if valueBlock(block) != nil {
 				return NewNil(), fmt.Errorf("array.clear does not accept a block")
 			}
-			receiver, err := exec.writableCollection(receiver)
-			if err != nil {
-				return NewNil(), err
-			}
-			setArrayElems(receiver, []Value{})
-			return receiver, nil
+			return exec.writeArrayElems(receiver, []Value{})
 		}), nil
 	case "delete_if", "keep_if":
 		name := "array." + property
