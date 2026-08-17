@@ -69,21 +69,28 @@ func TestNumericEqualityComparesAcrossIntAndFloat(t *testing.T) {
 
 // Hash keys use eql?, so an int and a float key stay distinct even though they
 // now compare equal under ==. That separation is the reason eql? exists.
-func TestHashKeysStayKindStrict(t *testing.T) {
+// Numeric keys are rejected outright, so the int/float distinction `eql?` draws
+// never reaches a hash. Converting with to_s is the documented migration, and
+// numbers that render differently stay different keys.
+func TestNumericHashKeysAreRejected(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
     def run()
       h = {}
       h[1] = "int"
-      h[1.0] = "float"
+      h.keys.length
+    end
+
+    def converted()
+      h = {}
+      h[1.to_s] = "one"
+      h[1.5.to_s] = "one and a half"
       h.keys.length
     end
     `)
-	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
-	if got.String() != "2" {
-		t.Fatalf("hash held %s keys, want 2 (int and float keys must stay distinct)", got.String())
+	requireCallErrorContains(t, script, "run", nil, CallOptions{},
+		"hash keys must be strings or symbols")
+	if got := callFunc(t, script, "converted", nil); got.Int() != 2 {
+		t.Fatalf("converted key count = %d, want 2", got.Int())
 	}
 }

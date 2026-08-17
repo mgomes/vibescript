@@ -164,7 +164,7 @@ func (p *jsonValueParser) parseObject() (Value, error) {
 		return NewHash(nil), nil
 	}
 
-	values := NewTypedHash(jsonInitialObjectCapacity)
+	values := NewHashWithCapacity(jsonInitialObjectCapacity)
 	for {
 		if p.pos >= len(p.raw) {
 			return NewNil(), fmt.Errorf("unexpected end of JSON input")
@@ -651,9 +651,8 @@ func appendJSONValueRendered(buf []byte, val Value, state *jsonStringifyState) (
 }
 
 type jsonObjectEntry struct {
-	key     string
-	sortKey string
-	value   Value
+	key   string
+	value Value
 }
 
 func jsonObjectIdentity(val Value) uintptr {
@@ -662,34 +661,32 @@ func jsonObjectIdentity(val Value) uintptr {
 			return id
 		}
 	}
-	return reflect.ValueOf(val.Hash()).Pointer()
+	return reflect.ValueOf(val.HashEntryMap()).Pointer()
 }
 
+// jsonObjectEntries returns the members stringify emits, in the order the hash
+// iterates: Ruby-style insertion order for a hash built by a script, the way
+// Ruby's JSON.generate does, and sorted keys for a bare host map or an object,
+// which record no order.
 func jsonObjectEntries(val Value) ([]jsonObjectEntry, error) {
-	// Typed hashes carry Ruby-style insertion order, so stringify emits members
-	// in that order the way Ruby's JSON.generate does. Legacy hashes and
-	// objects have no recorded order and keep sorted keys for determinism.
-	if val.Kind() == KindHash && hashHasTypedEntries(val) {
-		hashEntries := val.HashEntries()
-		entries := make([]jsonObjectEntry, len(hashEntries))
-		for i, entry := range hashEntries {
-			key, err := valueToHashKey(entry.Key)
-			if err != nil {
-				return nil, fmt.Errorf("JSON.stringify key: %w", err)
-			}
-			entries[i] = jsonObjectEntry{key: key, value: entry.Value}
-		}
-		return entries, nil
-	}
-
-	hash := val.Hash()
-	entries := make([]jsonObjectEntry, 0, len(hash))
-	for key, item := range hash {
-		entries = append(entries, jsonObjectEntry{key: key, sortKey: key, value: item})
-	}
-	slices.SortFunc(entries, func(a, b jsonObjectEntry) int {
-		return cmp.Compare(a.sortKey, b.sortKey)
+	// Fill the returned buffer directly and sort it in place when insertion
+	// order is unavailable. RangeHashEntries' fallback used to allocate a
+	// second []Value of keys on top of this slice, which stringify's quota
+	// checks never reserved.
+	n := val.HashLen()
+	entries := make([]jsonObjectEntry, 0, n)
+	val.RangeHashEntries(func(key string, item Value) {
+		entries = append(entries, jsonObjectEntry{key: key, value: item})
 	})
+	// RangeHashEntries walks recorded insertion order when it still covers
+	// the live entries. Objects and host-mutated maps have no such record,
+	// so sort the JSON buffer in place rather than allocating a second
+	// []HashEntry on top of it.
+	if !val.HashUsesRecordedOrder() {
+		slices.SortFunc(entries, func(a, b jsonObjectEntry) int {
+			return cmp.Compare(a.key, b.key)
+		})
+	}
 	return entries, nil
 }
 

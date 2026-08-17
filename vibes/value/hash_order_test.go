@@ -2,6 +2,7 @@ package value_test
 
 import (
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mgomes/vibescript/vibes/value"
@@ -41,12 +42,12 @@ func TestHashSetPreservesInsertionOrder(t *testing.T) {
 				t.Fatalf("HashSet(%s) error = %v, want nil", name, err)
 			}
 		}
-		requireKeyOrder(t, hash, []value.Value{value.NewSymbol("z"), value.NewSymbol("b"), value.NewSymbol("a")})
+		requireKeyOrder(t, hash, []value.Value{value.NewString("z"), value.NewString("b"), value.NewString("a")})
 	})
 
 	t.Run("overwrite_keeps_position", func(t *testing.T) {
 		t.Parallel()
-		hash := value.NewTypedHash(2)
+		hash := value.NewHashWithCapacity(2)
 		if err := hash.HashSet(value.NewSymbol("b"), value.NewInt(2)); err != nil {
 			t.Fatalf("HashSet(b) error = %v, want nil", err)
 		}
@@ -56,14 +57,14 @@ func TestHashSetPreservesInsertionOrder(t *testing.T) {
 		if err := hash.HashSet(value.NewSymbol("b"), value.NewInt(9)); err != nil {
 			t.Fatalf("HashSet(b overwrite) error = %v, want nil", err)
 		}
-		requireKeyOrder(t, hash, []value.Value{value.NewSymbol("b"), value.NewSymbol("a")})
+		requireKeyOrder(t, hash, []value.Value{value.NewString("b"), value.NewString("a")})
 		updated, ok, err := hash.HashGet(value.NewSymbol("b"))
 		if err != nil || !ok || !updated.Equal(value.NewInt(9)) {
 			t.Fatalf("HashGet(b) = %v, %v, %v; want 9, true, nil", updated, ok, err)
 		}
 	})
 
-	t.Run("legacy_promotion_seeds_sorted_then_appends", func(t *testing.T) {
+	t.Run("bare_map_seeds_sorted_then_appends", func(t *testing.T) {
 		t.Parallel()
 		hash := value.NewHash(map[string]value.Value{
 			"c": value.NewInt(3),
@@ -77,20 +78,27 @@ func TestHashSetPreservesInsertionOrder(t *testing.T) {
 			value.NewString("a"),
 			value.NewString("b"),
 			value.NewString("c"),
-			value.NewSymbol("aa"),
+			value.NewString("aa"),
 		})
 	})
 
-	t.Run("mixed_key_kinds_keep_insertion_order", func(t *testing.T) {
+	t.Run("symbol_and_string_spellings_share_one_slot", func(t *testing.T) {
 		t.Parallel()
-		hash := value.NewTypedHash(3)
-		keys := []value.Value{value.NewInt(2), value.NewString("a"), value.NewSymbol("a"), value.NewBool(true)}
-		for i, key := range keys {
-			if err := hash.HashSet(key, value.NewInt(int64(i))); err != nil {
-				t.Fatalf("HashSet(%v) error = %v, want nil", key, err)
-			}
+		hash := value.NewHashWithCapacity(2)
+		if err := hash.HashSet(value.NewSymbol("a"), value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet(:a) error = %v, want nil", err)
 		}
-		requireKeyOrder(t, hash, keys)
+		if err := hash.HashSet(value.NewString("b"), value.NewInt(2)); err != nil {
+			t.Fatalf("HashSet(\"b\") error = %v, want nil", err)
+		}
+		if err := hash.HashSet(value.NewString("a"), value.NewInt(9)); err != nil {
+			t.Fatalf("HashSet(\"a\") error = %v, want nil", err)
+		}
+		requireKeyOrder(t, hash, []value.Value{value.NewString("a"), value.NewString("b")})
+		updated, ok, err := hash.HashGet(value.NewSymbol("a"))
+		if err != nil || !ok || !updated.Equal(value.NewInt(9)) {
+			t.Fatalf("HashGet(:a) = %v, %v, %v; want 9, true, nil", updated, ok, err)
+		}
 	})
 }
 
@@ -99,46 +107,43 @@ func TestHashOrderCapacity(t *testing.T) {
 
 	orderOnly := value.NewHash(map[string]value.Value{})
 	orderOnly.ReserveHashOrder(3)
-	if orderOnly.HashHasTypedEntries() {
-		t.Fatalf("ReserveHashOrder() initialized typed entries, want order-only reservation")
-	}
 	if got := value.HashOrderCapacity(orderOnly); got != 3 {
 		t.Fatalf("ReserveHashOrder() order capacity = %d, want 3", got)
 	}
-
-	typedReserved := value.NewHash(map[string]value.Value{})
-	typedReserved.ReserveTypedHashOrder(3)
-	if !typedReserved.HashHasTypedEntries() {
-		t.Fatalf("ReserveTypedHashOrder() left hash legacy-only, want typed entries")
-	}
-	if got := value.HashTypedEntryCapacity(typedReserved); got != 3 {
-		t.Fatalf("ReserveTypedHashOrder() typed entry capacity = %d, want 3", got)
-	}
-	if got := value.HashOrderCapacity(typedReserved); got != 3 {
-		t.Fatalf("ReserveTypedHashOrder() order capacity = %d, want 3", got)
+	if got := value.HashEntryCapacity(orderOnly); got != 0 {
+		t.Fatalf("ReserveHashOrder() entry capacity = %d, want 0", got)
 	}
 
-	newTypedReserved := value.NewTypedHash(3)
-	if got := value.HashTypedEntryCapacity(newTypedReserved); got != 3 {
-		t.Fatalf("NewTypedHash(3) typed entry capacity = %d, want 3", got)
+	reserved := value.NewHash(map[string]value.Value{})
+	reserved.ReserveHashCapacity(3)
+	if got := value.HashEntryCapacity(reserved); got != 3 {
+		t.Fatalf("ReserveHashCapacity() entry capacity = %d, want 3", got)
 	}
-	if got := value.HashOrderCapacity(newTypedReserved); got != 3 {
-		t.Fatalf("NewTypedHash(3) order capacity = %d, want 3", got)
+	if got := value.HashOrderCapacity(reserved); got != 3 {
+		t.Fatalf("ReserveHashCapacity() order capacity = %d, want 3", got)
 	}
 
-	grownTyped := value.NewTypedHash(0)
-	if err := grownTyped.HashSet(value.NewSymbol("a"), value.NewInt(1)); err != nil {
+	newReserved := value.NewHashWithCapacity(3)
+	if got := value.HashEntryCapacity(newReserved); got != 3 {
+		t.Fatalf("NewHashWithCapacity(3) entry capacity = %d, want 3", got)
+	}
+	if got := value.HashOrderCapacity(newReserved); got != 3 {
+		t.Fatalf("NewHashWithCapacity(3) order capacity = %d, want 3", got)
+	}
+
+	grown := value.NewHashWithCapacity(0)
+	if err := grown.HashSet(value.NewSymbol("a"), value.NewInt(1)); err != nil {
 		t.Fatalf("HashSet(a) error = %v, want nil", err)
 	}
-	grownTyped.ReserveTypedHashOrder(3)
-	if got := value.HashTypedEntryCapacity(grownTyped); got != 3 {
-		t.Fatalf("ReserveTypedHashOrder() grown typed entry capacity = %d, want 3", got)
+	grown.ReserveHashCapacity(3)
+	if got := value.HashEntryCapacity(grown); got != 3 {
+		t.Fatalf("ReserveHashCapacity() grown entry capacity = %d, want 3", got)
 	}
-	if got, ok, err := grownTyped.HashGet(value.NewSymbol("a")); err != nil || !ok || !got.Equal(value.NewInt(1)) {
-		t.Fatalf("HashGet(a) after ReserveTypedHashOrder() = %v, %v, %v; want 1, true, nil", got, ok, err)
+	if got, ok, err := grown.HashGet(value.NewSymbol("a")); err != nil || !ok || !got.Equal(value.NewInt(1)) {
+		t.Fatalf("HashGet(a) after ReserveHashCapacity() = %v, %v, %v; want 1, true, nil", got, ok, err)
 	}
 
-	hash := value.NewTypedHash(0)
+	hash := value.NewHashWithCapacity(0)
 	if got := value.HashOrderCapacity(hash); got != 0 {
 		t.Fatalf("empty typed hash order capacity = %d, want 0", got)
 	}
@@ -148,8 +153,8 @@ func TestHashOrderCapacity(t *testing.T) {
 	if got := value.HashOrderCapacity(hash); got < 1 {
 		t.Fatalf("order capacity after insert = %d, want >= 1", got)
 	}
-	if got := value.HashOrderCapacity(value.NewHash(map[string]value.Value{"a": value.NewInt(1)})); got != 0 {
-		t.Fatalf("legacy hash order capacity = %d, want 0", got)
+	if got := value.HashOrderCapacity(value.NewHash(map[string]value.Value{"a": value.NewInt(1)})); got != 1 {
+		t.Fatalf("bare-map hash order capacity = %d, want 1", got)
 	}
 	if got := value.HashOrderCapacity(value.NewInt(1)); got != 0 {
 		t.Fatalf("non-hash order capacity = %d, want 0", got)
@@ -159,7 +164,7 @@ func TestHashOrderCapacity(t *testing.T) {
 func TestHashRenderingFollowsInsertionOrder(t *testing.T) {
 	t.Parallel()
 
-	hash := value.NewTypedHash(3)
+	hash := value.NewHashWithCapacity(3)
 	for _, name := range []string{"e", "b", "a", "d", "c"} {
 		if err := hash.HashSet(value.NewSymbol(name), value.NewInt(1)); err != nil {
 			t.Fatalf("HashSet(%s) error = %v, want nil", name, err)
@@ -183,24 +188,211 @@ func TestHashRenderingFollowsInsertionOrder(t *testing.T) {
 	}
 }
 
-func TestHashEntriesFallBackWhenOrderUntracked(t *testing.T) {
+func TestBareMapHashIteratesSorted(t *testing.T) {
 	t.Parallel()
 
-	// A legacy hash never tracks order; entries still surface exactly once
-	// each even though their order is Go map order.
+	// A bare host map records no insertion order, so it iterates by sorted key
+	// rather than exposing Go's randomized map traversal.
 	hash := value.NewHash(map[string]value.Value{
 		"b": value.NewInt(2),
 		"a": value.NewInt(1),
 	})
+	requireKeyOrder(t, hash, []value.Value{value.NewString("a"), value.NewString("b")})
+}
+
+// A host holding the live map from Hash() can swap one key for another, leaving
+// the entry count unchanged while the recorded order names a key the map no
+// longer holds. Iteration must notice and fall back to sorted keys rather than
+// emitting the departed key with a zero value and dropping the new one.
+func TestHostKeySwapThroughLiveMapFallsBackToSortedKeys(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{"a": value.NewInt(1)})
+	live := hash.Hash()
+	delete(live, "a")
+	live["b"] = value.NewInt(2)
+
 	entries := hash.HashEntries()
-	if len(entries) != 2 {
-		t.Fatalf("legacy entries = %d, want 2", len(entries))
+	if len(entries) != 1 {
+		t.Fatalf("entries after key swap = %d, want 1", len(entries))
 	}
-	seen := map[string]bool{}
-	for _, entry := range entries {
-		seen[entry.Key.String()] = true
+	if got := entries[0].Key.String(); got != "b" {
+		t.Fatalf("entry key after swap = %q, want %q", got, "b")
 	}
-	if !seen["a"] || !seen["b"] {
-		t.Fatalf("legacy entries missing keys: %v", seen)
+	if got := entries[0].Value; !got.Equal(value.NewInt(2)) {
+		t.Fatalf("entry value after swap = %s, want 2", got.Inspect())
 	}
+}
+
+func TestHostDeleteReinsertThenDirectInsertFallsBackToSortedKeys(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{})
+	if err := hash.HashSet(value.NewString("a"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(a) error = %v, want nil", err)
+	}
+	if err := hash.HashSet(value.NewString("b"), value.NewInt(2)); err != nil {
+		t.Fatalf("HashSet(b) error = %v, want nil", err)
+	}
+	live := hash.Hash()
+	delete(live, "a")
+	if err := hash.HashSet(value.NewString("a"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(a) after delete error = %v, want nil", err)
+	}
+	live["c"] = value.NewInt(3)
+
+	requireKeyOrder(t, hash, []value.Value{
+		value.NewString("a"),
+		value.NewString("b"),
+		value.NewString("c"),
+	})
+}
+
+func TestHashIterationScratchBytesOnlyWhenOrderFallsBack(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{})
+	for i := range 20 {
+		name := string(rune('a' + i))
+		if err := hash.HashSet(value.NewString(name), value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet(%s) error = %v, want nil", name, err)
+		}
+	}
+	if got := value.HashIterationScratchBytes(hash); got != 0 {
+		t.Fatalf("HashIterationScratchBytes(ordered) = %d, want 0", got)
+	}
+	live := hash.Hash()
+	delete(live, "a")
+	live["zz"] = value.NewInt(2)
+	if got := value.HashIterationScratchBytes(hash); got <= 0 {
+		t.Fatalf("HashIterationScratchBytes(invalidated) = %d, want > 0", got)
+	}
+}
+
+func TestNewHashWithOrderDuplicateNamesFallsBackToSortedKeys(t *testing.T) {
+	t.Parallel()
+
+	entries := map[string]value.Value{
+		"a": value.NewInt(1),
+		"b": value.NewInt(2),
+		"c": value.NewInt(3),
+	}
+	order := []value.Value{value.NewString("a"), value.NewString("b"), value.NewString("a")}
+	hash := value.NewHashWithOrder(entries, order)
+	if hash.HashUsesRecordedOrder() {
+		t.Fatal("NewHashWithOrder(duplicate names) used the adopted order, want sorted fallback")
+	}
+	requireKeyOrder(t, hash, []value.Value{
+		value.NewString("a"),
+		value.NewString("b"),
+		value.NewString("c"),
+	})
+}
+
+func TestLiveMapStaysUntrustedAfterHashSet(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{})
+	for _, name := range []string{"a", "b"} {
+		if err := hash.HashSet(value.NewString(name), value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet(%s) error = %v, want nil", name, err)
+		}
+	}
+	live := hash.Hash()
+	if err := hash.HashSet(value.NewString("c"), value.NewInt(3)); err != nil {
+		t.Fatalf("HashSet(c) error = %v, want nil", err)
+	}
+	delete(live, "a")
+	live["d"] = value.NewInt(4)
+	if err := hash.HashSet(value.NewString("a"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(a) after live-map swap error = %v, want nil", err)
+	}
+	requireKeyOrder(t, hash, []value.Value{
+		value.NewString("a"),
+		value.NewString("b"),
+		value.NewString("c"),
+		value.NewString("d"),
+	})
+}
+
+func TestHashReadDoesNotLeaveLaterInsertsUntrusted(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{})
+	if err := hash.HashSet(value.NewString("a"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(a) error = %v, want nil", err)
+	}
+	_ = hash.Hash()
+	if err := hash.HashSet(value.NewString("b"), value.NewInt(2)); err != nil {
+		t.Fatalf("HashSet(b) after Hash() error = %v, want nil", err)
+	}
+	if !hash.HashUsesRecordedOrder() {
+		t.Fatal("Hash() then HashSet(b) dropped the recorded order, want insertion order kept")
+	}
+	requireKeyOrder(t, hash, []value.Value{value.NewString("a"), value.NewString("b")})
+}
+
+func TestConcurrentHashReadsAreRaceFree(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{"a": value.NewInt(1)})
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Go(func() {
+			if got := hash.Hash(); got["a"].Int() != 1 {
+				t.Errorf("Hash()[a] = %v, want 1", got["a"])
+			}
+		})
+	}
+	wg.Wait()
+}
+
+func TestHostKeySwapFallbackSortsTheEntryBuffer(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{})
+	for _, name := range []string{"m", "k", "z"} {
+		if err := hash.HashSet(value.NewString(name), value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet(%s) error = %v, want nil", name, err)
+		}
+	}
+	live := hash.Hash()
+	delete(live, "m")
+	live["a"] = value.NewInt(2)
+	live["c"] = value.NewInt(3)
+
+	var buf [8]value.HashEntry
+	entries := hash.HashEntriesInto(buf[:])
+	requireKeyOrder(t, hash, []value.Value{
+		value.NewString("a"),
+		value.NewString("c"),
+		value.NewString("k"),
+		value.NewString("z"),
+	})
+	if len(entries) != 4 {
+		t.Fatalf("HashEntriesInto after key swap = %d entries, want 4", len(entries))
+	}
+	if got, want := entries[0].Key.String(), "a"; got != want {
+		t.Fatalf("HashEntriesInto[0] = %q, want %q", got, want)
+	}
+}
+
+func TestNewHashRetainedMapDeleteReinsertFallsBack(t *testing.T) {
+	t.Parallel()
+
+	entries := map[string]value.Value{
+		"a": value.NewInt(1),
+		"b": value.NewInt(2),
+	}
+	hash := value.NewHash(entries)
+	delete(entries, "a")
+	if err := hash.HashSet(value.NewString("a"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(a) after delete through NewHash map error = %v, want nil", err)
+	}
+	entries["c"] = value.NewInt(3)
+	requireKeyOrder(t, hash, []value.Value{
+		value.NewString("a"),
+		value.NewString("b"),
+		value.NewString("c"),
+	})
 }

@@ -703,9 +703,9 @@ func TestUniversalDupCloneAndFreeze(t *testing.T) {
   ary_copy[0] = 2
 
   hash = { name: "old" }
-  hash[1] = ["one"]
+  hash["items"] = ["one"]
   hash_copy = hash.clone
-  hash_copy[1][0] = "changed"
+  hash_copy["items"][0] = "changed"
   hash_copy[:name] = "new"
 
   match = "a1".match("([a-z])([0-9])")
@@ -715,8 +715,8 @@ func TestUniversalDupCloneAndFreeze(t *testing.T) {
   {
     array_original: ary[0],
     array_copy: ary_copy[0],
-    hash_original_array: hash[1][0],
-    hash_copy_array: hash_copy[1][0],
+    hash_original_array: hash["items"][0],
+    hash_copy_array: hash_copy["items"][0],
     hash_original_symbol: hash[:name],
     hash_copy_symbol: hash_copy[:name],
     object_original_capture: match.captures[0],

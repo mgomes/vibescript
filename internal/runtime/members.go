@@ -173,7 +173,7 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 		// entry shadows the universal helper only when it is a callable export (a
 		// module's exported `def eql?` or `def tap`); the treatment of a non-callable
 		// data field then depends on whether the helper is data-safe.
-		if val, ok := obj.Hash()[property]; ok {
+		if val, ok := obj.HashEntryMap()[property]; ok {
 			if !isUniversalMember(property) || isCallableMember(val) {
 				return val, nil
 			}
@@ -493,10 +493,10 @@ func (exec *Execution) getScopedMember(obj Value, property string, pos Position)
 		// Namespace objects such as Math expose constants and module
 		// functions, so `Math::PI` resolves the same member that `Math.PI`
 		// would, matching Ruby's `::` constant access on a module.
-		if val, ok := obj.Hash()[property]; ok {
+		if val, ok := obj.HashEntryMap()[property]; ok {
 			return val, nil
 		}
-		candidates := slices.Collect(maps.Keys(obj.Hash()))
+		candidates := slices.Collect(maps.Keys(obj.HashEntryMap()))
 		return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, candidates))
 	}
 	if obj.Kind() == KindClass {

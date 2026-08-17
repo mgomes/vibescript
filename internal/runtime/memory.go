@@ -68,11 +68,6 @@ const estimatedArrayWrapperExtraBytes = value.ArrayDataBytes - estimatedSliceBas
 // release matrix builds, which is what caught the hand-written slice base.
 var _ [estimatedArrayWrapperExtraBytes]struct{}
 
-const (
-	estimatedHashLookupKeyBytes = int(unsafe.Sizeof(value.HashLookupKey{}))
-	estimatedHashEntryBytes     = int(unsafe.Sizeof(HashEntry{}))
-)
-
 // estimatedBigIntStructBytes is the heap footprint of the big.Int struct a
 // big-integer payload allocates around its word backing (sign flag plus the
 // word slice header). The words themselves are charged per allocated slot on
@@ -964,10 +959,61 @@ func (exec *Execution) checkProjectedValueRendering(val Value, payloadBytes int)
 
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
+	used = saturatingAdd(used, renderingScratchBytes(val))
 	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
+}
+
+// renderingScratchBytes is the peak heap inspect/to_s holds for iteration
+// buffers while val stays live. A recorded-order hash walks in place; a
+// fallback hash or any object larger than the inline buffer allocates a
+// []HashEntry that remains live while nested values render, so the peak is
+// this node's buffer plus the largest child path rather than the root only.
+func renderingScratchBytes(val Value) int {
+	return walkRenderingScratch(val, make(map[uintptr]struct{}))
+}
+
+func walkRenderingScratch(val Value, seen map[uintptr]struct{}) int {
+	switch val.Kind() {
+	case KindArray:
+		id := arrayIdentity(val)
+		if id != 0 {
+			if _, ok := seen[id]; ok {
+				return 0
+			}
+			seen[id] = struct{}{}
+		}
+		maxChild := 0
+		for _, elem := range val.Array() {
+			if n := walkRenderingScratch(elem, seen); n > maxChild {
+				maxChild = n
+			}
+		}
+		return maxChild
+	case KindHash, KindObject:
+		id := hashScanIdentity(val)
+		if id != 0 {
+			if _, ok := seen[id]; ok {
+				return 0
+			}
+			seen[id] = struct{}{}
+		}
+		own := 0
+		if !val.HashUsesRecordedOrder() {
+			own = sortedHashEntryBufferBytes(val.HashLen())
+		}
+		maxChild := 0
+		for _, item := range val.HashEntryMap() {
+			if n := walkRenderingScratch(item, seen); n > maxChild {
+				maxChild = n
+			}
+		}
+		return saturatingAdd(own, maxChild)
+	default:
+		return 0
+	}
 }
 
 // checkProjectedIntArrayBytes rejects allocations that would exceed the memory
@@ -1098,7 +1144,7 @@ func (exec *Execution) checkProjectedHashBytes(count int, receiver Value, args [
 // it allocates either its output map or the sorted-key scratch buffer(s) that
 // drive an ordered walk. outputEntries is the number of entries the result map
 // would hold; scratchBytes is the heap footprint of the scratch key slices (see
-// sortedKeyBufferBytes), which the caller sums per-buffer so the inline-stack-
+// sortedHashEntryBufferBytes), which the caller sums per-buffer so the inline-stack-
 // buffer threshold is applied to each independently.
 //
 // The output map's fixed overhead is always charged, even when outputEntries is
@@ -1132,6 +1178,10 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 func (exec *Execution) projectedHashTransformBytes(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) int {
 	used := exec.projectedHashBaseBytes(receiver, args, kwargs, block)
 	used = saturatingAdd(used, saturatingMul(outputEntries, estimatedMapEntryStructuralBytes))
+	// The output hash grows an insertion-order slot per entry beside its map,
+	// which the reservation helpers charge; this admission must agree with them
+	// or it admits an output the reservation then refuses.
+	used = saturatingAdd(used, hashOrderBackingBytes(outputEntries))
 	return saturatingAdd(used, scratchBytes)
 }
 
@@ -1152,7 +1202,7 @@ func (exec *Execution) projectedHashTransformFits(outputEntries, scratchBytes in
 // block-conflict merge) holds for its whole walk: the output map it fills plus any
 // sorted-key scratch slices. outputEntries is the largest entry count the result
 // map could reach; scratchBytes is the scratch slices' footprint (see
-// sortedKeyBufferBytes). The empty-map base overhead is always included because the
+// sortedHashEntryBufferBytes). The empty-map base overhead is always included because the
 // transform allocates a real map even for an empty result.
 //
 // These buffers live only on the Go call stack while the block runs, so they are
@@ -1167,6 +1217,7 @@ func (exec *Execution) projectedHashTransformFits(outputEntries, scratchBytes in
 func hashTransformBufferBytes(outputEntries, scratchBytes int) int {
 	bytes := estimatedValueBytes + estimatedMapBaseBytes + estimatedHashDataBytes
 	bytes = saturatingAdd(bytes, saturatingMul(outputEntries, estimatedMapEntryStructuralBytes))
+	bytes = saturatingAdd(bytes, hashOrderBackingBytes(outputEntries))
 	return saturatingAdd(bytes, scratchBytes)
 }
 
@@ -1247,27 +1298,13 @@ func (exec *Execution) maxCollapsedPairBytes(receiver Value) int {
 }
 
 func maxCollapsedPairBytesWithEstimator(receiver Value, est *memoryEstimator) int {
-	if hashHasTypedEntries(receiver) {
-		if receiver.HashLen() == 0 {
-			return 0
-		}
-		maxBytes := 0
-		var entryBuf [smallHashKeyBufferSize]HashEntry
-		for _, entry := range receiver.HashEntriesInto(entryBuf[:]) {
-			pair := NewArray([]Value{entry.Key, entry.Value})
-			if bytes := est.probe(pair); bytes > maxBytes {
-				maxBytes = bytes
-			}
-		}
-		return maxBytes
-	}
-	entries := receiver.Hash()
-	if len(entries) == 0 {
+	if receiver.HashLen() == 0 {
 		return 0
 	}
 	maxBytes := 0
-	for key, value := range entries {
-		pair := NewArray([]Value{NewSymbol(key), value})
+	var entryBuf [smallHashKeyBufferSize]HashEntry
+	for _, entry := range receiver.HashEntriesInto(entryBuf[:]) {
+		pair := NewArray([]Value{entry.Key, entry.Value})
 		if bytes := est.probe(pair); bytes > maxBytes {
 			maxBytes = bytes
 		}
@@ -1444,27 +1481,6 @@ func newArrayBuildAccumulator(exec *Execution, receiver Value, args []Value, kwa
 		acc.base = saturatingAdd(acc.base, acc.est.value(block))
 	}
 	return acc
-}
-
-// reserveScratch folds a fixed scratch allocation into the baseline so it is held
-// against the quota for the build's entire lifetime, and rejects the build if the
-// reservation alone already overflows. Builders that keep a Go-local scratch
-// buffer live while the result accumulates (String#scan holds the engine's whole
-// [][]int match table the entire time it materializes per-match result elements
-// from it) reserve that buffer here so its bytes coexist with every accumulated
-// element at peak. Without the reservation a build could keep both the scratch and
-// the growing result live and exceed the quota by the scratch size before the
-// per-element check observed it. scratchBytes is the heap footprint of that live
-// buffer.
-func (acc *arrayBuildAccumulator) reserveScratch(scratchBytes int) error {
-	if acc.exec.memoryQuota <= 0 {
-		return nil
-	}
-	acc.base = saturatingAdd(acc.base, scratchBytes)
-	if acc.exec.memoryExceeded(acc.base) {
-		return acc.exec.memoryQuotaExceededError()
-	}
-	return nil
 }
 
 // add charges a newly appended element and rejects the build if the result's
@@ -1885,13 +1901,11 @@ type hashLiteralBuildAccumulator struct {
 	replacing     bool
 	keyPayloads   map[string]int
 	valuePayloads map[string]int
-	typedEntries  int
 }
 
 type hashLiteralEntry struct {
-	key       Value
-	lookupKey HashLookupKey
-	value     Value
+	key   string
+	value Value
 }
 
 // newHashLiteralBuildAccumulator snapshots the current execution roots for a
@@ -1933,36 +1947,45 @@ func (acc *hashLiteralBuildAccumulator) reserveBacking(capacity int) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
+	// The literal allocates its entry map and pre-sizes its insertion-order
+	// backing to the pair count before the first pair runs, so both are fixed
+	// structure rather than something an entry grows.
 	acc.base = saturatingAdd(acc.base, saturatingMul(capacity, estimatedMapEntryStructuralBytes))
+	acc.base = saturatingAdd(acc.base, hashOrderBackingBytes(capacity))
 	// No entries exist yet, so the replay set the sessions path measures is
 	// empty.
 	return acc.checkQuota(nil)
 }
 
-func (acc *hashLiteralBuildAccumulator) addDistinctEntry(current map[string]hashLiteralEntry, lookupKey HashLookupKey, key, val Value) error {
+// hashOrderBackingBytes is the heap footprint of the insertion-order backing a
+// hash of capacity slots retains: the slice base plus one key Value per slot.
+// The slots hold the key Values iteration hands out, so walking a hash boxes
+// nothing per entry; their string payloads alias the entry map's own keys,
+// which the entry accounting already charges.
+func hashOrderBackingBytes(capacity int) int {
+	if capacity <= 0 {
+		return 0
+	}
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(capacity, estimatedValueBytes))
+}
+
+func (acc *hashLiteralBuildAccumulator) addDistinctEntry(current map[string]hashLiteralEntry, key string, val Value) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
 
 	if acc.sessions {
-		entryStructural := acc.typedEntryStructuralBytes()
 		used, nodes := acc.sessionUsedBytes(current, func(est *memoryEstimator) int {
-			payload := saturatingAdd(hashLiteralKeyPayload(est, lookupKey, key), est.valuePayload(val))
-			return saturatingAdd(entryStructural, payload)
+			return saturatingAdd(est.stringPayloadSize(key), est.valuePayload(val))
 		})
 		if acc.exec.memoryExceeded(used) {
 			return acc.exec.memoryQuotaExceededError()
 		}
-		if err := acc.exec.chargeEstimatorWalk(nodes); err != nil {
-			return err
-		}
-		acc.retained = saturatingAdd(acc.retained, entryStructural)
-		return nil
+		return acc.exec.chargeEstimatorWalk(nodes)
 	}
 
 	before := acc.est.walked
-	acc.retained = saturatingAdd(acc.retained, acc.typedEntryStructuralBytes())
-	acc.retained = saturatingAdd(acc.retained, hashLiteralKeyPayload(acc.est, lookupKey, key))
+	acc.retained = saturatingAdd(acc.retained, acc.est.stringPayloadSize(key))
 	acc.retained = saturatingAdd(acc.retained, acc.est.valuePayload(val))
 	if err := acc.checkQuota(current); err != nil {
 		return err
@@ -1975,9 +1998,7 @@ func (acc *hashLiteralBuildAccumulator) addDistinctEntry(current map[string]hash
 // appears, retained charges must become subtractable so overwritten values stop
 // contributing after the replacement.
 func (acc *hashLiteralBuildAccumulator) replaceEntry(
-	canonical string,
-	lookupKey HashLookupKey,
-	key Value,
+	key string,
 	val Value,
 	current map[string]hashLiteralEntry,
 ) error {
@@ -1995,20 +2016,8 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 		// against the PRE-replacement set plus the candidate: the old value
 		// stays in the unpublished hash until the write lands, so the
 		// transient peak holds both allocations.
-		candidate := hashLiteralEntry{key: key, lookupKey: lookupKey, value: val}
-		// A replacement reuses the entry that is already there, but a key this
-		// literal has not seen adds one. Its structural bytes have to be part of
-		// what admission weighs, not added after it passes: on the final pair
-		// nothing checks again, so a quota with less headroom than one entry's
-		// structure admitted a hash that lands over it. addDistinctEntry, the
-		// neighboring path, has always folded them in (#1).
-		entryStructural := 0
-		if _, replacingExisting := current[canonical]; !replacingExisting {
-			entryStructural = acc.typedEntryStructuralBytes()
-		}
 		used, nodes := acc.sessionUsedBytes(current, func(est *memoryEstimator) int {
-			payload := saturatingAdd(hashLiteralKeyPayload(est, candidate.lookupKey, candidate.key), est.valuePayload(candidate.value))
-			return saturatingAdd(entryStructural, payload)
+			return saturatingAdd(est.stringPayloadSize(key), est.valuePayload(val))
 		})
 		if acc.exec.memoryExceeded(used) {
 			return acc.exec.memoryQuotaExceededError()
@@ -2016,7 +2025,6 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 		if err := acc.exec.chargeEstimatorWalk(nodes); err != nil {
 			return err
 		}
-		acc.retained = saturatingAdd(acc.retained, entryStructural)
 		// The post-replacement set never exceeds the admitted peak, so no
 		// second check is needed here; the caller's write makes current that
 		// set and later entries re-measure it anyway.
@@ -2028,18 +2036,9 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 		nodes = acc.rebuildRetainedEntries(current)
 	}
 
-	keyPayload, valuePayload, entryNodes := acc.entryPayloads(lookupKey, key, val)
+	keyPayload, valuePayload, entryNodes := acc.entryPayloads(key, val)
 	nodes += entryNodes
-	// The snapshot path had the same gap as the sessions one above, and kept it
-	// permanently rather than only across the last pair: a key first seen in
-	// replacement mode was never charged its entry structure at all, because
-	// rebuildRetainedEntries only counts the entries that existed when
-	// replacement began.
-	entryStructural := 0
-	if _, replacingExisting := current[canonical]; !replacingExisting {
-		entryStructural = acc.typedEntryStructuralBytes()
-	}
-	incoming := saturatingAdd(entryStructural, saturatingAdd(keyPayload, valuePayload))
+	incoming := saturatingAdd(keyPayload, valuePayload)
 	base, baseNodes := acc.liveBase()
 	nodes += baseNodes
 	if used := saturatingAdd(saturatingAdd(base, acc.retained), incoming); acc.exec.memoryExceeded(used) {
@@ -2049,7 +2048,7 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 		return err
 	}
 
-	prior := saturatingAdd(acc.keyPayloads[canonical], acc.valuePayloads[canonical])
+	prior := saturatingAdd(acc.keyPayloads[key], acc.valuePayloads[key])
 	acc.retained -= prior
 	if acc.retained < 0 {
 		acc.retained = 0
@@ -2060,10 +2059,9 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 		acc.valuePayloads = make(map[string]int)
 	}
 	// keyPayloads and valuePayloads are the subtractable per-key totals a later
-	// replacement of this same key retracts, so the structure charged above
-	// stays out of them: the entry it paid for outlives every replacement.
-	acc.keyPayloads[canonical] = keyPayload
-	acc.valuePayloads[canonical] = valuePayload
+	// replacement of this same key retracts.
+	acc.keyPayloads[key] = keyPayload
+	acc.valuePayloads[key] = valuePayload
 	return acc.checkQuota(current)
 }
 
@@ -2074,14 +2072,12 @@ func (acc *hashLiteralBuildAccumulator) rebuildRetainedEntries(current map[strin
 	acc.retained = 0
 	acc.keyPayloads = make(map[string]int, len(current))
 	acc.valuePayloads = make(map[string]int, len(current))
-	acc.typedEntries = 0
 	nodes := 0
-	for canonical, entry := range current {
-		acc.retained = saturatingAdd(acc.retained, acc.typedEntryStructuralBytes())
-		keyPayload, valuePayload, entryNodes := acc.entryPayloads(entry.lookupKey, entry.key, entry.value)
+	for key, entry := range current {
+		keyPayload, valuePayload, entryNodes := acc.entryPayloads(entry.key, entry.value)
 		nodes += entryNodes
-		acc.keyPayloads[canonical] = keyPayload
-		acc.valuePayloads[canonical] = valuePayload
+		acc.keyPayloads[key] = keyPayload
+		acc.valuePayloads[key] = valuePayload
 		acc.retained = saturatingAdd(acc.retained, saturatingAdd(keyPayload, valuePayload))
 	}
 	acc.est = nil
@@ -2089,31 +2085,20 @@ func (acc *hashLiteralBuildAccumulator) rebuildRetainedEntries(current map[strin
 	return nodes
 }
 
-func (acc *hashLiteralBuildAccumulator) typedEntryStructuralBytes() int {
-	// Each typed entry retains two lookup keys: one in the entry map's bucket
-	// and one slot in the insertion-order backing HashSet grows beside it.
-	entryBytes := estimatedMapEntryBytes + 2*estimatedHashLookupKeyBytes + estimatedHashEntryBytes
-	if acc.typedEntries == 0 {
-		entryBytes = saturatingAdd(estimatedMapBaseBytes+estimatedSliceBaseBytes, entryBytes)
-	}
-	acc.typedEntries++
-	return entryBytes
-}
-
 // entryPayloads measures one entry's key and value payloads and reports the
 // graph nodes doing so walked.
-func (acc *hashLiteralBuildAccumulator) entryPayloads(lookupKey HashLookupKey, key, val Value) (int, int, int) {
+func (acc *hashLiteralBuildAccumulator) entryPayloads(key string, val Value) (int, int, int) {
 	if acc.sessions {
 		s := acc.exec.beginBaseWalk()
 		defer s.close()
 		valuePayload := s.est.valuePayload(val)
-		keyPayload := hashLiteralKeyPayload(s.est, lookupKey, key)
+		keyPayload := s.est.stringPayloadSize(key)
 		return keyPayload, valuePayload, s.nodes()
 	}
 	est := newMemoryEstimator()
 	acc.exec.estimateMemoryUsageBase(est)
 	valuePayload := est.valuePayload(val)
-	keyPayload := hashLiteralKeyPayload(est, lookupKey, key)
+	keyPayload := est.stringPayloadSize(key)
 	return keyPayload, valuePayload, est.walked
 }
 
@@ -2139,7 +2124,7 @@ func (acc *hashLiteralBuildAccumulator) sessionUsedBytes(current map[string]hash
 	defer s.close()
 	retained := 0
 	for _, prior := range current {
-		retained = saturatingAdd(retained, hashLiteralKeyPayload(s.est, prior.lookupKey, prior.key))
+		retained = saturatingAdd(retained, s.est.stringPayloadSize(prior.key))
 		retained = saturatingAdd(retained, s.est.valuePayload(prior.value))
 	}
 	extra := 0
@@ -2163,22 +2148,6 @@ func (acc *hashLiteralBuildAccumulator) liveBase() (int, int) {
 	s := acc.exec.beginBaseWalk()
 	defer s.close()
 	return saturatingAdd(s.base, acc.base), s.nodes()
-}
-
-// hashLiteralKeyPayload prices one literal key. hashDisplayKey returns a string
-// or symbol key's own string, so the sessions replay re-prices earlier keys
-// without rendering anything and the estimator's identity dedup collapses the
-// repeats to nothing. That holds only while every literal key is a label or a
-// quoted label, which the grammar enforces and
-// TestHashLiteralKeysAreAlwaysLabels pins: a computed-key form would make
-// hashDisplayKey call Inspect, and the replay would render it once per earlier
-// pair per pair, allocating a fresh string each time that no dedup can catch
-// and no estimator node count can see (#1).
-func hashLiteralKeyPayload(est *memoryEstimator, lookupKey HashLookupKey, key Value) int {
-	keyPayload := est.stringPayloadSize(hashDisplayKey(key))
-	keyPayload = saturatingAdd(keyPayload, lookupKey.ExtraPayloadBytes())
-	keyPayload = saturatingAdd(keyPayload, est.valuePayload(key))
-	return keyPayload
 }
 
 // checkQuota measures the literal so far and charges the walk doing so drove.
@@ -2223,28 +2192,7 @@ func (acc *hashBuildAccumulator) reserveBacking(capacity int) error {
 	}
 	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
 	acc.base = saturatingAdd(acc.base, saturatingMul(capacity, estimatedMapEntryStructuralBytes))
-	return acc.checkQuota()
-}
-
-// reserveScratch folds a loop-scratch reservation taken AFTER construction into
-// the accumulator's baseline.
-//
-// base is a snapshot of the call roots plus whatever reserveLoopScratch held at
-// construction time, which is why drivers normally reserve before building the
-// accumulator. A driver that only allocates a buffer on demand cannot do that,
-// so it must report the reservation here: otherwise its per-entry checks weigh
-// accumulated payloads against a baseline that omits the buffer, and receiver,
-// output, buffer, and synthesized payloads could together exceed the quota with
-// every individual check still passing.
-//
-// The live whole-graph checks already see the reservation through
-// exec.reservedScratchBytes; only this snapshot needs telling, so the bytes are
-// not counted twice.
-func (acc *hashBuildAccumulator) reserveScratch(bytes int) error {
-	if acc.exec.memoryQuota <= 0 {
-		return nil
-	}
-	acc.base = saturatingAdd(acc.base, bytes)
+	acc.base = saturatingAdd(acc.base, hashOrderBackingBytes(capacity))
 	return acc.checkQuota()
 }
 
@@ -2319,17 +2267,6 @@ func (acc *hashBuildAccumulator) addSynthesizedKey(key string) error {
 	return acc.checkQuota()
 }
 
-func (acc *hashBuildAccumulator) addTypedSynthesizedKey(key Value, displayKey string, lookupKey HashLookupKey) error {
-	if acc.exec.memoryQuota <= 0 {
-		return nil
-	}
-
-	acc.built = saturatingAdd(acc.built, acc.est.valuePayload(key))
-	acc.built = saturatingAdd(acc.built, acc.est.stringPayloadSize(displayKey))
-	acc.built = saturatingAdd(acc.built, lookupKey.ExtraPayloadBytes())
-	return acc.checkQuota()
-}
-
 // checkTransient rejects the build when a freshly allocated value returned by a
 // block, but not retained as part of the output map, would push the peak
 // footprint over the quota. Array#to_h's block form uses it for the temporary
@@ -2365,6 +2302,27 @@ func (acc *hashBuildAccumulator) checkTransient(transient Value) error {
 
 // checkQuota rejects the build when the live baseline plus the accumulated output
 // exceeds the quota.
+// reserveScratch folds a fixed scratch allocation into the baseline so it is held
+// against the quota for the build's entire lifetime, and rejects the build if the
+// reservation alone already overflows. Builders that keep a Go-local scratch
+// buffer live while the result accumulates (String#scan holds the engine's whole
+// [][]int match table the entire time it materializes per-match result elements
+// from it) reserve that buffer here so its bytes coexist with every accumulated
+// element at peak. Without the reservation a build could keep both the scratch and
+// the growing result live and exceed the quota by the scratch size before the
+// per-element check observed it. scratchBytes is the heap footprint of that live
+// buffer.
+func (acc *arrayBuildAccumulator) reserveScratch(scratchBytes int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	acc.base = saturatingAdd(acc.base, scratchBytes)
+	if acc.exec.memoryExceeded(acc.base) {
+		return acc.exec.memoryQuotaExceededError()
+	}
+	return nil
+}
+
 func (acc *hashBuildAccumulator) checkQuota() error {
 	used := saturatingAdd(acc.base, acc.built)
 	if acc.exec.memoryExceeded(used) {
@@ -2754,7 +2712,7 @@ func (exec *Execution) projectedHashBaseBytes(receiver Value, args []Value, kwar
 // of building a tracking table sized to the rejected result.
 //
 // scratchBytes is the heap footprint of any sorted-key scratch buffers the
-// transform materializes alongside its output (see mergeSortScratchBytes). It is
+// transform materializes alongside its output (see sortedHashEntryBufferBytes). It is
 // subtracted from the byte budget before deriving the entry cap so this ceiling
 // agrees with the final checkProjectedHashTransformBytes, which charges the same
 // scratch: without it the cap would admit entries the projection's actual budget
@@ -2768,10 +2726,12 @@ func (exec *Execution) maxProjectedHashEntries(scratchBytes int, receiver Value,
 	// check sees it.
 	budget := exec.memoryBudgetBytes()
 	used := saturatingAdd(exec.projectedHashBaseBytes(receiver, args, kwargs, block), scratchBytes)
+	used = saturatingAdd(used, estimatedSliceBaseBytes)
 	if used >= budget {
 		return 0
 	}
-	return (budget - used) / estimatedMapEntryStructuralBytes
+	// Each admitted entry costs a map slot and an insertion-order slot.
+	return (budget - used) / (estimatedMapEntryStructuralBytes + estimatedValueBytes)
 }
 
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
@@ -3274,23 +3234,14 @@ func (est *memoryEstimator) value(val Value) int {
 		// over-count the slice base already makes for them.
 		size += estimatedArrayWrapperExtraBytes
 	case KindHash:
-		if entries, ok := hashStringMapIfMaterialized(val); ok {
-			size += est.hash(entries)
-		}
-		// A KindHash wraps its entry map in a hashData struct to carry optional
-		// Ruby-style default metadata; that wrapper is a real per-hash heap
-		// allocation outside the entry map, so it counts toward the quota too.
-		// Charged once per distinct wrapper identity so two values sharing the
-		// same hashData are not double counted. Objects use a bare map with no
-		// wrapper, so hashWrapperBytes returns 0 for them.
+		size += est.hash(val.HashEntryMap())
+		// A KindHash wraps its entry map in a hashData struct that also holds the
+		// insertion order; that wrapper is a real per-hash heap allocation
+		// outside the entry map, so it counts toward the quota too. Charged once
+		// per distinct wrapper identity so two values sharing the same hashData
+		// are not double counted. Objects use a bare map with no wrapper, so
+		// hashWrapperBytes returns 0 for them.
 		size += est.hashWrapperBytes(val)
-		// A KindHash may retain Ruby-style default metadata (a default value
-		// and/or a default proc) outside its entry map. Those payloads are
-		// reachable state — a script can hold a large array or string solely
-		// through a Hash.new(big) default — so they count toward the quota too.
-		// Objects never carry defaults, so these accessors return nil for them.
-		size += est.valuePayload(hashDefaultValue(val))
-		size += est.valuePayload(hashDefaultProc(val))
 	case KindObject:
 		size += est.objectWrapperBytes(val)
 		// A tagged bag's published rendering is retained by the wrapper and can
@@ -3302,7 +3253,7 @@ func (est *memoryEstimator) value(val Value) int {
 			size += estimatedStringHeaderBytes
 			size += est.stringPayloadSize(form)
 		}
-		size += est.hash(val.Hash())
+		size += est.hash(val.HashEntryMap())
 	case KindClass:
 		cl := valueClass(val)
 		if cl == nil {
@@ -3567,7 +3518,7 @@ func (est *memoryEstimator) hashWrapperBytes(val Value) int {
 	}
 	id := hashIdentity(val)
 	if id == 0 {
-		return saturatingAdd(estimatedHashDataBytes, est.typedHashEntriesBytes(val))
+		return saturatingAdd(estimatedHashDataBytes, est.hashReservedBytes(val))
 	}
 	if _, seen := est.seenHashData[id]; seen {
 		return 0
@@ -3579,62 +3530,20 @@ func (est *memoryEstimator) hashWrapperBytes(val Value) int {
 	if est.journal != nil && est.journal.record() {
 		est.journal.hashData = append(est.journal.hashData, id)
 	}
-	return saturatingAdd(estimatedHashDataBytes, est.typedHashEntriesBytes(val))
+	return saturatingAdd(estimatedHashDataBytes, est.hashReservedBytes(val))
 }
 
-func (est *memoryEstimator) typedHashEntriesBytes(val Value) int {
-	if !hashHasTypedEntries(val) {
+// hashReservedBytes charges the storage a hash retains beyond the entries the
+// entry-map walk already prices: buckets reserved past the live entry count and
+// the insertion-order backing. The order slots hold the entry map's own key
+// strings, so only their headers are new.
+func (est *memoryEstimator) hashReservedBytes(val Value) int {
+	if val.Kind() != KindHash {
 		return 0
 	}
-
-	// The two branches charge every entry identically and differ only in how the
-	// entries are traversed; keep the per-entry charge in sync when editing. The
-	// branch keys on capacity (already needed below), which bounds the entry
-	// count, so a hash that fits the stack buffer takes the direct path and no
-	// extra size query is issued beyond what the unbranched walk already made.
-	size := estimatedMapBaseBytes
-	capacity := value.HashTypedEntryCapacity(val)
-	count := 0
-	if capacity <= smallHashKeyBufferSize {
-		// A small hash fits a stack buffer, so materialize and iterate it
-		// directly with no allocation. This is the hot path for the frequently
-		// rewalked low-cardinality hashes typical of group_by/partition results,
-		// and the inlined loop stays cheaper than an indirect per-entry call.
-		var entryBuf [smallHashKeyBufferSize]TypedHashEntry
-		entries := val.TypedHashEntriesInto(entryBuf[:])
-		count = len(entries)
-		for _, entry := range entries {
-			size = saturatingAdd(size, estimatedMapEntryBytes+estimatedHashLookupKeyBytes+estimatedHashEntryBytes)
-			size = saturatingAdd(size, entry.LookupKey.ExtraPayloadBytes())
-			size = saturatingAdd(size, est.valuePayload(entry.Entry.Key))
-			size = saturatingAdd(size, est.valuePayload(entry.Entry.Value))
-		}
-	} else {
-		// A large hash would force TypedHashEntriesInto to allocate an
-		// O(entries) slice, and this walk runs on every memory check while the
-		// hash is reachable, so a large hash under a positive quota paid that
-		// allocation per check. Walk it in place instead. The visitor keeps its
-		// accumulator on the stack, which stays correct under the valuePayload
-		// recursion that a hash-of-hashes triggers.
-		val.RangeTypedHashEntries(func(lookupKey HashLookupKey, entry HashEntry) {
-			count++
-			size = saturatingAdd(size, estimatedMapEntryBytes+estimatedHashLookupKeyBytes+estimatedHashEntryBytes)
-			size = saturatingAdd(size, lookupKey.ExtraPayloadBytes())
-			size = saturatingAdd(size, est.valuePayload(entry.Key))
-			size = saturatingAdd(size, est.valuePayload(entry.Value))
-		})
-	}
-	if capacity > count {
-		extraSlots := capacity - count
-		extraSlotBytes := estimatedMapEntryBytes + estimatedHashLookupKeyBytes + estimatedHashEntryBytes
-		size = saturatingAdd(size, saturatingMul(extraSlots, extraSlotBytes))
-	}
-	// The insertion-order backing retains one lookup-key slot per slot of
-	// capacity (append growth can leave capacity beyond the entry count). Its
-	// lookup keys alias strings the entries above already charge, so only the
-	// structural slots are new.
-	if orderCap := value.HashOrderCapacity(val); orderCap > 0 {
-		size = saturatingAdd(size, saturatingAdd(estimatedSliceBaseBytes, saturatingMul(orderCap, estimatedHashLookupKeyBytes)))
+	size := hashOrderBackingBytes(value.HashOrderCapacity(val))
+	if extra := value.HashEntryCapacity(val) - val.HashLen(); extra > 0 {
+		size = saturatingAdd(size, saturatingMul(extra, estimatedMapEntryStructuralBytes))
 	}
 	return size
 }

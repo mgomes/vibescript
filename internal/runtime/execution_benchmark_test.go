@@ -482,7 +482,7 @@ func BenchmarkExecutionRecursiveFibQuota(b *testing.B) {
 // branches of every hash driver.
 func benchmarkTypedHash(b *testing.B, n int) Value {
 	b.Helper()
-	h := NewTypedHash(n)
+	h := NewHashWithCapacity(n)
 	for i := range n {
 		if err := hashSet(h, NewString(fmt.Sprintf("k%03d", i)), NewInt(int64(i))); err != nil {
 			b.Fatalf("build typed hash: %v", err)

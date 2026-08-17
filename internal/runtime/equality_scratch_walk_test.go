@@ -11,7 +11,7 @@ import (
 func smallHashArray(n int) Value {
 	elems := make([]Value, n)
 	for i := range elems {
-		h := NewTypedHash(1)
+		h := NewHashWithCapacity(1)
 		if err := h.HashSet(NewString(fmt.Sprintf("k%d", i)), NewInt(int64(i))); err != nil {
 			panic(err)
 		}
@@ -53,7 +53,7 @@ func TestHashProbeDoesNotWalkPerComparison(t *testing.T) {
 	const n = 800
 
 	receiver := smallHashArray(n)
-	hashProbe := NewTypedHash(1)
+	hashProbe := NewHashWithCapacity(1)
 	if err := hashProbe.HashSet(NewString("nomatch"), NewInt(-1)); err != nil {
 		t.Fatalf("HashSet: %v", err)
 	}

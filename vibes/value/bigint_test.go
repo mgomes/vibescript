@@ -193,78 +193,31 @@ func TestBigIntIdentity(t *testing.T) {
 	}
 }
 
-func TestBigIntHashKeys(t *testing.T) {
+func TestBigIntIsNotAHashKey(t *testing.T) {
 	a := value.NewBigInt(bigFromString(t, "18446744073709551616"))
-	b := value.NewBigInt(bigFromString(t, "18446744073709551616"))
-	zero := value.NewInt(0)
 
-	keyA, err := value.NewHashLookupKey(a)
-	if err != nil {
-		t.Fatalf("NewHashLookupKey(big): %v", err)
-	}
-	keyB, err := value.NewHashLookupKey(b)
-	if err != nil {
-		t.Fatalf("NewHashLookupKey(big): %v", err)
-	}
-	keyZero, err := value.NewHashLookupKey(zero)
-	if err != nil {
-		t.Fatalf("NewHashLookupKey(0): %v", err)
-	}
-	if keyA != keyB {
-		t.Fatalf("equal big values must produce equal lookup keys")
-	}
-	if keyA == keyZero {
-		t.Fatalf("big lookup key collided with compact 0")
-	}
-	if got := keyA.ExtraPayloadBytes(); got != len("10000000000000000") {
-		t.Fatalf("ExtraPayloadBytes = %d; want canonical hex length", got)
-	}
-	if got := keyZero.ExtraPayloadBytes(); got != 0 {
-		t.Fatalf("compact key ExtraPayloadBytes = %d; want 0", got)
+	// Hash keys are strings and symbols only, so a big integer is rejected
+	// wherever a key can enter or probe a hash.
+	if _, err := value.HashKeyString(a); err == nil {
+		t.Fatalf("HashKeyString(big) error = nil, want unsupported hash key")
 	}
 
-	canonA, err := value.HashKey(a)
-	if err != nil {
-		t.Fatalf("HashKey(big): %v", err)
+	h := value.NewHashWithCapacity(0)
+	if err := h.HashSet(a, value.NewInt(1)); err == nil {
+		t.Fatalf("HashSet(big) error = nil, want unsupported hash key")
 	}
-	// Big keys canonicalize in hexadecimal (linear in words, unlike decimal)
-	// under their own prefix, which no other key space produces.
-	if canonA != "bigint:10000000000000000" {
-		t.Fatalf("HashKey(big) = %q", canonA)
+	if _, _, err := h.HashGet(a); err == nil {
+		t.Fatalf("HashGet(big) error = nil, want unsupported hash key")
 	}
 
-	h := value.NewTypedHash(0)
-	if err := h.HashSet(a, value.NewInt(1)); err != nil {
-		t.Fatalf("HashSet(big): %v", err)
+	// Its decimal spelling is a perfectly good key, which is the documented
+	// migration for a computed key.
+	if err := h.HashSet(value.NewString(a.String()), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(big.to_s) error = %v, want nil", err)
 	}
-	got, ok, err := h.HashGet(b)
+	got, ok, err := h.HashGet(value.NewString("18446744073709551616"))
 	if err != nil || !ok || got.Int() != 1 {
-		t.Fatalf("HashGet(equal big) = (%v, %v, %v); want (1, true, nil)", got, ok, err)
-	}
-	if _, ok, _ := h.HashGet(zero); ok {
-		t.Fatalf("compact 0 must not find the big key's entry")
-	}
-
-	// Crafted probes: no other key space may reach the big key's entry or
-	// canonical form. A string spelling the canonical text (or the old
-	// decimal spelling), the hex digits as a string, and a compact int whose
-	// decimal matches the hex text must all stay distinct.
-	for _, probe := range []value.Value{
-		value.NewString("bigint:10000000000000000"),
-		value.NewString("int:18446744073709551616"),
-		value.NewString("10000000000000000"),
-		value.NewInt(10000000000000000),
-	} {
-		if _, ok, _ := h.HashGet(probe); ok {
-			t.Fatalf("crafted probe %s reached the big key's entry", probe.Inspect())
-		}
-		canonProbe, err := value.HashKey(probe)
-		if err != nil {
-			t.Fatalf("HashKey(probe): %v", err)
-		}
-		if canonProbe == canonA {
-			t.Fatalf("crafted probe %s collided with the big canonical form %q", probe.Inspect(), canonA)
-		}
+		t.Fatalf("HashGet(big.to_s) = (%v, %v, %v); want (1, true, nil)", got, ok, err)
 	}
 }
 

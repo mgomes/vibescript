@@ -229,8 +229,6 @@ type (
 	ValueKind       = value.ValueKind
 	EqualityContext = value.EqualityContext
 	HashEntry       = value.HashEntry
-	HashLookupKey   = value.HashLookupKey
-	TypedHashEntry  = value.TypedHashEntry
 	Money           = value.Money
 	Duration        = value.Duration
 	Range           = value.Range
@@ -307,26 +305,19 @@ func NewArray(a []Value) Value { return value.NewArray(a) }
 // NewHash returns a hash (map) Value.
 func NewHash(h map[string]Value) Value { return value.NewHash(h) }
 
-// NewTypedHash returns a typed-key hash without eagerly materializing the legacy
-// string-key compatibility map.
-func NewTypedHash(capacity int) Value { return value.NewTypedHash(capacity) }
+// NewHashWithCapacity returns an empty hash pre-sized for capacity entries.
+func NewHashWithCapacity(capacity int) Value { return value.NewHashWithCapacity(capacity) }
 
-// NewHashWithDefault returns a hash Value carrying Ruby-style default metadata
-// (a default value and/or a default proc consulted on missing-key lookup).
-func NewHashWithDefault(h map[string]Value, defaultValue, defaultProc Value) Value {
-	return value.NewHashWithDefault(h, defaultValue, defaultProc)
+// newHashWithOrder returns a hash over entries that iterates in the given key
+// order, for the cloners that reuse a shared entry map and must still give each
+// wrapper its own order.
+func newHashWithOrder(entries map[string]Value, order []Value) Value {
+	return value.NewHashWithTrustedOrder(entries, order)
 }
 
-// hashDefaultValue returns the default value configured for a hash, or nil.
-func hashDefaultValue(v Value) Value { return value.HashDefaultValue(v) }
-
-// hashDefaultProc returns the default proc (a KindBlock value) configured for a
-// hash, or nil.
-func hashDefaultProc(v Value) Value { return value.HashDefaultProc(v) }
-
-// hashIdentity returns a stable identity for a hash wrapper (entries plus
-// default metadata), or 0 when v is not a hash. Scanners that must also visit
-// hash defaults key their seen-set on this rather than the bare entry map.
+// hashIdentity returns a stable identity for a hash wrapper, or 0 when v is not
+// a hash. Cloners and scanners key their seen-sets on this rather than the bare
+// entry map, so two wrappers sharing one map stay distinct.
 func hashIdentity(v Value) uintptr { return value.HashIdentity(v) }
 
 // arrayIdentity returns a stable identity for an array wrapper, or 0 when v is
@@ -348,10 +339,6 @@ func setArrayWindow(v Value, elems []Value, head int) { v.SetArrayWindow(elems, 
 // arrayWindowHead reports how many element slots an array's elements start past
 // the beginning of the allocation they sit in.
 func arrayWindowHead(v Value) int { return value.ArrayWindowHead(v) }
-
-func hashStringMapIfMaterialized(v Value) (map[string]Value, bool) {
-	return v.HashStringMapIfMaterialized()
-}
 
 // NewSymbol returns a symbol Value.
 func NewSymbol(name string) Value { return value.NewSymbol(name) }
@@ -542,20 +529,6 @@ func compositeValueNeedsHostClone(val Value) bool {
 		}
 		return false
 	case KindHash, KindObject:
-		// A hash carrying a Ruby-style default proc (a block) must be cloned even
-		// when its entries do not, so the proc closes over the cloned environment
-		// rather than the live one as it crosses the host boundary. A default
-		// value may itself be (or reach) a clone-needing value through an
-		// arbitrarily deep, possibly cyclic graph, so escalate to the stateful
-		// scan rather than recursing without shared state here.
-		if val.Kind() == KindHash {
-			if !hashDefaultProc(val).IsNil() {
-				return true
-			}
-			if !hashDefaultValue(val).IsNil() {
-				return valueNeedsHostCloneWithFreshState(val)
-			}
-		}
 		if val.HashLen() == 0 {
 			return false
 		}
@@ -579,22 +552,6 @@ func compositeValueNeedsHostClone(val Value) bool {
 	default:
 		return valueNeedsHostClone(val)
 	}
-}
-
-// hashDefaultNeedsHostClone reports whether a hash's default metadata requires a
-// host clone: a default proc is always a block (clone-needed), and a default
-// value is clone-needed when it directly is or can contain a runtime value. It
-// threads the caller's scan state so a default value that cycles back to its own
-// hash (e.g. d = {}; h = Hash.new(d); d[:h] = h) terminates instead of
-// recursing forever.
-func hashDefaultNeedsHostClone(val Value, state hostValueScanState) bool {
-	if !hashDefaultProc(val).IsNil() {
-		return true
-	}
-	if def := hashDefaultValue(val); !def.IsNil() {
-		return valueNeedsHostCloneWithState(def, state)
-	}
-	return false
 }
 
 func valueNeedsHostCloneWithFreshState(val Value) bool {
@@ -654,13 +611,6 @@ func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
 				return false
 			}
 			state.maps[ptr] = struct{}{}
-		}
-		// A default proc or clone-needing default value forces a clone even when
-		// the entries do not need one; only KindHash carries defaults. The wrapper
-		// is marked seen above first, so a default value cycling back to this hash
-		// terminates at the seen check.
-		if val.Kind() == KindHash && hashDefaultNeedsHostClone(val, state) {
-			return true
 		}
 		return anyHashValue(val, func(item Value) bool {
 			return valueNeedsHostCloneWithState(item, state)
@@ -908,13 +858,11 @@ func cloneEnvForHost(env *Env, state hostValueCloneState) *Env {
 	return clone
 }
 
-// cloneHostHashValue clones a KindHash value, preserving and deep-cloning its
-// Ruby-style default metadata (default value and default proc) so a hash that
-// crosses the host boundary keeps its missing-key behavior and its proc closes
-// over the cloned environment rather than the live one. The cloned hash is
-// cached on its source wrapper identity so a hash reachable through several
-// paths (or one that contains itself) clones to a single wrapper and keeps its
-// object identity across the boundary.
+// cloneHostHashValue clones a KindHash value. The cloned hash is cached on its
+// source wrapper identity so a hash reachable through several paths (or one
+// that contains itself) clones to a single wrapper and keeps its object
+// identity across the boundary, and the clone is filled in the source's
+// iteration order so the copy iterates the way its source does.
 func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 	id := hashIdentity(val)
 	if id != 0 {
@@ -922,76 +870,48 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 			return clone
 		}
 	}
-	typedEntries := hashHasTypedEntries(val)
-	// Only the legacy string-key map participates in shared-entry dedup. A typed
-	// hash clones through HashEntries() below, so avoid materializing its lossy
-	// string-key map here at all.
-	var entries map[string]Value
-	var entriesPtr uintptr
-	var sharedEntries map[string]Value
-	var sharedSeen bool
-	if !typedEntries {
-		entries = val.Hash()
-		entriesPtr = reflect.ValueOf(entries).Pointer()
-		// A distinct wrapper that shares this entry map already cloned it; reuse
-		// that cloned map so both cloned wrappers mutate one map in place and the
-		// host's intentional aliasing survives the boundary. The shared map is
-		// already fully populated, so skip the fill loop -- only a fresh wrapper
-		// (with this wrapper's own cloned defaults) is built around it.
-		sharedEntries, sharedSeen = state.hashEntries[entriesPtr]
-	}
+	entries := val.HashEntryMap()
+	entriesPtr := reflect.ValueOf(entries).Pointer()
+	// A distinct wrapper that shares this entry map already cloned it; reuse
+	// that cloned map so both cloned wrappers mutate one map in place and the
+	// host's intentional aliasing survives the boundary. The shared map is
+	// already fully populated, so skip the fill loop -- only a fresh wrapper is
+	// built around it.
+	sharedEntries, sharedSeen := state.hashEntries[entriesPtr]
 	clonedEntries := sharedEntries
 	if !sharedSeen {
 		clonedEntries = make(map[string]Value, val.HashLen())
 	}
-	defaultValue := hashDefaultValue(val)
-	defaultProc := hashDefaultProc(val)
-	hasDefault := !defaultValue.IsNil() || !defaultProc.IsNil()
+	// A shared map is already filled, so the fill loop below is skipped and the
+	// wrapper needs this source's order handed to it: two wrappers over one map
+	// can iterate differently, and NewHash would derive one order from the
+	// map's contents for both. A fresh map is filled entry by entry below,
+	// which records the same order as it goes.
 	var cloned Value
-	if hasDefault {
-		cloned = NewHashWithDefault(clonedEntries, NewNil(), NewNil())
+	if sharedSeen {
+		cloned = newHashWithOrder(clonedEntries, val.HashKeyOrder())
 	} else {
 		cloned = NewHash(clonedEntries)
 	}
-	// Register the wrapper before cloning defaults or entries so a hash that
-	// contains itself -- whether through an entry or through a default that
-	// reaches the hash (e.g. Hash.new { |_, _| h }) -- dedups against this clone
-	// rather than recursing forever or cloning a second wrapper.
+	// Register the wrapper before cloning entries so a hash that contains itself
+	// dedups against this clone rather than recursing forever or cloning a
+	// second wrapper.
 	if id != 0 {
 		state.hashes[id] = cloned
 	}
-	if !typedEntries && !sharedSeen && entriesPtr != 0 {
+	if !sharedSeen && entriesPtr != 0 {
 		state.hashEntries[entriesPtr] = clonedEntries
 	}
-	if hasDefault {
-		clonedDefaultValue := NewNil()
-		clonedDefaultProc := NewNil()
-		if !defaultValue.IsNil() {
-			clonedDefaultValue = cloneValueForHostWithState(defaultValue, state)
-		}
-		if !defaultProc.IsNil() {
-			clonedDefaultProc = cloneValueForHostWithState(defaultProc, state)
-		}
-		cloned.SetHashDefaults(clonedDefaultValue, clonedDefaultProc)
-	}
 	if !sharedSeen {
-		if typedEntries {
-			for _, typedEntry := range val.OrderedTypedHashEntriesInto(nil) {
-				clonedKey := cloneValueForHostWithState(typedEntry.Entry.Key, state)
-				clonedValue := cloneValueForHostWithState(typedEntry.Entry.Value, state)
-				setClonedTypedHashEntry(cloned, typedEntry.LookupKey, clonedKey, clonedValue)
-			}
-		} else {
-			for key, item := range entries {
-				clonedEntries[key] = cloneValueForHostWithState(item, state)
-			}
+		for _, entry := range val.HashEntries() {
+			setClonedHashEntry(cloned, entry.Key, cloneValueForHostWithState(entry.Value, state))
 		}
 	}
 	return cloned
 }
 
 func cloneHostMapValue(val Value, state hostValueCloneState, construct func(map[string]Value) Value) Value {
-	entries := val.Hash()
+	entries := val.HashEntryMap()
 	ptr := reflect.ValueOf(entries).Pointer()
 	if ptr != 0 {
 		if clone, ok := state.maps[ptr]; ok {

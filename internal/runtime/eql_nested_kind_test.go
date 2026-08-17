@@ -78,23 +78,3 @@ func TestEqualityStaysNumericRecursively(t *testing.T) {
 		})
 	}
 }
-
-// Hash keys use eql? identity, so an int key and a float key stay distinct.
-func TestHashKeysKeepKindIdentity(t *testing.T) {
-	t.Parallel()
-	script := compileScript(t, `
-    def run()
-      h = {}
-      h[1] = "int"
-      h[1.0] = "float"
-      h.size.to_s
-    end
-    `)
-	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
-	if got.String() != "2" {
-		t.Fatalf("hash with an int and a float key has size %s, want 2", got.String())
-	}
-}

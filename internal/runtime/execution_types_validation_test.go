@@ -58,6 +58,43 @@ func TestTypeAllowsStringHashKeyDefersForAmbiguousUnions(t *testing.T) {
 	}
 }
 
+func TestValueMatchesTypeHashSymbolAnnotation(t *testing.T) {
+	t.Parallel()
+
+	hash := NewHashWithCapacity(1)
+	if err := hash.HashSet(NewSymbol("name"), NewInt(1)); err != nil {
+		t.Fatalf("HashSet(name) error = %v, want nil", err)
+	}
+	hashType := &TypeExpr{
+		Kind: TypeHash,
+		TypeArgs: []*TypeExpr{
+			{Name: "symbol", Kind: TypeSymbol},
+			{Name: "int", Kind: TypeInt},
+		},
+	}
+
+	matches, err := valueMatchesType(hash, hashType)
+	if err != nil {
+		t.Fatalf("valueMatchesType({name: 1}, hash<symbol, int>) error = %v, want nil", err)
+	}
+	if !matches {
+		t.Fatal("valueMatchesType({name: 1}, hash<symbol, int>) = false, want true")
+	}
+	if err := hash.HashSet(NewString("a"), NewInt(2)); err != nil {
+		t.Fatalf("HashSet(a) after valueMatchesType error = %v, want nil", err)
+	}
+	entries := hash.HashEntries()
+	if len(entries) != 2 {
+		t.Fatalf("HashEntries after valueMatchesType = %d, want 2", len(entries))
+	}
+	if got, want := entries[0].Key.String(), "name"; got != want {
+		t.Fatalf("HashEntries[0] after valueMatchesType = %q, want %q", got, want)
+	}
+	if got, want := entries[1].Key.String(), "a"; got != want {
+		t.Fatalf("HashEntries[1] after valueMatchesType = %q, want %q", got, want)
+	}
+}
+
 func TestValueMatchesTypeHashUnknownKeyUnionReturnsError(t *testing.T) {
 	t.Parallel()
 	hashType := &TypeExpr{

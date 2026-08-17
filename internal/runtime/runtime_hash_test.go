@@ -48,339 +48,6 @@ func compareHash(t *testing.T, got, want map[string]Value) {
 	}
 }
 
-func TestHashArbitraryKeys(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `def run()
-  hash = {}
-  hash[1] = "one"
-  hash[[1, 2]] = "array"
-  hash["name"] = "string"
-  hash[:name] = "symbol"
-  hash[[3, 4]] = "assigned"
-	  hash.store([5], "stored")
-	  copy = hash.dup
-	  mixed = { "name": "string" }
-	  mixed[:name] = "symbol"
-	  groups = [1, 2, 3].group_by { |n| n % 2 }
-	  tally = [[1], [1], [2]].tally
-	  mixed_groups = ["name", :name, "name"].group_by { |key| key }
-	  mixed_tally = ["name", :name, "name"].tally
-	  pairs = [[1, "pair-int"], [[2], "pair-array"]].to_h
-	  {
-    int: hash[1],
-    array: hash[[1, 2]],
-    string_key: hash["name"],
-    symbol_key: hash[:name],
-	    assigned_array: hash[[3, 4]],
-	    stored_array: hash[[5]],
-	    copied_int: copy[1],
-	    copied_array: copy[[1, 2]],
-	    mixed_size: mixed.size,
-	    mixed_keys: mixed.keys,
-	    mixed_values: mixed.values,
-	    odd_group: groups[1],
-	    even_group: groups[0],
-	    tally_array: tally[[1]],
-	    mixed_group_size: mixed_groups.size,
-	    mixed_group_string: mixed_groups["name"],
-	    mixed_group_symbol: mixed_groups[:name],
-	    mixed_tally_size: mixed_tally.size,
-	    mixed_tally_string: mixed_tally["name"],
-	    mixed_tally_symbol: mixed_tally[:name],
-    pair_int: pairs[1],
-    pair_array: pairs[[2]]
-  }
-end`)
-
-	result := callFunc(t, script, "run", nil)
-	if result.Kind() != KindHash {
-		t.Fatalf("Hash arbitrary key summary kind = %v, want hash", result.Kind())
-	}
-	got := result.Hash()
-	checks := map[string]Value{
-		"int":                NewString("one"),
-		"array":              NewString("array"),
-		"string_key":         NewString("string"),
-		"symbol_key":         NewString("symbol"),
-		"assigned_array":     NewString("assigned"),
-		"stored_array":       NewString("stored"),
-		"copied_int":         NewString("one"),
-		"copied_array":       NewString("array"),
-		"mixed_size":         NewInt(2),
-		"tally_array":        NewInt(2),
-		"mixed_group_size":   NewInt(2),
-		"mixed_tally_size":   NewInt(2),
-		"mixed_tally_string": NewInt(2),
-		"mixed_tally_symbol": NewInt(1),
-		"pair_int":           NewString("pair-int"),
-		"pair_array":         NewString("pair-array"),
-	}
-	for key, want := range checks {
-		if got := got[key]; !got.Equal(want) {
-			t.Fatalf("arbitrary hash key %s = %s, want %s", key, got.Inspect(), want.Inspect())
-		}
-	}
-	compareArrays(t, got["mixed_keys"], []Value{NewString("name"), NewSymbol("name")})
-	compareArrays(t, got["mixed_values"], []Value{NewString("string"), NewString("symbol")})
-	compareArrays(t, got["odd_group"], []Value{NewInt(1), NewInt(3)})
-	compareArrays(t, got["even_group"], []Value{NewInt(2)})
-	compareArrays(t, got["mixed_group_string"], []Value{NewString("name"), NewString("name")})
-	compareArrays(t, got["mixed_group_symbol"], []Value{NewSymbol("name")})
-}
-
-func TestTypedHashAnnotationsUseOriginalKeyValues(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `def int_key(hash: hash<int, string>)
-  hash[1]
-end
-
-def array_key(hash: hash<array<int>, string>)
-  hash[[1, 2]]
-end
-
-def reject_symbol(hash: hash<int, string>)
-  hash
-end
-
-def build_int_hash()
-  h = {}
-  h[1] = "one"
-  h
-end
-
-def build_array_hash()
-  h = {}
-  h[[1, 2]] = "array"
-  h
-end
-
-def build_symbol_hash()
-  {a: "symbol"}
-end`)
-
-	intHash := callFunc(t, script, "build_int_hash", nil)
-	intResult, err := script.Call(context.Background(), "int_key", []Value{intHash}, CallOptions{})
-	if err != nil {
-		t.Fatalf("int_key(int-keyed hash) error = %v, want nil", err)
-	}
-	if !intResult.Equal(NewString("one")) {
-		t.Fatalf("int_key(int-keyed hash) = %s, want one", intResult.Inspect())
-	}
-	arrayHash := callFunc(t, script, "build_array_hash", nil)
-	arrayResult, err := script.Call(context.Background(), "array_key", []Value{arrayHash}, CallOptions{})
-	if err != nil {
-		t.Fatalf("array_key(array-keyed hash) error = %v, want nil", err)
-	}
-	if !arrayResult.Equal(NewString("array")) {
-		t.Fatalf("array_key(array-keyed hash) = %s, want array", arrayResult.Inspect())
-	}
-	symbolHash := callFunc(t, script, "build_symbol_hash", nil)
-	_, err = script.Call(context.Background(), "reject_symbol", []Value{symbolHash}, CallOptions{})
-	if err == nil {
-		t.Fatalf("reject_symbol({a: string}) error = nil, want type mismatch")
-	}
-}
-
-func TestTypedHashKeysSurviveHashHelpers(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `def run()
-  hash = { "a": 1 }
-  hash[:a] = 2
-  merge_arg = {}
-  merge_arg[:a] = 3
-  merged = hash.merge(merge_arg)
-  sliced = hash.slice("a", :a)
-  excepted = hash.except(:a)
-  selected = hash.select { |key, value| key == "a" }
-  rejected = hash.reject { |key, value| key == :a }
-  deleted_if = hash.delete_if { |key, value| false }
-  kept_if = hash.keep_if { |key, value| true }
-  transformed = hash.transform_values { |value| value + 10 }
-  compact_base = { "a": 1 }
-  compact_base[:a] = nil
-  compacted = compact_base.compact
-  looped = []
-  for pair in hash
-    looped = looped.push(pair)
-  end
-  {
-    merge_size: merged.size,
-    merge_str: merged["a"],
-    merge_sym: merged[:a],
-    slice_size: sliced.size,
-    slice_str: sliced["a"],
-    slice_sym: sliced[:a],
-    except_size: excepted.size,
-    except_str: excepted["a"],
-    except_sym_nil: excepted[:a] == nil,
-    select_size: selected.size,
-    select_str: selected["a"],
-    select_sym_nil: selected[:a] == nil,
-    reject_size: rejected.size,
-    reject_str: rejected["a"],
-    reject_sym_nil: rejected[:a] == nil,
-    delete_if_size: deleted_if.size,
-    delete_if_str: deleted_if["a"],
-    delete_if_sym: deleted_if[:a],
-    keep_if_size: kept_if.size,
-    keep_if_str: kept_if["a"],
-    keep_if_sym: kept_if[:a],
-    transform_size: transformed.size,
-    transform_str: transformed["a"],
-    transform_sym: transformed[:a],
-    compact_size: compacted.size,
-    compact_str: compacted["a"],
-    compact_sym_nil: compacted[:a] == nil,
-    looped: looped
-  }
-end`)
-
-	result := callFunc(t, script, "run", nil)
-	if result.Kind() != KindHash {
-		t.Fatalf("typed hash helper summary kind = %v, want hash", result.Kind())
-	}
-	got := result.Hash()
-	checks := map[string]Value{
-		"merge_size":      NewInt(2),
-		"merge_str":       NewInt(1),
-		"merge_sym":       NewInt(3),
-		"slice_size":      NewInt(2),
-		"slice_str":       NewInt(1),
-		"slice_sym":       NewInt(2),
-		"except_size":     NewInt(1),
-		"except_str":      NewInt(1),
-		"except_sym_nil":  NewBool(true),
-		"select_size":     NewInt(1),
-		"select_str":      NewInt(1),
-		"select_sym_nil":  NewBool(true),
-		"reject_size":     NewInt(1),
-		"reject_str":      NewInt(1),
-		"reject_sym_nil":  NewBool(true),
-		"delete_if_size":  NewInt(2),
-		"delete_if_str":   NewInt(1),
-		"delete_if_sym":   NewInt(2),
-		"keep_if_size":    NewInt(2),
-		"keep_if_str":     NewInt(1),
-		"keep_if_sym":     NewInt(2),
-		"transform_size":  NewInt(2),
-		"transform_str":   NewInt(11),
-		"transform_sym":   NewInt(12),
-		"compact_size":    NewInt(1),
-		"compact_str":     NewInt(1),
-		"compact_sym_nil": NewBool(true),
-	}
-	for key, want := range checks {
-		if got := got[key]; !got.Equal(want) {
-			t.Fatalf("typed hash helper %s = %s, want %s", key, got.Inspect(), want.Inspect())
-		}
-	}
-	compareArrays(t, got["looped"], []Value{
-		NewArray([]Value{NewString("a"), NewInt(1)}),
-		NewArray([]Value{NewSymbol("a"), NewInt(2)}),
-	})
-}
-
-func TestTypedHashMergeDoesNotMaterializeReceiverMirror(t *testing.T) {
-	t.Parallel()
-
-	receiver := NewTypedHash(0)
-	if err := hashSet(receiver, NewString("a"), NewInt(1)); err != nil {
-		t.Fatalf("hashSet(string key) error = %v", err)
-	}
-	if err := hashSet(receiver, NewSymbol("a"), NewInt(2)); err != nil {
-		t.Fatalf("hashSet(symbol key) error = %v", err)
-	}
-	arg := NewTypedHash(0)
-	if err := hashSet(arg, NewSymbol("a"), NewInt(3)); err != nil {
-		t.Fatalf("hashSet(arg symbol key) error = %v", err)
-	}
-	if entries, ok := hashStringMapIfMaterialized(receiver); ok || entries != nil {
-		t.Fatalf("typed receiver materialized before merge = %v, %v; want nil, false", entries, ok)
-	}
-
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30}
-	merged, err := callHashMember(t, exec, receiver, "merge", []Value{arg}, NewNil())
-	if err != nil {
-		t.Fatalf("typed merge error = %v", err)
-	}
-	if got, ok, err := hashGet(merged, NewString("a")); err != nil || !ok || !got.Equal(NewInt(1)) {
-		t.Fatalf("merged string key = %s, %v, %v; want 1, true, nil", got.Inspect(), ok, err)
-	}
-	if got, ok, err := hashGet(merged, NewSymbol("a")); err != nil || !ok || !got.Equal(NewInt(3)) {
-		t.Fatalf("merged symbol key = %s, %v, %v; want 3, true, nil", got.Inspect(), ok, err)
-	}
-	if entries, ok := hashStringMapIfMaterialized(receiver); ok || entries != nil {
-		t.Fatalf("typed receiver materialized after merge = %v, %v; want nil, false", entries, ok)
-	}
-}
-
-func TestHostClonePreservesTypedHashKeys(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `def build()
-  h = {}
-  h[1] = "one"
-  h[[1]] = "array"
-  h["name"] = "string"
-  h[:name] = "symbol"
-  h
-end
-
-def fetch(hash)
-  {
-    int: hash[1],
-    array: hash[[1]],
-    string_key: hash["name"],
-    symbol_key: hash[:name]
-  }
-end`)
-
-	exported := callFunc(t, script, "build", nil)
-	result := callFunc(t, script, "fetch", []Value{exported})
-	if result.Kind() != KindHash {
-		t.Fatalf("fetch summary kind = %v, want hash", result.Kind())
-	}
-	compareHash(t, result.Hash(), map[string]Value{
-		"int":        NewString("one"),
-		"array":      NewString("array"),
-		"string_key": NewString("string"),
-		"symbol_key": NewString("symbol"),
-	})
-}
-
-func TestHostBackedHashTypedWriteReplacesMatchingLegacyKey(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `def rewrite(record)
-  record[:array] = []
-  {
-    size: record.size,
-    value: record[:array],
-    keys: record.keys
-  }
-end`)
-
-	record := NewHash(map[string]Value{"array": NewString("old")})
-	result := callFunc(t, script, "rewrite", []Value{record})
-	if result.Kind() != KindHash {
-		t.Fatalf("rewrite summary kind = %v, want hash", result.Kind())
-	}
-	got := result.Hash()
-	if !got["size"].Equal(NewInt(1)) {
-		t.Fatalf("record size = %s, want 1", got["size"].Inspect())
-	}
-	if value := got["value"]; value.Kind() != KindArray || len(value.Array()) != 0 {
-		t.Fatalf("record[:array] = %s, want empty array", value.Inspect())
-	}
-	keys := got["keys"].Array()
-	if len(keys) != 1 || !keys[0].Equal(NewSymbol("array")) {
-		t.Fatalf("record keys = %s, want [:array]", got["keys"].Inspect())
-	}
-}
-
 func TestHashMergeAndKeys(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -409,7 +76,7 @@ func TestHashMergeAndKeys(t *testing.T) {
 	}
 
 	keys := callFunc(t, script, "insertion_keys", nil)
-	wantKeys := []Value{NewSymbol("b"), NewSymbol("a")}
+	wantKeys := []Value{NewString("b"), NewString("a")}
 	compareArrays(t, keys, wantKeys)
 }
 
@@ -471,9 +138,9 @@ func TestHashMergeConflictBlock(t *testing.T) {
 			want: map[string]Value{"a": NewInt(11), "b": NewInt(2), "c": NewInt(3)},
 		},
 		{
-			name: "block receives the key as a symbol",
+			name: "block receives the key as a string",
 			fn:   "receives_symbol_key",
-			want: NewSymbol("a"),
+			want: NewString("a"),
 		},
 		{
 			name: "string keys collide using their string form",
@@ -481,14 +148,16 @@ func TestHashMergeConflictBlock(t *testing.T) {
 			want: map[string]Value{"a": NewInt(11), "b": NewInt(5)},
 		},
 		{
-			name: "symbol and string keys with the same name stay distinct",
+			// One keyspace: the quoted key conflicts with the label, so the
+			// block resolves it instead of adding a second entry.
+			name: "symbol and string keys with the same name conflict",
 			fn:   "mixed_symbol_string_keys",
-			want: map[string]Value{"a": NewInt(10)},
+			want: map[string]Value{"a": NewInt(11)},
 		},
 		{
 			name: "block with fewer params defaults extra args away",
 			fn:   "arity_one_block",
-			want: map[string]Value{"a": NewSymbol("a"), "b": NewInt(2)},
+			want: map[string]Value{"a": NewString("a"), "b": NewInt(2)},
 		},
 		{
 			name: "no block keeps the incoming hash winning",
@@ -822,35 +491,35 @@ func TestHashFlatten(t *testing.T) {
 		{
 			name: "default depth spreads pairs",
 			fn:   "default_depth",
-			want: []Value{NewSymbol("a"), NewInt(1), NewSymbol("b"), NewInt(2)},
+			want: []Value{NewString("a"), NewInt(1), NewString("b"), NewInt(2)},
 		},
 		{
 			name: "default depth keeps nested value arrays",
 			fn:   "nested_value_kept_at_default_depth",
-			want: []Value{NewSymbol("a"), NewInt(1), NewSymbol("b"), NewArray([]Value{NewInt(2), NewInt(3)})},
+			want: []Value{NewString("a"), NewInt(1), NewString("b"), NewArray([]Value{NewInt(2), NewInt(3)})},
 		},
 		{
 			name: "depth two flattens value arrays one more level",
 			fn:   "depth_two_flattens_value_arrays",
-			want: []Value{NewSymbol("a"), NewInt(1), NewSymbol("b"), NewInt(2), NewInt(3)},
+			want: []Value{NewString("a"), NewInt(1), NewString("b"), NewInt(2), NewInt(3)},
 		},
 		{
 			name: "depth zero keeps key-value pairs nested",
 			fn:   "depth_zero_keeps_pairs",
 			want: []Value{
-				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
-				NewArray([]Value{NewSymbol("b"), NewArray([]Value{NewInt(2), NewInt(3)})}),
+				NewArray([]Value{NewString("a"), NewInt(1)}),
+				NewArray([]Value{NewString("b"), NewArray([]Value{NewInt(2), NewInt(3)})}),
 			},
 		},
 		{
 			name: "negative depth flattens completely",
 			fn:   "negative_depth_flattens_fully",
-			want: []Value{NewSymbol("a"), NewInt(1), NewSymbol("b"), NewInt(2), NewInt(3), NewInt(4)},
+			want: []Value{NewString("a"), NewInt(1), NewString("b"), NewInt(2), NewInt(3), NewInt(4)},
 		},
 		{
 			name: "float depth is truncated like Ruby",
 			fn:   "float_depth_truncates",
-			want: []Value{NewSymbol("a"), NewInt(1), NewSymbol("b"), NewArray([]Value{NewInt(2), NewInt(3)})},
+			want: []Value{NewString("a"), NewInt(1), NewString("b"), NewArray([]Value{NewInt(2), NewInt(3)})},
 		},
 		{
 			name: "empty hash flattens to an empty array",
@@ -926,8 +595,9 @@ func TestQuotedHashLiteralKeys(t *testing.T) {
 	if lookups.Kind() != KindHash {
 		t.Fatalf("lookups() = %s, want hash", lookups.Kind())
 	}
+	// A quoted key and its symbol spelling address one entry.
 	compareHash(t, lookups.Hash(), map[string]Value{
-		"symbol_name": NewNil(),
+		"symbol_name": NewString("Ada"),
 		"string_name": NewString("Ada"),
 		"hyphenated":  NewString("Lovelace"),
 	})
@@ -936,9 +606,10 @@ func TestQuotedHashLiteralKeys(t *testing.T) {
 	if collision.Kind() != KindHash {
 		t.Fatalf("collision() = %s, want hash", collision.Kind())
 	}
+	// { name: ..., "name": ... } is one entry the later pair overwrites.
 	compareHash(t, collision.Hash(), map[string]Value{
-		"size":        NewInt(2),
-		"symbol_name": NewString("symbol"),
+		"size":        NewInt(1),
+		"symbol_name": NewString("string"),
 		"string_name": NewString("string"),
 	})
 }
@@ -988,7 +659,7 @@ func TestHashMethodNamesWinOverKeys(t *testing.T) {
 	if !collisions["size_key"].Equal(NewString("XL")) {
 		t.Fatalf("size_key = %v, want XL", collisions["size_key"])
 	}
-	compareArrays(t, collisions["keys_method"], []Value{NewSymbol("size"), NewSymbol("keys"), NewSymbol("fetch")})
+	compareArrays(t, collisions["keys_method"], []Value{NewString("size"), NewString("keys"), NewString("fetch")})
 	if !collisions["keys_key"].Equal(NewString("raw keys")) {
 		t.Fatalf("keys_key = %v, want raw keys", collisions["keys_key"])
 	}
@@ -1104,13 +775,14 @@ func TestHashExpandedHelpers(t *testing.T) {
 	if !got["empty_true"].Bool() {
 		t.Fatalf("expected empty_true to be true")
 	}
-	if !got["key_symbol"].Bool() || got["key_string"].Bool() || !got["include_symbol"].Bool() {
+	// A symbol and a string spelling name the same key, so both predicates hit.
+	if !got["key_symbol"].Bool() || !got["key_string"].Bool() || !got["include_symbol"].Bool() {
 		t.Fatalf("key/include mismatch: %#v", got)
 	}
 	if got["missing_key"].Bool() {
 		t.Fatalf("missing_key should be false")
 	}
-	compareArrays(t, got["keys"], []Value{NewSymbol("b"), NewSymbol("a"), NewSymbol("c")})
+	compareArrays(t, got["keys"], []Value{NewString("b"), NewString("a"), NewString("c")})
 	compareArrays(t, got["values"], []Value{NewInt(2), NewInt(1), NewInt(3)})
 
 	if !got["fetch_hit"].Equal(NewInt(1)) {
@@ -1136,7 +808,8 @@ func TestHashExpandedHelpers(t *testing.T) {
 	if slice.Kind() != KindHash {
 		t.Fatalf("slice expected hash, got %v", slice.Kind())
 	}
-	compareHash(t, slice.Hash(), map[string]Value{"a": NewInt(1)})
+	// slice(:a, "c") now selects both: the quoted key is the same key as :c.
+	compareHash(t, slice.Hash(), map[string]Value{"a": NewInt(1), "c": NewInt(3)})
 
 	except := got["except"]
 	if except.Kind() != KindHash {
@@ -1145,7 +818,7 @@ func TestHashExpandedHelpers(t *testing.T) {
 	compareHash(t, except.Hash(), map[string]Value{"a": NewInt(1), "c": NewInt(3)})
 
 	compareArrays(t, got["each_pairs"], []Value{NewString("b=2"), NewString("a=1"), NewString("c=3")})
-	compareArrays(t, got["each_keys"], []Value{NewSymbol("b"), NewSymbol("a"), NewSymbol("c")})
+	compareArrays(t, got["each_keys"], []Value{NewString("b"), NewString("a"), NewString("c")})
 	compareArrays(t, got["each_values"], []Value{NewInt(2), NewInt(1), NewInt(3)})
 
 	selectGT1 := got["select_gt1"]
@@ -1198,8 +871,8 @@ func TestHashEachBlockArgumentShape(t *testing.T) {
 			params: "|pair|",
 			body:   `out = out.push(pair)`,
 			want: []Value{
-				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
-				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+				NewArray([]Value{NewString("a"), NewInt(1)}),
+				NewArray([]Value{NewString("b"), NewInt(2)}),
 			},
 		},
 		{
@@ -1207,8 +880,8 @@ func TestHashEachBlockArgumentShape(t *testing.T) {
 			params: "|(k, v)|",
 			body:   `out = out.push([k, v])`,
 			want: []Value{
-				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
-				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+				NewArray([]Value{NewString("a"), NewInt(1)}),
+				NewArray([]Value{NewString("b"), NewInt(2)}),
 			},
 		},
 		{
@@ -1216,8 +889,8 @@ func TestHashEachBlockArgumentShape(t *testing.T) {
 			params: "|(k, *rest)|",
 			body:   `out = out.push([k, rest])`,
 			want: []Value{
-				NewArray([]Value{NewSymbol("a"), NewArray([]Value{NewInt(1)})}),
-				NewArray([]Value{NewSymbol("b"), NewArray([]Value{NewInt(2)})}),
+				NewArray([]Value{NewString("a"), NewArray([]Value{NewInt(1)})}),
+				NewArray([]Value{NewString("b"), NewArray([]Value{NewInt(2)})}),
 			},
 		},
 		{
@@ -1225,8 +898,8 @@ func TestHashEachBlockArgumentShape(t *testing.T) {
 			params: "|key, value|",
 			body:   `out = out.push([key, value])`,
 			want: []Value{
-				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
-				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+				NewArray([]Value{NewString("a"), NewInt(1)}),
+				NewArray([]Value{NewString("b"), NewInt(2)}),
 			},
 		},
 		{
@@ -1234,8 +907,8 @@ func TestHashEachBlockArgumentShape(t *testing.T) {
 			params: "|key, value, extra|",
 			body:   `out = out.push([key, value, extra])`,
 			want: []Value{
-				NewArray([]Value{NewSymbol("a"), NewInt(1), NewNil()}),
-				NewArray([]Value{NewSymbol("b"), NewInt(2), NewNil()}),
+				NewArray([]Value{NewString("a"), NewInt(1), NewNil()}),
+				NewArray([]Value{NewString("b"), NewInt(2), NewNil()}),
 			},
 		},
 	}
@@ -1405,7 +1078,7 @@ func TestHashEachDestructureRestGrownEntryBoundedByQuota(t *testing.T) {
 
 	source := `def run(h)
 		h.each do |(k, (head, *tail))|
-			if k == :a
+			if k == "a"
 				h[:c] = (1..20000).to_a
 			end
 		end
@@ -1519,14 +1192,9 @@ func TestHashFetchValuesErrors(t *testing.T) {
 			wantErr: `hash.fetch_values key not found: "missing"`,
 		},
 		{
-			name:    "string key distinct from symbol key raises",
-			source:  `def run() { a: 1 }.fetch_values("a") end`,
-			wantErr: `hash.fetch_values key not found: "a"`,
-		},
-		{
 			name:    "unsupported key type rejected",
 			source:  `def run() { a: 1 }.fetch_values({ bad: 1 }) end`,
-			wantErr: "hash.fetch_values key is unsupported hash key",
+			wantErr: "hash.fetch_values key is an unsupported hash key",
 		},
 	}
 
@@ -1612,7 +1280,7 @@ func TestHashFetchErrors(t *testing.T) {
 		{
 			name:    "unsupported key type rejected",
 			source:  `def run() { a: 1 }.fetch({ bad: 1 }) end`,
-			wantErr: "hash.fetch key is unsupported hash key",
+			wantErr: "hash.fetch key is an unsupported hash key",
 		},
 		{
 			name:    "too many positional arguments rejected",
@@ -1733,57 +1401,6 @@ func TestHashLiteralSyntaxRestriction(t *testing.T) {
 	}
 }
 
-func TestTypedHashDisplayCollisionsKeepDistinctSemanticEntries(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `def run()
-  left = {}
-  left[:a] = 1
-  left["a"] = 2
-  right = {}
-  right[:a] = 9
-  right["a"] = 2
-  {
-    equal: left == right,
-    json: JSON.stringify(left)
-  }
-end`)
-
-	got := callFunc(t, script, "run", nil)
-	if got.Kind() != KindHash {
-		t.Fatalf("typed collision summary kind = %v, want hash", got.Kind())
-	}
-	compareHash(t, got.Hash(), map[string]Value{
-		"equal": NewBool(false),
-		"json":  NewString(`{"a":1,"a":2}`),
-	})
-}
-
-func TestFloatHashKeysNormalizeSignedZero(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `def run()
-  h = {}
-  h[0.0] = "positive"
-  h[-0.0] = "negative"
-  {
-    size: h.size,
-    positive: h[0.0],
-    negative: h[-0.0]
-  }
-end`)
-
-	got := callFunc(t, script, "run", nil)
-	if got.Kind() != KindHash {
-		t.Fatalf("signed zero summary kind = %v, want hash", got.Kind())
-	}
-	compareHash(t, got.Hash(), map[string]Value{
-		"size":     NewInt(1),
-		"positive": NewString("negative"),
-		"negative": NewString("negative"),
-	})
-}
-
 func TestHashRejectsUnsupportedKeyTypes(t *testing.T) {
 	t.Parallel()
 
@@ -1800,46 +1417,6 @@ func TestHashRejectsUnsupportedKeyTypes(t *testing.T) {
 			t.Parallel()
 			script := compileScript(t, "def run()\n  "+tt.expr+"\nend")
 			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.want)
-		})
-	}
-}
-
-func TestHashMembershipPredicatesAcceptAnyCandidateKey(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		method string
-		key    string
-		want   bool
-	}{
-		{name: "key? present symbol", method: "key?", key: ":a", want: true},
-		{name: "key? string distinct from symbol", method: "key?", key: `"a"`, want: false},
-		{name: "key? absent symbol", method: "key?", key: ":missing", want: false},
-		{name: "key? integer candidate", method: "key?", key: "1", want: false},
-		{name: "key? float candidate", method: "key?", key: "1.5", want: false},
-		{name: "key? bool candidate", method: "key?", key: "true", want: false},
-		{name: "key? nil candidate", method: "key?", key: "nil", want: false},
-		{name: "key? array candidate", method: "key?", key: "[1]", want: false},
-		{name: "has_key? present symbol", method: "has_key?", key: ":a", want: true},
-		{name: "has_key? integer candidate", method: "has_key?", key: "1", want: false},
-		{name: "include? present symbol", method: "include?", key: ":a", want: true},
-		{name: "include? integer candidate", method: "include?", key: "1", want: false},
-		{name: "include? array candidate", method: "include?", key: "[:a]", want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			source := "def run() { a: 1 }." + tt.method + "(" + tt.key + ") end"
-			script := compileScript(t, source)
-			result := callFunc(t, script, "run", nil)
-			if result.Kind() != KindBool {
-				t.Fatalf("expected bool, got %v", result.Kind())
-			}
-			if result.Bool() != tt.want {
-				t.Fatalf("%s(%s) = %v, want %v", tt.method, tt.key, result.Bool(), tt.want)
-			}
 		})
 	}
 }
@@ -1865,10 +1442,8 @@ func TestHashMemberAliasMatchesKeyPredicate(t *testing.T) {
 		want bool
 	}{
 		{name: "present symbol", key: ":a", want: true},
-		{name: "string distinct from symbol", key: `"a"`, want: false},
+		{name: "string spelling of the same key", key: `"a"`, want: true},
 		{name: "absent symbol", key: ":missing", want: false},
-		{name: "integer candidate", key: "1", want: false},
-		{name: "array candidate", key: "[:a]", want: false},
 	}
 
 	for _, tt := range tests {
@@ -1882,6 +1457,17 @@ func TestHashMemberAliasMatchesKeyPredicate(t *testing.T) {
 			if result.Bool() != tt.want {
 				t.Fatalf("member?(%s) = %v, want %v", tt.key, result.Bool(), tt.want)
 			}
+		})
+	}
+
+	// A candidate that is not a string or symbol is rejected rather than
+	// answered false, like every other key surface.
+	for _, key := range []string{"1", "[:a]"} {
+		t.Run("rejects "+key, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run() { a: 1 }.member?("+key+") end")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{},
+				"hash keys must be strings or symbols")
 		})
 	}
 }
@@ -1995,7 +1581,7 @@ func TestHashStoreRejectsMisuse(t *testing.T) {
 		{name: "missing value", source: "def run() { a: 1 }.store(:b) end", wantErr: "hash.store expects a key and a value"},
 		{name: "no arguments", source: "def run() { a: 1 }.store() end", wantErr: "hash.store expects a key and a value"},
 		{name: "too many arguments", source: "def run() { a: 1 }.store(:b, 2, 3) end", wantErr: "hash.store expects a key and a value"},
-		{name: "unsupported key", source: "def run() { a: 1 }.store({ bad: 1 }, 2) end", wantErr: "hash.store key is unsupported hash key"},
+		{name: "unsupported key", source: "def run() { a: 1 }.store({ bad: 1 }, 2) end", wantErr: "hash.store key is an unsupported hash key"},
 		{name: "keyword argument", source: "def run() { a: 1 }.store(b: 2) end", wantErr: "hash.store does not accept keyword arguments"},
 	}
 
@@ -2004,112 +1590,6 @@ func TestHashStoreRejectsMisuse(t *testing.T) {
 			t.Parallel()
 			script := compileScript(t, tt.source)
 			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.wantErr)
-		})
-	}
-}
-
-func TestHashExceptIgnoresUnsupportedKeys(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		source string
-		want   map[string]Value
-	}{
-		{
-			name:   "parenless invocation copies the receiver",
-			source: `def run() ({ a: 1 }).except end`,
-			want:   map[string]Value{"a": NewInt(1)},
-		},
-		{
-			name:   "unsupported only preserves entries",
-			source: `def run() { a: 1 }.except(1) end`,
-			want:   map[string]Value{"a": NewInt(1)},
-		},
-		{
-			name:   "mixed unsupported and supported excludes supported",
-			source: `def run() { a: 1 }.except(1, :a) end`,
-			want:   map[string]Value{},
-		},
-		{
-			name:   "multiple unsupported keys are all ignored",
-			source: `def run() { a: 1, b: 2 }.except([3], { c: 4 }) end`,
-			want:   map[string]Value{"a": NewInt(1), "b": NewInt(2)},
-		},
-		{
-			name:   "string and symbol keys still excluded alongside unsupported",
-			source: `def run() { "a": 1, b: 2, c: 3 }.except("a", 5, :c) end`,
-			want:   map[string]Value{"b": NewInt(2)},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			script := compileScript(t, tt.source)
-			result := callFunc(t, script, "run", nil)
-			if result.Kind() != KindHash {
-				t.Fatalf("except expected hash, got %v", result.Kind())
-			}
-			compareHash(t, result.Hash(), tt.want)
-		})
-	}
-}
-
-func TestHashSliceIgnoresUnsupportedKeys(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		source string
-		want   map[string]Value
-	}{
-		{
-			name:   "no arguments returns empty hash",
-			source: `def run() ({ a: 1 }).slice() end`,
-			want:   map[string]Value{},
-		},
-		{
-			name:   "parenless invocation returns empty hash",
-			source: `def run() ({ a: 1 }).slice end`,
-			want:   map[string]Value{},
-		},
-		{
-			name:   "unsupported only returns empty hash",
-			source: `def run() { a: 1 }.slice(1) end`,
-			want:   map[string]Value{},
-		},
-		{
-			name:   "mixed unsupported and supported keeps supported",
-			source: `def run() { a: 1, b: 2 }.slice(:a, 1) end`,
-			want:   map[string]Value{"a": NewInt(1)},
-		},
-		{
-			name:   "multiple unsupported keys are all ignored",
-			source: `def run() { a: 1, b: 2 }.slice([3], { c: 4 }) end`,
-			want:   map[string]Value{},
-		},
-		{
-			name:   "string and symbol keys selected alongside unsupported",
-			source: `def run() { "a": 1, b: 2, c: 3 }.slice("a", 5, :c) end`,
-			want:   map[string]Value{"a": NewInt(1), "c": NewInt(3)},
-		},
-		{
-			name:   "absent supported key is omitted",
-			source: `def run() { a: 1 }.slice(:a, :missing) end`,
-			want:   map[string]Value{"a": NewInt(1)},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			script := compileScript(t, tt.source)
-			result := callFunc(t, script, "run", nil)
-			if result.Kind() != KindHash {
-				t.Fatalf("slice expected hash, got %v", result.Kind())
-			}
-			compareHash(t, result.Hash(), tt.want)
 		})
 	}
 }
@@ -2319,7 +1799,7 @@ func TestHashInsertionOrder(t *testing.T) {
 
     def transform_keys_collision()
       { c: 3, a: 1, b: 2 }.transform_keys do |k|
-        if k == :a
+        if k == "a"
           :x
         else
           :y
@@ -2329,10 +1809,9 @@ func TestHashInsertionOrder(t *testing.T) {
 
     def mixed_key_kinds()
       h = {}
-      h[2] = "two"
-      h[1] = "one"
       h[:b] = 2
       h["a"] = 1
+      h["b"] = 3
       h.keys
     end
 
@@ -2352,7 +1831,7 @@ func TestHashInsertionOrder(t *testing.T) {
 
     def group_by_first_encounter()
       ["bb", "a", "ccc", "dd"].group_by do |s|
-        s.length
+        s.length.to_s
       end.keys
     end
 
@@ -2386,10 +1865,12 @@ func TestHashInsertionOrder(t *testing.T) {
     end
     `)
 
+	// Hash keys live in one string keyspace, so every key a literal label or a
+	// symbol spelling produces reads back as a string.
 	sym := func(names ...string) []Value {
 		out := make([]Value, len(names))
 		for i, name := range names {
-			out[i] = NewSymbol(name)
+			out[i] = NewString(name)
 		}
 		return out
 	}
@@ -2421,29 +1902,31 @@ func TestHashInsertionOrder(t *testing.T) {
 		{name: "compact_receiver_order", fn: "compact_receiver_order", want: NewArray(sym("d", "a"))},
 		{name: "transform_values_order", fn: "transform_values_order", want: NewArray(sym("b", "a"))},
 		{
+			// A symbol and a string spelling address one entry, so the second
+			// write to "b" keeps :b's original position rather than appending.
 			name: "mixed_key_kinds",
 			fn:   "mixed_key_kinds",
-			want: NewArray([]Value{NewInt(2), NewInt(1), NewSymbol("b"), NewString("a")}),
+			want: NewArray([]Value{NewString("b"), NewString("a")}),
 		},
 		{
 			name: "to_a_order",
 			fn:   "to_a_order",
 			want: NewArray([]Value{
-				NewArray([]Value{NewSymbol("c"), NewInt(3)}),
-				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
-				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+				NewArray([]Value{NewString("c"), NewInt(3)}),
+				NewArray([]Value{NewString("a"), NewInt(1)}),
+				NewArray([]Value{NewString("b"), NewInt(2)}),
 			}),
 		},
 		{
 			name: "flatten_order",
 			fn:   "flatten_order",
-			want: NewArray([]Value{NewSymbol("b"), NewInt(2), NewSymbol("a"), NewInt(1)}),
+			want: NewArray([]Value{NewString("b"), NewInt(2), NewString("a"), NewInt(1)}),
 		},
 		{name: "delete_keeps_order", fn: "delete_keeps_order", want: NewArray(sym("c", "b"))},
 		{
 			name: "group_by_first_encounter",
 			fn:   "group_by_first_encounter",
-			want: NewArray([]Value{NewInt(2), NewInt(1), NewInt(3)}),
+			want: NewArray([]Value{NewString("2"), NewString("1"), NewString("3")}),
 		},
 		{
 			name: "tally_first_encounter",
@@ -2491,7 +1974,7 @@ func TestHashInsertionOrder(t *testing.T) {
 			t.Fatalf("merge_order key[%d] = %v, want %v", i, entry.Key, wantMergedKeys[i])
 		}
 	}
-	if updated, ok, err := hashGet(merged, NewSymbol("a")); err != nil || !ok || !updated.Equal(NewInt(9)) {
+	if updated, ok, err := hashGet(merged, NewString("a")); err != nil || !ok || !updated.Equal(NewInt(9)) {
 		t.Fatalf("merge_order :a = %v, %v, %v; want 9", updated, ok, err)
 	}
 
@@ -2502,10 +1985,10 @@ func TestHashInsertionOrder(t *testing.T) {
 	}
 	// c and b both map to :y; the collision keeps :y at c's first-emitted
 	// position while b's later value wins, exactly like Ruby.
-	if !entries[0].Key.Equal(NewSymbol("y")) || !entries[0].Value.Equal(NewInt(2)) {
+	if !entries[0].Key.Equal(NewString("y")) || !entries[0].Value.Equal(NewInt(2)) {
 		t.Fatalf("transform_keys_collision[0] = %v=%v, want y=2", entries[0].Key, entries[0].Value)
 	}
-	if !entries[1].Key.Equal(NewSymbol("x")) || !entries[1].Value.Equal(NewInt(1)) {
+	if !entries[1].Key.Equal(NewString("x")) || !entries[1].Value.Equal(NewInt(1)) {
 		t.Fatalf("transform_keys_collision[1] = %v=%v, want x=1", entries[1].Key, entries[1].Value)
 	}
 }
@@ -2567,12 +2050,12 @@ func TestHashCopyPreservesSortedOrderForBareHostMap(t *testing.T) {
 		{name: "store_copies_bare_receiver_sorted", fn: "bare_store", want: NewArray(str("alpha", "bravo", "charlie", "delta", "echo", "zeta"))},
 		// The in-place delete keeps a bare host map legacy, and a legacy-only
 		// hash surfaces its keys as symbols in sorted order.
-		{name: "delete_keeps_bare_receiver_sorted", fn: "bare_delete", want: NewArray([]Value{NewSymbol("alpha"), NewSymbol("charlie"), NewSymbol("delta"), NewSymbol("echo")})},
+		{name: "delete_keeps_bare_receiver_sorted", fn: "bare_delete", want: NewArray([]Value{NewString("alpha"), NewString("charlie"), NewString("delta"), NewString("echo")})},
 		{name: "mixed_merge_copies_bare_receiver_sorted", fn: "bare_merge", want: NewArray(str("alpha", "bravo", "charlie", "delta", "echo", "zeta"))},
 		{
 			name: "merge_inserts_bare_argument_sorted",
 			fn:   "merge_bare_argument",
-			want: NewArray([]Value{NewSymbol("z"), NewString("alpha"), NewString("bravo"), NewString("charlie"), NewString("delta"), NewString("echo")}),
+			want: NewArray([]Value{NewString("z"), NewString("alpha"), NewString("bravo"), NewString("charlie"), NewString("delta"), NewString("echo")}),
 		},
 	}
 
@@ -2584,37 +2067,6 @@ func TestHashCopyPreservesSortedOrderForBareHostMap(t *testing.T) {
 				t.Fatalf("%s mismatch (-want +got):\n%s", tc.fn, diff)
 			}
 		})
-	}
-}
-
-func TestHashStorePromotesLegacyReceiverByLegacyLookup(t *testing.T) {
-	t.Parallel()
-
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 64 << 20}
-
-	replaced := NewHash(map[string]Value{"k": NewInt(1)})
-	if _, err := callHashMember(t, exec, replaced, "store", []Value{NewSymbol("k"), NewInt(9)}, NewNil()); err != nil {
-		t.Fatalf("store(symbol over legacy string key) = %v, want nil", err)
-	}
-	if replaced.HashLen() != 1 {
-		t.Fatalf("store(symbol over legacy string key) entries = %d, want 1", replaced.HashLen())
-	}
-	if got, ok, err := hashGet(replaced, NewSymbol("k")); err != nil || !ok || !got.Equal(NewInt(9)) {
-		t.Fatalf("store(symbol over legacy string key) :k = %v, %v, %v; want 9, true, nil", got, ok, err)
-	}
-
-	distinct := NewHash(map[string]Value{"1": NewInt(1)})
-	if _, err := callHashMember(t, exec, distinct, "store", []Value{NewInt(1), NewInt(9)}, NewNil()); err != nil {
-		t.Fatalf("store(int beside legacy string key) = %v, want nil", err)
-	}
-	if distinct.HashLen() != 2 {
-		t.Fatalf("store(int beside legacy string key) entries = %d, want 2", distinct.HashLen())
-	}
-	if got, ok, err := hashGet(distinct, NewString("1")); err != nil || !ok || !got.Equal(NewInt(1)) {
-		t.Fatalf("store(int beside legacy string key) string key = %v, %v, %v; want 1, true, nil", got, ok, err)
-	}
-	if got, ok, err := hashGet(distinct, NewInt(1)); err != nil || !ok || !got.Equal(NewInt(9)) {
-		t.Fatalf("store(int beside legacy string key) int key = %v, %v, %v; want 9, true, nil", got, ok, err)
 	}
 }
 
@@ -2803,14 +2255,11 @@ func TestTypedCopyReservesExactOrderCapacity(t *testing.T) {
 			if got.HashLen() != tc.wantLen {
 				t.Fatalf("%s entries = %d, want %d", tc.fn, got.HashLen(), tc.wantLen)
 			}
-			if !hashHasTypedEntries(got) {
-				t.Fatalf("%s result is legacy-only, want typed hash storage", tc.fn)
-			}
 			if capacity := value.HashOrderCapacity(got); capacity != tc.wantCapacity {
 				t.Fatalf("%s order capacity = %d, want %d", tc.fn, capacity, tc.wantCapacity)
 			}
-			if capacity := value.HashTypedEntryCapacity(got); capacity != tc.wantCapacity {
-				t.Fatalf("%s typed entry capacity = %d, want %d", tc.fn, capacity, tc.wantCapacity)
+			if capacity := value.HashEntryCapacity(got); capacity != tc.wantCapacity {
+				t.Fatalf("%s entry capacity = %d, want %d", tc.fn, capacity, tc.wantCapacity)
 			}
 		})
 	}
@@ -2835,4 +2284,48 @@ func TestHashLiteralReservesExactOrderCapacity(t *testing.T) {
 	if capacity := value.HashOrderCapacity(got); capacity != 3 {
 		t.Fatalf("literal order capacity = %d, want 3 (append growth would overshoot to 4)", capacity)
 	}
+}
+
+// Two hash wrappers may share one entry map while iterating differently: a
+// wrapper whose recorded order has gone stale falls back to sorted keys, while
+// the wrapper that did the writing keeps its insertion order. The cloners reuse
+// one cloned map for both, so each clone must still be built with its own
+// source's order rather than one derived from the shared map.
+func TestSharedEntryMapClonesKeepEachWrappersOrder(t *testing.T) {
+	t.Parallel()
+
+	shared := map[string]Value{}
+	sorted := NewHash(shared)
+	ordered := NewHash(shared)
+	for _, name := range []string{"b", "a"} {
+		if err := ordered.HashSet(NewString(name), NewInt(1)); err != nil {
+			t.Fatalf("HashSet(%s) error = %v", name, err)
+		}
+	}
+
+	script := compileScript(t, "def run(x, y)\n  [x.keys, y.keys]\nend\n")
+	got := callScript(t, context.Background(), script, "run", []Value{sorted, ordered}, CallOptions{})
+	arms := got.Array()
+	if want := `["a", "b"]`; arms[0].Inspect() != want {
+		t.Fatalf("stale-order wrapper cloned as %s, want %s", arms[0].Inspect(), want)
+	}
+	if want := `["b", "a"]`; arms[1].Inspect() != want {
+		t.Fatalf("insertion-ordered wrapper cloned as %s, want %s", arms[1].Inspect(), want)
+	}
+}
+
+func TestHashInspectCompareAndTypeCheckKeepInsertionOrder(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run()
+  h = {}
+  h["z"] = 1
+  h.inspect
+  h == {z: 1}
+  h["a"] = 2
+  h.keys
+end
+`)
+	got := callFunc(t, script, "run", nil)
+	compareArrays(t, got, []Value{NewString("z"), NewString("a")})
 }

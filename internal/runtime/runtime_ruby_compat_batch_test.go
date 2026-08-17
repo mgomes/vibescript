@@ -212,7 +212,7 @@ def run()
       value == 2
     end,
     hash_keep_if: { a: 1, b: 2, c: 3 }.keep_if do |key, value|
-      key == :a || value == 3
+      key == "a" || value == 3
     end,
     uniq_block: ["a", "A", "b", "B"].uniq do |word|
       word.downcase

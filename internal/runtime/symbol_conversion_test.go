@@ -221,7 +221,7 @@ func TestSymbolConversionHashLookup(t *testing.T) {
 
 	script := compileScript(t, `
 		def run()
-			by_symbol = { name: "symbol", "name": "string" }
+			by_symbol = { name: "symbol" }
 			{
 				symbol_key: by_symbol["name".to_sym],
 				string_key: by_symbol["name"],
@@ -234,7 +234,8 @@ func TestSymbolConversionHashLookup(t *testing.T) {
 	if !hash["symbol_key"].Equal(NewString("symbol")) {
 		t.Fatalf("symbol_key: got %#v", hash["symbol_key"])
 	}
-	if !hash["string_key"].Equal(NewString("string")) {
+	// "name" and :name address one entry, so both spellings read it back.
+	if !hash["string_key"].Equal(NewString("symbol")) {
 		t.Fatalf("string_key: got %#v", hash["string_key"])
 	}
 	if !hash["name_round"].Equal(NewString("symbol")) {

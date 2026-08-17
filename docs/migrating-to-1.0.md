@@ -118,7 +118,7 @@ rendered output — golden-output tests are the usual casualty.
 
 ```vibe
 h = { b: 2, a: 1 }
-h.keys        # => [:b, :a] (insertion order; previously [:a, :b])
+h.keys        # => ["b", "a"] (insertion order; previously ["a", "b"])
 h.keys.sort   # sorted output where you relied on it
 ```
 

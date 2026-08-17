@@ -28,7 +28,7 @@ func TestHashMapYieldsEntriesLikeRuby(t *testing.T) {
 			// A one-parameter block receives the pair whole, also matching Ruby.
 			name:   "one parameter block receives the pair",
 			source: `h = {alice: 90}` + "\n" + `h.map { |pair| pair }.inspect`,
-			want:   "[[:alice, 90]]",
+			want:   `[["alice", 90]]`,
 		},
 		{
 			name:   "block may use both key and value",
@@ -171,9 +171,9 @@ func TestHashMapHonorsBlockArity(t *testing.T) {
 		want string
 	}{
 		{`({a: 1}).map { _2 }.inspect`, "[1]"},
-		{`({a: 1}).map { _1 }.inspect`, "[[:a, 1]]"},
+		{`({a: 1}).map { _1 }.inspect`, `[["a", 1]]`},
 		{`({a: 1, b: 2}).map { |k, v| v }.inspect`, "[1, 2]"},
-		{`({a: 1}).map { |pair| pair }.inspect`, "[[:a, 1]]"},
+		{`({a: 1}).map { |pair| pair }.inspect`, `[["a", 1]]`},
 	}
 
 	for _, tc := range tests {

@@ -492,7 +492,7 @@ var memberContractExemptions = map[string][]string{
 		"call",
 	},
 	"hash": {
-		"clear", "compact", "deep_transform_keys", "default", "default_proc",
+		"clear", "compact", "deep_transform_keys",
 		"delete", "delete_if", "dig", "each", "each_key", "each_value",
 		"each_with_index", "empty?", "except", "fetch", "fetch_values",
 		"flatten", "has_key?", "has_value?", "include?", "inspect", "keep_if",

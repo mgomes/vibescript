@@ -660,11 +660,10 @@ end
 
 ## Hashes
 
-See [hashes.md](hashes.md) for worked examples. Hash keys keep Ruby-style value
-identity, so symbols and strings are distinct keys and hash-rocket literals can
-use other hashable values such as integers and arrays. `keys`, `values`, and all
-block-based iteration visit entries in Ruby-style insertion order for
-determinism.
+See [hashes.md](hashes.md) for worked examples. Hash keys live in one string
+keyspace: symbols and strings address the same entry, and integer or array
+keys are rejected. `keys`, `values`, and all block-based iteration visit
+entries in Ruby-style insertion order for determinism.
 
 Property access (`record.name`) resolves the hash methods below before stored
 keys, so method names stay stable even when data contains the same key:
@@ -720,7 +719,7 @@ methods.
 - `each_key { |key| } -> hash` – yield each key.
 - `each_value { |value| } -> hash` – yield each value.
 - `to_a -> array` – nested `[key, value]` pairs in insertion order, with keys
-  exposed as symbols. The inverse of `Array#to_h`, equivalent to `flatten(0)`.
+  exposed as strings. The inverse of `Array#to_h`, equivalent to `flatten(0)`.
 - `map_with_index { |pair, index| } -> array` – new array of block results,
   yielding each `[key, value]` pair with its 0-based index in insertion order.
   Takes no arguments.
@@ -734,13 +733,14 @@ methods.
 - `merge(*others) { |key, old_value, new_value| } -> hash` – combined entries; for
   keys present in both hashes the block resolves the conflict and its result is
   stored, folding through each argument in turn. Keys present on only one side are
-  copied without invoking the block, and the conflict key is yielded as a symbol.
+  copied without invoking the block, and the conflict key is the stored string.
 - `update(*others) -> hash` / `merge!(*others) -> hash` – Ruby's in-place
   merge: fold the argument hashes into the receiver itself and return it. Both
   accept the same optional conflict block as `merge`; with no arguments they
   are no-ops returning the receiver.
 - `replace(other) -> hash` – discards the receiver's entries and adopts
-  `other`'s entries and default metadata in place, returning the receiver.
+  `other`'s entries in place, returning the receiver. Hashes have no
+  per-hash default metadata.
 - `flatten(depth = 1) -> array` – flat array built from the `[key, value]` pairs,
   flattened to `depth`. The default depth produces `[key, value, ...]`; array
   values stay nested unless a deeper `depth` is given. A `depth` of `0` keeps the
@@ -753,18 +753,14 @@ methods.
   removes the entry from the receiver in place and returns the removed value.
   On a miss it returns `nil` — or the block result for the requested key — and
   leaves the receiver untouched.
-- `clear -> hash` – empties the receiver in place and returns it, keeping its
-  identity and any `Hash.new` default.
+- `clear -> hash` – empties the receiver in place and returns it.
 - `delete_if { |key, value| } -> hash` / `keep_if { |key, value| } -> hash` –
   prune the receiver in place against the block (drop accepted / keep accepted
   entries) and return it; survivors keep their insertion order.
 - `slice(*keys) -> hash` – only the listed keys; missing keys are skipped.
-  Unsupported key types (anything other than a symbol or string) are ignored as
-  Ruby misses, so a candidate that cannot match an entry is dropped rather than
-  raising.
-- `except(*keys) -> hash` – all entries except the listed keys. Unsupported key
-  types (anything other than a symbol or string) are ignored as Ruby misses, so
-  the entry is kept rather than raising.
+  A candidate that is not a string or symbol raises.
+- `except(*keys) -> hash` – all entries except the listed keys. A candidate
+  that is not a string or symbol raises.
 - `select { |key, value| } -> hash` – entries for which the block is truthy.
 - `reject { |key, value| } -> hash` – entries for which the block is falsy.
 - `compact -> hash` – entries with `nil` values removed.
@@ -1116,8 +1112,8 @@ Symbols (`:name`) expose the Ruby string/symbol conversion helpers:
 - `to_sym -> symbol` – returns the receiver unchanged.
 
 `"name".to_sym` and `:name.to_s` round-trip between the two representations.
-Hash key identity remains kind-sensitive, matching Ruby: `:name` and `"name"`
-are distinct keys, and `:name == "name"` is `false`.
+`:name == "name"` is still `false`; hash lookup is the exception, where both
+address the same entry.
 
 ## Enum Values
 

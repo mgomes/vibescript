@@ -3313,7 +3313,7 @@ func stringTemplateLookup(context Value, keyPath string) (Value, bool) {
 		if current.Kind() != KindHash && current.Kind() != KindObject {
 			return NewNil(), false
 		}
-		next, ok := current.Hash()[segment]
+		next, ok := current.HashEntryMap()[segment]
 		if !ok {
 			return NewNil(), false
 		}

@@ -52,13 +52,10 @@ func TestMatchDataKeysAreAllPublic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
-	for _, want := range []string{":begin", ":captures", ":end", ":named_captures", ":post_match", ":pre_match", ":to_s"} {
+	for _, want := range []string{`"begin"`, `"captures"`, `"end"`, `"named_captures"`, `"post_match"`, `"pre_match"`, `"to_s"`} {
 		if !strings.Contains(got.String(), want) {
 			t.Fatalf("keys %s missing %s", got.String(), want)
 		}
-	}
-	if strings.Contains(got.String(), `:"`) {
-		t.Fatalf("keys %s contains a quoted (non-identifier) name", got.String())
 	}
 }
 

@@ -153,24 +153,6 @@ end`)
 	}
 }
 
-// TestInboundHashDefaultMetadataTakesSlowPath pins that a host hash carrying
-// Ruby-style default metadata is excluded from the fast path and keeps its
-// missing-key behavior through the rebinder.
-func TestInboundHashDefaultMetadataTakesSlowPath(t *testing.T) {
-	t.Parallel()
-
-	script := compileScriptDefault(t, `def read(h)
-  h[:missing]
-end`)
-
-	withDefault := NewHashWithDefault(map[string]Value{}, NewString("fallback"), NewNil())
-	result := callScript(t, context.Background(), script, "read",
-		[]Value{withDefault}, CallOptions{})
-	if !result.Equal(NewString("fallback")) {
-		t.Fatalf("missing-key read = %v, want fallback", result)
-	}
-}
-
 // TestInboundBuriedForwardedCapabilityStillRevoked pins that a callable buried
 // deep inside an otherwise data-shaped argument graph disables the fast path
 // for the whole call, so the inbound rebinder still revokes a captured

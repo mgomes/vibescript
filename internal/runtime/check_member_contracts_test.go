@@ -796,7 +796,7 @@ end
 				t.Errorf("render(nil) = %#v, want empty string", got)
 			}
 
-			shape := NewTypedHash(1)
+			shape := NewHashWithCapacity(1)
 			if err := shape.HashSet(NewSymbol("name"), NewString("Ada")); err != nil {
 				t.Fatalf(`HashSet(:name, "Ada") error = %v`, err)
 			}

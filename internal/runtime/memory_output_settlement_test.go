@@ -61,20 +61,12 @@ func TestConstructionWalkIsPaidBeforeAnyCallback(t *testing.T) {
 		keys[i] = NewString(string(rune('a' + i)))
 	}
 
-	// fetch_values invokes the block it is passed; values_at invokes the hash's
-	// default proc instead, so each has to be handed the block the way it takes
-	// it or no bind charge is built and the test proves nothing.
 	tests := []struct {
 		method  string
 		prepare func(block Value) (Value, Value)
 	}{
 		{"fetch_values", func(block Value) (Value, Value) {
 			return NewHash(map[string]Value{}), block
-		}},
-		{"values_at", func(block Value) (Value, Value) {
-			receiver := NewHash(map[string]Value{})
-			receiver.SetHashDefaults(NewNil(), block)
-			return receiver, NewNil()
 		}},
 	}
 

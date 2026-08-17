@@ -2,6 +2,7 @@ package value
 
 import (
 	"math"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -194,29 +195,31 @@ func ArrayIdentity(v Value) uintptr {
 	return 0
 }
 
-// hashData backs a KindHash value. It pairs the entry map with optional
-// Ruby-style default metadata consulted on missing-key lookup: either a default
-// value (returned without inserting) or a default proc (a KindBlock value the
-// runtime invokes with the hash and key). KindObject keeps a bare map because
-// objects never carry hash defaults.
+// hashData backs a KindHash value. It holds the entry map and the Ruby-style
+// insertion order of its keys; KindObject keeps a bare map because an
+// attribute bag records no order.
 //
-// order records Ruby-style insertion order for typedEntries: HashSet appends
-// each new lookup key and keeps an overwritten key at its original position,
-// so when typedEntries is non-nil, order lists each of its keys exactly once.
-// A hash promoted from a legacy string map seeds order from the sorted display
-// keys because a bare Go map carries no insertion record. Legacy-only hashes
-// (typedEntries == nil) keep a nil order and iterate in sorted key order.
+// order lists each entry key exactly once, as the KindString Value iteration
+// hands out: HashSet appends a new key and keeps an overwritten key at its
+// original position. A bare Go map handed to NewHash carries no insertion
+// record, so NewHash seeds order from its sorted keys and the hash iterates
+// sorted, as it always has.
 type hashData struct {
-	entries            map[string]Value
-	typedEntries       map[HashLookupKey]HashEntry
-	typedEntryCapacity int
-	order              []HashLookupKey
-	defaultValue       Value
-	defaultProc        Value
+	entries       map[string]Value
+	entryCapacity int
+	order         []Value
+	// orderUntrusted is set when Hash() hands out the live map, or when
+	// NewHash retains a non-empty caller map. A host can then delete a
+	// key, HashSet it again (which would append a duplicate), and insert
+	// another key through the map, leaving a same-length order that names
+	// a key twice. The flag stays set for the life of that exposure so
+	// later HashSet traffic keeps reconciling rather than trusting the
+	// record. It is atomic because Hash() is a documented concurrent read.
+	orderUntrusted atomic.Bool
 }
 
 // HashDataBytes is the heap footprint of the hashData wrapper every KindHash
-// value allocates, excluding the entry map and default payloads it points at.
+// value allocates, excluding the entry map and order backing it points at.
 // Memory-quota accounting charges it once per distinct hash so an array of many
 // small hashes cannot retain the per-hash wrapper cost uncharged.
 // It is intended for the interpreter's internal use; hosts should not rely
@@ -224,89 +227,80 @@ type hashData struct {
 // docs/embedding-api-stability.md).
 const HashDataBytes = int(unsafe.Sizeof(hashData{}))
 
-// NewHash returns a hash (map) Value with no default.
+// NewHash returns a hash (map) Value over h. A non-empty map records no
+// insertion order, so the hash iterates in sorted key order. The map is
+// retained, not copied: if the caller keeps it, later mutation is treated
+// like Hash() exposure and the recorded order stays untrusted.
 func NewHash(h map[string]Value) Value {
-	return Value{kind: KindHash, data: &hashData{entries: h}}
-}
-
-// NewTypedHash returns a hash with typed-key storage and no materialized legacy
-// string-key map. Hash() materializes that map lazily for legacy callers.
-func NewTypedHash(capacity int) Value {
-	var order []HashLookupKey
-	if capacity > 0 {
-		order = make([]HashLookupKey, 0, capacity)
+	hd := &hashData{entries: h, entryCapacity: len(h)}
+	if len(h) > 0 {
+		hd.order = sortedMapKeysInto(h, nil)
+		hd.orderUntrusted.Store(true)
 	}
-	return Value{kind: KindHash, data: &hashData{
-		typedEntries:       make(map[HashLookupKey]HashEntry, capacity),
-		typedEntryCapacity: capacity,
-		order:              order,
-	}}
+	return Value{kind: KindHash, data: hd}
 }
 
-// NewHashWithDefault returns a hash (map) Value carrying Ruby-style default
-// metadata. A non-nil defaultProc (a KindBlock value) takes precedence over
-// defaultValue on missing-key lookup; pass NewNil() for whichever is unused.
-func NewHashWithDefault(h map[string]Value, defaultValue, defaultProc Value) Value {
-	return Value{kind: KindHash, data: &hashData{
-		entries:      h,
-		defaultValue: defaultValue,
-		defaultProc:  defaultProc,
-	}}
-}
-
-// SetHashDefaults overwrites the Ruby-style default metadata of an existing hash
-// wrapper in place. It exists so a deep clone can register the destination
-// wrapper in its seen-set before it walks the default value/proc: a default that
-// reaches the hash itself (e.g. Hash.new { |_, _| h }) then dedups against the
-// already-registered wrapper instead of cloning a second one whose defaults
-// would close over the wrong object. v must be a hash whose wrapper is not yet
-// shared; mutating a hash that other Values observe would change their defaults.
+// NewHashWithOrder returns a hash over entries that iterates in the given key
+// order. The order slice is adopted, so callers must not retain or reuse it; an
+// order that does not cover entries falls back to sorted iteration. It exists
+// for the copiers that clone an entry map wholesale and must reproduce the
+// source's iteration order without rehashing every key.
 // It is intended for the interpreter's internal use; hosts should not call
 // it, and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
-func (v Value) SetHashDefaults(defaultValue, defaultProc Value) {
-	if v.kind != KindHash {
-		return
+func NewHashWithOrder(entries map[string]Value, order []Value) Value {
+	if !orderNamesUnique(order) {
+		// A caller-supplied order that repeats a name can match the
+		// entry count while omitting another live key. Drop it so
+		// iteration takes the sorted fallback.
+		order = nil
 	}
-	if hd, ok := v.data.(*hashData); ok {
-		BumpMutationEpoch()
-		hd.defaultValue = defaultValue
-		hd.defaultProc = defaultProc
-	}
+	return NewHashWithTrustedOrder(entries, order)
 }
 
-// HashDefaultValue returns the default value configured for a hash, or NewNil()
-// when v is not a hash or carries no default value. It is the plain-value
-// counterpart to HashDefaultProc.
-func HashDefaultValue(v Value) Value {
-	if v.kind != KindHash {
-		return NewNil()
-	}
-	if hd, ok := v.data.(*hashData); ok {
-		return hd.defaultValue
-	}
-	return NewNil()
+// NewHashWithTrustedOrder is NewHashWithOrder for an order that is already
+// unique, such as HashKeyOrder() output. The inbound clone path uses this
+// so Script.Call does not re-validate a snapshot it just took.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func NewHashWithTrustedOrder(entries map[string]Value, order []Value) Value {
+	return Value{kind: KindHash, data: &hashData{
+		entries:       entries,
+		entryCapacity: len(entries),
+		order:         order,
+	}}
 }
 
-// HashDefaultProc returns the default proc configured for a hash, or NewNil()
-// when v is not a hash or carries no default proc. The returned value, when
-// present, is the KindBlock the runtime invokes on missing-key lookup.
-func HashDefaultProc(v Value) Value {
-	if v.kind != KindHash {
-		return NewNil()
+func orderNamesUnique(order []Value) bool {
+	for i := range order {
+		name := order[i].data.(string)
+		for j := i + 1; j < len(order); j++ {
+			if order[j].data.(string) == name {
+				return false
+			}
+		}
 	}
-	if hd, ok := v.data.(*hashData); ok {
-		return hd.defaultProc
+	return true
+}
+
+// NewHashWithCapacity returns an empty hash whose entry map and insertion-order
+// backing are pre-sized for capacity entries.
+func NewHashWithCapacity(capacity int) Value {
+	var order []Value
+	if capacity > 0 {
+		order = make([]Value, 0, capacity)
 	}
-	return NewNil()
+	return Value{kind: KindHash, data: &hashData{
+		entries:       make(map[string]Value, capacity),
+		entryCapacity: capacity,
+		order:         order,
+	}}
 }
 
 // HashIdentity returns an identity for a hash wrapper, or 0 when v is not
 // a hash. Unlike the entry-map pointer, this identifies the whole hashData
-// wrapper, so two KindHash values that share an entry map but carry different
-// default metadata are distinct. Cycle-detecting scanners that must also visit
-// hash defaults key their seen-set on this value rather than the bare entry map,
-// which would otherwise hide a second wrapper's distinct default payload.
+// wrapper, so two KindHash values that share an entry map are distinct.
 //
 // Like ArrayIdentity, the identity is a bare uintptr wrapper address and is
 // only meaningful between captures taken while the address cannot move (see

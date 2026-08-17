@@ -569,10 +569,10 @@ Unknown keyword arguments are strict for all function calls, including typed sig
 ## Notes and limitations
 
 - Types are nominal by kind.
-- Hash keys keep their runtime identity, so `hash<K, V>` validates the actual key
-  values. For example, `hash<int, string>` accepts a hash built with
-  `h[1] = "one"`, and `hash<string, string>` accepts `{ "name": "Ada" }` but
-  rejects the symbol-keyed `{ name: "Ada" }`.
+- Hash keys live in one string keyspace. `hash["name"]`, `hash[:name]`, and
+  the literal label `name:` address the same entry. `hash<string, V>` and
+  `hash<symbol, V>` therefore describe the same keys; an integer or other
+  non-text key is rejected at runtime.
 - Shape types are strict: keys must match exactly, except fields marked
   optional with `?`, which may be absent, and open shapes (trailing `...`),
   which permit undeclared extra fields.

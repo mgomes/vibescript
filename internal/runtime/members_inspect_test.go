@@ -298,6 +298,86 @@ func TestInspectChargesBuilderRoundedCapacity(t *testing.T) {
 	}
 }
 
+func TestInspectChargesNestedObjectEntryScratch(t *testing.T) {
+	t.Parallel()
+
+	builtin := valueBuiltin(newInspectBuiltin("array"))
+	fields := make(map[string]Value, 20)
+	for i := range 20 {
+		fields[string(rune('a'+i))] = NewInt(int64(i))
+	}
+	receiver := NewArray([]Value{NewObject(fields)})
+
+	measure := &Execution{ctx: context.Background()}
+	base := measure.estimateMemoryUsage()
+	receiverFootprint := measure.estimateMemoryUsage(receiver) - base
+	if receiverFootprint <= 0 {
+		t.Fatalf("receiver footprint = %d, want > 0", receiverFootprint)
+	}
+	payload, err := receiver.InspectByteLenBounded(func() error { return nil })
+	if err != nil {
+		t.Fatalf("InspectByteLenBounded() error = %v, want nil", err)
+	}
+	scratch := sortedHashEntryBufferBytes(20)
+	if scratch <= 0 {
+		t.Fatalf("sortedHashEntryBufferBytes(20) = %d, want > 0", scratch)
+	}
+	withoutScratch := base + receiverFootprint + estimatedValueBytes + estimatedStringHeaderBytes + roundedAllocSize(payload)
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 30,
+		memoryQuota: withoutScratch,
+	}
+	if _, err := builtin.Fn(exec, receiver, nil, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("[obj].inspect without nested entry scratch error = %v, want %v", err, errMemoryQuotaExceeded)
+	}
+	exec.exhausted = nil
+	exec.memoryQuota = withoutScratch + scratch
+	if _, err := builtin.Fn(exec, receiver, nil, nil, NewNil()); err != nil {
+		t.Fatalf("[obj].inspect with nested entry scratch error = %v, want nil", err)
+	}
+}
+
+func TestPChargesObjectEntryScratch(t *testing.T) {
+	t.Parallel()
+
+	fields := make(map[string]Value, 20)
+	for i := range 20 {
+		fields[string(rune('a'+i))] = NewInt(int64(i))
+	}
+	obj := NewObject(fields)
+	measure := &Execution{ctx: context.Background()}
+	base := measure.estimateMemoryUsage()
+	objFootprint := measure.estimateMemoryUsage(obj) - base
+	if objFootprint <= 0 {
+		t.Fatalf("object footprint = %d, want > 0", objFootprint)
+	}
+	payload, err := obj.InspectByteLenBounded(func() error { return nil })
+	if err != nil {
+		t.Fatalf("InspectByteLenBounded() error = %v, want nil", err)
+	}
+	scratch := sortedHashEntryBufferBytes(20)
+	if scratch <= 0 {
+		t.Fatalf("sortedHashEntryBufferBytes(20) = %d, want > 0", scratch)
+	}
+	withoutScratch := base + objFootprint + estimatedValueBytes + estimatedStringHeaderBytes + payload
+	var discarded strings.Builder
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 30,
+		memoryQuota: withoutScratch,
+		engine:      &Engine{config: Config{OutputWriter: &discarded}},
+	}
+	if _, err := builtinP(exec, NewNil(), []Value{obj}, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("p(obj) without entry scratch error = %v, want %v", err, errMemoryQuotaExceeded)
+	}
+	exec.exhausted = nil
+	exec.memoryQuota = withoutScratch + scratch
+	if _, err := builtinP(exec, NewNil(), []Value{obj}, nil, NewNil()); err != nil {
+		t.Fatalf("p(obj) with entry scratch error = %v, want nil", err)
+	}
+}
+
 // TestInspectStepBudgetAbortsProjection confirms the projection walk charges the
 // step quota, so a composite whose rendering is bounded but whose shared-acyclic
 // graph forces an exponential re-walk trips the step quota instead of burning

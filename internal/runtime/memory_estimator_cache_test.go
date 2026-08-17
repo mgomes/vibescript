@@ -59,7 +59,7 @@ func newEstimatorCacheExec() (*Execution, *Env) {
 func estimatorCacheRows(n int) Value {
 	rows := make([]Value, 0, n)
 	for i := range n {
-		row := NewTypedHash(3)
+		row := NewHashWithCapacity(3)
 		_ = row.HashSet(NewSymbol("id"), NewInt(int64(i)))
 		_ = row.HashSet(NewSymbol("name"), NewString(fmt.Sprintf("row-%d", i)))
 		_ = row.HashSet(NewSymbol("tags"), NewArray([]Value{NewString("a"), NewString("b")}))
@@ -93,11 +93,9 @@ func estimatorCacheShapes(env *Env) []Value {
 	selfArr.SetArrayElems(append(selfArr.Array(), selfArr, NewString("cycle")))
 	env.Define("self_arr", selfArr)
 
-	selfHash := NewTypedHash(1)
+	selfHash := NewHashWithCapacity(1)
 	_ = selfHash.HashSet(NewSymbol("me"), selfHash)
 	env.Define("self_hash", selfHash)
-
-	env.Define("defaulted", NewHashWithDefault(map[string]Value{"k": NewInt(1)}, big, NewNil()))
 
 	legacy := NewHash(map[string]Value{"a": NewString("legacy"), "b": rows})
 	env.Define("legacy", legacy)
@@ -325,19 +323,10 @@ func TestBaseWalkMemoMutationMatrix(t *testing.T) {
 		row := rows.Array()[2]
 		return func() { row.HashClearEntries() }
 	})
-	baseWalkMemoMutation(t, "hash_set_defaults", true, func(_ *Execution, env *Env) func() {
-		h, _ := env.Get("defaulted")
-		return func() { h.SetHashDefaults(bigStr(), NewNil()) }
-	})
-	baseWalkMemoMutation(t, "hash_legacy_view_materialization", true, func(_ *Execution, env *Env) func() {
-		rows, _ := env.Get("rows")
-		row := rows.Array()[3]
-		return func() { _ = row.Hash() }
-	})
-	baseWalkMemoMutation(t, "hash_reserve_typed_order", true, func(_ *Execution, env *Env) func() {
+	baseWalkMemoMutation(t, "hash_reserve_capacity", true, func(_ *Execution, env *Env) func() {
 		rows, _ := env.Get("rows")
 		row := rows.Array()[4]
-		return func() { row.ReserveTypedHashOrder(64) }
+		return func() { row.ReserveHashCapacity(64) }
 	})
 	baseWalkMemoMutation(t, "env_assign_existing", true, func(_ *Execution, env *Env) func() {
 		return func() { env.Assign("big", NewArray([]Value{bigStr(), bigStr()})) }
@@ -530,7 +519,7 @@ end`, payloadA, regionPeak),
   tag = "t"
   [1, 2, 3, 4, 5, 6].group_by do |v|
     tag = tag + %q
-    v %% 2
+    (v %% 2).to_s
   end
   tag.size
 end`, payloadA),

@@ -86,53 +86,24 @@ func (v Value) Array() []Value {
 	return v.data.(*arrayData).elems
 }
 
-// Hash returns the hash content of v, or nil if v is not a hash or object.
-// A KindHash payload wraps its entries in a hashData struct (to carry optional
-// default metadata); a KindObject payload is a bare map.
+// Hash returns the live entry map of v, or nil if v is not a hash or object.
+// Hash keys are strings, so this is the whole content of the value; iteration
+// order lives on the wrapper and is reached through HashEntries.
 func (v Value) Hash() map[string]Value {
-	switch v.kind {
-	case KindHash:
-		hd := v.data.(*hashData)
-		if hd.entries == nil && hd.typedEntries != nil {
-			// Materializing the legacy view grows the wrapper's reachable
-			// footprint on what is otherwise a read path, so it must
-			// invalidate memoized estimator walks like any mutator.
-			BumpMutationEpoch()
-			hd.entries = make(map[string]Value, len(hd.typedEntries))
-			if len(hd.order) == len(hd.typedEntries) {
-				for _, lookupKey := range hd.order {
-					entry := hd.typedEntries[lookupKey]
-					hd.entries[HashDisplayKey(entry.Key)] = entry.Value
-				}
-			} else {
-				for _, entry := range hd.typedEntries {
-					hd.entries[HashDisplayKey(entry.Key)] = entry.Value
-				}
-			}
-		}
-		return hd.entries
-	case KindObject:
-		return v.data.(*objectData).entries
-	default:
-		return nil
+	if v.kind == KindHash {
+		v.data.(*hashData).orderUntrusted.Store(true)
 	}
+	return v.hashEntryMap()
 }
 
-// HashStringMapIfMaterialized returns the legacy string-key map when one already
-// exists, without forcing typed hashes to allocate that lossy compatibility view.
-// It is intended for the interpreter's internal use; hosts should not call
-// it, and it carries no compatibility promise (see
+// HashEntryMap returns the live entry map without recording that a host
+// can mutate it. Internal walks and clones use this; Hash() is the
+// embedding API that exposes the map for mutation.
+// It is intended for the interpreter's internal use; hosts should not
+// rely on it, and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
-func (v Value) HashStringMapIfMaterialized() (map[string]Value, bool) {
-	switch v.kind {
-	case KindHash:
-		entries := v.data.(*hashData).entries
-		return entries, entries != nil
-	case KindObject:
-		return v.data.(*objectData).entries, true
-	default:
-		return nil, false
-	}
+func (v Value) HashEntryMap() map[string]Value {
+	return v.hashEntryMap()
 }
 
 // hashEntries returns the entry map of a KindHash value. Callers must already

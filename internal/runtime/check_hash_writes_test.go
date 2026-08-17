@@ -67,6 +67,56 @@ func TestTypeExprSatisfiesRejectsOpenShapeForTypedHash(t *testing.T) {
 	}
 }
 
+func TestHashKeyTypeRelationsTreatStringAndSymbolAlike(t *testing.T) {
+	t.Parallel()
+
+	if !hashKeyTypeSatisfies(checkTypeSymbol, checkTypeString, nil) {
+		t.Fatal("hashKeyTypeSatisfies(symbol, string) = false, want true")
+	}
+	if !hashKeyTypeSatisfies(checkTypeString, checkTypeSymbol, nil) {
+		t.Fatal("hashKeyTypeSatisfies(string, symbol) = false, want true")
+	}
+	if !hashKeyTypeSatisfies(unionTypeExprs(checkTypeString, checkTypeSymbol), checkTypeSymbol, nil) {
+		t.Fatal("hashKeyTypeSatisfies(string | symbol, symbol) = false, want true")
+	}
+	if hashKeyTypeSatisfies(checkTypeInt, checkTypeString, nil) {
+		t.Fatal("hashKeyTypeSatisfies(int, string) = true, want false")
+	}
+	if hashKeyTypesDisjoint(checkTypeString, checkTypeSymbol, nil) {
+		t.Fatal("hashKeyTypesDisjoint(string, symbol) = true, want false")
+	}
+	if !hashKeyTypesDisjoint(checkTypeSymbol, checkTypeInt, nil) {
+		t.Fatal("hashKeyTypesDisjoint(symbol, int) = false, want true")
+	}
+	if !hashKeyTypesDisjoint(checkTypeInt, checkTypeInt, nil) {
+		t.Fatal("hashKeyTypesDisjoint(int, int) = false, want true")
+	}
+
+	stringHash := &TypeExpr{Kind: TypeHash, TypeArgs: []*TypeExpr{checkTypeString, checkTypeInt}}
+	symbolHash := &TypeExpr{Kind: TypeHash, TypeArgs: []*TypeExpr{checkTypeSymbol, checkTypeInt}}
+	if !typeExprSatisfies(stringHash, symbolHash, nil) {
+		t.Fatal("typeExprSatisfies(hash<string, int>, hash<symbol, int>) = false, want true")
+	}
+	if !typeExprSatisfies(symbolHash, stringHash, nil) {
+		t.Fatal("typeExprSatisfies(hash<symbol, int>, hash<string, int>) = false, want true")
+	}
+
+	mixed := &TypeExpr{
+		Kind: TypeShape,
+		Name: mixedKeysMarker(true, true, false),
+		Shape: map[string]*TypeExpr{
+			"a": checkTypeInt,
+			"b": checkTypeInt,
+		},
+	}
+	if !typeExprSatisfies(mixed, symbolHash, nil) {
+		t.Fatal("typeExprSatisfies(mixed string/symbol shape, hash<symbol, int>) = false, want true")
+	}
+	if shapeVsTypedHashDisjoint(mixed, symbolHash, nil) {
+		t.Fatal("shapeVsTypedHashDisjoint(mixed string/symbol shape, hash<symbol, int>) = true, want false")
+	}
+}
+
 func TestCheckHashWriteContradictions(t *testing.T) {
 	t.Parallel()
 
@@ -79,10 +129,19 @@ func TestCheckHashWriteContradictions(t *testing.T) {
 			name: "key write to typed hash",
 			source: `
 def f(h: hash<string, int>)
-  h[:sym] = 1
+  h[true] = 1
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected key string, got bool",
+		},
+		{
+			name: "integer key on an int-keyed hash is a guaranteed mismatch",
+			source: `
+def f(h: hash<int, string>)
+  h[1] = "x"
+end
+`,
+			warning: "write to h expected key int, got int",
 		},
 		{
 			name: "value write to typed hash",
@@ -106,10 +165,10 @@ end
 			name: "store key",
 			source: `
 def f(h: hash<string, int>)
-  h.store(:sym, 1)
+  h.store(true, 1)
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected key string, got bool",
 		},
 		{
 			name: "store value",
@@ -144,20 +203,20 @@ end
 			source: `
 def f(h: hash<string, int>, other: hash<string, int>, args: array<any>)
   h.store(*args)
-  other[:bad] = 1
+  other["bad"] = "bad"
 end
 `,
-			warning: "write to other expected key string, got symbol",
+			warning: "write to other expected value int, got string",
 		},
 		{
 			name: "empty store keyword splat keeps a following write reachable",
 			source: `
 def f(h: hash<string, int>, other: hash<string, int>, opts: {})
   h.store("a", 1, **opts)
-  other[:bad] = 1
+  other["bad"] = "bad"
 end
 `,
-			warning: "write to other expected key string, got symbol",
+			warning: "write to other expected value int, got string",
 		},
 		{
 			name: "splatted literal merge entries are checked",
@@ -219,10 +278,10 @@ end
 			name: "merge with a contradicting key representation",
 			source: `
 def f(h: hash<symbol, int>)
-  h.merge!({ "a": 1 })
+  h.merge!({ "a": "bad" })
 end
 `,
-			warning: "write to h expected key symbol, got string",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "merge source hash is not retained by the receiver",
@@ -230,48 +289,26 @@ end
 def f(h: hash<string, int>, other: hash<string, int>)
   h.merge!(other)
   other["b"] = "bad"
-  h[:sym] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
-			name: "conflict block cannot hide an impossible key",
+			name: "mixed-key local merge argument with a bad value is rejected",
 			source: `
 def f(h: hash<string, int>)
-  h.merge!({ a: 1 }) do |key, old, new|
-    old
-  end
-end
-`,
-			warning: "write to h expected key string, got symbol",
-		},
-		{
-			name: "conflict block cannot hide a value behind an impossible key",
-			source: `
-def f(h: hash<symbol, int>)
-  h.merge!({ "a": true }) do |key, old, new|
-    old
-  end
-end
-`,
-			warning: "write to h expected value int, got bool",
-		},
-		{
-			name: "mixed-key local merge argument contradicts a single-representation bound",
-			source: `
-def f(h: hash<string, int>)
-  bad = { a: 1, "b": 2 }
+  bad = { a: "nope", "b": 2 }
   h.merge!(bad)
 end
 `,
 			warning: "write to h expected hash<string, int>, got",
 		},
 		{
-			name: "mixed-key local contradicts a union bound excluding symbols",
+			name: "mixed-key local with a bad value contradicts a union key bound",
 			source: `
 def f(h: hash<string | int, int>)
-  bad = { a: 1, "b": 2 }
+  bad = { a: "nope", "b": 2 }
   h.merge!(bad)
 end
 `,
@@ -289,36 +326,27 @@ end
 			warning: "write to h expected key string | symbol, got bool",
 		},
 		{
-			name: "mixed-key local contradicts a symbol-keyed boundary",
+			name: "mixed-key local with a bad value contradicts a symbol-keyed boundary",
 			source: `
 def g(h: hash<symbol, int>)
   h
 end
 
 def f
-  bad = { a: 1, "b": 2 }
+  bad = { a: "nope", "b": 2 }
   g(bad)
 end
 `,
 			warning: "call to g argument h expected hash<symbol, int>, got",
 		},
 		{
-			name: "mixed-key merge literal diagnoses each entry",
+			name: "mixed-key merge literal diagnoses a bad value",
 			source: `
 def f(h: hash<string, int>)
-  h.merge!({ a: 1, "b": 2 })
+  h.merge!({ a: "nope", "b": 2 })
 end
 `,
-			warning: "write to h expected key string, got symbol",
-		},
-		{
-			name: "string and symbol merge keys with the same spelling stay distinct",
-			source: `
-def f(h: hash<string, int>)
-  h.merge!({ a: 1, "a": 2 })
-end
-`,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "compatible mixed-key merge preserves the fact",
@@ -344,20 +372,20 @@ end
 			source: `
 def f(h: hash<string, int>, other: hash<string, int>, opts: hash<string, int>)
   h.merge!(**opts)
-  other[:bad] = 1
+  other["bad"] = "bad"
 end
 `,
-			warning: "write to other expected key string, got symbol",
+			warning: "write to other expected value int, got string",
 		},
 		{
 			name: "optional update keyword splat keeps a following write reachable",
 			source: `
 def f(h: hash<string, int>, other: hash<string, int>, opts: { extra?: int })
   h.update(**opts)
-  other[:bad] = 1
+  other["bad"] = "bad"
 end
 `,
-			warning: "write to other expected key string, got symbol",
+			warning: "write to other expected value int, got string",
 		},
 		{
 			name: "merge with a local shape fact keeps the whole-shape check",
@@ -580,15 +608,6 @@ end
 			warning: "write to h expected key int, got symbol",
 		},
 		{
-			name: "hash default getter may reach a typed hash write",
-			source: `
-def f(h: hash<int, int>)
-  h.default ||= 1
-end
-`,
-			warning: "write to h expected key int, got symbol",
-		},
-		{
 			name: "hash callable getter reaches a typed hash write",
 			source: `
 def f(h: hash<int, int>)
@@ -621,10 +640,10 @@ end
 			source: `
 def f(h: hash<string, int>)
   h.value ||= 1
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "rescued missing member assignment preserves a declared shape",
@@ -645,20 +664,20 @@ end
 			source: `
 def f(user: { child: hash<string, int> }, child: hash<string, int>)
   user.child = child
-  child[:bad] = 1
+  child["bad"] = "bad"
 end
 `,
-			warning: "write to child expected key string, got symbol",
+			warning: "write to child expected value int, got string",
 		},
 		{
 			name: "compatible entry write preserves the fact",
 			source: `
 def f(h: hash<string, int>)
   h["a"] = 1
-  h[:sym] = 2
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "compatible store preserves the fact",
@@ -676,10 +695,10 @@ end
 def f(h: hash<string, int>)
   args = ["a", 1]
   h.store(*args)
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "compatible exact merge splat preserves the fact",
@@ -687,10 +706,10 @@ end
 def f(h: hash<string, int>)
   args = [{ "a": 1 }]
   h.merge!(*args)
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "empty exact merge splat preserves the fact",
@@ -698,10 +717,10 @@ end
 def f(h: hash<string, int>)
   args = []
   h.merge!(*args)
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "rescued empty exact store splat preserves the fact",
@@ -712,10 +731,10 @@ def f(h: hash<string, int>)
   rescue
     nil
   end
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "compatible merge preserves the fact",
@@ -740,10 +759,10 @@ end
 			name: "replace checks a literal key",
 			source: `
 def f(h: hash<string, int>)
-  h.replace({ bad: 1 })
+  h.replace({ bad: "nope" })
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "replace checks an exact local source",
@@ -771,20 +790,20 @@ end
 def f(h: hash<string, int>)
   args = [{ "a": 1 }]
   h.replace(*args)
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "compatible replace preserves the hash fact",
 			source: `
 def f(h: hash<string, int>)
   h.replace({ "a": 1 })
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "compatible exact local replace preserves the hash fact",
@@ -792,20 +811,20 @@ end
 def f(h: hash<string, int>)
   replacement = { "a": 1 }
   h.replace(replacement)
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "empty replace preserves the hash fact",
 			source: `
 def f(h: hash<string, int>)
   h.replace({})
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "replace does not retain a scalar source hash root",
@@ -817,20 +836,20 @@ end
 def f(h: hash<string, int>, replacement: hash<string, int>)
   h.replace(replacement)
   consume(replacement)
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "compatible typed replace source preserves the hash fact",
 			source: `
 def f(h: hash<string, int>, replacement: hash<string, int>)
   h.replace(replacement)
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "rescued non-hash replace preserves the hash fact",
@@ -841,10 +860,10 @@ def f(h: hash<string, int>)
   rescue
     nil
   end
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "rescued empty replace splat preserves the hash fact",
@@ -855,10 +874,10 @@ def f(h: hash<string, int>)
   rescue
     nil
   end
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "replace checks a declared shape field",
@@ -987,20 +1006,20 @@ end
 			name: "safe navigation store checks the nullable bound",
 			source: `
 def f(h: hash<string, int>?)
-  h&.store(:sym, 1)
+  h&.store(:sym, "bad")
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "nullable hash narrowed by a nil guard",
 			source: `
 def f(h: hash<string, int>?)
   return if h.nil?
-  h[:sym] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "local seeded by a declared return type",
@@ -1011,31 +1030,31 @@ end
 
 def f
   h = build()
-  h[:sym] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "write through an alias of the typed hash",
 			source: `
 def f(h: hash<string, int>)
   g = h
-  g[:sym] = 1
+  g["bad"] = "bad"
 end
 `,
-			warning: "write to g expected key string, got symbol",
+			warning: "write to g expected value int, got string",
 		},
 		{
 			name: "write inside a conditional branch",
 			source: `
 def f(h: hash<string, int>, flag)
   if flag
-    h[:sym] = 1
+    h["bad"] = "bad"
   end
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "refined parse_as field contradicts a later boundary",
@@ -1051,6 +1070,36 @@ def f(raw: string)
 end
 `,
 			warning: "call to g argument user expected { name: string }, got { name: int }",
+		},
+		{
+			name: "parse_as write through the other key spelling refines",
+			source: `
+def g(user: { name: string })
+  user
+end
+
+def f(raw: string)
+  body = JSON.parse_as(raw, { name: string })
+  body[:name] = 1
+  g(body)
+end
+`,
+			warning: "call to g argument user expected { name: string }, got { name: int }",
+		},
+		{
+			name: "literal write through the other key spelling refines",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f
+  h = {name: "old"}
+  h["name"] = 1
+  takes_string(h[:name])
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
 			name: "string write to an empty literal adopts the representation",
@@ -1152,10 +1201,10 @@ def f(h: hash<string, int>)
   rescue
     nil
   end
-  h[:sym] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "rescued unstorable store key preserves the hash fact",
@@ -1166,10 +1215,10 @@ def f(h: hash<string, int>)
   rescue
     nil
   end
-  h[:sym] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "rescued invalid merge argument preserves the hash fact",
@@ -1180,10 +1229,10 @@ def f(h: hash<string, int>)
   rescue
     nil
   end
-  h[:sym] = 1
+  h["bad"] = "bad"
 end
 `,
-			warning: "write to h expected key string, got symbol",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "rescued store abort preserves retained child facts",
@@ -1370,6 +1419,28 @@ end
 `,
 		},
 		{
+			name: "symbol key write to a string-keyed hash stays silent",
+			source: `
+def f(h: hash<string, int>)
+  h[:sym] = 1
+  h.store(:other, 2)
+end
+`,
+		},
+		{
+			name: "string and mixed keys satisfy a symbol-keyed hash",
+			source: `
+def g(h: hash<symbol, int>)
+  h
+end
+
+def f(h: hash<symbol, int>)
+  h.merge!({ "a": 1 })
+  g({ a: 1, "b": 2 })
+end
+`,
+		},
+		{
 			name: "compatible symbol-key member write stays silent",
 			source: `
 def f(h: hash<symbol, int>)
@@ -1463,6 +1534,21 @@ end
 `,
 		},
 		{
+			name: "declared shape write links a retained container alias",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f(row: { meta: { a: int } })
+  x = { a: 1 }
+  row[:meta] = x
+  x["a"] = "s"
+  takes_string(row[:meta]["a"])
+end
+`,
+		},
+		{
 			name: "skipped member or assignment does not write",
 			source: `
 def f(user: { name: string })
@@ -1519,14 +1605,6 @@ end
 			source: `
 def f(h: hash<int, nil>)
   h.default &&= nil
-end
-`,
-		},
-		{
-			name: "typed hash default proc skips and assignment",
-			source: `
-def f(h: hash<int, int>)
-  h.default_proc &&= 1
 end
 `,
 		},
@@ -1614,11 +1692,10 @@ end
 `,
 		},
 		{
-			name: "single-key typed hash member write weakens gradually",
+			name: "single-key typed hash member write stays silent",
 			source: `
 def f(h: hash<string, int>)
   h.value = 1
-  h[:bad] = 1
 end
 `,
 		},
@@ -1647,7 +1724,7 @@ end
 			source: `
 def f(h: hash<string, int>, replacement: hash<string, string>)
   h.replace(replacement)
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
 		},
@@ -1656,7 +1733,7 @@ end
 			source: `
 def f(h: hash<string, int>, replacement)
   h.replace(replacement)
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
 		},
@@ -1669,7 +1746,7 @@ end
 
 def f(h: hash<string, int>)
   consume(h.replace({ "a": 1 }))
-  h[:bad] = 1
+  h["bad"] = "bad"
 end
 `,
 		},
@@ -1705,7 +1782,7 @@ end
 			name: "nullable hash without a guard stays silent",
 			source: `
 def f(h: hash<string, int>?)
-  h[:sym] = 1
+  h["bad"] = "bad"
 end
 `,
 		},
@@ -1720,7 +1797,7 @@ end
 `,
 		},
 		{
-			name: "write through the other representation after adoption weakens",
+			name: "write through the other spelling after adoption refines",
 			source: `
 def takes_string(value: string)
   value
@@ -1890,7 +1967,7 @@ end
 			source: `
 def f(h: hash<string, int>, v)
   h.merge!(*v)
-  h[:sym] = 1
+  h["bad"] = "bad"
 end
 `,
 		},
@@ -1995,7 +2072,7 @@ end
 			source: `
 def f(h: hash<string, int>, v)
   h["a"] = v
-  h[:sym] = 1
+  h["bad"] = "bad"
 end
 `,
 		},
@@ -2004,7 +2081,7 @@ end
 			source: `
 def f(h: hash<string, int>)
   x = h.store("a", 1)
-  h[:sym] = 1
+  h["bad"] = "bad"
 end
 `,
 		},
@@ -2037,7 +2114,7 @@ end
 
 def f(h: hash<string, int>)
   helper(h)
-  h[:sym] = 1
+  h["bad"] = "bad"
 end
 `,
 		},
@@ -2047,7 +2124,7 @@ end
 def f(h: hash<string, int>, v)
   g = h
   g["a"] = v
-  h[:sym] = 1
+  h["bad"] = "bad"
 end
 `,
 		},
@@ -2056,9 +2133,9 @@ end
 			source: `
 def f(h: hash<string, int>, flag)
   while flag
-    h[:sym] = 1
+    h["bad"] = "bad"
   end
-  h[:sym] = 2
+  h["bad"] = "bad"
 end
 `,
 		},
@@ -2069,7 +2146,7 @@ def f(h: hash<string, int>)
   [1].each do |i|
     h[:sym] = i
   end
-  h[:sym] = 2
+  h["bad"] = "bad"
 end
 `,
 		},
@@ -2084,20 +2161,6 @@ def f(raw: string, v)
   body = JSON.parse_as(raw, { name: string })
   body["name"] = v
   takes_string(body["name"])
-end
-`,
-		},
-		{
-			name: "parse_as write through the other key representation weakens",
-			source: `
-def g(user: { name: string })
-  user
-end
-
-def f(raw: string)
-  body = JSON.parse_as(raw, { name: string })
-  body[:name] = 1
-  g(body)
 end
 `,
 		},
@@ -2327,13 +2390,13 @@ end
 
 def impossible_key_getter
   h = {}
-  h[1] = false
+  h["other"] = false
   h.value ||= fail_right_side()
 end
 
 def impossible_compound_key_getter
   h = {}
-  h[1] = 1
+  h["other"] = 1
   h.value += fail_right_side()
 end
 
@@ -2342,21 +2405,23 @@ def fail_right_side
 end
 `)
 
+	// A member write addresses the one entry both spellings name, so every
+	// shape below reads the written value back through either spelling.
 	compareArrays(t, callFunc(t, script, "existing_symbol", nil), []Value{
 		NewInt(1),
-		NewNil(),
+		NewInt(1),
 	})
 	compareArrays(t, callFunc(t, script, "existing_string", nil), []Value{
-		NewNil(),
+		NewInt(1),
 		NewInt(1),
 	})
 	compareArrays(t, callFunc(t, script, "symbol_wins", nil), []Value{
 		NewInt(1),
-		NewString("string"),
+		NewInt(1),
 	})
 	compareArrays(t, callFunc(t, script, "missing_key", nil), []Value{
 		NewInt(1),
-		NewNil(),
+		NewInt(1),
 	})
 	compareArrays(t, callFunc(t, script, "compound_and_logical", nil), []Value{
 		NewInt(3),
@@ -2415,81 +2480,4 @@ end
 		NewBool(true),
 		NewInt(1),
 	})
-}
-
-func TestHashWriteSymbolBoundaryRejectsObjectBacking(t *testing.T) {
-	t.Parallel()
-
-	script := compileScriptDefault(t, `
-def write(h: hash<symbol, int>)
-  h[:value] = 1
-end
-`)
-	receiver := NewObject(map[string]Value{})
-	requireCallErrorContains(
-		t,
-		script,
-		"write",
-		[]Value{receiver},
-		CallOptions{},
-		"argument h expected hash<symbol, int>, got {}",
-	)
-	if entries := receiver.HashEntries(); len(entries) != 0 {
-		t.Fatalf("object entries after rejected boundary = %#v, want none", entries)
-	}
-}
-
-func TestHashReplaceShapeCheckMatchesRuntimeKeyIdentity(t *testing.T) {
-	t.Parallel()
-
-	colliding := compileScriptDefault(t, `
-def replace_fields(user: { name: int })
-  user.replace({ name: 1, "name": 2 })
-end
-`)
-	requireCheckWarningContains(
-		t,
-		colliding,
-		"write to user adds field name to exact shape { name: int }",
-	)
-
-	receiver := NewTypedHash(1)
-	if err := receiver.HashSet(NewSymbol("name"), NewInt(0)); err != nil {
-		t.Fatalf("HashSet(:name, 0) error = %v", err)
-	}
-	got := callFunc(t, colliding, "replace_fields", []Value{receiver})
-	if got.HashLen() != 2 {
-		t.Fatalf("replace_fields({name: 0}).HashLen() = %d, want 2", got.HashLen())
-	}
-	if value, ok, err := got.HashGet(NewSymbol("name")); err != nil {
-		t.Fatalf("replace_fields({name: 0})[:name] error = %v", err)
-	} else if !ok || !value.Equal(NewInt(1)) {
-		t.Errorf("replace_fields({name: 0})[:name] = %v, %t, want 1, true", value, ok)
-	}
-	if value, ok, err := got.HashGet(NewString("name")); err != nil {
-		t.Fatalf(`replace_fields({name: 0})["name"] error = %v`, err)
-	} else if !ok || !value.Equal(NewInt(2)) {
-		t.Errorf(`replace_fields({name: 0})["name"] = %v, %t, want 2, true`, value, ok)
-	}
-
-	overwritten := compileScriptDefault(t, `
-def replace_fields(user: { name: int })
-  user.replace({ name: "discarded", name: 2 })
-end
-`)
-	requireNoCheckWarnings(t, overwritten)
-
-	receiver = NewTypedHash(1)
-	if err := receiver.HashSet(NewSymbol("name"), NewInt(0)); err != nil {
-		t.Fatalf("HashSet(:name, 0) error = %v", err)
-	}
-	got = callFunc(t, overwritten, "replace_fields", []Value{receiver})
-	if got.HashLen() != 1 {
-		t.Fatalf("replace_fields({name: 0}).HashLen() = %d, want 1", got.HashLen())
-	}
-	if value, ok, err := got.HashGet(NewSymbol("name")); err != nil {
-		t.Fatalf("replace_fields({name: 0})[:name] error = %v", err)
-	} else if !ok || !value.Equal(NewInt(2)) {
-		t.Errorf("replace_fields({name: 0})[:name] = %v, %t, want 2, true", value, ok)
-	}
 }

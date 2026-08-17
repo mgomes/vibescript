@@ -82,11 +82,10 @@ decode `\n`, `\t`, `\"`, `\\`; single-quoted symbols decode `\'` and `\\`).
 Interpolation is not supported in symbol literals, so `:"a#{b}"` is a parse
 error. `:"name"` is accepted anywhere a symbol literal is.
 
-A quoted hash key is not a symbol. In a hash literal, a bare label makes a
-symbol key and a quoted label makes a string key, so `{ name: 1 }` is read back
-with `h[:name]` and `{ "name": 1 }` with `h["name"]`. The quoted form is the only
-literal syntax for a string-keyed hash, which is what `JSON.parse` returns. See
-`docs/hashes.md`.
+Hash keys live in one string keyspace. In a hash literal a bare label and a
+quoted label both make a string key, so `{ name: 1 }` and `{ "name": 1 }` are
+the same hash and either `h[:name]` or `h["name"]` reads it. A symbol remains a
+distinct value kind everywhere else; only keys normalize. See `docs/hashes.md`.
 
 See `docs/arrays.md`, `docs/hashes.md`, `docs/strings.md`, `docs/durations.md`,
 and `docs/time.md` for full method coverage.

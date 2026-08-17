@@ -108,23 +108,14 @@ func DeepCloneValue(val value.Value) value.Value {
 		}
 		return value.NewArray(cloned)
 	case value.KindHash:
-		hash := val.Hash()
+		hash := val.HashEntryMap()
 		cloned := make(map[string]value.Value, len(hash))
 		for k, v := range hash {
 			cloned[k] = DeepCloneValue(v)
 		}
-		// Preserve the hash's Ruby-style default metadata so the isolated copy
-		// keeps the same missing-key behavior. The default value is deep-cloned
-		// like an entry; the default proc is a runtime-only block, copied by
-		// reference like blocks elsewhere in this clone.
-		defaultProc := value.HashDefaultProc(val)
-		defaultValue := value.HashDefaultValue(val)
-		if defaultProc.Kind() == value.KindNil && defaultValue.Kind() == value.KindNil {
-			return value.NewHash(cloned)
-		}
-		return value.NewHashWithDefault(cloned, DeepCloneValue(defaultValue), defaultProc)
+		return value.NewHashWithTrustedOrder(cloned, val.HashKeyOrder())
 	case value.KindObject:
-		obj := val.Hash()
+		obj := val.HashEntryMap()
 		cloned := make(map[string]value.Value, len(obj))
 		for k, v := range obj {
 			cloned[k] = DeepCloneValue(v)
@@ -305,7 +296,7 @@ func (s *traversalDepthScanner) check(label string, val value.Value, depth int) 
 			s.seen.arrays[id] = remainingDepth
 		}
 	case value.KindHash, value.KindObject:
-		entries := val.Hash()
+		entries := val.HashEntryMap()
 		ptr := value.HashIdentity(val)
 		if ptr == 0 {
 			ptr = reflect.ValueOf(entries).Pointer()
@@ -321,12 +312,6 @@ func (s *traversalDepthScanner) check(label string, val value.Value, depth int) 
 			if err := s.check(label, item, depth+1); err != nil {
 				return err
 			}
-		}
-		if err := s.check(label, value.HashDefaultValue(val), depth+1); err != nil {
-			return err
-		}
-		if err := s.check(label, value.HashDefaultProc(val), depth+1); err != nil {
-			return err
 		}
 		delete(s.visiting.maps, ptr)
 		if seenRemaining, ok := s.seen.maps[ptr]; !ok || remainingDepth < seenRemaining {
@@ -394,7 +379,7 @@ func validateDataOnly(val value.Value, visiting, seen *seenSet) dataOnlyResult {
 		seen.arrays[id] = struct{}{}
 		return issue
 	case value.KindHash, value.KindObject:
-		entries := val.Hash()
+		entries := val.HashEntryMap()
 		// A KindHash's default metadata lives outside its entry map, so two
 		// wrappers can share one map yet carry different defaults. Key the
 		// seen/visiting sets on the whole hash wrapper (or the entry-map pointer
@@ -414,19 +399,6 @@ func validateDataOnly(val value.Value, visiting, seen *seenSet) dataOnlyResult {
 		issue := dataOnlyOK
 		for _, item := range entries {
 			switch result := validateDataOnly(item, visiting, seen); result {
-			case dataOnlyCallable:
-				return dataOnlyCallable
-			case dataOnlyCycle:
-				issue = dataOnlyCycle
-			}
-		}
-		// A KindHash may carry Ruby-style default metadata outside its entry
-		// map: a default value and a default proc (a KindBlock, always a
-		// callable). Validate both so a Hash.new { ... } default proc, or a
-		// default value that nests a callable, is rejected at a data-only
-		// boundary instead of slipping through as an empty hash.
-		for _, meta := range [...]value.Value{value.HashDefaultValue(val), value.HashDefaultProc(val)} {
-			switch result := validateDataOnly(meta, visiting, seen); result {
 			case dataOnlyCallable:
 				return dataOnlyCallable
 			case dataOnlyCycle:
@@ -479,7 +451,7 @@ func cloneDataOnlyValue(val value.Value, visiting *seenSet, depth int) (value.Va
 	case value.KindHash:
 		return cloneDataOnlyHash(val, visiting, depth)
 	case value.KindObject:
-		return cloneDataOnlyMap(val.Hash(), visiting, value.NewObject, depth)
+		return cloneDataOnlyMap(val.HashEntryMap(), visiting, value.NewObject, depth)
 	default:
 		return val, dataOnlyOK
 	}
@@ -491,7 +463,7 @@ func cloneDataOnlyValue(val value.Value, visiting *seenSet, depth int) (value.Va
 // value is cloned and preserved on the result so the isolated copy keeps the
 // same missing-key behavior.
 func cloneDataOnlyHash(val value.Value, visiting *seenSet, depth int) (value.Value, dataOnlyResult) {
-	entries := val.Hash()
+	entries := val.HashEntryMap()
 	// Track the whole hash wrapper, not just the entry map: two wrappers can
 	// share one entry map yet carry distinct defaults, and the cycle check must
 	// follow each wrapper's own default graph.
@@ -530,29 +502,10 @@ func cloneDataOnlyHash(val value.Value, visiting *seenSet, depth int) (value.Val
 		}
 	}
 
-	defaultProc := value.HashDefaultProc(val)
-	if defaultProc.Kind() != value.KindNil {
-		// The default proc is always a script block; a data-only copy cannot
-		// retain a callable.
-		return value.NewNil(), dataOnlyCallable
-	}
-	clonedDefault, result := cloneDataOnlyValue(value.HashDefaultValue(val), visiting, depth+1)
-	switch result {
-	case dataOnlyCallable:
-		return value.NewNil(), dataOnlyCallable
-	case dataOnlyDepth:
-		return value.NewNil(), dataOnlyDepth
-	case dataOnlyCycle:
-		issue = dataOnlyCycle
-	}
-
 	if issue != dataOnlyOK {
 		return value.NewNil(), issue
 	}
-	if clonedDefault.Kind() == value.KindNil {
-		return value.NewHash(cloned), dataOnlyOK
-	}
-	return value.NewHashWithDefault(cloned, clonedDefault, value.NewNil()), dataOnlyOK
+	return value.NewHashWithTrustedOrder(cloned, val.HashKeyOrder()), dataOnlyOK
 }
 
 func cloneDataOnlyMap(

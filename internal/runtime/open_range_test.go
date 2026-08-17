@@ -217,21 +217,19 @@ end`)
 
 // TestOpenRangeHashKeys pins that open ranges are distinct hash keys from any
 // bounded range sharing an endpoint.
-func TestOpenRangeHashKeys(t *testing.T) {
+// A range is not a hash key: hash keys are strings and symbols only, and the
+// open forms are rejected like every other kind.
+func TestOpenRangeIsNotAHashKey(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `def run
   h = {}
   h[(1..)] = "endless"
-  h[(1..0)] = "bounded"
-  h[(..1)] = "beginless"
-  [h.size, h[(1..)], h[(1..0)], h[(..1)]]
+  h.size
 end`)
 
-	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
-	compareArrays(t, got, []Value{
-		NewInt(3), NewString("endless"), NewString("bounded"), NewString("beginless"),
-	})
+	requireCallErrorContains(t, script, "run", nil, CallOptions{},
+		"hash keys must be strings or symbols")
 }
 
 // TestBareMultilineRangeStatementSplit pins the statement-level newline rule

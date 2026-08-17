@@ -46,18 +46,18 @@ func TestIndexAwareIterationHappyPaths(t *testing.T) {
 			name:   "hash each_with_index pair and index in insertion order",
 			source: `def run(); out = []; { b: 2, a: 1, c: 3 }.each_with_index do |pair, index| out = out.push([pair, index]) end; out; end`,
 			want: []Value{
-				NewArray([]Value{NewArray([]Value{NewSymbol("b"), NewInt(2)}), NewInt(0)}),
-				NewArray([]Value{NewArray([]Value{NewSymbol("a"), NewInt(1)}), NewInt(1)}),
-				NewArray([]Value{NewArray([]Value{NewSymbol("c"), NewInt(3)}), NewInt(2)}),
+				NewArray([]Value{NewArray([]Value{NewString("b"), NewInt(2)}), NewInt(0)}),
+				NewArray([]Value{NewArray([]Value{NewString("a"), NewInt(1)}), NewInt(1)}),
+				NewArray([]Value{NewArray([]Value{NewString("c"), NewInt(3)}), NewInt(2)}),
 			},
 		},
 		{
 			name:   "hash map_with_index pair and index in insertion order",
 			source: `def run(); { b: 2, a: 1, c: 3 }.map_with_index do |pair, index| [pair[0], pair[1], index] end; end`,
 			want: []Value{
-				NewArray([]Value{NewSymbol("b"), NewInt(2), NewInt(0)}),
-				NewArray([]Value{NewSymbol("a"), NewInt(1), NewInt(1)}),
-				NewArray([]Value{NewSymbol("c"), NewInt(3), NewInt(2)}),
+				NewArray([]Value{NewString("b"), NewInt(2), NewInt(0)}),
+				NewArray([]Value{NewString("a"), NewInt(1), NewInt(1)}),
+				NewArray([]Value{NewString("c"), NewInt(3), NewInt(2)}),
 			},
 		},
 	}
@@ -554,7 +554,7 @@ func TestHashMapWithIndexReservesBackingUpFront(t *testing.T) {
 	// baseline and that baseline plus a full backing, so only the slot reservation
 	// can trip it.
 	acc := newArrayBuildAccumulator(&Execution{memoryQuota: 1 << 30}, receiver, nil, nil, emptyBlockValue())
-	if err := acc.reserveScratch(sortedKeyBufferBytes(receiverSize)); err != nil {
+	if err := acc.reserveScratch(sortedHashEntryBufferBytes(receiverSize)); err != nil {
 		t.Fatalf("reserveScratch: %v", err)
 	}
 	baselineOnly := acc.projected(0)
@@ -593,7 +593,7 @@ func TestHashMapWithIndexChargesYieldedPair(t *testing.T) {
 	// build reaches with the whole result backing but no live pair; the build trips
 	// only if the extra pair is charged on top of it.
 	acc := newArrayBuildAccumulator(&Execution{memoryQuota: 1 << 30}, receiver, nil, nil, emptyBlockValue())
-	if err := acc.reserveScratch(sortedKeyBufferBytes(receiverSize)); err != nil {
+	if err := acc.reserveScratch(sortedHashEntryBufferBytes(receiverSize)); err != nil {
 		t.Fatalf("reserveScratch: %v", err)
 	}
 	backingPeak := acc.projected(receiverSize)
@@ -656,7 +656,7 @@ func TestHashMapWithIndexAdmitsYieldedPairWithinQuota(t *testing.T) {
 	entries := receiver.Hash()
 
 	acc := newArrayBuildAccumulator(&Execution{memoryQuota: 1 << 30}, receiver, nil, nil, emptyBlockValue())
-	if err := acc.reserveScratch(sortedKeyBufferBytes(receiverSize)); err != nil {
+	if err := acc.reserveScratch(sortedHashEntryBufferBytes(receiverSize)); err != nil {
 		t.Fatalf("reserveScratch: %v", err)
 	}
 	backingPeak := acc.projected(receiverSize)

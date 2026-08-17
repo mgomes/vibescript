@@ -198,7 +198,7 @@ func validateRequireAliasBinding(root *Env, alias string, module Value) error {
 func sameObjectValue(left, right Value) bool {
 	return left.Kind() == KindObject &&
 		right.Kind() == KindObject &&
-		reflect.ValueOf(left.Hash()).Pointer() == reflect.ValueOf(right.Hash()).Pointer()
+		reflect.ValueOf(left.HashEntryMap()).Pointer() == reflect.ValueOf(right.HashEntryMap()).Pointer()
 }
 
 func bindModuleExportsWithoutOverwrite(root *Env, exports map[string]Value) {

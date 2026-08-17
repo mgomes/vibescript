@@ -40,10 +40,10 @@ func typedSymbolHash(key string, val Value) Value {
 }
 
 // largeTypedSymbolHash builds a typed (symbol-keyed) hash with count entries so
-// merge tests exercise the typed projection path (hashHasTypedEntries) rather
+// merge tests exercise the projection path rather
 // than the legacy string-keyed map.
 func largeTypedSymbolHash(count int) Value {
-	hash := NewTypedHash(0)
+	hash := NewHashWithCapacity(0)
 	for i := range count {
 		if err := hashSet(hash, NewSymbol("k"+strconv.Itoa(i)), NewInt(int64(i))); err != nil {
 			panic(fmt.Sprintf("set typed symbol hash key: %v", err))
@@ -54,7 +54,7 @@ func largeTypedSymbolHash(count int) Value {
 
 // typedSymbolHashFrom builds a typed (symbol-keyed) hash from name/value pairs.
 func typedSymbolHashFrom(pairs map[string]int) Value {
-	hash := NewTypedHash(0)
+	hash := NewHashWithCapacity(0)
 	for k, v := range pairs {
 		if err := hashSet(hash, NewSymbol(k), NewInt(int64(v))); err != nil {
 			panic(fmt.Sprintf("set typed symbol hash key: %v", err))
@@ -85,7 +85,7 @@ func TestHashKeysValuesHonorSandboxDuringMaterialization(t *testing.T) {
 	receiver := largeHashReceiver(2_000)
 	baseExec := &Execution{ctx: context.Background(), quota: 1 << 30}
 	base := baseExec.estimateMemoryUsage(receiver)
-	quota := base + sortedKeyBufferBytes(len(receiver.Hash())) + estimatedSliceBaseBytes
+	quota := base + sortedHashEntryBufferBytes(len(receiver.Hash())) + estimatedSliceBaseBytes
 
 	for _, name := range []string{"keys", "values"} {
 		t.Run(name+"_memory", func(t *testing.T) {
@@ -120,6 +120,24 @@ func TestHashDeepTransformKeysHonorsSandboxDuringTraversal(t *testing.T) {
 	requireErrorIs(t, err, errStepQuotaExceeded)
 }
 
+func TestHashDeepTransformKeysRejectsCyclicObject(t *testing.T) {
+	t.Parallel()
+
+	obj := NewObject(map[string]Value{})
+	if err := hashSet(obj, NewString("self"), obj); err != nil {
+		t.Fatalf("hashSet(cyclic object) error = %v", err)
+	}
+	receiver := NewHash(map[string]Value{"root": obj})
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 64 << 20}
+	_, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, keyIdentityBlock())
+	if err == nil {
+		t.Fatal("deep_transform_keys(hash with cyclic object) error = nil, want cyclic structures")
+	}
+	if !strings.Contains(err.Error(), "does not support cyclic structures") {
+		t.Fatalf("deep_transform_keys(hash with cyclic object) error = %v, want cyclic structures", err)
+	}
+}
+
 func TestHashDeepTransformKeysReservesOutputBuffers(t *testing.T) {
 	t.Parallel()
 
@@ -127,38 +145,10 @@ func TestHashDeepTransformKeysReservesOutputBuffers(t *testing.T) {
 	block := keyIdentityBlock()
 	baseExec := &Execution{ctx: context.Background(), quota: 1 << 30}
 	base := baseExec.estimateMemoryUsage(receiver, block)
-	quota := base + hashTransformBufferBytes(len(receiver.Hash()), sortedKeyBufferBytes(len(receiver.Hash())))/2
+	quota := base + hashTransformBufferBytes(len(receiver.Hash()), sortedHashEntryBufferBytes(len(receiver.Hash())))/2
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	_, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, block)
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
-}
-
-func TestHashDeepTransformKeysTypedReceiverDoesNotMaterializeLegacyMap(t *testing.T) {
-	t.Parallel()
-
-	key := NewArray([]Value{NewString("account"), NewSymbol("id")})
-	receiver := NewTypedHash(0)
-	if err := hashSet(receiver, key, NewInt(42)); err != nil {
-		t.Fatalf("hashSet(%s) error = %v, want nil", key.Inspect(), err)
-	}
-	if entries, ok := hashStringMapIfMaterialized(receiver); ok || entries != nil {
-		t.Fatalf("typed receiver legacy map before deep_transform_keys = %v, %v; want nil, false", entries, ok)
-	}
-
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
-	got, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, keyIdentityBlock())
-	if err != nil {
-		t.Fatalf("hash.deep_transform_keys on typed receiver = %v, want success", err)
-	}
-	if entries, ok := hashStringMapIfMaterialized(receiver); ok || entries != nil {
-		t.Fatalf("typed receiver legacy map after deep_transform_keys = %v, %v; want nil, false", entries, ok)
-	}
-	if got.Kind() != KindHash || got.HashLen() != 1 {
-		t.Fatalf("hash.deep_transform_keys typed result = %s with %d entries, want hash with 1 entry", got.Kind(), got.HashLen())
-	}
-	if value, ok, err := hashGet(got, key); err != nil || !ok || value.Int() != 42 {
-		t.Fatalf("hash.deep_transform_keys typed result lookup = (%v, %v, %v), want (42, true, nil)", value, ok, err)
-	}
 }
 
 func TestHashDeepTransformKeysRetainedPayloadReservationTripsMemoryQuota(t *testing.T) {
@@ -202,7 +192,7 @@ func TestHashDeepTransformKeysDoesNotRechargeSharedLeafPayloads(t *testing.T) {
 	block := keyIdentityBlock()
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
-	outputBytes := hashTransformBufferBytes(len(receiver.Hash()), sortedKeyBufferBytes(len(receiver.Hash())))
+	outputBytes := hashTransformBufferBytes(len(receiver.Hash()), sortedHashEntryBufferBytes(len(receiver.Hash())))
 	quota := liveWithRoots + outputBytes + len("leaf") + 64*1024
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
@@ -228,7 +218,7 @@ func TestHashDeepTransformKeysDoesNotRechargeSharedArrayLeafPayloads(t *testing.
 	block := keyIdentityBlock()
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
-	outputBytes := hashTransformBufferBytes(len(receiver.Hash()), sortedKeyBufferBytes(len(receiver.Hash())))
+	outputBytes := hashTransformBufferBytes(len(receiver.Hash()), sortedHashEntryBufferBytes(len(receiver.Hash())))
 	quota := liveWithRoots + outputBytes + len("items") + deepTransformArrayBufferBytes(len(items.Array())) + 64*1024
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
@@ -253,7 +243,7 @@ func TestHashDeepTransformKeysDoesNotRechargePreReservedArrayBacking(t *testing.
 	block := keyIdentityBlock()
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
 	liveWithRoots := probe.hashCallRootBytes(receiver, nil, nil, block)
-	outputBytes := hashTransformBufferBytes(len(receiver.Hash()), sortedKeyBufferBytes(len(receiver.Hash())))
+	outputBytes := hashTransformBufferBytes(len(receiver.Hash()), sortedHashEntryBufferBytes(len(receiver.Hash())))
 	quota := liveWithRoots + outputBytes + len("items") + deepTransformArrayBufferBytes(len(items.Array()))
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
@@ -396,7 +386,7 @@ func TestHashReplaceChargesTypedOutputAndScratch(t *testing.T) {
 	if scratch <= 0 {
 		t.Fatalf("test setup expects a heap-allocated entry buffer for %d entries", count)
 	}
-	quota := base + typedHashTransformBufferBytes(count, scratch)
+	quota := base + hashTransformBufferBytes(count, scratch)
 
 	receiver := largeHashReceiver(count)
 	replacement := largeHashReceiver(count)
@@ -421,7 +411,7 @@ func TestHashReplaceChargesTypedOutputAndScratch(t *testing.T) {
 	}
 
 	// Withholding the scratch term must reject the call before any mutation.
-	tight := base + typedHashTransformBufferBytes(count, 0)
+	tight := base + hashTransformBufferBytes(count, 0)
 	receiver = largeHashReceiver(count)
 	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: tight}
 	_, err = callHashMember(t, exec, receiver, "replace", []Value{largeHashReceiver(count)}, NewNil())
@@ -461,7 +451,7 @@ func TestHashTransformProjectionCountsLiveCallRoots(t *testing.T) {
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoot := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, NewNil())
 	outputStructure := estimatedEmptyOutputHashBytes +
-		count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
+		count*estimatedMapEntryStructuralBytes + hashOrderBackingBytes(count)
 	if liveWithRoot <= outputStructure {
 		t.Fatalf("test setup expects the live input (%d) to exceed the output structure (%d)", liveWithRoot, outputStructure)
 	}
@@ -494,7 +484,8 @@ func TestHashSliceProjectionBoundsByOutputNotArgCount(t *testing.T) {
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
 	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	outputStructure := estimatedEmptyOutputHashBytes + len(receiver.Hash())*perEntry
+	outputStructure := estimatedEmptyOutputHashBytes +
+		len(receiver.Hash())*perEntry + hashOrderBackingBytes(len(receiver.Hash()))
 	quota := liveWithRoots + outputStructure
 
 	// Sanity: a map projected at len(args) would dwarf this quota, so admitting the
@@ -542,8 +533,8 @@ func TestHashMergeProjectionCountsUnionNotSum(t *testing.T) {
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, []Value{receiver}, nil, NewNil())
 	outputStructure := estimatedEmptyOutputHashBytes +
-		count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
-	scratch := sortedKeyBufferBytes(count)
+		count*estimatedMapEntryStructuralBytes + hashOrderBackingBytes(count)
+	scratch := sortedHashEntryBufferBytes(count)
 	quota := liveWithRoots + outputStructure + scratch
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
@@ -561,7 +552,7 @@ func TestHashMergeProjectionCountsUnionNotSum(t *testing.T) {
 	// Sanity: the discarded sum-based projection (len(base)+len(arg) = 2*count)
 	// would not fit this quota, confirming the test exercises the union fix.
 	sumProjection := estimatedEmptyOutputHashBytes +
-		2*count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
+		2*count*estimatedMapEntryStructuralBytes + hashOrderBackingBytes(2*count)
 	if liveWithRoots+sumProjection <= quota {
 		t.Fatalf("test setup expects the sum-based projection (%d) to exceed the quota (%d)", liveWithRoots+sumProjection, quota)
 	}
@@ -584,11 +575,11 @@ func TestHashMergeMultiArgOverlapStaysWithinQuota(t *testing.T) {
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
 	outputStructure := estimatedEmptyOutputHashBytes +
-		count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
+		count*estimatedMapEntryStructuralBytes + hashOrderBackingBytes(count)
 	// The per-argument sorted key scratch buffer is reused across arguments, so it
 	// only sizes to the largest single argument (count keys here). Fold it into the
 	// quota alongside the union-sized output map.
-	scratch := sortedKeyBufferBytes(count)
+	scratch := sortedHashEntryBufferBytes(count)
 	quota := liveWithRoots + outputStructure + scratch
 
 	// Sanity: the loose upper bound sums every argument length, so it exceeds the
@@ -639,12 +630,12 @@ func TestTypedMergedKeyCount(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			exec := &Execution{ctx: context.Background()}
-			got, err := typedMergedKeyCount(exec, base, tc.args, tc.limit)
+			got, err := mergedHashKeyCount(exec, base, tc.args, tc.limit)
 			if err != nil {
-				t.Fatalf("typedMergedKeyCount(%s) error = %v, want nil", tc.name, err)
+				t.Fatalf("mergedHashKeyCount(%s) error = %v, want nil", tc.name, err)
 			}
 			if got != tc.want {
-				t.Fatalf("typedMergedKeyCount(%s) = %d, want %d", tc.name, got, tc.want)
+				t.Fatalf("mergedHashKeyCount(%s) = %d, want %d", tc.name, got, tc.want)
 			}
 		})
 	}
@@ -667,7 +658,7 @@ func TestTypedMergedKeyCountStopsAtLimit(t *testing.T) {
 
 	const limit = 10
 	exec := &Execution{ctx: context.Background()}
-	got, err := typedMergedKeyCount(exec, base, args, limit)
+	got, err := mergedHashKeyCount(exec, base, args, limit)
 	if err != nil {
 		t.Fatalf("typedMergedKeyCount error = %v, want nil", err)
 	}
@@ -693,12 +684,12 @@ func TestTypedHashMergeProjectionCountsUnionNotSum(t *testing.T) {
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	base := probe.projectedHashBaseBytes(receiver, args, nil, NewNil())
 	scratch := sortedHashEntryBufferBytes(count)
-	unionBacking := count*estimatedMapEntryStructuralBytes + typedHashEntryMapBytes(count)
+	unionBacking := hashTransformBufferBytes(count, 0)
 	quota := base + unionBacking + scratch
 
 	// Sanity: the discarded sum-based projection (2*count entries) would not fit
 	// this quota, confirming the test exercises the typed union fix.
-	sumBacking := 2*count*estimatedMapEntryStructuralBytes + typedHashEntryMapBytes(2*count)
+	sumBacking := hashTransformBufferBytes(2*count, 0)
 	if base+sumBacking+scratch <= quota {
 		t.Fatalf("test setup expects the sum-based projection to exceed the quota")
 	}
@@ -764,7 +755,7 @@ func TestHashMergeRejectsWhenScratchExceedsQuota(t *testing.T) {
 	projectedBase := probe.projectedHashBaseBytes(receiver, args, nil, NewNil())
 	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
 	unionOutput := count * perEntry
-	scratch := mergeSortScratchBytes(args)
+	scratch := sortedHashEntryBufferBytes(maxArgEntries(args))
 	if scratch <= 0 {
 		t.Fatalf("test setup expects a heaped scratch buffer, got %d bytes", scratch)
 	}
@@ -802,15 +793,19 @@ func TestMaxProjectedHashEntriesAgreesWithProjection(t *testing.T) {
 	receiver := largeHashReceiver(1_000)
 	args := []Value{receiver}
 
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	// The projection walks the call roots, so the probe needs a live quota for
+	// its base to match the one the checked execution will measure.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	projectedBase := probe.projectedHashBaseBytes(receiver, args, nil, NewNil())
-	scratch := sortedKeyBufferBytes(2_000)
-	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+	scratch := sortedHashEntryBufferBytes(2_000)
+	// Each admitted entry costs a map slot and an insertion-order slot; the
+	// order backing's own base rides in the fixed part of the budget.
+	perEntry := estimatedMapEntryStructuralBytes + estimatedValueBytes
 
 	// Pick a quota that admits some entries beyond the base plus scratch so the cap
 	// is a positive number bounded by the byte budget.
 	const wantCap = 50
-	quota := projectedBase + scratch + wantCap*perEntry
+	quota := projectedBase + scratch + estimatedSliceBaseBytes + wantCap*perEntry
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 
 	entryCap := exec.maxProjectedHashEntries(scratch, receiver, args, nil, NewNil())
@@ -1002,7 +997,7 @@ func TestHashMergeUnionCountHonorsStepQuota(t *testing.T) {
 	// both lengths (so it overflows and forces that path).
 	args := []Value{argument, argument}
 
-	exec := &Execution{ctx: context.Background(), quota: 100, memoryQuota: 8_000_000}
+	exec := &Execution{ctx: context.Background(), quota: 100, memoryQuota: 12_000_000}
 	_, err := callHashMember(t, exec, receiver, "merge", args, NewNil())
 	requireErrorIs(t, err, errStepQuotaExceeded)
 }
@@ -1064,7 +1059,7 @@ func hashStoreProjectionBytes(t *testing.T, receiver Value, args []Value, entrie
 	t.Helper()
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	live := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
-	return live + typedHashTransformBufferBytes(entries, 0)
+	return live + hashTransformBufferBytes(entries, 0)
 }
 
 // TestHashStoreChargesSlotAndPromotion pins the in-place store's memory
@@ -1203,7 +1198,7 @@ func TestHashExceptChargesExclusionSet(t *testing.T) {
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
 	outputStructure := estimatedEmptyOutputHashBytes +
-		count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
+		count*estimatedMapEntryStructuralBytes + hashOrderBackingBytes(count)
 	preFixBudget := liveWithRoots + outputStructure
 
 	exclusion := exclusionSetBytes(count)
@@ -1222,55 +1217,14 @@ func TestHashExceptChargesExclusionSet(t *testing.T) {
 	// A quota generously above roots + output + exclusion set still admits the call
 	// and returns the empty result, proving the new charge does not over-tighten a
 	// valid except.
-	roomy := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: preFixBudget + exclusion + 64*1024}
+	entryScratch := sortedHashEntryBufferBytes(count)
+	roomy := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: preFixBudget + exclusion + entryScratch + 64*1024}
 	out, err := callHashMember(t, roomy, receiver, "except", args, NewNil())
 	if err != nil {
 		t.Fatalf("except within an ample quota failed: %v", err)
 	}
 	if got := len(out.Hash()); got != 0 {
 		t.Fatalf("except(*keys) kept %d entries, want 0", got)
-	}
-}
-
-func TestHashExceptTypedArrayKeyChargesCanonicalExclusionPayload(t *testing.T) {
-	t.Parallel()
-
-	keyItems := make([]Value, 256)
-	for i := range keyItems {
-		keyItems[i] = NewString("segment-" + strconv.Itoa(i))
-	}
-	key := NewArray(keyItems)
-	receiver := NewHash(map[string]Value{})
-	if err := hashSet(receiver, key, NewInt(1)); err != nil {
-		t.Fatalf("set typed array key: %v", err)
-	}
-	args := []Value{key}
-
-	lookupKey, err := hashLookupKey(key)
-	if err != nil {
-		t.Fatalf("lookup typed array key: %v", err)
-	}
-	extraPayload := lookupKey.ExtraPayloadBytes()
-	if extraPayload <= 0 {
-		t.Fatalf("expected array lookup key to retain canonical payload, got %d", extraPayload)
-	}
-
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	projected := probe.projectedHashBaseBytes(receiver, args, nil, NewNil())
-	projected = saturatingAdd(projected, estimatedMapEntryStructuralBytes)
-	projected = saturatingAdd(projected, typedExclusionSetBytes(1))
-
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projected + extraPayload/2}
-	_, err = callHashMember(t, exec, receiver, "except", args, NewNil())
-	requireErrorIs(t, err, errMemoryQuotaExceeded)
-
-	roomy := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projected + extraPayload + 64*1024}
-	out, err := callHashMember(t, roomy, receiver, "except", args, NewNil())
-	if err != nil {
-		t.Fatalf("typed except within an ample quota failed: %v", err)
-	}
-	if got := out.HashLen(); got != 0 {
-		t.Fatalf("typed except kept %d entries, want 0", got)
 	}
 }
 
@@ -1476,7 +1430,7 @@ func TestHashBuildAccumulatorBackingReservationMatchesProjection(t *testing.T) {
 	// backing. Measure the projection BEFORE reserving the output map, so the
 	// reservation does not also fold into projectedHashBaseBytes.
 	wantBase := exec.projectedHashBaseBytes(receiver, nil, nil, NewNil()) +
-		capacity*estimatedMapEntryStructuralBytes
+		capacity*estimatedMapEntryStructuralBytes + hashOrderBackingBytes(capacity)
 
 	delta := exec.reserveLoopScratch(hashTransformBufferBytes(capacity, 0))
 	defer exec.releaseLoopScratch(delta)
@@ -1522,13 +1476,13 @@ func TestHashTransformValuesScratchPeakTripsMemoryQuota(t *testing.T) {
 	backingDelta := probe.reserveLoopScratch(hashTransformBufferBytes(count, 0))
 	defer probe.releaseLoopScratch(backingDelta)
 	acc := newHashBuildAccumulator(probe, receiver, nil, nil, block)
-	for range sortedHashKeysInto(receiver.Hash(), nil) {
+	for range receiver.HashEntries() {
 		if err := acc.add(NewNil()); err != nil {
 			t.Fatalf("probe build tripped under an unbounded quota: %v", err)
 		}
 	}
 	peakWithoutScratch := acc.base + acc.built
-	scratch := sortedKeyBufferBytes(count)
+	scratch := sortedHashEntryBufferBytes(count)
 	if scratch <= 0 {
 		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
 	}
@@ -1579,7 +1533,7 @@ func TestHashTransformReservationsRejectBeforeMapAllocation(t *testing.T) {
 
 			probe := &Execution{ctx: context.Background(), quota: 1 << 30}
 			roots := probe.hashCallRootBytes(receiver, nil, nil, tt.block)
-			buffers := hashTransformBufferBytes(count, sortedKeyBufferBytes(count))
+			buffers := hashTransformBufferBytes(count, sortedHashEntryBufferBytes(count))
 			quota := saturatingAdd(roots, buffers) - 1
 			if roots > quota {
 				t.Fatalf("test setup expects roots (%d) to fit quota (%d)", roots, quota)
@@ -1598,144 +1552,22 @@ func TestHashTransformReservationsRejectBeforeMapAllocation(t *testing.T) {
 	}
 }
 
-func TestTypedHashTransformsReserveTypedOutputMap(t *testing.T) {
-	t.Parallel()
-
-	const count = 2_000
-	receiver := largeTypedSymbolHash(count)
-	scratch := sortedHashEntryBufferBytes(count)
-	legacyBuffers := hashTransformBufferBytes(count, scratch)
-	typedBuffers := typedHashTransformBufferBytes(count, scratch)
-	if legacyBuffers >= typedBuffers {
-		t.Fatalf("test setup expects typed buffers (%d) to exceed legacy buffers (%d)", typedBuffers, legacyBuffers)
-	}
-
-	tests := []struct {
-		name  string
-		block Value
-	}{
-		{name: "transform_keys", block: keyIdentityBlock()},
-		{name: "transform_values", block: emptyHashBlock()},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			probe := &Execution{ctx: context.Background(), quota: 1 << 30}
-			roots := probe.hashCallRootBytes(receiver, nil, nil, tt.block)
-			quota := roots + legacyBuffers
-			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
-			_, err := callHashMember(t, exec, receiver, tt.name, nil, tt.block)
-			requireErrorIs(t, err, errMemoryQuotaExceeded)
-			if exec.steps != 0 {
-				t.Fatalf("hash.%s ran %d step(s), want typed output backing rejected before iteration", tt.name, exec.steps)
-			}
-			if exec.reservedScratchBytes != 0 {
-				t.Fatalf("hash.%s leaked %d reserved scratch bytes after rejection", tt.name, exec.reservedScratchBytes)
-			}
-		})
-	}
-}
-
-func TestTypedHashCopiesReserveTypedOutputMap(t *testing.T) {
-	t.Parallel()
-
-	const count = 2_000
-	receiver := largeTypedSymbolHash(count)
-	legacyBuffers := hashTransformBufferBytes(count, 0)
-	typedBuffers := typedHashTransformBufferBytes(count, 0)
-	if legacyBuffers >= typedBuffers {
-		t.Fatalf("test setup expects typed buffers (%d) to exceed legacy buffers (%d)", typedBuffers, legacyBuffers)
-	}
-
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
-	roots := probe.hashCallRootBytes(receiver, nil, nil, NewNil())
-	quota := roots + legacyBuffers
-	if roots > quota {
-		t.Fatalf("test setup expects roots (%d) to fit quota (%d)", roots, quota)
-	}
-
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
-	_, err := callHashMember(t, exec, receiver, "compact", nil, NewNil())
-	requireErrorIs(t, err, errMemoryQuotaExceeded)
-	if exec.steps != 0 {
-		t.Fatalf("hash.compact ran %d step(s), want typed output backing rejected before iteration", exec.steps)
-	}
-	if exec.reservedScratchBytes != 0 {
-		t.Fatalf("hash.compact leaked %d reserved scratch bytes after rejection", exec.reservedScratchBytes)
-	}
-}
-
-func TestMaxProjectedTypedHashEntriesAgreesWithProjection(t *testing.T) {
-	t.Parallel()
-
-	receiver := largeTypedSymbolHash(1_000)
-	args := []Value{receiver}
-
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	projectedBase := probe.hashCallRootBytes(receiver, args, nil, NewNil())
-	scratch := sortedHashEntryBufferBytes(2_000)
-	typedBase := estimatedValueBytes + estimatedHashDataBytes + estimatedMapBaseBytes + estimatedSliceBaseBytes
-	perEntry := estimatedMapEntryBytes + 2*estimatedHashLookupKeyBytes + estimatedHashEntryBytes
-
-	const wantCap = 50
-	quota := projectedBase + scratch + typedBase + wantCap*perEntry
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
-
-	entryCap := exec.maxProjectedTypedHashEntries(scratch, receiver, args, nil, NewNil())
-	if entryCap != wantCap {
-		t.Fatalf("maxProjectedTypedHashEntries = %d, want %d", entryCap, wantCap)
-	}
-
-	if err := exec.checkProjectedTypedHashTransformBytes(entryCap, scratch, receiver, args, nil, NewNil()); err != nil {
-		t.Fatalf("checkProjectedTypedHashTransformBytes(%d, scratch) = %v, want it to fit the cap", entryCap, err)
-	}
-	if err := exec.checkProjectedTypedHashTransformBytes(entryCap+1, scratch, receiver, args, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
-		t.Fatalf("checkProjectedTypedHashTransformBytes(%d, scratch) = %v, want it to exceed the cap", entryCap+1, err)
-	}
-}
-
 func TestProjectedTypedHashTransformChargesEmptyTypedMap(t *testing.T) {
 	t.Parallel()
 
 	receiver := largeTypedSymbolHash(1)
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	projectedBase := probe.hashCallRootBytes(receiver, nil, nil, NewNil())
-	emptyTypedHash := typedHashTransformBufferBytes(0, 0)
+	emptyHash := hashTransformBufferBytes(0, 0)
 
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projectedBase + emptyTypedHash - 1}
-	if err := exec.checkProjectedTypedHashTransformBytes(0, 0, receiver, nil, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
-		t.Fatalf("checkProjectedTypedHashTransformBytes(0) = %v, want memory quota error", err)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projectedBase + emptyHash - 1}
+	if err := exec.checkProjectedHashTransformBytes(0, 0, receiver, nil, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("checkProjectedHashTransformBytes(0) = %v, want memory quota error", err)
 	}
 
-	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projectedBase + emptyTypedHash}
-	if err := exec.checkProjectedTypedHashTransformBytes(0, 0, receiver, nil, nil, NewNil()); err != nil {
-		t.Fatalf("checkProjectedTypedHashTransformBytes(0) = %v, want nil", err)
-	}
-}
-
-func TestLegacyEmptyTransformKeysDoesNotReserveTypedMap(t *testing.T) {
-	t.Parallel()
-
-	receiver := NewHash(map[string]Value{})
-	block := keyIdentityBlock()
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
-	legacyBuffers := hashTransformBufferBytes(0, sortedKeyBufferBytes(0))
-
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roots + legacyBuffers}
-	got, err := callHashMember(t, exec, receiver, "transform_keys", nil, block)
-	if err != nil {
-		t.Fatalf("empty legacy hash.transform_keys at legacy reservation quota = %v, want nil", err)
-	}
-	if got.HashLen() != 0 {
-		t.Fatalf("empty legacy hash.transform_keys result entries = %d, want 0", got.HashLen())
-	}
-	if hashHasTypedEntries(got) {
-		t.Fatal("empty legacy hash.transform_keys result has typed entries, want legacy-only hash")
-	}
-	if exec.reservedScratchBytes != 0 {
-		t.Fatalf("empty legacy hash.transform_keys leaked %d reserved scratch bytes", exec.reservedScratchBytes)
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projectedBase + emptyHash}
+	if err := exec.checkProjectedHashTransformBytes(0, 0, receiver, nil, nil, NewNil()); err != nil {
+		t.Fatalf("checkProjectedHashTransformBytes(0) = %v, want nil", err)
 	}
 }
 
@@ -1746,7 +1578,7 @@ func TestHashTransformReservationsDoNotMaskRequiredBlock(t *testing.T) {
 	receiver := largeHashReceiver(count)
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
 	roots := probe.hashCallRootBytes(receiver, nil, nil, NewNil())
-	buffers := hashTransformBufferBytes(count, sortedKeyBufferBytes(count))
+	buffers := hashTransformBufferBytes(count, sortedHashEntryBufferBytes(count))
 	quota := saturatingAdd(roots, buffers) - 1
 	if roots > quota {
 		t.Fatalf("test setup expects roots (%d) to fit quota (%d)", roots, quota)
@@ -1788,7 +1620,7 @@ func TestHashEachFitsRealFootprint(t *testing.T) {
 
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
-	scratch := sortedKeyBufferBytes(count)
+	scratch := sortedHashEntryBufferBytes(count)
 	if scratch <= 0 {
 		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
 	}
@@ -2201,72 +2033,6 @@ end`
 	requireCallRuntimeErrorType(t, script, "run", []Value{largeHashReceiver(2_000)}, CallOptions{}, runtimeErrorTypeLimit)
 }
 
-func TestHashTransformKeysChargesRetainedTypedKeyValues(t *testing.T) {
-	t.Parallel()
-
-	const count = 2_000
-	const keyWidth = 16
-	receiver := largeHashReceiver(count)
-	block := freshArrayKeyBlockValue(keyWidth)
-
-	arrayKey := func(key string) Value {
-		elements := make([]Value, 0, keyWidth+1)
-		for i := range keyWidth {
-			elements = append(elements, NewInt(int64(i)))
-		}
-		elements = append(elements, NewSymbol(key))
-		return NewArray(elements)
-	}
-	displayOnlyPayload := 0
-	typedPayload := 0
-	maxTypedKeyCharge := 0
-	for i := range count {
-		key := arrayKey("k" + strconv.Itoa(i))
-		lookupKey, err := hashLookupKey(key)
-		if err != nil {
-			t.Fatalf("hashLookupKey(sample array key %d) error = %v, want nil", i, err)
-		}
-		displayKey := hashDisplayKey(key)
-		displayOnlyPayload = saturatingAdd(displayOnlyPayload, newMemoryEstimator().stringPayloadSize(displayKey))
-		est := newMemoryEstimator()
-		typedKeyCharge := est.valuePayload(key)
-		typedKeyCharge = saturatingAdd(typedKeyCharge, est.stringPayloadSize(displayKey))
-		typedKeyCharge = saturatingAdd(typedKeyCharge, lookupKey.ExtraPayloadBytes())
-		typedPayload = saturatingAdd(typedPayload, typedKeyCharge)
-		if typedKeyCharge > maxTypedKeyCharge {
-			maxTypedKeyCharge = typedKeyCharge
-		}
-	}
-	if typedPayload <= displayOnlyPayload {
-		t.Fatalf("test setup expects typed key payload (%d) to exceed display-only payload (%d)", typedPayload, displayOnlyPayload)
-	}
-
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
-	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
-	buffers := typedHashTransformBufferBytes(count, sortedKeyBufferBytes(count))
-	transientKeyPayload := maxTypedKeyCharge
-	payloadHeadroom := max(transientKeyPayload, displayOnlyPayload)
-	if typedPayload <= payloadHeadroom {
-		t.Fatalf("test setup expects retained typed keys (%d) to exceed payload headroom (%d)", typedPayload, payloadHeadroom)
-	}
-
-	quota := saturatingAdd(saturatingAdd(roots, buffers), payloadHeadroom)
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
-	_, err := callHashMember(t, exec, receiver, "transform_keys", nil, block)
-	requireErrorIs(t, err, errMemoryQuotaExceeded)
-
-	roomy := saturatingAdd(saturatingAdd(roots, buffers), typedPayload)
-	roomy = saturatingAdd(roomy, maxTypedKeyCharge)
-	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roomy}
-	got, err := callHashMember(t, exec, receiver, "transform_keys", nil, block)
-	if err != nil {
-		t.Fatalf("hash.transform_keys with retained typed array keys under roomy quota error = %v, want nil", err)
-	}
-	if got.HashLen() != count {
-		t.Fatalf("hash.transform_keys with retained typed array keys produced %d entries, want %d", got.HashLen(), count)
-	}
-}
-
 // selfCyclicArray builds an array whose single element points back at the array
 // itself: a = [0]; a[0] = a. NewArray stores the slice header directly, so
 // mutating the backing after construction makes the value reach itself, mirroring
@@ -2287,32 +2053,30 @@ func selfCyclicHash() Value {
 	return h
 }
 
-// TestHashMergeZeroArgWithBlockOverLargeReceiverSucceeds pins the P2 finding on PR
-// #776: a bare `h.merge { ... }` with no argument hashes short-circuits to a copy
-// of the receiver and never runs the block or sorts the base, so the conflict
-// block's base scratch buffer is never allocated. The projection must not charge
-// that phantom scratch. A receiver whose real copy fits the quota but whose
-// phantom base scratch would not must still be admitted.
+// TestHashMergeZeroArgWithBlockOverLargeReceiverSucceeds pins that a bare
+// `h.merge { ... }` copies the receiver through HashEntriesInto and must reserve
+// that receiver-sized snapshot, while still not charging unused conflict-block
+// scratch for zero arguments.
 func TestHashMergeZeroArgWithBlockOverLargeReceiverSucceeds(t *testing.T) {
 	t.Parallel()
 
 	const count = 50_000
 	receiver := largeHashReceiver(count)
 
-	// Size the quota to fit the live receiver plus the copied output map exactly,
-	// with no headroom for a base-sized sorted key scratch buffer. The phantom
-	// scratch the pre-fix projection charged would push this over the limit.
+	// Size the quota to fit the live receiver, the copied output, and the
+	// receiver-sized HashEntriesInto scratch that the copy walk actually
+	// allocates. A conflict-block base scratch is still unused (zero args),
+	// but the entry snapshot is live alongside the output.
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, NewNil())
 	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	outputStructure := estimatedEmptyOutputHashBytes + count*perEntry
-	scratch := sortedKeyBufferBytes(count)
-	quota := liveWithRoots + outputStructure + scratch/2
+	outputStructure := estimatedEmptyOutputHashBytes + count*perEntry + hashOrderBackingBytes(count)
+	scratch := sortedHashEntryBufferBytes(count)
+	quota := liveWithRoots + outputStructure + scratch + 64*1024
 
-	// Sanity: the pre-fix projection added the full base scratch on top, which would
-	// exceed this quota, so admitting the call proves the phantom charge is gone.
-	if liveWithRoots+outputStructure+scratch <= quota {
-		t.Fatalf("test setup expects the phantom-scratch projection (%d) to exceed the quota (%d)", liveWithRoots+outputStructure+scratch, quota)
+	tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: liveWithRoots + outputStructure + scratch/2}
+	if _, err := callHashMember(t, tight, receiver, "merge", nil, emptyHashBlock()); err == nil {
+		t.Fatal("zero-arg merge under a quota that omits receiver entry scratch must reject")
 	}
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
@@ -2405,20 +2169,6 @@ func keyIdentityBlock() Value {
 	return NewBlock(
 		[]Param{{Kind: ParamNormal, Name: "k", Target: &Identifier{Name: "k", Position: pos}}},
 		[]Statement{&ExprStmt{Position: pos, Expr: &Identifier{Name: "k", Position: pos}}},
-		newEnv(nil),
-	)
-}
-
-func freshArrayKeyBlockValue(width int) Value {
-	pos := Position{Line: 1, Column: 1}
-	elements := make([]Expression, 0, width+1)
-	for i := range width {
-		elements = append(elements, &IntegerLiteral{Value: int64(i), Position: pos})
-	}
-	elements = append(elements, &Identifier{Name: "k", Position: pos})
-	return NewBlock(
-		[]Param{{Kind: ParamNormal, Name: "k", Target: &Identifier{Name: "k", Position: pos}}},
-		[]Statement{&ExprStmt{Expr: &ArrayLiteral{Elements: elements, Position: pos}, Position: pos}},
 		newEnv(nil),
 	)
 }
@@ -2632,7 +2382,7 @@ func TestHashSortedKeyBufferTripsMemoryQuota(t *testing.T) {
 	block := emptyHashBlock()
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	base := probe.hashCallRootBytes(receiver, nil, nil, block)
-	scratch := sortedKeyBufferBytes(count)
+	scratch := sortedHashEntryBufferBytes(count)
 	if scratch <= 0 {
 		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
 	}
@@ -2681,7 +2431,7 @@ func TestForHashLoopSortedKeyBufferTripsMemoryQuota(t *testing.T) {
 	// estimateMemoryUsageBase plus the iterable, deduplicated against the base.
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, NewNil())
-	scratch := sortedKeyBufferBytes(count)
+	scratch := sortedHashEntryBufferBytes(count)
 	if scratch <= 0 {
 		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
 	}
@@ -2769,7 +2519,7 @@ func TestForHashLoopHoldsScratchAcrossBody(t *testing.T) {
 	// that dominates the small per-iteration body below.
 	const count = 4_000
 	receiver := largeHashReceiver(count)
-	scratch := sortedKeyBufferBytes(count)
+	scratch := sortedHashEntryBufferBytes(count)
 	if scratch <= 0 {
 		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
 	}
@@ -2816,7 +2566,7 @@ func TestForHashReachablePairBodyFitsWithoutPairReservation(t *testing.T) {
 	receiver := NewHash(map[string]Value{key: NewInt(1)})
 	body := arrayValue(bodyLen)
 	pair := NewArray([]Value{NewSymbol(key), NewInt(1)})
-	scratch := sortedKeyBufferBytes(1)
+	scratch := sortedHashEntryBufferBytes(1)
 	pairChargeProbe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	pairCharge := pairChargeProbe.maxCollapsedPairBytes(receiver)
 
@@ -2906,7 +2656,7 @@ func TestHashSelectSortedKeyBufferTripsMemoryQuota(t *testing.T) {
 	base := probe.projectedHashBaseBytes(receiver, nil, nil, block)
 	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
 	outputStructure := count * perEntry
-	scratch := sortedKeyBufferBytes(count)
+	scratch := sortedHashEntryBufferBytes(count)
 	if scratch <= 0 {
 		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
 	}
@@ -3137,7 +2887,7 @@ func TestHashMergeNonConflictGrowthWithEarlyConflictTrips(t *testing.T) {
 	args := []Value{arg}
 
 	unionLen := 1 + nonConflictKeys
-	scratch := mergeSortScratchBytes(args)
+	scratch := sortedHashEntryBufferBytes(maxArgEntries(args))
 
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	probe.root = newEnv(nil)
@@ -3224,7 +2974,7 @@ func TestHashMergeOverlappingBlockExactUnionFitsLooseBoundWouldReject(t *testing
 	probe.root = newEnv(nil)
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, block)
 	emptyMap := estimatedEmptyOutputHashBytes
-	scratch := mergeSortScratchBytes(args)
+	scratch := sortedHashEntryBufferBytes(maxArgEntries(args))
 	exactBacking := count * estimatedMapEntryStructuralBytes
 	looseBacking := 2 * count * estimatedMapEntryStructuralBytes
 	resultBytes := newMemoryEstimator().valuePayload(shared)
@@ -3313,7 +3063,7 @@ func TestHashEachOverFixedNestedRestDoesNotPanic(t *testing.T) {
 
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
-	scratch := sortedKeyBufferBytes(len(receiver.Hash()))
+	scratch := sortedHashEntryBufferBytes(len(receiver.Hash()))
 
 	// A real but generous quota so the memory path -- including the per-entry pair
 	// charge and the in-block destructure -- runs under enforcement rather than the
@@ -3660,7 +3410,7 @@ func TestHashEachReachablePairBodyFitsWithoutPairReservation(t *testing.T) {
 	block := bodyPairEachBlock(parent)
 
 	pair := NewArray([]Value{NewSymbol(key), NewInt(1)})
-	scratch := sortedKeyBufferBytes(1)
+	scratch := sortedHashEntryBufferBytes(1)
 	pairChargeProbe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	pairCharge := pairChargeProbe.maxCollapsedPairBytes(receiver)
 
@@ -3749,7 +3499,7 @@ func TestHashEachEmptyBodyNestedRestCountsScratchInBindCharge(t *testing.T) {
 
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
-	scratch := sortedKeyBufferBytes(len(entries))
+	scratch := sortedHashEntryBufferBytes(len(entries))
 	pairCharge := probe.maxCollapsedPairBytes(receiver)
 	tailCharge := nestedRestTailChargeBytes(bigValue)
 
@@ -3985,7 +3735,7 @@ func TestHashSelectEmptyBodyValueRestCountsOutputBufferInBindCharge(t *testing.T
 	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
 	// The transform reserves its whole output map plus the sorted-key scratch through
 	// reserveLoopScratch before the runner snapshots the bind charge.
-	bufferCharge := hashTransformBufferBytes(len(entries), sortedKeyBufferBytes(len(entries)))
+	bufferCharge := hashTransformBufferBytes(len(entries), sortedHashEntryBufferBytes(len(entries)))
 	tailCharge := valueRestTailChargeBytes(bigKey, bigValue)
 
 	// Sanity: the output map and scratch are genuinely non-trivial, so the buggy
@@ -4067,7 +3817,7 @@ func TestHashTransformValuesEmptyBodyValueRestCountsOutputBufferInBindCharge(t *
 
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
-	bufferCharge := hashTransformBufferBytes(len(entries), sortedKeyBufferBytes(len(entries)))
+	bufferCharge := hashTransformBufferBytes(len(entries), sortedHashEntryBufferBytes(len(entries)))
 	// transform_values yields the value array directly, so the lone destructure binds
 	// it and the per-call estimator is seeded with that single value argument before
 	// the fresh tail is charged.
@@ -4110,7 +3860,7 @@ func TestHashSelectEmptyBodyValueRestFitsQuota(t *testing.T) {
 
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
-	bufferCharge := hashTransformBufferBytes(len(entries), sortedKeyBufferBytes(len(entries)))
+	bufferCharge := hashTransformBufferBytes(len(entries), sortedHashEntryBufferBytes(len(entries)))
 	tailCharge := valueRestTailChargeBytes(bigKey, bigValue)
 	quota := roots + bufferCharge + tailCharge + 64*1024
 
@@ -4149,7 +3899,7 @@ func TestHashFlattenChargesResultDuringBuild(t *testing.T) {
 	depthArg := NewInt(-1)
 
 	want := make([]Value, 0, leaves)
-	want = append(want, NewSymbol("k"))
+	want = append(want, NewString("k"))
 	for range refs {
 		want = append(want, inner...)
 	}
@@ -4211,7 +3961,7 @@ func TestHashFlattenPreflightsPairsBacking(t *testing.T) {
 		est := newMemoryEstimator()
 		est.value(receiver)
 		var entryBuf [smallHashKeyBufferSize]HashEntry
-		entries := orderedTypedHashEntriesInto(receiver, entryBuf[:])
+		entries := receiver.HashEntriesInto(entryBuf[:])
 		pairPayload := 0
 		want := make([]Value, 0, 2*count)
 		for _, entry := range entries {
@@ -4379,82 +4129,6 @@ func TestHashValuesAtWalksRetainedOutputDuringDefaultProcs(t *testing.T) {
 	}
 }
 
-// The root is unregistered when the builtin returns, so a values_at that fits
-// still resolves present keys and default-proc misses alike.
-func TestHashValuesAtDoesNotOverCharge(t *testing.T) {
-	t.Parallel()
-
-	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
-    def run()
-      h = Hash.new { |hash, k| "x" * 20000 }
-      h[:a] = 1
-      h[:b] = 2
-      h.values_at(:a, :b, `+lookupKeyList(30)+`)
-    end
-    `)
-	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("a values_at that fits the quota was rejected: %v", err)
-	}
-	want := make([]Value, 0, 32)
-	want = append(want, NewInt(1), NewInt(2))
-	for range 30 {
-		want = append(want, NewString(strings.Repeat("x", 20000)))
-	}
-	compareArrays(t, got, want)
-}
-
-// Every miss resolving to one static default retains the same payload thirty
-// times over, and the receiver holds it too. A charge computed for the output
-// on its own bills that payload again on top of the receiver; walking the
-// output through the estimator that already saw the receiver counts it once.
-// The quota here sits far above the call's real footprint and far below the
-// doubled estimate, so only the deduplicating walk admits it.
-func TestHashValuesAtDoesNotDoubleChargeAStaticDefault(t *testing.T) {
-	t.Parallel()
-
-	const defaultBytes = 400 * 1024
-	const missing = 30
-
-	defaultValue := NewString(strings.Repeat("d", defaultBytes))
-	receiver := NewHashWithDefault(map[string]Value{"a": NewInt(1)}, defaultValue, NewNil())
-
-	args := make([]Value, 0, missing+1)
-	args = append(args, NewSymbol("a"))
-	for i := range missing {
-		args = append(args, NewSymbol(fmt.Sprintf("m%03d", i)))
-	}
-
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
-	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
-	footprint := base + arraySlotBackingBytes(len(args))
-
-	// Half a default's worth of headroom: ample for the real build, nowhere
-	// near enough to absorb a second copy of the default's payload.
-	quota := footprint + defaultBytes/2
-	if quota <= footprint || quota >= footprint+defaultBytes {
-		t.Fatalf("quota %d must fit the real footprint %d and reject the doubled charge %d", quota, footprint, footprint+defaultBytes)
-	}
-
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
-	got, err := callHashMember(t, exec, receiver, "values_at", args, NewNil())
-	if err != nil {
-		t.Fatalf("a values_at that fits its real footprint under quota %d was rejected: %v", quota, err)
-	}
-	want := make([]Value, 0, missing+1)
-	want = append(want, NewInt(1))
-	for range missing {
-		want = append(want, defaultValue)
-	}
-	compareArrays(t, got, want)
-	if exec.reservedScratchBytes != 0 {
-		t.Fatalf("values_at leaked %d scratch bytes after success", exec.reservedScratchBytes)
-	}
-	if len(exec.outputWalkRoots) != 0 {
-		t.Fatalf("values_at left %d output walk roots registered after success", len(exec.outputWalkRoots))
-	}
-}
-
 // A callback can detach a result it previously stored: here the first callback
 // memoizes a 400KB value into the hash, and the second clears the hash -- so
 // the payload is live only in the Go-local output -- before allocating a 700KB
@@ -4465,19 +4139,6 @@ func TestHashRetainedOutputIsWalkedWhenACallbackDetachesIt(t *testing.T) {
 	t.Parallel()
 
 	sources := map[string]string{
-		"values_at default proc": `
-    def run()
-      h = Hash.new { |hash, k|
-        if k == :b
-          hash.clear
-          ("t" * 700000).length
-        else
-          hash[k] = "x" * 400000
-        end
-      }
-      h.values_at(:a, :b)
-    end
-    `,
 		"fetch_values block": `
     def run()
       h = { }
@@ -4514,16 +4175,6 @@ func TestHashPresentResultIsWalkedWhenACallbackDetachesIt(t *testing.T) {
 	t.Parallel()
 
 	sources := map[string]string{
-		"values_at default proc": `
-    def run()
-      h = Hash.new { |hash, k|
-        hash.clear
-        ("t" * 700000).length
-      }
-      h[:a] = "x" * 400000
-      h.values_at(:a, :b)
-    end
-    `,
 		"fetch_values block": `
     def run()
       h = { }
@@ -4558,13 +4209,6 @@ func TestHashLookupsDoNotDoubleChargeAliasesNoCallbackCanDetach(t *testing.T) {
 	const quota = 650 * 1024
 
 	sources := map[string]string{
-		"values_at with every key present": `
-    def run()
-      h = Hash.new { |hash, k| hash[k] = "z" * 10 }
-      h[:a] = "x" * 400000
-      h.values_at(:a)
-    end
-    `,
 		"fetch_values with every key present": `
     def run()
       h = { }
@@ -4614,20 +4258,6 @@ func TestHashLookupsRejectDetachedElementsOfAnArrayKey(t *testing.T) {
       }
     end
     `,
-		"values_at default proc": `
-    def run()
-      k = ["x" * 400000]
-      h = Hash.new { |hash, x|
-        if x == :b
-          k.clear
-          ("t" * 700000).length
-        else
-          x[0]
-        end
-      }
-      h.values_at(k, :b)
-    end
-    `,
 	}
 
 	for name, src := range sources {
@@ -4670,14 +4300,6 @@ func TestHashLookupsRechargeResultsThatGrowAfterBeingProduced(t *testing.T) {
       }
     end
     `,
-		"values_at default proc": `
-    def run()
-      box = [[]]
-      h = Hash.new { |hash, k|` + body + `
-      }
-      h.values_at(:a, :b, :c)
-    end
-    `,
 	}
 
 	for name, src := range sources {
@@ -4716,14 +4338,6 @@ func TestHashLookupsRejectGrowthAndDetachWithinOneCallback(t *testing.T) {
       h = { }
       h.fetch_values(:a, :b) { |k|` + body + `
       }
-    end
-    `,
-		"values_at default proc": `
-    def run()
-      box = [[]]
-      h = Hash.new { |hash, k|` + body + `
-      }
-      h.values_at(:a, :b)
     end
     `,
 	}
@@ -4765,14 +4379,6 @@ func TestHashLookupsDoNotChargeAResultThatShrank(t *testing.T) {
       }
     end
     `,
-		"values_at default proc": `
-    def run()
-      a = ["x" * 400000]
-      h = Hash.new { |hash, k|` + body + `
-      }
-      h.values_at(:a, :b, :c)
-    end
-    `,
 	}
 
 	for name, src := range sources {
@@ -4804,18 +4410,6 @@ func TestHashLookupsChargeAResultAliasingAnEphemeralKey(t *testing.T) {
           k
         end
       }
-    end
-    `,
-		"values_at default proc": `
-    def run()
-      h = Hash.new { |hash, k|
-        if k == :b
-          ("t" * 700000).length
-        else
-          k
-        end
-      }
-      h.values_at("x" * 400000, :b)
     end
     `,
 	}
@@ -4876,8 +4470,6 @@ func TestHashLookupCallbacksKeepTheBaseWalkMemo(t *testing.T) {
 	const small, large = 400, 800
 	sources := map[string]string{
 		"fetch_values block": "def run()\n  h = { }\n  h.fetch_values(%s) { |k| \"xxxxxxxxxxxxxxxx\" }.length\nend",
-		"values_at default proc": "def run()\n  h = Hash.new { |g, k| \"xxxxxxxxxxxxxxxx\" }\n" +
-			"  h.values_at(%s).length\nend",
 	}
 
 	for name, tmpl := range sources {
@@ -4937,10 +4529,6 @@ func TestHashLookupsChargeAnEphemeralKeyLikeABoundOne(t *testing.T) {
 			"def run(b)\n  { }.fetch_values(b.dup) { |(head, *tail)| 1 }\nend",
 			"def run(b)\n  k = b.dup\n  { }.fetch_values(k) { |(head, *tail)| 1 }\nend",
 		},
-		"values_at": {
-			"def run(b)\n  h = Hash.new { |g, (head, *tail)| 1 }\n  h.values_at(b.dup)\nend",
-			"def run(b)\n  h = Hash.new { |g, (head, *tail)| 1 }\n  k = b.dup\n  h.values_at(k)\nend",
-		},
 	}
 
 	for name, spellings := range pairs {
@@ -4979,10 +4567,6 @@ func TestHashLookupsDoNotDoubleChargeAnEphemeralReceiver(t *testing.T) {
 			"def run()\n  { a: " + payload + " }.fetch_values(:a, :m) { |(head, *tail)| 1 }\nend",
 			"def run()\n  h = { a: " + payload + " }\n  h.fetch_values(:a, :m) { |(head, *tail)| 1 }\nend",
 		},
-		"values_at": {
-			"def run()\n  { a: " + payload + " }.values_at(:a, :m)\nend",
-			"def run()\n  h = { a: " + payload + " }\n  h.values_at(:a, :m)\nend",
-		},
 	}
 
 	for name, spellings := range pairs {
@@ -5018,90 +4602,6 @@ func minMemoryQuotaForLookupNoArgs(t *testing.T, src string) int {
 	return lo
 }
 
-// A default proc is script code, and script code can change the hash's default:
-// Hash#replace adopts the replacement's, so the proc that serves the first
-// missing key can be gone by the second. Reading the proc once before the loop
-// and driving every miss through it therefore answered the second key from a
-// proc the hash no longer had. This is what the callback runner has to re-read
-// per key; it may reuse its scope, but only while the proc behind it is the same
-// one.
-func TestHashValuesAtRereadsTheDefaultAfterEachProc(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `
-    def run()
-      h = Hash.new { |g, k| g.replace(Hash.new(7)); 1 }
-      h.values_at(:a, :b)
-    end
-    `)
-	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("values_at over a proc that replaces the hash: %v", err)
-	}
-	// The proc runs for :a and swaps the hash's default proc for a static 7, so
-	// :b is served by that static default rather than by the proc again.
-	compareArrays(t, got, []Value{NewInt(1), NewInt(7)})
-}
-
-// The reuse the runner exists for has to survive the per-key re-read: a proc
-// that never changes must still be driven through one scope, or the base walk
-// is discarded on every miss and the lookup goes quadratic again.
-//
-// Not parallel: the estimator visit counter is process-wide.
-func TestHashValuesAtKeepsTheMemoWhileTheProcIsUnchanged(t *testing.T) {
-	if estimatorVerify {
-		t.Skip("the estimator oracle re-derives a reference walk per retained result, which is deliberately quadratic")
-	}
-
-	const small, large = 400, 800
-	tmpl := "def run()\n  h = Hash.new { |g, k| \"xxxxxxxxxxxxxxxx\" }\n  h.values_at(%s).length\nend"
-	atSmall := lookupEstimatorVisits(t, fmt.Sprintf(tmpl, missingKeyList(small)))
-	atLarge := lookupEstimatorVisits(t, fmt.Sprintf(tmpl, missingKeyList(large)))
-	if atLarge > atSmall*3 {
-		t.Errorf("estimator visited %d nodes for %d misses and %d for %d; doubling the misses should "+
-			"roughly double the walk, so re-reading the default is rebuilding the runner every key",
-			atSmall, small, atLarge, large)
-	}
-}
-
-// The root walks the results produced so far, not the slice preallocated from the
-// argument count, so a wide lookup does not pay for its whole output on its first
-// miss. A stateful callback discards the memo every iteration, which is what makes
-// the difference observable: capacity pricing walks n results per check where
-// prefix pricing walks i.
-//
-// Two departures from this file's usual style, both forced and worth stating.
-//
-// It measures estimator visits rather than steps. This property used to be pinned
-// by a step count, because the walk was billed to the step quota; that charge has
-// been removed, since the walk is forced by a memo miss and the memo is keyed on a
-// process-wide epoch any execution can advance, so billing it charged this script
-// for other scripts' mutations (see memory_output.go). With the charge gone the
-// step quota no longer observes this walk, and a step count passes either way.
-//
-// And it asserts an absolute ceiling rather than a growth ratio. Both pricings are
-// quadratic under a stateful callback -- they differ by a constant, not by a
-// growth rate -- so no ratio across sizes can separate them. At 400 misses the
-// produced prefix visits 112,475 nodes and the preallocated slice 192,275; the
-// bound sits between them with a quarter's headroom on each side.
-//
-// Not parallel: the estimator visit counter is process-wide.
-func TestHashValuesAtWalksTheProducedPrefixNotThePreallocatedSlice(t *testing.T) {
-	if estimatorVerify {
-		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
-	}
-	const misses, ceiling = 400, 150_000
-	src := fmt.Sprintf("def run()\n  counter = [0]\n"+
-		"  h = Hash.new { |g, k| counter[0] = counter[0] + 1; 1 }\n"+
-		"  h.values_at(%s).length\nend", missingKeyList(misses))
-
-	if visits := lookupEstimatorVisits(t, src); visits > ceiling {
-		t.Fatalf("%d misses visited %d estimator nodes, over the %d bound; the root is priced by the "+
-			"slice the lookup preallocated rather than by the results it has produced",
-			misses, visits, ceiling)
-	}
-}
-
 // failingCallbackLookups returns the fetch_values and values_at spellings of one
 // shape: a lookup that retains prefix results, whose last callback mutates
 // captured state -- discarding the base-walk memo -- then spins long enough for
@@ -5130,30 +4630,8 @@ func failingCallbackLookups(prefix, spin int, tail string) map[string]string {
 		"  end\n" +
 		"  counter[0]\n" +
 		"end"
-	valuesAt := "def run(a, n)\n" +
-		"  counter = [0]\n" +
-		"  h = Hash.new do |g, k|\n" +
-		"    counter[0] = counter[0] + 1\n" +
-		"    if counter[0] >= %d\n" +
-		"      j = 0\n" +
-		"      while j < %d\n" +
-		"        counter[0] = counter[0] + 1\n" +
-		"        j = j + 1\n" +
-		"      end\n" +
-		"      %s\n" +
-		"    end\n" +
-		"    [k, k]\n" +
-		"  end\n" +
-		"  begin\n" +
-		"    h.values_at(%s)\n" +
-		"  rescue\n" +
-		"    0\n" +
-		"  end\n" +
-		"  counter[0]\n" +
-		"end"
 	return map[string]string{
 		"fetch_values": fmt.Sprintf(fetch, missingKeyList(prefix), prefix, spin, tail),
-		"values_at":    fmt.Sprintf(valuesAt, prefix, spin, tail, missingKeyList(prefix)),
 	}
 }
 
@@ -5337,44 +4815,6 @@ func TestNestedHashLookupDoesNotRechargeTheEnclosingBlocksPayload(t *testing.T) 
 	}
 }
 
-// The known over-charge, pinned by its shape rather than by its value.
-//
-// A rest-binding callback returning a value held by the ENCLOSING block's scope is
-// charged for that value twice. liveBaseline subtracts a start value taken over the
-// full graph from a later reading the region memo serves over the prefix alone, and
-// the enclosing block's scope is in neither the prefix nor the start value, so the
-// payload it holds reads as fresh growth on top of a baseline that already carries
-// it. The lookup is charged more than it uses; nothing is let through unchecked.
-//
-// This asserts that the surcharge tracks the payload, which is exactly what the
-// correct shapes above assert it must NOT do. It is written to fail once the two
-// readings are put on one basis, because at that point this shape joins the ones
-// above and belongs in that test rather than this one.
-func TestNestedRestBindingHashLookupOverchargesForTheEnclosingBlocksPayload(t *testing.T) {
-	// Deliberately not parallel, for the reason recorded on the walk-budget tests:
-	// baseWalkCacheDisabled is process-wide, and this over-charge exists only while
-	// the base-walk memo is serving readings. With memoization off every reading
-	// falls through to the full-graph basis, the two bases agree, and the surcharge
-	// stops tracking the payload -- so a concurrent test that flips that switch
-	// makes this one fail for the very reason it is asserting. It measured 101,054
-	// bytes at a 100,000-byte payload and 3,997 at 200,000 that way.
-	const small, large = 100_000, 200_000
-	const params = "(head, *tail)"
-	atSmall := minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("suffix", params, small)) -
-		minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("flat", params, small))
-	atLarge := minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("suffix", params, large)) -
-		minMemoryQuotaForLookupNoArgs(t, nestedLookupSource("flat", params, large))
-
-	// The surcharge is one whole payload, so doubling the payload doubles it.
-	if growth := atLarge - atSmall; growth < (large-small)/2 {
-		t.Fatalf("the nested rest-binding spelling cost %d bytes over the flat one at a %d-byte payload "+
-			"and %d at %d: the surcharge no longer tracks the payload, so the retained-output readings "+
-			"have been put on one basis. Move this shape into "+
-			"TestNestedHashLookupDoesNotRechargeTheEnclosingBlocksPayload and delete this test",
-			atSmall, small, atLarge, large)
-	}
-}
-
 // Nesting must not change what a lookup returns, whatever it costs.
 func TestNestedHashLookupsReturnTheSameResults(t *testing.T) {
 	t.Parallel()
@@ -5383,12 +4823,6 @@ func TestNestedHashLookupsReturnTheSameResults(t *testing.T) {
 		src  string
 		want int64
 	}{
-		"values_at, no rest": {"def run()\n  t = 0\n  [1, 2].each do |x|\n" +
-			"    h = Hash.new { |g, k| x * 10 }\n" +
-			"    h.values_at(:a, :b).each { |v| t = t + v }\n  end\n  t\nend", 60},
-		"values_at, named rest": {"def run()\n  t = 0\n  [1, 2].each do |x|\n" +
-			"    h = Hash.new { |g, (head, *tail)| head + x }\n" +
-			"    h.values_at([5, 6], [7, 8]).each { |v| t = t + v }\n  end\n  t\nend", 30},
 		"fetch_values": {"def run()\n  t = 0\n  [1, 2].each do |x|\n" +
 			"    { }.fetch_values(:a, :b) { |k| x }.each { |v| t = t + v }\n  end\n  t\nend", 6},
 	}
@@ -5447,8 +4881,7 @@ func allPresentLookupSource(builtin string, count int, params string) string {
 // fetch_values that construction sat before the loop. So a rest-binding block
 // bought a graph walk for a callback that never happened, and an argumentless
 // call bought one for a loop that never ran. On master the two spellings cost the
-// same, because master builds no runner at all. values_at already built its
-// default proc's runner on the first miss and is here to keep it that way.
+// same, because master builds no runner at all.
 //
 // The assertion compares the two spellings rather than pinning a count: a named
 // rest changes how a callback BINDS, so when the callback is never invoked it must
@@ -5462,7 +4895,7 @@ func TestAllPresentHashLookupDoesNotPayForItsCallback(t *testing.T) {
 		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
 	}
 	graph := loopMemoArray(20000)
-	for _, builtin := range []string{"fetch_values", "values_at"} {
+	for _, builtin := range []string{"fetch_values"} {
 		for _, present := range []int{0, 1, 4} {
 			t.Run(fmt.Sprintf("%s/%d present keys", builtin, present), func(t *testing.T) {
 				atPlain := estimatorVisitsFor(t, allPresentLookupSource(builtin, present, "k"), graph, 0)
@@ -5476,83 +4909,6 @@ func TestAllPresentHashLookupDoesNotPayForItsCallback(t *testing.T) {
 						100*float64(atRest-atPlain)/float64(atPlain))
 				}
 			})
-		}
-	}
-}
-
-// restCallbackSource composes a lookup whose callback binds a named rest and is
-// also stateful: it mutates a captured counter on every call, and in the raising
-// spelling fails on the second key after mutating. Both keys miss, so the
-// callback runs twice (or once and then raises).
-//
-// A named rest is what builds a blockBindCharge, and mutation is what discards
-// the base-walk memo, so this is the corner where the charge and the re-derived
-// walk meet. Every other test in this file that binds a rest has a pure callback,
-// and every stateful one binds plainly.
-func restCallbackSource(builtin, behavior string, nested bool) string {
-	body := "      n[0] = n[0] + head\n      head\n"
-	if behavior == "raising" {
-		body = "      n[0] = n[0] + 1\n      if head == 3\n        raise \"boom\"\n      end\n      head\n"
-	}
-	var call string
-	if builtin == "fetch_values" {
-		call = "    { }.fetch_values([1, 2], [3, 4]) do |(head, *tail)|\n" + body + "    end\n"
-	} else {
-		call = "    h = Hash.new do |g, (head, *tail)|\n" + body + "    end\n" +
-			"    h.values_at([1, 2], [3, 4])\n"
-	}
-	if behavior == "raising" {
-		call = "    begin\n" + call + "    rescue\n      0\n    end\n"
-	}
-	if nested {
-		call = "  [1].each do |x|\n" + call + "  end\n"
-	} else {
-		call = strings.ReplaceAll(call, "\n    ", "\n  ")
-		call = strings.TrimPrefix(call, "  ")
-	}
-	return "def run()\n  n = [0]\n" + call + "  n[0]\nend"
-}
-
-// A stateful callback that also binds a named rest, which no other test in this
-// file combines. The two features interact: the rest binding is the only thing
-// that builds a blockBindCharge, and the mutation is the only thing that discards
-// the base-walk memo the charge's later readings come from, so this is where the
-// charge and the re-derived output walk meet.
-//
-// The assertions are on results rather than on cost, deliberately. What a nested
-// rest-binding lookup COSTS when its callback touches the enclosing block's scope
-// is the known over-charge pinned separately; what it RETURNS must be right
-// regardless, and that had no coverage at all in either spelling.
-func TestRestBindingHashLookupCallbacksThatMutateAndRaise(t *testing.T) {
-	t.Parallel()
-
-	for _, builtin := range []string{"fetch_values", "values_at"} {
-		for _, nested := range []bool{false, true} {
-			for _, behavior := range []string{"mutating", "raising"} {
-				// Mutating: both keys miss, so the callback adds 1 and 3.
-				// Raising: it counts both calls and fails on the second.
-				want := int64(4)
-				if behavior == "raising" {
-					want = 2
-				}
-				name := fmt.Sprintf("%s/%s", builtin, behavior)
-				if nested {
-					name += "/nested"
-				}
-				t.Run(name, func(t *testing.T) {
-					t.Parallel()
-					src := restCallbackSource(builtin, behavior, nested)
-					script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 16 << 20}, src)
-					got, err := script.Call(context.Background(), "run", nil, CallOptions{})
-					if err != nil {
-						t.Fatalf("run: %v\n%s", err, src)
-					}
-					if got.Kind() != KindInt || got.Int() != want {
-						t.Fatalf("a %s callback binding a named rest produced %v, want %d\n%s",
-							behavior, got, want, src)
-					}
-				})
-			}
 		}
 	}
 }
@@ -5591,49 +4947,6 @@ func TestHashValuesAtDoesNotDoubleChargeAnEphemeralReceiverWithAProc(t *testing.
 		t.Fatalf("an ephemeral receiver with a rest-binding default proc admits at %d bytes where the "+
 			"same receiver bound to a local admits at %d, a %d-byte difference; the receiver is being "+
 			"walked a different number of times in the two spellings", atEphemeral, atBound, diff)
-	}
-}
-
-// A rest-binding callback is the only shape that consults liveBaseline, and so
-// the only one that can build a bind charge or reach the retained-output
-// fallback. Both walk the reachable graph. Building the charge is this
-// execution's own doing and is billed; the fallback's walk is not, and that is a
-// decision rather than an oversight.
-//
-// The fallback runs whenever the base-walk memo cannot answer, and the memo is
-// keyed on a process-wide mutation epoch that any execution in the process
-// advances. Billing it therefore charged this script for other scripts'
-// mutations: a concurrent mutator drove an innocent lookup from 10,053 billed
-// nodes to 166,753. Attributing the walk would need per-execution mutation
-// tracking across 36 bump sites in two packages, which is its own change, so the
-// walk is left unbilled and its residue is bounded instead -- measured at about
-// 0.15 walks per step, against a graph the memory quota already bounds.
-//
-// What this pins is the half that remains: the construction walk still scales
-// with the graph it measures, so the charge has not quietly become free. A
-// tenfold graph raised it 2.8x when this was written; two is far above the 1.0x
-// an entirely unbilled path produces.
-//
-// Deliberately not parallel: this measures step counts, and baseWalkCacheDisabled
-// is process-wide.
-func TestRestBindingLookupBillsTheGraphItWalks(t *testing.T) {
-	if estimatorVerify {
-		t.Skip("the estimator oracle recomputes a reference walk per check, which is deliberately quadratic")
-	}
-	const calls, small, large = 4, 400, 4_000
-	src := "def run(a, n)\n  t = 0\n  i = 0\n  while i < n\n" +
-		"    h = Hash.new { |g, (head, *tail)| 1 }\n" +
-		"    t = t + h.values_at([1, 2]).length\n    i = i + 1\n  end\n  t\nend"
-	cfg := Config{MemoryQuotaBytes: 64 << 20}
-
-	atSmall := minStepQuotaToComplete(t, cfg, src, loopMemoArray(small), calls, 200_000)
-	atLarge := minStepQuotaToComplete(t, cfg, src, loopMemoArray(large), calls, 200_000)
-
-	if atLarge < atSmall*2 {
-		t.Fatalf("%d lookups over a %d-element graph needed %d steps and over a %d-element one %d, "+
-			"a %.1fx rise for a tenfold graph; the bind charge's construction walk is no longer "+
-			"billed, so nothing on this path scales with the graph it measures",
-			calls, small, atSmall, large, atLarge, float64(atLarge)/float64(atSmall))
 	}
 }
 
@@ -5731,4 +5044,16 @@ func TestLookupRestWindowPreflightSeesRetainedOutput(t *testing.T) {
 			"%d-byte rest window was materialized before the preflight rejected it",
 			got-floor, floor, budget, window)
 	}
+}
+
+// maxArgEntries is the largest argument entry count a merge snapshots into its
+// reusable entry buffer.
+func maxArgEntries(args []Value) int {
+	maxArg := 0
+	for _, arg := range args {
+		if n := arg.HashLen(); n > maxArg {
+			maxArg = n
+		}
+	}
+	return maxArg
 }

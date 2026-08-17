@@ -285,7 +285,7 @@ func TestForHashLoops(t *testing.T) {
     def break_at_b()
       out = []
       for pair in { a: 1, b: 2, c: 3 }
-        if pair[0] == :b
+        if pair[0] == "b"
           break
         end
         out = out + [pair]
@@ -296,7 +296,7 @@ func TestForHashLoops(t *testing.T) {
     def next_skips_b()
       out = []
       for pair in { a: 1, b: 2, c: 3 }
-        if pair[0] == :b
+        if pair[0] == "b"
           next
         end
         out = out + [pair]
@@ -320,15 +320,15 @@ func TestForHashLoops(t *testing.T) {
 			name: "yields_insertion_ordered_key_value_pairs",
 			fn:   "pairs",
 			want: NewArray([]Value{
-				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
-				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
-				NewArray([]Value{NewSymbol("c"), NewInt(3)}),
+				NewArray([]Value{NewString("b"), NewInt(2)}),
+				NewArray([]Value{NewString("a"), NewInt(1)}),
+				NewArray([]Value{NewString("c"), NewInt(3)}),
 			}),
 		},
 		{
 			name: "first_element_is_symbol_key",
 			fn:   "keys",
-			want: NewArray([]Value{NewSymbol("b"), NewSymbol("a")}),
+			want: NewArray([]Value{NewString("b"), NewString("a")}),
 		},
 		{
 			name: "second_element_is_value",
@@ -343,20 +343,20 @@ func TestForHashLoops(t *testing.T) {
 		{
 			name: "break_stops_iteration",
 			fn:   "break_at_b",
-			want: NewArray([]Value{NewArray([]Value{NewSymbol("a"), NewInt(1)})}),
+			want: NewArray([]Value{NewArray([]Value{NewString("a"), NewInt(1)})}),
 		},
 		{
 			name: "next_skips_entry",
 			fn:   "next_skips_b",
 			want: NewArray([]Value{
-				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
-				NewArray([]Value{NewSymbol("c"), NewInt(3)}),
+				NewArray([]Value{NewString("a"), NewInt(1)}),
+				NewArray([]Value{NewString("c"), NewInt(3)}),
 			}),
 		},
 		{
 			name: "loop_returns_last_body_value",
 			fn:   "last_pair",
-			want: NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+			want: NewArray([]Value{NewString("b"), NewInt(2)}),
 		},
 	}
 

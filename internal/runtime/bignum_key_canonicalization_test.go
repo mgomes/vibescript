@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-// Canonicalizing a big-integer key (hash set/get/delete, set-op membership,
-// aggregation buckets) is linear work in the payload's words and is charged
-// against the step quota with the arithmetic convention (1 + words/8). These
-// tests pin the adversarial shape: thousands of aliases of a ~400k-bit value
-// pushed through every canonicalizing surface must trip the 50k step quota
-// fast instead of burning tens of seconds of uncharged conversion CPU (the
-// pre-fix behavior ran 14-45s per case to completion).
+// Keying a big integer for an array set operation is linear work in the
+// payload's words and is charged against the step quota with the arithmetic
+// convention (1 + words/8). These tests pin the adversarial shape: thousands of
+// aliases of a ~400k-bit value pushed through every set-op surface must trip
+// the 50k step quota fast instead of burning tens of seconds of uncharged
+// conversion CPU (the pre-fix behavior ran 14-45s per case to completion). Big
+// integers are not hash keys, so the hash surfaces are not in this list.
 func requireBigKeyStepTrip(t *testing.T, name, body string) {
 	t.Helper()
 	t.Run(name, func(t *testing.T) {
@@ -35,52 +35,27 @@ func TestBignumKeyCanonicalizationChargesSteps(t *testing.T) {
 	requireBigKeyStepTrip(t, "array difference", "(a - a).size")
 	requireBigKeyStepTrip(t, "uniq", "a.uniq.size")
 	requireBigKeyStepTrip(t, "union", "a.union([x]).size")
-	requireBigKeyStepTrip(t, "tally", "a.tally.size")
-	requireBigKeyStepTrip(t, "group_by", "a.group_by { |v| v }.size")
-	requireBigKeyStepTrip(t, "hash write", `
-  h = {}
-  i = 0
-  3000.times { h[x] = i; i = i + 1 }
-  h.size`)
-	requireBigKeyStepTrip(t, "hash read", `
-  h = {}
-  h[x] = 1
-  total = 0
-  3000.times { total = total + h[x] }
-  total`)
-	requireBigKeyStepTrip(t, "hash key probe", `
-  h = {}
-  h[x] = 1
-  n = 0
-  3000.times { n = n + (h.key?(x) ? 1 : 0) }
-  n`)
 }
 
 func TestBignumKeyCanonicalizationInQuotaResultsUnchanged(t *testing.T) {
 	t.Parallel()
-	// Small big keys stay well inside the default quotas and keep their exact
-	// semantics through every canonicalizing surface.
+	// Small big values stay well inside the default quotas and keep their exact
+	// set-operation semantics.
 	script := compileScript(t, `
     def run
       big = 2 ** 100
-      h = {}
-      h[big] = "hit"
       [
-        h[2 ** 100],
-        h.key?(big),
-        h.fetch(big),
         ([big, 2 ** 100, big + 1, 0] & [big]).size,
         [big, 2 ** 100, big + 1].uniq.size,
-        [big, big, 5].tally[big],
         ([big] - [big]).size
       ]
     end
   `)
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
 	if err != nil {
-		t.Fatalf("in-quota big keys failed: %v", err)
+		t.Fatalf("in-quota big values failed: %v", err)
 	}
-	if got := result.String(); got != "[hit, true, hit, 1, 2, 2, 0]" {
-		t.Fatalf("in-quota big-key results = %s", got)
+	if got := result.String(); got != "[1, 2, 0]" {
+		t.Fatalf("in-quota big-value results = %s", got)
 	}
 }

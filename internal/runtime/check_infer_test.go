@@ -955,7 +955,7 @@ def run(user: { name: string }, flag)
   end
 end
 `)
-	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string | nil")
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
 }
 
 func TestCheckInferLoopHeadersSeePreLoopFacts(t *testing.T) {
@@ -1908,7 +1908,7 @@ def run(user: { name: string, age: int })
   takes_int(user["age"])
 end
 `)
-	requireCheckWarningContains(t, age, "call to takes_int argument value expected int, got int | nil")
+	requireNoCheckWarnings(t, age)
 }
 
 func TestCheckInferShapeUnknownFieldReadsNil(t *testing.T) {
@@ -2475,9 +2475,9 @@ end
 func TestCheckInferKeywordRestKeyKinds(t *testing.T) {
 	t.Parallel()
 
-	// Rest keywords bind as a string-keyed hash, so a symbol key type
-	// always fails at call binding even with compatible values.
-	script := compileScript(t, `
+	// Rest keywords bind as a string-keyed hash, which is the same
+	// keyspace as hash<symbol, V>.
+	requireNoCheckWarnings(t, compileScript(t, `
 def accept(**opts: hash<symbol, int>)
   opts
 end
@@ -2486,8 +2486,7 @@ def run()
   v = 1
   accept(limit: v)
 end
-`)
-	requireCheckWarningContains(t, script, "call to accept argument opts expected hash<symbol, int>, got string-keyed keywords")
+`))
 
 	// Shape-annotated keyword rests check per field: unknown keywords fail
 	// the exact shape, known ones check their field types.
@@ -3254,9 +3253,9 @@ end
 func TestCheckInferShapeFactsRespectKeyKinds(t *testing.T) {
 	t.Parallel()
 
-	// A label-keyed hash literal is a symbol-keyed store: a string lookup is
-	// known to miss (reads nil), a symbol lookup yields the exact field.
-	script := compileScript(t, `
+	// String and symbol keys address one entry, so a label-keyed literal
+	// yields the field under either lookup spelling.
+	requireNoCheckWarnings(t, compileScript(t, `
 def takes_string(value: string)
   value
 end
@@ -3265,8 +3264,7 @@ def run()
   h = { name: "Ada" }
   takes_string(h["name"])
 end
-`)
-	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got nil")
+`))
 
 	requireNoCheckWarnings(t, compileScript(t, `
 def takes_string(value: string)
@@ -3279,9 +3277,8 @@ def run()
 end
 `))
 
-	// JSON stores are string-keyed, so a symbol lookup on a parse_as result
-	// is known to miss.
-	parseAs := compileScript(t, `
+	// JSON.parse_as is the same keyspace: a symbol lookup finds the field.
+	requireNoCheckWarnings(t, compileScript(t, `
 def takes_string(value: string)
   value
 end
@@ -3290,12 +3287,10 @@ def run(raw: string)
   body = JSON.parse_as(raw, { name: string })
   takes_string(body[:name])
 end
-`)
-	requireCheckWarningContains(t, parseAs, "call to takes_string argument value expected string, got nil")
+`))
 
-	// An annotated shape parameter has an unknown key representation: a
-	// present field reads as field-or-nil, so it still contradicts a
-	// disjoint boundary but never over-claims the field type.
+	// An annotated shape parameter uses the same keyspace, so a required
+	// field is an exact hit and a disjoint boundary still contradicts.
 	param := compileScript(t, `
 def takes_int(value: int)
   value
@@ -3305,7 +3300,7 @@ def run(user: { name: string })
   takes_int(user["name"])
 end
 `)
-	requireCheckWarningContains(t, param, "call to takes_int argument value expected int, got string | nil")
+	requireCheckWarningContains(t, param, "call to takes_int argument value expected int, got string")
 }
 
 func TestCheckInferBranchJoinsKeepDistinctMarkers(t *testing.T) {
@@ -3452,12 +3447,9 @@ end
 func TestCheckInferMutationPoisonsContainerFacts(t *testing.T) {
 	t.Parallel()
 
-	// An index write or member call may restructure the container, so its
-	// shape facts must stop holding (no stale-field diagnostics afterwards).
-	// The declared shape's key representation is unknown, so even the
-	// compatible write weakens the fact. (An incompatible write is reported
-	// at the write site; see check_hash_writes_test.go.)
-	requireNoCheckWarnings(t, compileScript(t, `
+	// A compatible write replaces the same unified-key field, so the
+	// declared shape fact still describes the required field afterwards.
+	requireCheckWarningContains(t, compileScript(t, `
 def takes_int(value: int)
   value
 end
@@ -3466,8 +3458,9 @@ def run(user: { name: string })
   user["name"] = "x"
   takes_int(user["name"])
 end
-`))
+`), "call to takes_int argument value expected int, got string")
 
+	// delete removes the field, so the later read is no longer a known string.
 	requireNoCheckWarnings(t, compileScript(t, `
 def takes_int(value: int)
   value
@@ -3496,8 +3489,8 @@ func TestMergeLocalValueFactsKeepsOnlyCommonProvenance(t *testing.T) {
 		{
 			name: "hash provenance first",
 			left: checkLocalValueFact{
-				staticVals:   []Expression{hashLiteral},
-				hashDefaults: []directCoreHashDefaultCapture{{freshEmpty: true}},
+				staticVals:  []Expression{hashLiteral},
+				blockValues: []capturedBlockLiteralValue{{block: callback, strict: true}},
 			},
 			right: checkLocalValueFact{staticVals: []Expression{arrayLiteral}},
 		},
@@ -3505,8 +3498,8 @@ func TestMergeLocalValueFactsKeepsOnlyCommonProvenance(t *testing.T) {
 			name: "hash provenance second",
 			left: checkLocalValueFact{staticVals: []Expression{arrayLiteral}},
 			right: checkLocalValueFact{
-				staticVals:   []Expression{hashLiteral},
-				hashDefaults: []directCoreHashDefaultCapture{{freshEmpty: true}},
+				staticVals:  []Expression{hashLiteral},
+				blockValues: []capturedBlockLiteralValue{{block: callback, strict: true}},
 			},
 		},
 		{
@@ -3532,7 +3525,7 @@ func TestMergeLocalValueFactsKeepsOnlyCommonProvenance(t *testing.T) {
 			if !exact || len(merged.staticVals) != 2 {
 				t.Fatalf("mergeLocalValueFacts() = %#v, %t, want two static alternatives", merged, exact)
 			}
-			if len(merged.blockValues) != 0 || len(merged.hashDefaults) != 0 {
+			if len(merged.blockValues) != 0 {
 				t.Fatalf("mergeLocalValueFacts() = %#v, want no one-sided provenance", merged)
 			}
 		})
@@ -3542,14 +3535,14 @@ func TestMergeLocalValueFactsKeepsOnlyCommonProvenance(t *testing.T) {
 	second := &BlockLiteral{Lambda: true}
 	merged, exact := checker.mergeLocalValueFacts(
 		checkLocalValueFact{
-			hashDefaults: []directCoreHashDefaultCapture{{block: first, strict: true}},
+			blockValues: []capturedBlockLiteralValue{{block: first, strict: true}},
 		},
 		checkLocalValueFact{
-			hashDefaults: []directCoreHashDefaultCapture{{block: second, strict: true}},
+			blockValues: []capturedBlockLiteralValue{{block: second, strict: true}},
 		},
 	)
-	if !exact || len(merged.hashDefaults) != 2 {
-		t.Fatalf("mergeLocalValueFacts() = %#v, %t, want both exact hash defaults", merged, exact)
+	if !exact || len(merged.blockValues) != 2 {
+		t.Fatalf("mergeLocalValueFacts() = %#v, %t, want both exact block values", merged, exact)
 	}
 }
 

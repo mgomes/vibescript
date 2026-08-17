@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"cmp"
-	"fmt"
 	"maps"
 	"math"
 	"reflect"
@@ -77,7 +76,6 @@ type checkLocalValueFact struct {
 	blockChoiceMayNil       bool
 	staticVals              []Expression
 	blockValues             []capturedBlockLiteralValue
-	hashDefaults            []directCoreHashDefaultCapture
 	staticChoice            checkStaticChoiceFact
 	keywordSplatFails       bool
 	invalidKeywordSplatKeys map[string]struct{}
@@ -337,7 +335,6 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 			blockChoiceMayNil:       fact.blockChoiceMayNil,
 			staticVals:              append([]Expression(nil), fact.staticVals...),
 			blockValues:             append([]capturedBlockLiteralValue(nil), fact.blockValues...),
-			hashDefaults:            append([]directCoreHashDefaultCapture(nil), fact.hashDefaults...),
 			staticChoice:            cloneCheckStaticChoiceFact(fact.staticChoice),
 			keywordSplatFails:       fact.keywordSplatFails,
 			invalidKeywordSplatKeys: cloneCheckStringSet(fact.invalidKeywordSplatKeys),
@@ -351,7 +348,7 @@ func (c *scriptChecker) localClassValueFor(name string) (string, bool) {
 	if !ok || len(fact.classNames) != 1 || len(fact.callables) > 0 || len(fact.staticVals) > 0 ||
 		len(fact.instanceOrigins) > 0 ||
 		len(fact.blocks) > 0 || len(fact.blockValues) > 0 ||
-		len(fact.hashDefaults) > 0 || fact.keywordSplatFails {
+		fact.keywordSplatFails {
 		return "", false
 	}
 	return fact.classNames[0], true
@@ -362,7 +359,7 @@ func (c *scriptChecker) localClassValuesFor(name string) ([]string, bool) {
 	return fact.classNames, ok && len(fact.classNames) > 0 && len(fact.callables) == 0 &&
 		len(fact.instanceOrigins) == 0 &&
 		len(fact.blocks) == 0 && len(fact.staticVals) == 0 &&
-		len(fact.blockValues) == 0 && len(fact.hashDefaults) == 0 &&
+		len(fact.blockValues) == 0 &&
 		!fact.keywordSplatFails
 }
 
@@ -410,7 +407,7 @@ func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, boo
 	if !ok || len(fact.callables) != 1 || len(fact.classNames) > 0 || len(fact.staticVals) > 0 ||
 		len(fact.instanceOrigins) > 0 ||
 		len(fact.blocks) > 0 || len(fact.blockValues) > 0 ||
-		len(fact.hashDefaults) > 0 || fact.keywordSplatFails {
+		fact.keywordSplatFails {
 		return nil, false
 	}
 	return fact.callables[0], true
@@ -421,7 +418,7 @@ func (c *scriptChecker) localCallableValuesFor(name string) ([]*ScriptFunction, 
 	return fact.callables, ok && len(fact.callables) > 0 && len(fact.classNames) == 0 &&
 		len(fact.instanceOrigins) == 0 &&
 		len(fact.blocks) == 0 && len(fact.staticVals) == 0 &&
-		len(fact.blockValues) == 0 && len(fact.hashDefaults) == 0 &&
+		len(fact.blockValues) == 0 &&
 		!fact.keywordSplatFails
 }
 
@@ -622,11 +619,9 @@ func (c *scriptChecker) bindLocalExactValueFact(name string, valueFact checkLoca
 		valueFact.blocks = normalizeCheckBlockLiterals(valueFact.blocks)
 		valueFact.staticVals = c.normalizeCheckStaticValues(valueFact.staticVals)
 		valueFact.blockValues = normalizeCapturedBlockLiteralValues(valueFact.blockValues)
-		valueFact.hashDefaults = normalizeDirectCoreHashDefaultCaptures(valueFact.hashDefaults)
 		if len(valueFact.instanceOrigins) == 0 &&
 			len(valueFact.blocks) == 0 && len(valueFact.staticVals) == 0 &&
-			len(valueFact.blockValues) == 0 &&
-			len(valueFact.hashDefaults) == 0 {
+			len(valueFact.blockValues) == 0 {
 			delete(c.localClassValues[i], name)
 			return
 		}
@@ -824,7 +819,6 @@ func (c *scriptChecker) bindLocalKeywordSplatFailure(name string, keys ...string
 		fact.blockChoiceMayNil = false
 		fact.staticVals = nil
 		fact.blockValues = nil
-		fact.hashDefaults = nil
 		fact.staticChoice = checkStaticChoiceFact{}
 		fact.keywordSplatFails = true
 		c.localClassValues[i][name] = fact
@@ -1864,7 +1858,6 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousInstanceIvarsDirty := c.instanceIvarFactsDirty
 	previousIfClassFacts := c.evaluatedIfClassFacts
 	previousBlockValues := c.evaluatedBlockValues
-	previousHashDefaults := c.evaluatedHashDefaults
 	c.typePoison = nil
 	c.staticValuePoison = nil
 	c.staticValueDependents = nil
@@ -1887,7 +1880,6 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	// pass over facts that do not exist.
 	c.evaluatedIfClassFacts = nil
 	c.evaluatedBlockValues = nil
-	c.evaluatedHashDefaults = nil
 	return func() {
 		c.typePoison = previousPoison
 		c.staticValuePoison = previousStaticValuePoison
@@ -1906,7 +1898,6 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 		c.instanceIvarFactsDirty = previousInstanceIvarsDirty
 		c.evaluatedIfClassFacts = previousIfClassFacts
 		c.evaluatedBlockValues = previousBlockValues
-		c.evaluatedHashDefaults = previousHashDefaults
 	}
 }
 
@@ -1924,7 +1915,6 @@ func (c *scriptChecker) withClonedLocalInferenceScope() func() {
 	widenedIvars := cloneCheckStringSet(c.widenedIvarFacts)
 	ifClassFacts := maps.Clone(c.evaluatedIfClassFacts)
 	blockValues := maps.Clone(c.evaluatedBlockValues)
-	hashDefaults := maps.Clone(c.evaluatedHashDefaults)
 	destructureFacts := maps.Clone(c.evaluatedDestructureFacts)
 	projectionFacts := maps.Clone(c.destructureProjectionFacts)
 	stmtNoFallthrough := c.stmtNoFallthroughInferred
@@ -1941,7 +1931,6 @@ func (c *scriptChecker) withClonedLocalInferenceScope() func() {
 		c.widenedIvarFacts = cloneCheckStringSet(widenedIvars)
 		c.evaluatedIfClassFacts = maps.Clone(ifClassFacts)
 		c.evaluatedBlockValues = maps.Clone(blockValues)
-		c.evaluatedHashDefaults = maps.Clone(hashDefaults)
 		c.evaluatedDestructureFacts = maps.Clone(destructureFacts)
 		c.destructureProjectionFacts = maps.Clone(projectionFacts)
 		c.stmtNoFallthroughInferred = stmtNoFallthrough
@@ -2416,13 +2405,6 @@ type capturedBlockLiteralValue struct {
 	strict bool
 }
 
-type directCoreHashDefaultCapture struct {
-	block      *BlockLiteral
-	strict     bool
-	unknown    bool
-	freshEmpty bool
-}
-
 func normalizeCapturedBlockLiteralValues(
 	values []capturedBlockLiteralValue,
 ) []capturedBlockLiteralValue {
@@ -2431,28 +2413,6 @@ func normalizeCapturedBlockLiteralValues(
 		duplicate := false
 		for _, existing := range normalized {
 			if candidate.block == existing.block && candidate.strict == existing.strict {
-				duplicate = true
-				break
-			}
-		}
-		if !duplicate {
-			normalized = append(normalized, candidate)
-		}
-	}
-	return normalized
-}
-
-func normalizeDirectCoreHashDefaultCaptures(
-	captures []directCoreHashDefaultCapture,
-) []directCoreHashDefaultCapture {
-	var normalized []directCoreHashDefaultCapture
-	for _, candidate := range captures {
-		duplicate := false
-		for _, existing := range normalized {
-			if candidate.block == existing.block &&
-				candidate.strict == existing.strict &&
-				candidate.unknown == existing.unknown &&
-				candidate.freshEmpty == existing.freshEmpty {
 				duplicate = true
 				break
 			}
@@ -3373,7 +3333,6 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 			typed.Object,
 			c.inferExpressionType(typed.Object),
 		)
-		hashDefault, _ := c.captureDirectCoreHashDefaults(typed.Object)
 		for _, index := range typed.Indices {
 			c.collectRepeatedRegionIvarEffectsFromExpression(index, effects, true)
 			if !c.expressionMayCompleteForBinding(index) {
@@ -3385,14 +3344,6 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 			dispatch := c.indexScriptDispatch(typed, dispatchType)
 			if dispatch.mayRunScript() {
 				mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
-			}
-			defaultEffects, defaultMayRun, _ := c.indexReadIvarEffects(
-				typed,
-				dispatchType,
-				hashDefault,
-			)
-			if defaultMayRun {
-				mergeRegionIvarEffects(effects, defaultEffects)
 			}
 		})
 		c.withEvaluatedDestructureArgumentFacts(
@@ -3527,80 +3478,6 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 	}
 }
 
-// indexReadIvarEffects recognizes hash default callbacks while retaining pure
-// builtin and fresh-literal reads. Direct Hash.new provenance is captured when
-// the object evaluates so a later index expression cannot change it.
-func (c *scriptChecker) directCoreHashDefaultMayComplete(
-	expr *IndexExpr,
-	receiverType *TypeExpr,
-	defaults []directCoreHashDefaultCapture,
-) bool {
-	if expr == nil || len(defaults) == 0 {
-		return true
-	}
-	if len(expr.Indices) != 1 ||
-		c.indexedHashOperationProvablyAbortsWithReceiver(expr, receiverType) {
-		return false
-	}
-	for _, capture := range defaults {
-		if capture.block == nil {
-			return true
-		}
-		if !capture.freshEmpty {
-			return true
-		}
-		args := []Expression{expr.Object, expr.Indices[0]}
-		receiverValue := NewHashWithDefault(
-			make(map[string]Value),
-			NewNil(),
-			wrapBlock(&Block{}),
-		)
-		binding := c.blockLiteralBindingOutcome(
-			capture.block,
-			args,
-			capture.strict,
-			&receiverValue,
-		)
-		if binding.mayBind &&
-			c.blockLiteralBodyMayComplete(capture.block, capture.strict) {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *scriptChecker) applyDirectCoreHashDefaultNamespaceMutations(
-	expr *IndexExpr,
-	receiverType *TypeExpr,
-	defaults []directCoreHashDefaultCapture,
-) {
-	if expr == nil || len(expr.Indices) != 1 ||
-		c.indexedHashOperationProvablyAbortsWithReceiver(expr, receiverType) {
-		return
-	}
-	for _, capture := range defaults {
-		if capture.block == nil {
-			continue
-		}
-		args := []Expression{expr.Object, expr.Indices[0]}
-		receiverValue := NewHashWithDefault(
-			make(map[string]Value),
-			NewNil(),
-			wrapBlock(&Block{}),
-		)
-		binding := c.blockLiteralBindingOutcome(
-			capture.block,
-			args,
-			capture.strict,
-			&receiverValue,
-		)
-		if binding.mayBind &&
-			c.applyLambdaBlockNamespaceMutations(capture.block) {
-			c.markOpaqueClassConstants()
-		}
-	}
-}
-
 func (c *scriptChecker) capturedBlockLiteralCallEntry(
 	value capturedBlockLiteralValue,
 	call *CallExpr,
@@ -3652,223 +3529,6 @@ func (c *scriptChecker) capturedBlockLiteralCallEntry(
 	outcome.mayEnter = true
 	outcome.mayReject = outcome.mayReject || !binding.mustBind
 	return outcome
-}
-
-func (c *scriptChecker) indexReadIvarEffects(
-	expr *IndexExpr,
-	receiverType *TypeExpr,
-	direct []directCoreHashDefaultCapture,
-) (regionIvarEffects, bool, bool) {
-	var effects regionIvarEffects
-	if expr == nil {
-		return effects, false, false
-	}
-	if _, literal := expr.Object.(*HashLiteral); literal {
-		return effects, false, false
-	}
-	if len(direct) > 0 {
-		if len(expr.Indices) != 1 {
-			return effects, false, false
-		}
-		if c.indexedHashOperationProvablyAbortsWithReceiver(expr, receiverType) {
-			return effects, false, true
-		}
-		mayRun := false
-		mayReject := false
-		for _, capture := range direct {
-			switch {
-			case capture.block != nil:
-				args := []Expression{expr.Object, expr.Indices[0]}
-				receiverValue := NewHashWithDefault(
-					make(map[string]Value),
-					NewNil(),
-					wrapBlock(&Block{}),
-				)
-				binding := c.blockLiteralBindingOutcome(
-					capture.block,
-					args,
-					capture.strict,
-					&receiverValue,
-				)
-				captureMayComplete := binding.mayBind &&
-					c.blockLiteralBodyMayComplete(capture.block, capture.strict)
-				if binding.mayBind {
-					c.collectRepeatedRegionIvarEffectsFromBlock(capture.block, &effects)
-				}
-				mayRun = mayRun || binding.mayBind
-				mayReject = mayReject || !binding.mustBind ||
-					binding.mayBind && !captureMayComplete
-			case capture.unknown:
-				effects.unknown = true
-				mayRun = true
-				mayReject = true
-			}
-		}
-		return effects, mayRun, mayReject
-	}
-	arms, ok := typeExprArms(receiverType, 0)
-	if !ok || len(arms) == 0 {
-		effects.unknown = true
-		return effects, true, true
-	}
-	for _, arm := range arms {
-		if arm.Kind == TypeHash || arm.Kind == TypeShape {
-			if len(expr.Indices) == 1 {
-				effects.unknown = true
-				return effects, true, true
-			}
-			return effects, false, false
-		}
-	}
-	return effects, false, false
-}
-
-func (c *scriptChecker) captureDirectCoreHashDefaults(
-	expr Expression,
-) ([]directCoreHashDefaultCapture, bool) {
-	if captures, evaluated := c.evaluatedHashDefaults[expr]; evaluated {
-		return append([]directCoreHashDefaultCapture(nil), captures...), true
-	}
-	switch typed := expr.(type) {
-	case *HashLiteral:
-		if typed.ShapeType == nil || c.hashShapeStaticallyShadowed(typed) {
-			return []directCoreHashDefaultCapture{{
-				freshEmpty: len(typed.Pairs) == 0,
-			}}, true
-		}
-		return nil, false
-	case *Identifier:
-		if _, poisoned := c.typePoison[typed.Name]; poisoned {
-			return nil, false
-		}
-		if _, poisoned := c.staticValuePoison[typed.Name]; poisoned {
-			return nil, false
-		}
-		fact, exact := c.localValueFactFor(typed.Name)
-		if !exact || len(fact.hashDefaults) == 0 {
-			return nil, false
-		}
-		return append([]directCoreHashDefaultCapture(nil), fact.hashDefaults...), true
-	case *ConditionalExpr:
-		if branch, known := staticConditionalExpressionBranch(typed); known {
-			return c.captureDirectCoreHashDefaults(branch)
-		}
-		return c.mergeDirectCoreHashDefaultExpressionList(
-			[]Expression{typed.Consequent, typed.Alternate},
-		)
-	case *IfExpr:
-		if branch, known := staticIfExpressionBranch(typed); known {
-			return c.captureDirectCoreHashDefaults(branch)
-		}
-		expressions := make([]Expression, 0, len(typed.ElseIf)+2)
-		expressions = append(expressions, typed.Consequent)
-		for _, branch := range typed.ElseIf {
-			expressions = append(expressions, branch.Result)
-		}
-		expressions = append(expressions, typed.Alternate)
-		return c.mergeDirectCoreHashDefaultExpressionList(expressions)
-	case *RescueExpr:
-		if expressionProvenNonRaising(typed.Body) {
-			return c.captureDirectCoreHashDefaults(typed.Body)
-		}
-		return c.mergeDirectCoreHashDefaultExpressionList(
-			[]Expression{typed.Body, typed.Fallback},
-		)
-	case *CaseExpr:
-		if result, known := staticCaseExpressionResult(typed); known {
-			return c.captureDirectCoreHashDefaults(result)
-		}
-		expressions := make([]Expression, 0, len(typed.Clauses)+1)
-		for _, clause := range typed.Clauses {
-			expressions = append(expressions, clause.Result)
-		}
-		expressions = append(expressions, typed.ElseExpr)
-		return c.mergeDirectCoreHashDefaultExpressionList(expressions)
-	}
-	var call *CallExpr
-	switch typed := expr.(type) {
-	case *CallExpr:
-		call = typed
-	case *MemberExpr:
-		if typed.Property != "new" {
-			return nil, false
-		}
-		call = &CallExpr{Callee: typed, Position: typed.Pos()}
-	default:
-		return nil, false
-	}
-	target, resolved := c.resolveCallable(call)
-	return c.captureResolvedCoreHashDefaults(
-		call,
-		target,
-		c.callTargetsBlockCapturingBuiltin(call, target, resolved),
-	)
-}
-
-func (c *scriptChecker) directCoreHashDefaultReceiverAliasNames(
-	expr Expression,
-) []string {
-	aliases := make(map[string]struct{})
-	for _, root := range c.containerAliasRoots(expr) {
-		for alias := range c.containerAliasNames(root) {
-			aliases[alias] = struct{}{}
-		}
-	}
-	names := make([]string, 0, len(aliases))
-	for name := range aliases {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
-}
-
-func (c *scriptChecker) poisonDirectCoreHashDefaultReceiverAliases(aliases []string) {
-	for _, alias := range aliases {
-		c.poisonLocalStaticValues(alias)
-	}
-}
-
-func (c *scriptChecker) validateEvaluatedDirectCoreHashDefaults(
-	evaluated []directCoreHashDefaultCapture,
-	exact bool,
-	aliases []string,
-) ([]directCoreHashDefaultCapture, bool) {
-	if !exact {
-		return nil, false
-	}
-	validated := append([]directCoreHashDefaultCapture(nil), evaluated...)
-	for _, alias := range aliases {
-		_, typePoisoned := c.typePoison[alias]
-		_, valuePoisoned := c.staticValuePoison[alias]
-		if !typePoisoned && !valuePoisoned {
-			continue
-		}
-		// The receiver object was selected before the index expressions ran,
-		// so a later local rebind cannot replace its default callback. A
-		// mutation or escape through any alias can make the selected Hash
-		// non-empty. Keep the callback identity while dropping only the
-		// missing-key guarantee used for completion.
-		for i := range validated {
-			validated[i].freshEmpty = false
-		}
-		break
-	}
-	return validated, true
-}
-
-func (c *scriptChecker) mergeDirectCoreHashDefaultExpressionList(
-	expressions []Expression,
-) ([]directCoreHashDefaultCapture, bool) {
-	var captures []directCoreHashDefaultCapture
-	for _, expression := range expressions {
-		alternatives, exact := c.captureDirectCoreHashDefaults(expression)
-		if !exact || len(captures)+len(alternatives) > 32 {
-			return nil, false
-		}
-		captures = append(captures, alternatives...)
-	}
-	captures = normalizeDirectCoreHashDefaultCaptures(captures)
-	return captures, len(captures) > 0
 }
 
 func (c *scriptChecker) capturedBlockLiteralValueAlternatives(
@@ -4015,7 +3675,6 @@ func (c *scriptChecker) captureEvaluatedRetainedConstructor(
 		return
 	}
 	delete(c.evaluatedBlockValues, call)
-	delete(c.evaluatedHashDefaults, call)
 	if values, exact := c.captureResolvedCoreBlockValues(
 		call,
 		target,
@@ -4026,83 +3685,6 @@ func (c *scriptChecker) captureEvaluatedRetainedConstructor(
 		}
 		c.evaluatedBlockValues[call] = append([]capturedBlockLiteralValue(nil), values...)
 	}
-	if captures, exact := c.captureResolvedCoreHashDefaults(
-		call,
-		target,
-		blockCapturing,
-	); exact {
-		if c.evaluatedHashDefaults == nil {
-			c.evaluatedHashDefaults = make(map[Expression][]directCoreHashDefaultCapture)
-		}
-		c.evaluatedHashDefaults[call] = append(
-			[]directCoreHashDefaultCapture(nil),
-			captures...,
-		)
-	}
-}
-
-func (c *scriptChecker) captureResolvedCoreHashDefaults(
-	call *CallExpr,
-	target staticCallable,
-	blockCapturing bool,
-) ([]directCoreHashDefaultCapture, bool) {
-	if !blockCapturing || target.name != "Hash.new" {
-		return nil, false
-	}
-	pure := directCoreHashDefaultCapture{freshEmpty: true}
-	if call.Block == nil && call.BlockArg == nil {
-		return []directCoreHashDefaultCapture{pure}, true
-	}
-	checkedCall, exact := c.staticallyExpandedCall(call)
-	if !exact {
-		return []directCoreHashDefaultCapture{{
-			unknown:    true,
-			freshEmpty: true,
-		}}, true
-	}
-	if len(checkedCall.KwArgs) != 0 || len(checkedCall.Args) > 1 {
-		return nil, false
-	}
-	if checkedCall.Block != nil {
-		if len(checkedCall.Args) != 0 || checkedCall.BlockArg != nil {
-			return nil, false
-		}
-		return []directCoreHashDefaultCapture{{
-			block:      checkedCall.Block,
-			strict:     checkedCall.Block.Lambda,
-			freshEmpty: true,
-		}}, true
-	}
-	if checkedCall.BlockArg == nil || len(checkedCall.Args) != 0 {
-		return nil, false
-	}
-	blocks, exact := c.capturedBlockLiteralValueAlternatives(checkedCall.BlockArg)
-	if exact {
-		captures := make([]directCoreHashDefaultCapture, 0, len(blocks))
-		for _, block := range blocks {
-			captures = append(captures, directCoreHashDefaultCapture{
-				block:      block.block,
-				strict:     block.strict,
-				freshEmpty: true,
-			})
-		}
-		captures = normalizeDirectCoreHashDefaultCaptures(captures)
-		return captures, len(captures) > 0
-	}
-	blockType, captured := c.callArgumentFacts[checkedCall.BlockArg]
-	if !captured {
-		blockType = c.inferExpressionTypeWithExpectation(
-			checkedCall.BlockArg,
-			typeExpressionExpectation(checkTypeFunction),
-		)
-	}
-	if typeExprIsNilOnly(blockType) {
-		return []directCoreHashDefaultCapture{pure}, true
-	}
-	return []directCoreHashDefaultCapture{{
-		unknown:    true,
-		freshEmpty: true,
-	}}, true
 }
 
 // blockLiteralBindingOutcome reports whether a block's complete binding phase
@@ -5583,11 +5165,6 @@ func (c *scriptChecker) mergeLocalValueFacts(
 			append(left.blockValues, right.blockValues...),
 		)
 	}
-	if len(left.hashDefaults) > 0 && len(right.hashDefaults) > 0 {
-		merged.hashDefaults = normalizeDirectCoreHashDefaultCaptures(
-			append(left.hashDefaults, right.hashDefaults...),
-		)
-	}
 	if left.keywordSplatFails && right.keywordSplatFails {
 		merged.keywordSplatFails = true
 		switch {
@@ -5613,7 +5190,6 @@ func (c *scriptChecker) mergeLocalValueFacts(
 		len(merged.blocks) > 0 ||
 		len(merged.staticVals) > 0 ||
 		len(merged.blockValues) > 0 ||
-		len(merged.hashDefaults) > 0 ||
 		merged.keywordSplatFails
 	return merged, exact
 }
@@ -6105,12 +5681,11 @@ func (c *scriptChecker) inferAssignStatementTypes(
 }
 
 // applyMemberWriteFacts checks hash/object field assignment syntax against a
-// local-rooted receiver's declared hash or shape fact. At runtime a hash
-// setter updates an existing symbol key first, then an existing string key,
-// and otherwise inserts a symbol; an object setter uses a string key. A typed
-// hash can select a string only when its key bound permits an existing string,
-// while a declared shape checks the property's logical field name independent
-// of its backing representation.
+// local-rooted receiver's declared hash or shape fact. Member assignment
+// writes the property name as a hash key, and strings and symbols share that
+// keyspace, so hash<string, V> and hash<symbol, V> both admit h.foo = ....
+// A declared shape checks the property's logical field name independent of
+// its backing representation.
 func (c *scriptChecker) applyMemberWriteFacts(
 	function string,
 	stmt *AssignStmt,
@@ -6166,13 +5741,13 @@ func (c *scriptChecker) applyMemberWriteFacts(
 
 	if keyBound, valueBound := declaredHashEntryTypes(contentFact); keyBound != nil {
 		resolve := c.checkNamedTypeResolver()
+		// Member assignment writes the property name as a hash key. Strings
+		// and symbols share that keyspace, so hash<string, V> and
+		// hash<symbol, V> both admit h.foo = ....
 		keyType := checkTypeSymbol
-		if !typeExprsDisjoint(checkTypeString, keyBound, resolve) {
-			keyType = unionTypeExprs(checkTypeString, checkTypeSymbol)
-		}
-		keyCompatible := typeExprSatisfies(keyType, keyBound, resolve)
+		keyCompatible := hashKeyTypeSatisfies(keyType, keyBound, resolve)
 		valueCompatible := written != nil && typeExprSatisfies(written, valueBound, resolve)
-		if typeExprsDisjoint(keyType, keyBound, resolve) {
+		if hashKeyTypesDisjoint(keyType, keyBound, resolve) {
 			c.add(function, stmt.Pos(), "write to %s expected key %s, got %s",
 				name, formatTypeExpr(keyBound), formatTypeExpr(keyType))
 		}
@@ -6274,10 +5849,6 @@ func (c *scriptChecker) hashOwnedMemberWriteCurrentType(receiver *TypeExpr, prop
 		builtin = checkTypeHash
 	case "inspect":
 		builtin = checkTypeString
-	case "default":
-		builtin = &TypeExpr{Kind: TypeAny}
-	case "default_proc":
-		builtin = unionTypeExprs(checkTypeFunction, checkTypeNil)
 	case "replace", "store", "delete", "remap_keys":
 		// These members are not auto-invoked, so a bare getter returns the
 		// callable itself and logical assignment can reach the setter.
@@ -6310,15 +5881,7 @@ func (c *scriptChecker) hashOwnedMemberWriteArmType(
 	builtin *TypeExpr,
 ) *TypeExpr {
 	if keyBound, valueBound := declaredHashEntryTypes(receiver); valueBound != nil {
-		switch property {
-		case "default":
-			// Typed-hash normalization rejects default procs and validates
-			// every non-nil default against the declared value bound.
-			builtin = unionTypeExprs(valueBound, checkTypeNil)
-		case "default_proc":
-			builtin = checkTypeNil
-		}
-		if typeExprsDisjoint(checkTypeString, keyBound, c.checkNamedTypeResolver()) {
+		if hashKeyTypesDisjoint(checkTypeString, keyBound, c.checkNamedTypeResolver()) {
 			return builtin
 		}
 		if typeExprMayIncludeCallable(valueBound) {
@@ -6359,7 +5922,7 @@ func (c *scriptChecker) memberWriteUsesUniversalDispatch(receiver *TypeExpr, pro
 				return true
 			}
 			if keyBound, valueBound := declaredHashEntryTypes(arm); valueBound != nil &&
-				typeExprsDisjoint(checkTypeString, keyBound, c.checkNamedTypeResolver()) {
+				hashKeyTypesDisjoint(checkTypeString, keyBound, c.checkNamedTypeResolver()) {
 				return true
 			}
 		}
@@ -6738,14 +6301,11 @@ func indexWriteInvalidKeywordSplatKey(target *IndexExpr) (bool, string) {
 	if !static {
 		return false, ""
 	}
-	if key.Kind() == KindString || key.Kind() == KindSymbol {
-		return false, ""
-	}
-	hashKey, err := valueToHashKey(key)
-	if err != nil {
+	if _, err := hashKeyString(key); err != nil {
 		return true, ""
 	}
-	return true, hashKey
+	// The key is a legal string key, so it cannot invalidate the splat.
+	return false, ""
 }
 
 func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expression) {
@@ -6757,7 +6317,6 @@ func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expressio
 	}
 	staticValues, staticExact := c.staticValueExpressionAlternatives(expr)
 	blockValues, blockExact := c.capturedBlockLiteralValueAlternatives(expr)
-	hashDefaults, hashExact := c.captureDirectCoreHashDefaults(expr)
 	blocks, blockChoiceMayNil, blocksExact := c.blockLiteralValueChoices(identityExpr)
 	var staticChoice checkStaticChoiceFact
 	if blocksExact {
@@ -6776,13 +6335,12 @@ func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expressio
 		c.bindLocalClassValues(name, classNames)
 	} else if fns, ok := c.callableExpressionFunctions(identityExpr); ok {
 		c.bindLocalCallableValues(name, fns)
-	} else if blocksExact || staticExact || blockExact || hashExact {
+	} else if blocksExact || staticExact || blockExact {
 		c.bindLocalExactValueFact(name, checkLocalValueFact{
 			blocks:            blocks,
 			blockChoiceMayNil: blockChoiceMayNil,
 			staticVals:        staticValues,
 			blockValues:       blockValues,
-			hashDefaults:      hashDefaults,
 			staticChoice:      staticChoice,
 		})
 	} else if c.keywordSplatExpressionAlwaysFails(expr) &&
@@ -7007,7 +6565,6 @@ func localValueFactTruthiness(fact checkLocalValueFact, tracked bool) (bool, boo
 	}
 	if len(fact.classNames) > 0 || len(fact.callables) > 0 ||
 		len(fact.instanceOrigins) > 0 ||
-		len(fact.hashDefaults) > 0 ||
 		len(fact.blocks) > 0 && !fact.blockChoiceMayNil {
 		return true, true
 	}
@@ -8477,17 +8034,17 @@ func (c *scriptChecker) staticLiteralProjectionFrom(object, indexExpr Expression
 		if object.ShapeType != nil && !c.hashShapeStaticallyShadowed(object) {
 			return nil, false
 		}
-		want, ok := staticLiteralValue(indexExpr)
+		want, ok := staticLiteralHashIdentity(indexExpr)
 		if !ok {
 			return nil, false
 		}
 		var projected Expression
 		for _, pair := range object.Pairs {
-			key, ok := staticLiteralValue(pair.Key)
+			key, ok := staticLiteralHashIdentity(pair.Key)
 			if !ok {
 				return nil, false
 			}
-			if key.Equal(want) {
+			if key == want {
 				projected = pair.Value
 			}
 		}
@@ -8583,7 +8140,7 @@ func (c *scriptChecker) bindParamValueFact(param Param, val Value, present bool)
 	}
 	fact := typeFactForValue(val)
 	if param.Kind == ParamKeywordRest && val.Kind() == KindHash {
-		fact = keywordRestFact(val.Hash())
+		fact = keywordRestFact(val.HashEntryMap())
 	}
 	if fact != nil {
 		c.bindLocalTypeInCurrentFrame(param.Name, fact)
@@ -11233,11 +10790,11 @@ func (c *scriptChecker) applyHashEntryWriteFacts(function string, stmt *AssignSt
 	preserved := intact
 	if keyType := c.inferExpressionType(index); keyType == nil {
 		preserved = false
-	} else if typedWriteRejected(keyType, keyBound, resolve) {
+	} else if hashKeyTypesDisjoint(keyType, keyBound, resolve) {
 		c.add(function, stmt.Pos(), "write to %s expected key %s, got %s",
 			name, formatTypeExpr(keyBound), formatTypeExpr(keyType))
 		preserved = false
-	} else if !typeExprSatisfies(keyType, keyBound, resolve) {
+	} else if !hashKeyTypeSatisfies(keyType, keyBound, resolve) {
 		preserved = false
 	}
 	if valueType := c.inferExpressionType(stmt.Value); valueType == nil {
@@ -11572,9 +11129,8 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 			(repr == shapeKeysStringMarker || repr == shapeKeysSymbolMarker) {
 			marker = repr
 		}
-		if repr != marker {
-			return false
-		}
+		// String and symbol keys address one entry, so a write through the
+		// other spelling still replaces this field.
 		receiverAliased := len(c.typeAliases[name]) != 0
 		written := c.inferExpressionType(value)
 		// The store retains the written value even when aliasing, a mutation
@@ -11679,8 +11235,18 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 		if typedWriteRejected(written, field, c.checkNamedTypeResolver()) {
 			c.add(function, pos, "write to %s field %s expected %s, got %s",
 				name, key, formatTypeExpr(field), formatTypeExpr(written))
+			return false
 		}
-		return false
+		// A compatible write replaces the same unified-key field. Keep the
+		// declared fact so later reads still see the required field type,
+		// and link a retained container so a later write through that
+		// value invalidates this field too.
+		receiverAliased := len(c.typeAliases[name]) != 0
+		c.linkContainerWriteAlias(name, value, written)
+		if c.mutationRegionDepth != 0 || receiverAliased || !intact {
+			return false
+		}
+		return true
 	}
 	return false
 }
@@ -14733,13 +14299,19 @@ func (c *scriptChecker) applyHashMutatorCallFacts(
 				preserved = false
 				return
 			}
-			if typedWriteRejected(written, bound, resolve) {
+			rejected := typedWriteRejected(written, bound, resolve)
+			satisfies := typeExprSatisfies(written, bound, resolve)
+			if noun == "key" {
+				rejected = hashKeyTypesDisjoint(written, bound, resolve)
+				satisfies = hashKeyTypeSatisfies(written, bound, resolve)
+			}
+			if rejected {
 				c.add(function, arg.Pos(), "write to %s expected %s %s, got %s",
 					name, noun, formatTypeExpr(bound), formatTypeExpr(written))
 				preserved = false
 				return
 			}
-			if !typeExprSatisfies(written, bound, resolve) {
+			if !satisfies {
 				preserved = false
 				return
 			}
@@ -15596,14 +15168,15 @@ func effectiveHashLiteralPairs(lit *HashLiteral) []HashPair {
 	return effectivePairs
 }
 
-// staticLiteralHashIdentity preserves the key-kind distinctions HashSet uses;
-// display keys intentionally collapse same-spelled strings and symbols.
+// staticLiteralHashIdentity is the entry a static literal key addresses.
+// Strings and symbols with the same spelling address one entry, so they share
+// one identity here too.
 func staticLiteralHashIdentity(expr Expression) (string, bool) {
 	value, ok := staticLiteralValue(expr)
 	if !ok {
 		return "", false
 	}
-	key, err := canonicalHashKey(value)
+	key, err := hashKeyString(value)
 	return key, err == nil
 }
 
@@ -15628,7 +15201,13 @@ func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit 
 			compatible = false
 			return false
 		}
-		if typedWriteRejected(written, bound, resolve) {
+		rejected := typedWriteRejected(written, bound, resolve)
+		satisfies := typeExprSatisfies(written, bound, resolve)
+		if noun == "key" {
+			rejected = hashKeyTypesDisjoint(written, bound, resolve)
+			satisfies = hashKeyTypeSatisfies(written, bound, resolve)
+		}
+		if rejected {
 			if warn {
 				c.add(function, expr.Pos(), "write to %s expected %s %s, got %s",
 					name, noun, formatTypeExpr(bound), formatTypeExpr(written))
@@ -15636,7 +15215,7 @@ func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit 
 			compatible = false
 			return true
 		}
-		if !typeExprSatisfies(written, bound, resolve) {
+		if !satisfies {
 			compatible = false
 		}
 		return false
@@ -15724,8 +15303,10 @@ func shapeVsTypedHashDisjoint(shape, hash *TypeExpr, resolve namedTypeResolver) 
 	if len(hash.TypeArgs) != 2 {
 		return false
 	}
-	// A known key representation contradicts a disjoint hash key type: a
-	// string-keyed store never satisfies hash<symbol, ...> and vice versa.
+	// A known key representation contradicts a disjoint hash key type. Strings
+	// and symbols share one keyspace, so a string-keyed store satisfies
+	// hash<symbol, ...> and vice versa; an "other" witness still contradicts
+	// a bound that admits only those two.
 	if len(shape.Shape) > 0 {
 		var keyType *TypeExpr
 		switch {
@@ -15734,14 +15315,11 @@ func shapeVsTypedHashDisjoint(shape, hash *TypeExpr, resolve namedTypeResolver) 
 		case shape.Name == shapeKeysSymbolMarker:
 			keyType = checkTypeSymbol
 		case strings.HasPrefix(shape.Name, shapeKeysMixedPrefix):
-			// A witnessed key kind provably violates a bound that excludes
-			// that kind entirely, and an "other" witness — neither a symbol
-			// nor a string — violates a bound admitting only those two.
 			flags := strings.TrimPrefix(shape.Name, shapeKeysMixedPrefix)
-			if strings.Contains(flags, "s") && typeExprsDisjoint(checkTypeSymbol, hash.TypeArgs[0], resolve) {
+			if strings.Contains(flags, "s") && hashKeyTypesDisjoint(checkTypeSymbol, hash.TypeArgs[0], resolve) {
 				return true
 			}
-			if strings.Contains(flags, "t") && typeExprsDisjoint(checkTypeString, hash.TypeArgs[0], resolve) {
+			if strings.Contains(flags, "t") && hashKeyTypesDisjoint(checkTypeString, hash.TypeArgs[0], resolve) {
 				return true
 			}
 			if strings.Contains(flags, "o") && typeExprArmsAll(hash.TypeArgs[0], func(arm *TypeExpr) bool {
@@ -15750,7 +15328,7 @@ func shapeVsTypedHashDisjoint(shape, hash *TypeExpr, resolve namedTypeResolver) 
 				return true
 			}
 		}
-		if keyType != nil && typeExprsDisjoint(keyType, hash.TypeArgs[0], resolve) {
+		if keyType != nil && hashKeyTypesDisjoint(keyType, hash.TypeArgs[0], resolve) {
 			return true
 		}
 	}
@@ -15950,43 +15528,25 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 	case TypeShape:
 		key, ok := staticLiteralHashKey(index)
 		if !ok {
+			if objectType.Name == shapeKeysStringMarker || objectType.Name == shapeKeysSymbolMarker {
+				if _, isLit := staticLiteralValue(index); isLit {
+					return checkTypeNil
+				}
+			}
 			return nil
 		}
 		fieldType, present := objectType.Shape[key]
-		indexKeyMarker := ""
-		switch index.(type) {
-		case *SymbolLiteral:
-			indexKeyMarker = shapeKeysSymbolMarker
-		case *StringLiteral:
-			indexKeyMarker = shapeKeysStringMarker
-		}
-		switch objectType.Name {
-		case shapeKeysStringMarker, shapeKeysSymbolMarker:
-			// Known store representation: a lookup of the other key kind
-			// (or a non-string, non-symbol key) always misses.
-			if indexKeyMarker != objectType.Name {
-				return checkTypeNil
-			}
-			if present {
-				// An optional field may be absent, so its read joins nil.
-				if shapeFieldOptional(fieldType) {
-					return unionTypeExprs(shapeFieldValueType(fieldType), checkTypeNil)
-				}
-				return fieldType
-			}
-			// An open shape may hold an undeclared field of any type, so the
-			// read stays unknown; a closed shape is known to miss.
-			if objectType.Open {
-				return nil
-			}
-			return checkTypeNil
-		}
-		// Unknown store representation: a present display name reads as the
-		// field type or nil depending on the store's key kind; an absent one
-		// misses either store.
+		// String and symbol keys address one entry, including on a declared
+		// markerless shape such as `{ name: string }`. A required field is
+		// therefore an exact hit; an optional field may be absent.
 		if present {
-			return unionTypeExprs(shapeFieldValueType(fieldType), checkTypeNil)
+			if shapeFieldOptional(fieldType) {
+				return unionTypeExprs(shapeFieldValueType(fieldType), checkTypeNil)
+			}
+			return fieldType
 		}
+		// An open shape may hold an undeclared field of any type, so the
+		// read stays unknown; a closed shape is known to miss.
 		if objectType.Open {
 			return nil
 		}
@@ -16074,64 +15634,23 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 	}
 }
 
-// unknownShapeKeyKindHint explains a nil arm that comes from not knowing how a
-// shape's keys are stored, rather than from the field being optional.
-//
-// Scope: this reaches diagnostics raised through checkInferredArgument, which
-// is the direct argument path. A mismatch raised on the rest/splat aggregate
-// path carries no explanation, because the read that produced the nil arm is
-// usually not an argument of that call at all -- `args = [row[:name]]` then
-// `accept(*args)` performs the read in a previous statement, so there is no
-// captured hint to carry and re-deriving it from the local's static value did
-// not recover one either. Extending it there means tracing the local back to
-// its assignment, which is dataflow work rather than a diagnostic tweak.
-//
-// A shape parameter accepts either key kind -- {name: "a"} and {"name": "b"}
-// both satisfy { name: string }, and JSON.parse produces the string-keyed form
-// -- so the checker cannot know which one a read will hit, and a read of even
-// a required field joins nil. Without saying so the diagnostic reads as though
-// the field were optional, which is how #1046 concluded that `?` had no
-// effect: it does, but only where the key kind is known, as in a hash literal.
+// unknownShapeKeyKindHint used to explain a nil arm that came from not knowing
+// how a shape's keys were stored. Strings and symbols now share one keyspace,
+// so a required field is an exact hit and the hint is empty.
+func (c *scriptChecker) unknownShapeKeyKindHint(Expression) string {
+	return ""
+}
+
 // capturedShapeKeyKindHint prefers the hint captured when the argument was
-// evaluated. A later argument can mutate the shape an earlier one read --
-// accept(row[:name], row.delete(:name)) -- which poisons the receiver fact, so
-// re-deriving it here would silently drop the explanation.
+// evaluated. A later argument can mutate the shape an earlier one read, which
+// poisons the receiver fact, so re-deriving it here would silently drop a
+// captured explanation. Under the unified keyspace a required field is an
+// exact hit, so the derived hint is empty.
 func (c *scriptChecker) capturedShapeKeyKindHint(expr Expression) string {
 	if hint, captured := c.callArgumentHints[expr]; captured {
 		return hint
 	}
 	return c.unknownShapeKeyKindHint(expr)
-}
-
-func (c *scriptChecker) unknownShapeKeyKindHint(expr Expression) string {
-	index, ok := expr.(*IndexExpr)
-	if !ok || len(index.Indices) != 1 {
-		return ""
-	}
-	key, ok := staticLiteralHashKey(index.Indices[0])
-	if !ok {
-		return ""
-	}
-	objectType := c.inferExpressionType(index.Object)
-	if objectType == nil || objectType.Kind != TypeShape || objectType.Nullable {
-		return ""
-	}
-	// A known store representation already reads a required field exactly.
-	if objectType.Name == shapeKeysStringMarker || objectType.Name == shapeKeysSymbolMarker {
-		return ""
-	}
-	field, present := objectType.Shape[key]
-	if !present || shapeFieldOptional(field) {
-		return ""
-	}
-	// A field whose declared type already admits nil produces the same
-	// `T | nil` read under a known key kind, so the nil arm is not the key
-	// kind's doing and saying it is would misattribute the diagnostic.
-	if !typeExprNeverNil(shapeFieldValueType(field)) {
-		return ""
-	}
-	return fmt.Sprintf("; %s is required, but this shape's key kind is unknown,"+
-		" so the read may still miss", key)
 }
 
 // bareMemberArgumentCallableFact mirrors the runtime's callable-parameter
@@ -17714,6 +17233,25 @@ func boundaryArrayRelation(
 	return relation
 }
 
+func boundaryHashKeyRelation(
+	inferred,
+	required *TypeExpr,
+	ctx boundaryTypeContext,
+	depth int,
+) boundaryTypeRelation {
+	decidedInf, matchesInf := typeAllowsStringHashKey(inferred)
+	decidedReq, matchesReq := typeAllowsStringHashKey(required)
+	if decidedInf && decidedReq {
+		if matchesInf && matchesReq {
+			return boundaryRelationAccepted
+		}
+		if matchesInf != matchesReq {
+			return boundaryRelationRejected
+		}
+	}
+	return boundaryTypeExprRelation(inferred, required, ctx, depth)
+}
+
 func boundaryHashRelation(
 	inferred,
 	required *TypeExpr,
@@ -17726,7 +17264,7 @@ func boundaryHashRelation(
 	if len(required.TypeArgs) != 2 || len(inferred.TypeArgs) != 2 {
 		return boundaryRelationGradual
 	}
-	keyRelation := boundaryTypeExprRelation(inferred.TypeArgs[0], required.TypeArgs[0], ctx, depth)
+	keyRelation := boundaryHashKeyRelation(inferred.TypeArgs[0], required.TypeArgs[0], ctx, depth)
 	if keyRelation == boundaryRelationRejected {
 		return boundaryRelationRejected
 	}
@@ -17813,7 +17351,7 @@ func boundaryShapeHashRelation(
 	result := boundaryRelationAccepted
 	if keyType == nil {
 		result = boundaryRelationGradual
-	} else if relation := boundaryTypeExprRelation(keyType, required.TypeArgs[0], ctx, depth); relation == boundaryRelationRejected {
+	} else if relation := boundaryHashKeyRelation(keyType, required.TypeArgs[0], ctx, depth); relation == boundaryRelationRejected {
 		return boundaryRelationRejected
 	} else if relation == boundaryRelationGradual {
 		result = boundaryRelationGradual
@@ -17940,7 +17478,7 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 			if len(declared.TypeArgs) != 2 || len(written.TypeArgs) != 2 {
 				return false
 			}
-			return typeExprSatisfies(written.TypeArgs[0], declared.TypeArgs[0], resolve) &&
+			return hashKeyTypeSatisfies(written.TypeArgs[0], declared.TypeArgs[0], resolve) &&
 				typeExprSatisfies(written.TypeArgs[1], declared.TypeArgs[1], resolve)
 		case TypeShape:
 			// A shape is a hash at runtime; with a known key representation
@@ -17987,7 +17525,7 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 			default:
 				return false
 			}
-			if !typeExprSatisfies(keyType, declared.TypeArgs[0], resolve) {
+			if !hashKeyTypeSatisfies(keyType, declared.TypeArgs[0], resolve) {
 				return false
 			}
 			if written.Open && !typeExprSatisfies(

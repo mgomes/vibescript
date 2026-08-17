@@ -86,21 +86,15 @@ func TestValueInspect(t *testing.T) {
 			`{"a b": 1}`,
 		},
 		{
-			// A KindHash carrying Ruby-style default metadata is backed by a
-			// hashData wrapper rather than a bare map; inspect must unwrap it to
-			// reach the entries and, like Ruby, render only the entries (never the
-			// default value).
-			"hash_with_default_value_renders_entries_only",
-			value.NewHashWithDefault(
-				map[string]value.Value{"a": value.NewInt(1)},
-				value.NewInt(0),
-				value.NewNil(),
-			),
+			// A KindHash is backed by a hashData wrapper rather than a bare map;
+			// inspect must unwrap it to reach the entries.
+			"hash_renders_entries",
+			value.NewHash(map[string]value.Value{"a": value.NewInt(1)}),
 			`{a: 1}`,
 		},
 		{
-			"empty_hash_with_default_value",
-			value.NewHashWithDefault(nil, value.NewInt(0), value.NewNil()),
+			"empty_hash",
+			value.NewHash(nil),
 			"{}",
 		},
 		{"empty_object", value.NewObject(nil), "{}"},
@@ -324,14 +318,9 @@ func TestValueInspectByteLenBounded(t *testing.T) {
 		v := value.NewArray([]value.Value{
 			value.NewString("x"),
 			value.NewHash(map[string]value.Value{"a": value.NewInt(1)}),
-			// A hash carrying Ruby-style default metadata is backed by a hashData
-			// wrapper; the bounded walk must unwrap it rather than asserting the
-			// payload is a bare map.
-			value.NewHashWithDefault(
-				map[string]value.Value{"b": value.NewInt(2)},
-				value.NewInt(0),
-				value.NewNil(),
-			),
+			// A hash is backed by a hashData wrapper; the bounded walk must
+			// unwrap it rather than asserting the payload is a bare map.
+			value.NewHash(map[string]value.Value{"b": value.NewInt(2)}),
 		})
 		got, err := v.InspectByteLenBounded(func() error { return nil })
 		if err != nil {
@@ -349,27 +338,6 @@ func TestValueInspectByteLenBounded(t *testing.T) {
 		_, err := v.InspectByteLenBounded(func() error { return sentinel })
 		if !errors.Is(err, sentinel) {
 			t.Fatalf("InspectByteLenBounded() error = %v, want %v", err, sentinel)
-		}
-	})
-
-	t.Run("step_error_charges_typed_hash_key_walk", func(t *testing.T) {
-		t.Parallel()
-		hash := value.NewHash(nil)
-		if err := hash.HashSet(value.NewArray([]value.Value{value.NewInt(1)}), value.NewString("ok")); err != nil {
-			t.Fatalf("HashSet(array key) error = %v", err)
-		}
-
-		sentinel := errors.New("budget exhausted")
-		steps := 0
-		_, err := hash.InspectByteLenBounded(func() error {
-			steps++
-			if steps == 3 {
-				return sentinel
-			}
-			return nil
-		})
-		if !errors.Is(err, sentinel) {
-			t.Fatalf("InspectByteLenBounded() error = %v after %d steps, want %v", err, steps, sentinel)
 		}
 	})
 }
@@ -407,14 +375,10 @@ func TestValueWriteInspectTo(t *testing.T) {
 			}),
 		},
 		{
-			// The streaming renderer must unwrap a hashData-backed hash carrying a
-			// default rather than asserting a bare map.
-			"hash_with_default_renders_entries_only",
-			value.NewHashWithDefault(
-				map[string]value.Value{"a": value.NewInt(1)},
-				value.NewInt(0),
-				value.NewNil(),
-			),
+			// The streaming renderer must unwrap a hashData-backed hash rather
+			// than asserting a bare map.
+			"hash_renders_entries",
+			value.NewHash(map[string]value.Value{"a": value.NewInt(1)}),
 		},
 		{
 			"object_renders_fields_like_hash",

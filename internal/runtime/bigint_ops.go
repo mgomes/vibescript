@@ -346,31 +346,15 @@ func bigIntDecimalDigitsUpperBound(bi *big.Int) int {
 	return digits
 }
 
-// chargeValueKeySteps scales the step cost of canonicalizing one hash key
-// with the payload the conversion reads (hash set/get/delete, membership
-// probes, aggregation keys). A big-integer key charges its word count at the
-// arithmetic convention of 1 + words/8: the canonical hex conversion is
-// linear in words. A string or symbol key charges its bytes at the
-// string-scan rate: building the canonical form copies the text, and the map
-// insert or lookup hashes all of it, work that was unmetered before #1135.
-// An array key recurses the way HashKey's canonicalization does — its nested
-// strings and big integers are copied into the canonical form once per
-// occurrence, shared subtrees included, so the charge follows the same
-// traversal with the same stack-scoped cycle guard rather than a permanent
-// visited set (which billed a shared DAG once while canonicalization copied
-// it exponentially). The walk carries a node budget so computing the charge
-// cannot itself become the unbounded work: past the budget the remaining
-// cost saturates, which trips any bounded step quota. Compact scalar keys
-// are a no-op.
+// chargeValueKeySteps meters an accepted hash key's text. Only strings and
+// symbols are keys, so anything else is a no-op: the caller rejects it with
+// the unsupported-key error instead of walking a leftover canonicalization
+// model that can exhaust a step quota first.
 func (exec *Execution) chargeValueKeySteps(key Value) error {
-	budget := valueKeyCostNodeBudget
-	words, charge, _, _ := valueKeyCanonicalizationCost(key, nil, &budget)
-	if words > 0 {
-		if err := exec.stepN(1 + words/bigIntStepWordsPerStep); err != nil {
-			return err
-		}
+	if key.Kind() != KindString && key.Kind() != KindSymbol {
+		return nil
 	}
-	return exec.chargeStringScan(charge)
+	return exec.chargeStringScan(len(key.String()))
 }
 
 // valueKeyCostNodeBudget bounds the canonicalization-cost walk. A shared DAG

@@ -182,6 +182,29 @@ func TestParseEnqueueOptionsParsesDelayKeyAndExtra(t *testing.T) {
 	}
 }
 
+func TestDeepCloneValuePreservesHashInsertionOrder(t *testing.T) {
+	t.Parallel()
+
+	original := value.NewHash(map[string]value.Value{})
+	for i, key := range []string{"b", "a"} {
+		if err := original.HashSet(value.NewString(key), value.NewInt(int64(i+1))); err != nil {
+			t.Fatalf("HashSet(%s) error = %v, want nil", key, err)
+		}
+	}
+
+	cloned := deepCloneValue(original)
+	entries := cloned.HashEntries()
+	if len(entries) != 2 {
+		t.Fatalf("deepCloneValue key count = %d, want 2", len(entries))
+	}
+	if got, want := entries[0].Key.String(), "b"; got != want {
+		t.Fatalf("deepCloneValue key[0] = %q, want %q", got, want)
+	}
+	if got, want := entries[1].Key.String(), "a"; got != want {
+		t.Fatalf("deepCloneValue key[1] = %q, want %q", got, want)
+	}
+}
+
 func TestParseEnqueueOptionsClonesExtraKwargs(t *testing.T) {
 	t.Parallel()
 
@@ -196,30 +219,6 @@ func TestParseEnqueueOptionsClonesExtraKwargs(t *testing.T) {
 	opts.Kwargs["meta"].Hash()["name"] = value.NewString("mutated")
 	if inner["name"].String() != "original" {
 		t.Fatalf("clone leaked into caller-owned map: %#v", inner)
-	}
-}
-
-func TestParseEnqueueOptionsPreservesHashDefault(t *testing.T) {
-	t.Parallel()
-
-	// A hash carrying a Ruby-style default value must keep that default after the
-	// defensive clone, otherwise the host receives a plain hash that returns nil
-	// for missing keys instead of the configured default.
-	withDefault := value.NewHashWithDefault(
-		map[string]value.Value{"present": value.NewInt(1)},
-		value.NewInt(42),
-		value.NewNil(),
-	)
-	kwargs := map[string]value.Value{"meta": withDefault}
-
-	opts, err := ParseEnqueueOptions("jobs", kwargs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	got := value.HashDefaultValue(opts.Kwargs["meta"])
-	if got.Kind() != value.KindInt || got.Int() != 42 {
-		t.Fatalf("clone dropped hash default: got %s", got)
 	}
 }
 
@@ -276,24 +275,6 @@ func TestParseEnqueueOptionsRejectsInvalidValues(t *testing.T) {
 			name:    "cyclic_extra_kwarg",
 			kwargs:  map[string]value.Value{"loop": value.NewHash(cyclic)},
 			wantErr: "jobs.enqueue keyword loop must not contain cyclic references",
-		},
-		{
-			// A hash carrying a default proc (a runtime-only block) outside its
-			// entry map must be rejected: the proc is a script callable that the
-			// data-only scan would miss if it walked only the entries.
-			name: "default_proc_extra_kwarg",
-			kwargs: map[string]value.Value{
-				"opts": value.NewHashWithDefault(map[string]value.Value{}, value.NewNil(), value.NewValue(value.KindBlock, struct{}{})),
-			},
-			wantErr: "jobs.enqueue keyword opts must be data-only",
-		},
-		{
-			// A hash default value that is itself a callable must also be rejected.
-			name: "default_value_callable_extra_kwarg",
-			kwargs: map[string]value.Value{
-				"opts": value.NewHashWithDefault(map[string]value.Value{}, callable, value.NewNil()),
-			},
-			wantErr: "jobs.enqueue keyword opts must be data-only",
 		},
 	}
 

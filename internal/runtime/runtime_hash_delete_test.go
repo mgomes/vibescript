@@ -126,7 +126,7 @@ func TestHashDeleteErrors(t *testing.T) {
 	requireCallErrorContains(t, script, "too_many", base, CallOptions{},
 		"hash.delete expects a key")
 	requireCallErrorContains(t, script, "invalid_key", base, CallOptions{},
-		"hash.delete key is unsupported hash key")
+		"hash.delete key is an unsupported hash key")
 	requireCallErrorContains(t, script, "keyword", base, CallOptions{},
 		"hash.delete does not accept keyword arguments")
 }

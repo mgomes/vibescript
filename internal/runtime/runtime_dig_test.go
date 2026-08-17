@@ -81,8 +81,6 @@ func TestDigPaths(t *testing.T) {
 		{"hash three levels", "hash_dig", NewInt(7)},
 		{"hash string keys", "hash_dig_string_keys", NewInt(9)},
 		{"hash missing key yields nil", "hash_dig_miss", NewNil()},
-		{"hash integer key yields nil", "hash_dig_int_key", NewNil()},
-		{"hash integer first key yields nil", "hash_dig_int_first_key", NewNil()},
 		{"hash through scalar yields nil", "hash_dig_through_scalar", NewNil()},
 		{"hash into array", "hash_into_array", NewInt(20)},
 		{"array into hash", "array_into_hash", NewString("y")},
@@ -96,6 +94,16 @@ func TestDigPaths(t *testing.T) {
 			if diff := valueDiff(tt.want, got); diff != "" {
 				t.Fatalf("dig result mismatch (-want +got):\n%s", diff)
 			}
+		})
+	}
+
+	// A hash step rejects a non-string key rather than digging past it as a
+	// miss, matching every other key surface.
+	for _, fn := range []string{"hash_dig_int_key", "hash_dig_int_first_key"} {
+		t.Run(fn+" rejects the key", func(t *testing.T) {
+			t.Parallel()
+			requireCallErrorContains(t, script, fn, nil, CallOptions{},
+				"hash keys must be strings or symbols")
 		})
 	}
 }
@@ -191,6 +199,18 @@ func TestDigPathUnit(t *testing.T) {
 			current: NewArray([]Value{NewInt(1)}),
 			args:    []Value{NewString("0")},
 			wantErr: "test.dig array index must be integer",
+		},
+		{
+			name:    "object integer key is unsupported",
+			current: NewObject(map[string]Value{"a": NewInt(1)}),
+			args:    []Value{NewInt(1)},
+			wantErr: "unsupported hash key",
+		},
+		{
+			name:    "hash integer key is unsupported",
+			current: NewHash(map[string]Value{"a": NewInt(1)}),
+			args:    []Value{NewInt(1)},
+			wantErr: "unsupported hash key",
 		},
 	}
 

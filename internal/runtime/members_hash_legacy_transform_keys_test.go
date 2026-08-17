@@ -103,59 +103,6 @@ end`,
 	}
 }
 
-// An array key can be mutated in place after its entry is processed, so a
-// deferred insert would canonicalize it in its final state and collapse two
-// entries onto one identity. The legacy branch flushes and inserts inline from
-// the first array key onward, exactly as the typed branch does.
-func TestLegacyTransformKeysArrayKeyFallbackKeepsIdentity(t *testing.T) {
-	source := `def run(h)
-  produced = []
-  n = 0
-  out = h.transform_keys do |k|
-    n = n + 1
-    key = [n]
-    produced.push(key)
-    if n == 2
-      produced[0][0] = 2
-    end
-    key
-  end
-  out.size.to_s + "|" + out.values.join(",")
-end`
-	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 20, MemoryQuotaBytes: 8 << 20}, source)
-	got, err := script.Call(context.Background(), "run", []Value{hostBuiltStringHash(2)}, CallOptions{})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
-	if got.String() != "2|0,1" {
-		t.Fatalf("got %q, want %q (entries collapsed onto a re-canonicalized array key)", got.String(), "2|0,1")
-	}
-}
-
-// The fallback can trigger partway through, so entries buffered before the first
-// array key are flushed and must keep their order and values relative to the
-// entries inserted inline after it.
-func TestLegacyTransformKeysMixedKeyKindsPreserveOrder(t *testing.T) {
-	source := `def run(h)
-  out = h.transform_keys do |k|
-    if k.to_s == "kdaa"
-      [3]
-    else
-      k.to_s
-    end
-  end
-  out.values.join(",") + "|" + out.size.to_s
-end`
-	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 20, MemoryQuotaBytes: 8 << 20}, source)
-	got, err := script.Call(context.Background(), "run", []Value{hostBuiltStringHash(6)}, CallOptions{})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
-	if got.String() != "0,1,2,3,4,5|6" {
-		t.Fatalf("got %q, want %q", got.String(), "0,1,2,3,4,5|6")
-	}
-}
-
 // A block can mutate or delete an entry of the receiver while iterating. Values
 // are captured when the block runs, not when the deferred build flushes, so an
 // already-processed entry keeps the value it contributed at the time -- matching

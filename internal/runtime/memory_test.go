@@ -1,12 +1,9 @@
 package runtime
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 	"unsafe"
-
-	"github.com/mgomes/vibescript/vibes/value"
 )
 
 func TestMemoryEstimatorLayoutConstantsMatchRuntimeTypes(t *testing.T) {
@@ -60,127 +57,19 @@ func TestMemoryEstimatorDeduplicatesAliasedStringPayload(t *testing.T) {
 	}
 }
 
-func TestMemoryEstimatorDoesNotMaterializeTypedHashMirror(t *testing.T) {
-	t.Parallel()
-
-	hash := NewTypedHash(0)
-	if err := hashSet(hash, NewString("score"), NewInt(7)); err != nil {
-		t.Fatalf("hashSet(score) error = %v", err)
-	}
-	if entries, ok := hashStringMapIfMaterialized(hash); ok || entries != nil {
-		t.Fatalf("typed hash legacy map before estimate = %v, %v; want nil, false", entries, ok)
-	}
-
-	estimate := newMemoryEstimator().value(hash)
-	if estimate == 0 {
-		t.Fatal("typed hash estimate = 0, want positive memory charge")
-	}
-	if entries, ok := hashStringMapIfMaterialized(hash); ok || entries != nil {
-		t.Fatalf("typed hash legacy map after estimate = %v, %v; want nil, false", entries, ok)
-	}
-}
-
-func TestMemoryEstimatorChargesReservedTypedHashCapacity(t *testing.T) {
+func TestMemoryEstimatorChargesReservedHashCapacity(t *testing.T) {
 	t.Parallel()
 
 	empty := NewHash(map[string]Value{})
-	empty.ReserveTypedHashOrder(0)
+	empty.ReserveHashCapacity(0)
 	reserved := NewHash(map[string]Value{})
-	reserved.ReserveTypedHashOrder(10)
+	reserved.ReserveHashCapacity(10)
 
 	emptyBytes := newMemoryEstimator().value(empty)
 	reservedBytes := newMemoryEstimator().value(reserved)
-	wantDelta := estimatedSliceBaseBytes + 10*(estimatedMapEntryBytes+2*estimatedHashLookupKeyBytes+estimatedHashEntryBytes)
+	wantDelta := hashOrderBackingBytes(10) + 10*estimatedMapEntryStructuralBytes
 	if gotDelta := reservedBytes - emptyBytes; gotDelta != wantDelta {
-		t.Fatalf("reserved typed hash estimate delta = %d, want %d", gotDelta, wantDelta)
-	}
-}
-
-func TestMemoryEstimatorChargesStoredTypedHashArrayLookupKey(t *testing.T) {
-	t.Parallel()
-
-	payload := strings.Repeat("abcdefghij", 512)
-	keyElements := []Value{NewString(payload)}
-	key := NewArray(keyElements)
-	hash := NewTypedHash(0)
-	if err := hashSet(hash, key, NewInt(1)); err != nil {
-		t.Fatalf("hashSet(array key) error = %v", err)
-	}
-	lookupBeforeMutation, err := hashLookupKey(key)
-	if err != nil {
-		t.Fatalf("hashLookupKey(array key) error = %v", err)
-	}
-	wantStoredPayload := lookupBeforeMutation.ExtraPayloadBytes()
-	if wantStoredPayload == 0 {
-		t.Fatal("array lookup key stored payload = 0, want positive canonical key payload")
-	}
-
-	keyElements[0] = NewString("x")
-	lookupAfterMutation, err := hashLookupKey(key)
-	if err != nil {
-		t.Fatalf("hashLookupKey(mutated array key) error = %v", err)
-	}
-	if got := lookupAfterMutation.ExtraPayloadBytes(); got >= wantStoredPayload {
-		t.Fatalf("mutated array lookup payload = %d, want less than original %d", got, wantStoredPayload)
-	}
-
-	var entryBuf [smallHashKeyBufferSize]TypedHashEntry
-	entries := hash.TypedHashEntriesInto(entryBuf[:])
-	if len(entries) != 1 {
-		t.Fatalf("TypedHashEntriesInto returned %d entries, want 1", len(entries))
-	}
-	if got := entries[0].LookupKey.ExtraPayloadBytes(); got != wantStoredPayload {
-		t.Fatalf("stored lookup payload = %d, want original payload %d", got, wantStoredPayload)
-	}
-
-	if got := newMemoryEstimator().typedHashEntriesBytes(hash); got < wantStoredPayload {
-		t.Fatalf("typed hash entry estimate = %d, want at least stored lookup payload %d", got, wantStoredPayload)
-	}
-}
-
-// TestMemoryEstimatorLargeTypedHashMatchesMaterializedSum locks the in-place
-// visitor path typedHashEntriesBytes takes for a hash larger than the small-hash
-// stack buffer. The visitor avoids allocating an O(entries) slice per check, and
-// its per-entry charge must stay byte-identical to summing the materialized
-// entries directly (the small-hash path). A hash with more than
-// smallHashKeyBufferSize entries exercises the visitor branch.
-func TestMemoryEstimatorLargeTypedHashMatchesMaterializedSum(t *testing.T) {
-	t.Parallel()
-
-	const entryCount = smallHashKeyBufferSize + 8
-	hash := NewTypedHash(entryCount)
-	for i := range entryCount {
-		if err := hashSet(hash, NewString(fmt.Sprintf("key-%02d", i)), NewInt(int64(i))); err != nil {
-			t.Fatalf("hashSet(%d) error = %v", i, err)
-		}
-	}
-
-	got := newMemoryEstimator().typedHashEntriesBytes(hash)
-
-	// Independently sum the charge over every materialized entry plus the
-	// capacity and insertion-order overhead, exactly as the small-hash path
-	// does. The visitor path must agree.
-	entries := hash.TypedHashEntriesInto(nil)
-	if len(entries) != entryCount {
-		t.Fatalf("materialized %d entries, want %d", len(entries), entryCount)
-	}
-	est := newMemoryEstimator()
-	want := estimatedMapBaseBytes
-	for _, entry := range entries {
-		want += estimatedMapEntryBytes + estimatedHashLookupKeyBytes + estimatedHashEntryBytes
-		want += entry.LookupKey.ExtraPayloadBytes()
-		want += est.valuePayload(entry.Entry.Key)
-		want += est.valuePayload(entry.Entry.Value)
-	}
-	if capacity := value.HashTypedEntryCapacity(hash); capacity > len(entries) {
-		want += (capacity - len(entries)) * (estimatedMapEntryBytes + estimatedHashLookupKeyBytes + estimatedHashEntryBytes)
-	}
-	if orderCap := value.HashOrderCapacity(hash); orderCap > 0 {
-		want += estimatedSliceBaseBytes + orderCap*estimatedHashLookupKeyBytes
-	}
-
-	if got != want {
-		t.Fatalf("large typed hash estimate = %d, want %d (materialized per-entry sum)", got, want)
+		t.Fatalf("reserved hash estimate delta = %d, want %d", gotDelta, wantDelta)
 	}
 }
 

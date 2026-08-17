@@ -162,8 +162,7 @@ func (v Value) Data() any {
 	case KindHash:
 		// Expose the public entry map rather than the internal *hashData
 		// wrapper, so embedders can inspect entries and round-trip a hash
-		// through Data/NewValue. Default metadata is reached via the dedicated
-		// HashDefaultValue/HashDefaultProc accessors.
+		// through Data/NewValue.
 		return v.Hash()
 	case KindObject:
 		// KindObject's payload is internally an *objectData wrapper, but Data

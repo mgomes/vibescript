@@ -148,12 +148,12 @@ func (exec *Execution) respondsTo(receiver Value, method string, allowPrivate bo
 		// shadowed by a stored entry, so they respond only when no entry shadows
 		// them or the shadowing entry is itself callable.
 		if isUniversalMember(method) {
-			return universalMemberResponds(method, receiver.Hash())
+			return universalMemberResponds(method, receiver.HashEntryMap())
 		}
 		if _, ok := hashBuiltinMembers.lookup(method, hashMemberBuiltin); ok {
 			return true
 		}
-		entry, ok := receiver.Hash()[method]
+		entry, ok := receiver.HashEntryMap()[method]
 		return ok && isInvocable(entry)
 	case KindObject:
 		return objectRespondsTo(receiver, method)
@@ -210,9 +210,9 @@ func universalMemberResponds(method string, data map[string]Value) bool {
 // and a callable export of any universal name is itself callable.
 func objectRespondsTo(receiver Value, method string) bool {
 	if isUniversalMember(method) {
-		return universalMemberResponds(method, receiver.Hash())
+		return universalMemberResponds(method, receiver.HashEntryMap())
 	}
-	if entry, ok := receiver.Hash()[method]; ok {
+	if entry, ok := receiver.HashEntryMap()[method]; ok {
 		return isInvocable(entry)
 	}
 	_, ok := hashBuiltinMembers.lookup(method, hashMemberBuiltin)

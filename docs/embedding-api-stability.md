@@ -55,14 +55,14 @@ Tier 2 below. Concretely:
   literals — no replacement is needed, the extra validation pass is the
   intended behavior.
 - **`vibes/value`**: `Value`, `ValueKind` and the `Kind*` constants; the
-  typed constructors (`NewNil` ... `NewRegex`, `NewBigInt`, `NewTypedHash`,
-  `NewHashWithDefault`, `NewMoneyFromCents`); the typed accessors
+  typed constructors (`NewNil` ... `NewRegex`, `NewBigInt`, `NewHash`,
+  `NewMoneyFromCents`); the typed accessors
   (`Kind`, `IsNil`, `Truthy`, `Bool`, `Int`, `Float`, `BigInt`, `IsBigInt`,
   `String`, `Inspect`, `Array`, `Money`, `Duration`, `Time`, `Range`,
   `Regex`, `Data`); the hash surface (`Hash`, `HashGet`, `HashSet`, `HashLen`,
-  `HashEntries`, `HashDeleteKey`, `HashClearEntries`, `HashEntry`,
-  `HashDefaultValue`, `HashDefaultProc`); equality (`Equal`, `Eql`,
-  `Identical`, `Truthy`); the opaque payload markers (`BlockPayload`,
+  `HashEntries`, `HashDeleteKey`, `HashClearEntries`, `HashEntry`);
+  equality (`Equal`, `Eql`, `Identical`, `Truthy`); the opaque payload
+  markers (`BlockPayload`,
   `BuiltinPayload`, `ClassPayload`, `EnumPayload`, `EnumValuePayload`,
   `FunctionPayload`, `InstancePayload`) and their accessors; bounded
   rendering (`StringBounded`, `InspectBounded`,
@@ -108,9 +108,10 @@ during the 2026-06/07 mutator, hash-order, and estimator-memoization work
 | Runtime hooks | `RuntimeStringer`, `RuntimeEqualer`, `RuntimeIdenticaler`, `NewValue` | format/compare runtime-only kinds whose payload types live outside `vibes/value` |
 | Mutation epoch | `MutationEpoch`, `BumpMutationEpoch` | invalidate the memory estimator's memoized base walk (#905) |
 | Identity | `ArrayIdentity`, `HashIdentity`, `SliceIdentity`, `EqualityContext` | cycle detection / seen-sets during graph walks; hosts use `Value.Identical` |
-| Quota accounting | `HashDataBytes`, `ArrayDataBytes`, `HashOrderCapacity`, `HashTypedEntryCapacity`, `HashLookupKey.ExtraPayloadBytes` | charge wrapper and reservation bytes to the memory quota |
-| Wrapper mutation | `SetArrayElems`, `SetArrayWindow`, `ArrayWindowHead`, `SetHashDefaults`, `ReserveHashOrder`, `ReserveTypedHashOrder` | primitives behind Ruby-style in-place mutators and clone bookkeeping (#873, #895); the window pair lets an in-place shrink tell how much of an allocation it has left behind, which a slice header does not say |
-| Typed-hash plumbing | `HashKey`, `HashDisplayKey`, `HashLookupKey`, `NewHashLookupKey`, `TypedHashEntry`, `TypedHashEntriesInto`, `HashEntriesInto`, `HashHasTypedEntries`, `HashStringMapIfMaterialized` | Ruby-ordered typed-key storage introduced by #867 |
+| Quota accounting | `HashDataBytes`, `ArrayDataBytes`, `HashOrderCapacity` | charge wrapper and reservation bytes to the memory quota |
+| Wrapper mutation | `SetArrayElems`, `SetArrayWindow`, `ArrayWindowHead`, `ReserveHashOrder`, `ReserveHashOrderUnpublished`, `HashSetUnpublished` | primitives behind Ruby-style in-place mutators and clone bookkeeping (#873, #895); the window pair lets an in-place shrink tell how much of an allocation it has left behind, which a slice header does not say; the unpublished pair is the literal builder's epoch-free write |
+| Hash constructors | `NewHashWithOrder`, `NewHashWithTrustedOrder`, `NewHashWithCapacity` | rebuild a hash with a recorded or trusted key order, or pre-size an empty one |
+| Hash iteration | `HashEntriesInto`, `RangeHashEntries`, `HashKeyOrder`, `HashUsesRecordedOrder`, `HashKeyString`, `HashEntryMap`, `HashIterationScratchBytes` | string-keyspace walks, the recorded-order check stringify uses to fill its own buffer, and the internal map reader that does not mark a hash host-exposed |
 | Rendering projections | `StringByteLen`, `StringRuneLen`, `StringByteLenBounded`, `StringRuneLenBounded`, `StringByteLenBoundedUpTo`, `InspectByteLenBounded`, `WriteStringTo`, `WriteInspectTo` | sandbox interpolation/inspect memory guards project output size before allocating |
 | Object provenance | `ObjectTag`, `ObjectTagNone`, `ObjectTagRescuedError`, `ObjectTagMatchData`, `NewTaggedObject`, `Value.ObjectTag`, `Value.ObjectStringForm`, `ObjectDataBytes` | mark the two bags the runtime builds to stand for something specific (a rescued error, match data) so their `to_s` renders without inferring it from field names |
 | Big-integer plumbing | `AdoptBigInt`, `Value.CompactInt`, `BigIntPayload`, `BigIntDecimalLenUpperBound` | copy-free promotion in arithmetic, quota accounting, and rendering preflight for big-integer payloads (#919); hosts use `NewBigInt`/`BigInt`/`IsBigInt` |

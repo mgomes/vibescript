@@ -85,7 +85,7 @@ func quickTypeCheck(val Value, ty *TypeExpr) (bool, bool) {
 			}
 			// The open shape `{ ... }` accepts any hash; the exact `{}`
 			// accepts only an empty one.
-			return true, ty.Open || len(val.Hash()) == 0
+			return true, ty.Open || len(val.HashEntryMap()) == 0
 		}
 		return false, false
 	case TypeUnion:
@@ -228,30 +228,45 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 		}
 		keyType := ty.TypeArgs[0]
 		valueType := ty.TypeArgs[1]
-		if hashHasTypedEntries(val) {
-			for _, entry := range val.HashEntries() {
-				keyMatches, err := s.matches(entry.Key, keyType)
-				if err != nil {
-					return false, err
-				}
-				if !keyMatches {
-					return false, nil
-				}
-				valueMatches, err := s.matches(entry.Value, valueType)
-				if err != nil {
-					return false, err
-				}
-				if !valueMatches {
-					return false, nil
-				}
+		if val.Kind() == KindHash {
+			// Every stored key is a string. Decide the key type once for the
+			// whole hash: hash<symbol, V> names the same keyspace as
+			// hash<string, V>, so a per-entry KindString match would reject a
+			// valid annotation before typeAllowsStringHashKey could accept it.
+			decided, keyMatches := typeAllowsStringHashKey(keyType)
+			if decided && !keyMatches {
+				return false, nil
 			}
-			return true, nil
+			var matchErr error
+			ok := true
+			val.RangeHashEntries(func(key string, item Value) {
+				if !ok || matchErr != nil {
+					return
+				}
+				if !decided {
+					var matches bool
+					matches, matchErr = s.matches(NewString(key), keyType)
+					if matchErr != nil || !matches {
+						ok = false
+						return
+					}
+				}
+				var valueMatches bool
+				valueMatches, matchErr = s.matches(item, valueType)
+				if matchErr != nil || !valueMatches {
+					ok = false
+				}
+			})
+			if matchErr != nil {
+				return false, matchErr
+			}
+			return ok, nil
 		}
 		if decided, keyMatches := typeAllowsStringHashKey(keyType); decided {
 			if !keyMatches {
 				return false, nil
 			}
-			for _, value := range val.Hash() {
+			for _, value := range val.HashEntryMap() {
 				valueMatches, err := s.matches(value, valueType)
 				if err != nil {
 					return false, err
@@ -262,7 +277,7 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 			}
 			return true, nil
 		}
-		for key, value := range val.Hash() {
+		for key, value := range val.HashEntryMap() {
 			keyMatches, err := s.matches(NewString(key), keyType)
 			if err != nil {
 				return false, err
@@ -296,7 +311,7 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 		if val.Kind() != KindHash && val.Kind() != KindObject {
 			return false, nil
 		}
-		entries := val.Hash()
+		entries := val.HashEntryMap()
 		if !ty.Open && len(entries) > len(ty.Shape) {
 			return false, nil
 		}
@@ -378,7 +393,7 @@ func typeValidationVisitFor(val Value, ty *TypeExpr) (typeValidationVisit, bool)
 	case KindArray:
 		valueID = reflect.ValueOf(val.Array()).Pointer()
 	case KindHash, KindObject:
-		valueID = reflect.ValueOf(val.Hash()).Pointer()
+		valueID = reflect.ValueOf(val.HashEntryMap()).Pointer()
 	default:
 		return typeValidationVisit{}, false
 	}
@@ -404,7 +419,11 @@ func typeAllowsStringHashKey(ty *TypeExpr) (bool, bool) {
 		// preserve unknown-type/resolution errors instead of silently treating
 		// them as mismatches.
 		return false, false
-	case TypeAny, TypeString:
+	case TypeAny, TypeString, TypeSymbol:
+		// Hash keys live in one string keyspace, and a symbol key normalizes to
+		// its string, so `hash<symbol, V>` and `hash<string, V>` describe the
+		// same hash. Accepting both spellings keeps existing annotations
+		// working the way `h[:name]` and `h["name"]` do.
 		return true, true
 	case TypeUnion:
 		anyMatches := false
@@ -426,6 +445,38 @@ func typeAllowsStringHashKey(ty *TypeExpr) (bool, bool) {
 		}
 		return true, false
 	}
+}
+
+// hashKeyTypeSatisfies reports whether every written hash-key type is admitted
+// by the declared bound. Strings and symbols share one keyspace, so
+// hash<string, V> and hash<symbol, V> describe the same hashes.
+func hashKeyTypeSatisfies(written, declared *TypeExpr, resolve namedTypeResolver) bool {
+	if decided, matches := typeAllowsStringHashKey(declared); decided {
+		if !matches {
+			return false
+		}
+		return typeExprArmsAll(written, func(arm *TypeExpr) bool {
+			decided, matches := typeAllowsStringHashKey(arm)
+			return decided && matches
+		})
+	}
+	return typeExprSatisfies(written, declared, resolve)
+}
+
+// hashKeyTypesDisjoint reports whether no hash key can satisfy both types
+// under the unified string keyspace. String and symbol overlap; a bound that
+// admits that keyspace is disjoint from one that excludes it.
+func hashKeyTypesDisjoint(a, b *TypeExpr, resolve namedTypeResolver) bool {
+	decidedA, matchesA := typeAllowsStringHashKey(a)
+	decidedB, matchesB := typeAllowsStringHashKey(b)
+	if decidedA && decidedB {
+		if matchesA || matchesB {
+			return matchesA != matchesB
+		}
+		// Neither type admits a runtime hash key, so no key can satisfy both.
+		return true
+	}
+	return typeExprsDisjoint(a, b, resolve)
 }
 
 func formatValueTypeExpr(val Value) string {
@@ -492,7 +543,7 @@ func (s *valueTypeFormatState) format(val Value, depth int) string {
 	case KindArray:
 		return s.formatArray(val.Array(), depth)
 	case KindHash, KindObject:
-		return s.formatHash(val.Hash(), depth)
+		return s.formatHash(val.HashEntryMap(), depth)
 	default:
 		return val.Kind().String()
 	}

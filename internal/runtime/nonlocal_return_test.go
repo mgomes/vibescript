@@ -2,8 +2,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
-	"strings"
 	"testing"
 )
 
@@ -340,51 +338,4 @@ end
 `)
 
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unexpected return")
-}
-
-// TestHashDefaultProcNonLocalReturn pins signal transparency through builtin
-// error wrapping: a return inside a Hash.new default proc reached via a
-// missing-key read returns from the method that created the proc instead of
-// surfacing as a flattened runtime error.
-func TestHashDefaultProcNonLocalReturn(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `def lookup
-  h = Hash.new { |hash, key| return "defaulted" }
-  h[:missing]
-  "after"
-end
-
-def run
-  [lookup, "caller continues"]
-end`)
-
-	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
-	compareArrays(t, got, []Value{NewString("defaulted"), NewString("caller continues")})
-}
-
-// TestHashDefaultProcErrorKeepsIndexAnchor pins the diagnostic contract next
-// to signal transparency: a real error raised by a default proc is still
-// re-anchored at the [] expression, while only non-local returns pass through.
-func TestHashDefaultProcErrorKeepsIndexAnchor(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `def lookup
-  h = Hash.new { |hash, key| raise "boom" }
-  h[:missing]
-end`)
-
-	err := callScriptErr(t, context.Background(), script, "lookup", nil, CallOptions{})
-	var runtimeErr *RuntimeError
-	if !errors.As(err, &runtimeErr) {
-		t.Fatalf("error = %T, want *RuntimeError", err)
-	}
-	if !strings.Contains(runtimeErr.Message, "boom") {
-		t.Fatalf("message = %q, want boom", runtimeErr.Message)
-	}
-	// Line 3 holds the h[:missing] read; the error anchors there, not inside
-	// the proc body on line 2.
-	if !strings.Contains(runtimeErr.CodeFrame, "line 3") {
-		t.Fatalf("code frame = %q, want anchor at line 3 (the [] expression)", runtimeErr.CodeFrame)
-	}
 }

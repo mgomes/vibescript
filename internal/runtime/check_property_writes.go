@@ -7,9 +7,10 @@ package runtime
 // accessor-backed ivar, a write whose known value is provably incompatible
 // with the contract warns, and unknown values pass to the runtime guard.
 
-import "maps"
-
-import "errors"
+import (
+	"errors"
+	"maps"
+)
 
 // ivarFactKey names the local-inference fact slot for an instance variable.
 // The @ prefix keeps ivar facts from colliding with same-named locals.

@@ -39,9 +39,10 @@ func TestQuotedSymbolValues(t *testing.T) {
 			want:   NewString(""),
 		},
 		{
-			name:   "quoted_symbol_distinct_from_string_key",
+			// A quoted symbol and a quoted string key name the same entry.
+			name:   "quoted_symbol_reads_the_string_key",
 			source: `def run; ({ "foo-bar": 1 })[:"foo-bar"]; end`,
-			want:   NewNil(),
+			want:   NewInt(1),
 		},
 		{
 			name:   "index_quoted_symbol_key",
@@ -149,67 +150,5 @@ func TestQuotedHashKeyIsString(t *testing.T) {
 	want := NewString("foo-bar")
 	if !got.Equal(want) {
 		t.Fatalf("hash key = %s, want %s", got.Inspect(), want.Inspect())
-	}
-}
-
-// TestHashLiteralKeyKindFollowsQuoting pins the rule the language reference
-// states next to the hash-literal grammar: a bare label makes a symbol key and
-// a quoted label makes a string key. The reference used to claim a quoted key
-// was the same symbol as :"name", so an author following it wrote h[:"name"]
-// and silently read nil.
-func TestHashLiteralKeyKindFollowsQuoting(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		source string
-		want   Value
-	}{
-		{
-			name:   "quoted label reads back as a string key",
-			source: `def run; ({ "name": 1 })["name"]; end`,
-			want:   NewInt(1),
-		},
-		{
-			name:   "quoted label does not read back as a symbol key",
-			source: `def run; ({ "name": 1 })[:name]; end`,
-			want:   NewNil(),
-		},
-		{
-			name:   "bare label reads back as a symbol key",
-			source: `def run; ({ name: 1 })[:name]; end`,
-			want:   NewInt(1),
-		},
-		{
-			name:   "bare label does not read back as a string key",
-			source: `def run; ({ name: 1 })["name"]; end`,
-			want:   NewNil(),
-		},
-		{
-			name:   "the two forms are distinct keys in one hash",
-			source: `def run; ({ name: 1, "name": 2 }).size; end`,
-			want:   NewInt(2),
-		},
-		{
-			name:   "a quoted label key inspects as a string",
-			source: `def run; ({ "name": 1 }).keys.inspect; end`,
-			want:   NewString(`["name"]`),
-		},
-		{
-			name:   "a bare label key inspects as a symbol",
-			source: `def run; ({ name: 1 }).keys.inspect; end`,
-			want:   NewString(`[:name]`),
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			script := compileScript(t, tc.source)
-			got := callFunc(t, script, "run", nil)
-			if !got.Equal(tc.want) {
-				t.Fatalf("%s = %s, want %s", tc.source, got.Inspect(), tc.want.Inspect())
-			}
-		})
 	}
 }

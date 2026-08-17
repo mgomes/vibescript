@@ -135,7 +135,7 @@ func (v Value) appendInspectArray(buf *strings.Builder, state *valueStringState,
 }
 
 func (v Value) appendInspectHash(buf *strings.Builder, state *valueStringState, limit int) error {
-	entries := v.Hash()
+	entries := v.HashEntryMap()
 	if len(entries) == 0 {
 		return appendBounded(buf, "{}", limit)
 	}
@@ -150,137 +150,42 @@ func (v Value) appendInspectHash(buf *strings.Builder, state *valueStringState, 
 	if err := appendByteBounded(buf, '{', limit); err != nil {
 		return err
 	}
-	if v.kind == KindHash {
-		if hd := v.data.(*hashData); hd.typedEntries != nil {
-			first := true
-			err := hd.forEachTypedEntry(func(entry HashEntry) error {
-				if !first {
-					if err := appendBounded(buf, elementSeparator, limit); err != nil {
-						return err
-					}
-				}
-				first = false
-				if err := appendInspectHashEntryKeyBounded(buf, entry.Key, state, limit); err != nil {
-					return err
-				}
-				if err := appendBounded(buf, keyValueSeparator, limit); err != nil {
-					return err
-				}
-				return entry.Value.appendInspect(buf, state, limit)
-			})
-			if err != nil {
-				return err
-			}
-			return appendByteBounded(buf, '}', limit)
-		}
-	}
 	first := true
-	for k, val := range entries {
+	write := func(name string, val Value) error {
 		if !first {
 			if err := appendBounded(buf, elementSeparator, limit); err != nil {
 				return err
 			}
 		}
 		first = false
-		if err := appendInspectHashKeyBounded(buf, k, limit); err != nil {
+		if err := appendInspectHashKeyBounded(buf, name, limit); err != nil {
 			return err
 		}
 		if err := appendBounded(buf, keyValueSeparator, limit); err != nil {
 			return err
 		}
-		if err := val.appendInspect(buf, state, limit); err != nil {
-			return err
+		return val.appendInspect(buf, state, limit)
+	}
+	if v.HashUsesRecordedOrder() {
+		var walkErr error
+		v.RangeHashEntries(func(name string, val Value) {
+			if walkErr != nil {
+				return
+			}
+			walkErr = write(name, val)
+		})
+		if walkErr != nil {
+			return walkErr
+		}
+	} else {
+		var entryBuf [smallHashIterationBuffer]HashEntry
+		for _, entry := range v.HashEntriesInto(entryBuf[:]) {
+			if err := write(entry.Key.String(), entry.Value); err != nil {
+				return err
+			}
 		}
 	}
 	return appendByteBounded(buf, '}', limit)
-}
-
-func appendInspectHashEntryKeyBounded(buf *strings.Builder, key Value, state *valueStringState, limit int) error {
-	if key.kind == KindSymbol {
-		return appendInspectHashKeyBounded(buf, key.String(), limit)
-	}
-	return key.appendInspect(buf, state, limit)
-}
-
-func inspectHashEntryKeyByteLen(key Value, state *valueStringState) int {
-	if key.kind == KindSymbol {
-		return inspectHashKeyByteLen(key.String())
-	}
-	return key.inspectByteLenWithState(state)
-}
-
-func inspectHashEntryKeyByteLenBounded(key Value, state *valueStringState, step func() error) (int, error) {
-	if key.kind == KindSymbol {
-		if err := step(); err != nil {
-			return 0, err
-		}
-		return inspectHashKeyByteLen(key.String()), nil
-	}
-	return key.inspectByteLenBoundedWithState(state, step)
-}
-
-func (v Value) inspectByteLenWithState(state *valueStringState) int {
-	switch v.kind {
-	case KindString:
-		return quotedStringByteLen(v.data.(string))
-	case KindSymbol:
-		return inspectSymbolByteLen(v.data.(string))
-	case KindNil:
-		return len("nil")
-	case KindArray:
-		elems := v.Array()
-		id := SliceIdentity{
-			Ptr: reflect.ValueOf(elems).Pointer(),
-			Len: len(elems),
-			Cap: cap(elems),
-		}
-		if id.Ptr != 0 {
-			if _, seen := state.arrays[id]; seen {
-				return len(cycleMarker)
-			}
-			state.arrays[id] = struct{}{}
-			defer delete(state.arrays, id)
-		}
-		total := len(arrayOpen) + len(arrayClose)
-		total += separatorBytes(len(elems))
-		for _, e := range elems {
-			total += e.inspectByteLenWithState(state)
-		}
-		return total
-	case KindHash, KindObject:
-		entries := v.Hash()
-		if len(entries) == 0 {
-			return len(hashOpen) + len(hashClose)
-		}
-		ptr := reflect.ValueOf(entries).Pointer()
-		if ptr != 0 {
-			if _, seen := state.maps[ptr]; seen {
-				return len(cycleMarker)
-			}
-			state.maps[ptr] = struct{}{}
-			defer delete(state.maps, ptr)
-		}
-		if v.kind == KindHash {
-			if typed := v.data.(*hashData).typedEntries; typed != nil {
-				total := len(hashOpen) + len(hashClose)
-				total += separatorBytes(len(typed))
-				for _, entry := range typed {
-					total += inspectHashEntryKeyByteLen(entry.Key, state) + len(keyValueSeparator)
-					total += entry.Value.inspectByteLenWithState(state)
-				}
-				return total
-			}
-		}
-		total := len(hashOpen) + len(hashClose)
-		total += separatorBytes(len(entries))
-		for k, val := range entries {
-			total += inspectHashKeyByteLen(k) + len(keyValueSeparator)
-			total += val.inspectByteLenWithState(state)
-		}
-		return total
-	default:
-		return len(v.String())
-	}
 }
 
 func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func() error) (int, error) {
@@ -345,7 +250,7 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 		}
 		return total, nil
 	case KindHash, KindObject:
-		entries := v.Hash()
+		entries := v.HashEntryMap()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose), nil
 		}
@@ -356,25 +261,6 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 			}
 			state.maps[ptr] = struct{}{}
 			defer delete(state.maps, ptr)
-		}
-		if v.kind == KindHash {
-			if typed := v.data.(*hashData).typedEntries; typed != nil {
-				total := len(hashOpen) + len(hashClose)
-				total += separatorBytes(len(typed))
-				for _, entry := range typed {
-					n, err := inspectHashEntryKeyByteLenBounded(entry.Key, state, step)
-					if err != nil {
-						return 0, err
-					}
-					total += n + len(keyValueSeparator)
-					valueBytes, err := entry.Value.inspectByteLenBoundedWithState(state, step)
-					if err != nil {
-						return 0, err
-					}
-					total += valueBytes
-				}
-				return total, nil
-			}
 		}
 		total := len(hashOpen) + len(hashClose)
 		total += separatorBytes(len(entries))

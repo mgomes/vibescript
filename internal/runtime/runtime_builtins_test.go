@@ -1128,7 +1128,8 @@ func TestJSONBuiltins(t *testing.T) {
 		t.Fatalf("stringify_reused_deep_array = %q", got.String())
 	}
 
-	compareArrays(t, callFunc(t, script, "parsed_object_key_identity", nil), []Value{NewInt(1), NewInt(2), NewInt(2)})
+	// A symbol write lands on the parsed string key, so the object keeps one entry.
+	compareArrays(t, callFunc(t, script, "parsed_object_key_identity", nil), []Value{NewInt(2), NewInt(2), NewInt(1)})
 	if got := callFunc(t, script, "parsed_object_truthiness", nil); !got.Equal(NewString("truthy")) {
 		t.Fatalf("parsed_object_truthiness = %s, want truthy", got.Inspect())
 	}
@@ -1177,6 +1178,23 @@ func TestJSONParseObjectDataExposesEntries(t *testing.T) {
 	}
 	if !data["name"].Equal(NewString("alex")) || !data["score"].Equal(NewInt(10)) {
 		t.Fatalf("JSON object Data() = %v, want parsed fields", data)
+	}
+}
+
+func TestJSONStringifyFollowsHashInsertionOrder(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def run()
+      h = {}
+      h["z"] = 1
+      h["m"] = 2
+      h["a"] = 3
+      JSON.stringify(h)
+    end
+    `)
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindString || got.String() != `{"z":1,"m":2,"a":3}` {
+		t.Fatalf("JSON.stringify(insertion-ordered hash) = %s, want {\"z\":1,\"m\":2,\"a\":3}", got.String())
 	}
 }
 
