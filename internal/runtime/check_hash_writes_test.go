@@ -1605,7 +1605,7 @@ end
 `,
 		},
 		{
-			name: "parse_as write through the other key representation weakens",
+			name: "parse_as write through the other key representation stays gradual",
 			source: `
 def g(user: { name: string })
   user
@@ -1613,7 +1613,7 @@ end
 
 def f(raw: string)
   body = JSON.parse_as(raw, { name: string })
-  body[:name] = 1
+  body[:name] = "x"
   g(body)
 end
 `,
