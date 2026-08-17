@@ -182,6 +182,29 @@ func TestParseEnqueueOptionsParsesDelayKeyAndExtra(t *testing.T) {
 	}
 }
 
+func TestDeepCloneValuePreservesHashInsertionOrder(t *testing.T) {
+	t.Parallel()
+
+	original := value.NewHash(map[string]value.Value{})
+	for i, key := range []string{"b", "a"} {
+		if err := original.HashSet(value.NewString(key), value.NewInt(int64(i+1))); err != nil {
+			t.Fatalf("HashSet(%s) error = %v, want nil", key, err)
+		}
+	}
+
+	cloned := deepCloneValue(original)
+	entries := cloned.HashEntries()
+	if len(entries) != 2 {
+		t.Fatalf("deepCloneValue key count = %d, want 2", len(entries))
+	}
+	if got, want := entries[0].Key.String(), "b"; got != want {
+		t.Fatalf("deepCloneValue key[0] = %q, want %q", got, want)
+	}
+	if got, want := entries[1].Key.String(), "a"; got != want {
+		t.Fatalf("deepCloneValue key[1] = %q, want %q", got, want)
+	}
+}
+
 func TestParseEnqueueOptionsClonesExtraKwargs(t *testing.T) {
 	t.Parallel()
 

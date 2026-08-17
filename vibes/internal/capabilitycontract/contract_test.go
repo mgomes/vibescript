@@ -343,6 +343,53 @@ func TestCloneDataOnlyValue(t *testing.T) {
 	})
 }
 
+func TestCloneDataOnlyValuePreservesHashInsertionOrder(t *testing.T) {
+	t.Parallel()
+
+	original := insertionOrderedHash(t, "b", "a")
+	cloned, err := CloneDataOnlyValue("payload", original)
+	if err != nil {
+		t.Fatalf("CloneDataOnlyValue(insertion-ordered hash) error = %v, want nil", err)
+	}
+	requireHashKeyOrder(t, cloned, "b", "a")
+
+	viaResult, err := CloneMethodResult("events.publish", original)
+	if err != nil {
+		t.Fatalf("CloneMethodResult(insertion-ordered hash) error = %v, want nil", err)
+	}
+	requireHashKeyOrder(t, viaResult, "b", "a")
+}
+
+func TestDeepCloneValuePreservesHashInsertionOrder(t *testing.T) {
+	t.Parallel()
+
+	requireHashKeyOrder(t, DeepCloneValue(insertionOrderedHash(t, "b", "a")), "b", "a")
+}
+
+func insertionOrderedHash(t *testing.T, keys ...string) value.Value {
+	t.Helper()
+	hash := value.NewHash(map[string]value.Value{})
+	for i, key := range keys {
+		if err := hash.HashSet(value.NewString(key), value.NewInt(int64(i+1))); err != nil {
+			t.Fatalf("HashSet(%s) error = %v, want nil", key, err)
+		}
+	}
+	return hash
+}
+
+func requireHashKeyOrder(t *testing.T, hash value.Value, want ...string) {
+	t.Helper()
+	entries := hash.HashEntries()
+	if len(entries) != len(want) {
+		t.Fatalf("hash key count = %d, want %d", len(entries), len(want))
+	}
+	for i, entry := range entries {
+		if got := entry.Key.String(); got != want[i] {
+			t.Fatalf("hash key[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
 func TestCloneMethodResultRejectsDeepTraversal(t *testing.T) {
 	t.Parallel()
 

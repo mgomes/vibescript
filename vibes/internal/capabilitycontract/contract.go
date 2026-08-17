@@ -113,7 +113,7 @@ func DeepCloneValue(val value.Value) value.Value {
 		for k, v := range hash {
 			cloned[k] = DeepCloneValue(v)
 		}
-		return value.NewHash(cloned)
+		return value.NewHashWithOrder(cloned, val.HashKeyOrder())
 	case value.KindObject:
 		obj := val.Hash()
 		cloned := make(map[string]value.Value, len(obj))
@@ -505,7 +505,7 @@ func cloneDataOnlyHash(val value.Value, visiting *seenSet, depth int) (value.Val
 	if issue != dataOnlyOK {
 		return value.NewNil(), issue
 	}
-	return value.NewHash(cloned), dataOnlyOK
+	return value.NewHashWithOrder(cloned, val.HashKeyOrder()), dataOnlyOK
 }
 
 func cloneDataOnlyMap(

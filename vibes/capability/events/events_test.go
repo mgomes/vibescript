@@ -212,6 +212,29 @@ func TestCapabilityPublishRejectsCyclicPayload(t *testing.T) {
 	}
 }
 
+func TestDeepClonePreservesHashInsertionOrder(t *testing.T) {
+	t.Parallel()
+
+	original := value.NewHash(map[string]value.Value{})
+	for i, key := range []string{"b", "a"} {
+		if err := original.HashSet(value.NewString(key), value.NewInt(int64(i+1))); err != nil {
+			t.Fatalf("HashSet(%s) error = %v, want nil", key, err)
+		}
+	}
+
+	cloned := deepClone(original)
+	entries := cloned.HashEntries()
+	if len(entries) != 2 {
+		t.Fatalf("deepClone key count = %d, want 2", len(entries))
+	}
+	if got, want := entries[0].Key.String(), "b"; got != want {
+		t.Fatalf("deepClone key[0] = %q, want %q", got, want)
+	}
+	if got, want := entries[1].Key.String(), "a"; got != want {
+		t.Fatalf("deepClone key[1] = %q, want %q", got, want)
+	}
+}
+
 func BenchmarkCapabilityPublishValidated(b *testing.B) {
 	result := value.NewHash(map[string]value.Value{
 		"meta": value.NewHash(map[string]value.Value{

@@ -203,7 +203,7 @@ func deepCloneValue(v value.Value) value.Value {
 		for k, val := range hash {
 			cloned[k] = deepCloneValue(val)
 		}
-		return value.NewHash(cloned)
+		return value.NewHashWithOrder(cloned, v.HashKeyOrder())
 	case value.KindObject:
 		obj := v.Hash()
 		cloned := make(map[string]value.Value, len(obj))
