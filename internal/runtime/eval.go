@@ -142,12 +142,12 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		var err error
 		if isCollectionMutator(e.Property) {
 			// A parenless mutator (`a.pop`, `a.shift`) is auto-invoked from
-			// here rather than through a call expression, so it resolves its
-			// receiver as an addressable path the same way, or the write would
+			// here rather than through a call expression, so it records the
+			// path that owns its receiver the same way, or the write would
 			// land on a copy the script never sees again.
 			defer exec.restore(exec.savedAddressedScope())
 			var addressed bool
-			obj, addressed, err = exec.resolveMutableReceiver(e.Object, env)
+			obj, addressed, err = exec.addressMutableReceiver(e.Object, env)
 			if !addressed {
 				obj, err = exec.evalExpressionWithAuto(e.Object, env, memberReceiverAutoInvokes(e.Object, e.Property, env))
 			}
@@ -1078,12 +1078,12 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 		err  error
 	)
 	if expr.Operator == tokenShovel {
-		// The shovel writes through its left operand, so it resolves that
-		// operand the way a mutating member call resolves its receiver: as an
-		// addressable path whose root the append rebinds.
+		// The shovel writes through its left operand, so it records the path
+		// that owns that operand the way a mutating member call does. Isolation
+		// waits until the append, after the right operand has run.
 		defer exec.restore(exec.savedAddressedScope())
 		var addressed bool
-		left, addressed, err = exec.resolveMutableReceiver(expr.Left, env)
+		left, addressed, err = exec.addressMutableReceiver(expr.Left, env)
 		if !addressed {
 			left, err = exec.evalExpression(expr.Left, env)
 		}
@@ -1352,16 +1352,16 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		// (#1129); when it is not eligible, charge the backing reallocation
 		// up front and take the ordinary epoch-bumping path.
 		if left.Kind() == KindArray {
-			writable, writableErr := exec.writableCollection(left)
-			if writableErr != nil {
-				return NewNil(), exec.wrapError(writableErr, pos)
-			}
-			left = writable
 			detached, detachErr := exec.detachStoredCollection(right)
 			if detachErr != nil {
 				return NewNil(), exec.wrapError(detachErr, pos)
 			}
 			right = detached
+			writable, writableErr := exec.writableCollection(left)
+			if writableErr != nil {
+				return NewNil(), exec.wrapError(writableErr, pos)
+			}
+			left = writable
 			publishCollection(right)
 			handled, appendErr := exec.appendArrayCharged(left, right)
 			if appendErr != nil {

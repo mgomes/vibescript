@@ -428,9 +428,23 @@ type mutablePathStep struct {
 
 // mutablePath is an addressable receiver: a rebindable root plus the hops that
 // reach the value being written.
+//
+// capturedRoot is the wrapper the path named when it was first resolved. A
+// later write isolates that wrapper, not whatever the root slot names now:
+// `a[0] += (a = [9]; 1)` must leave the newly assigned a intact and apply the
+// pending write to the array that was already evaluated.
 type mutablePath struct {
-	root  mutableRoot
-	steps []mutablePathStep
+	root         mutableRoot
+	steps        []mutablePathStep
+	capturedRoot Value
+	hasCapture   bool
+}
+
+func (path *mutablePath) captureRoot() {
+	if val, ok := path.root.get(); ok {
+		path.capturedRoot = val
+		path.hasCapture = true
+	}
 }
 
 // resolveMutableReceiver evaluates expr as the receiver of an in-place write,
@@ -441,6 +455,9 @@ type mutablePath struct {
 // the way down -- copied and rebound where it is shared -- so the leaf is a
 // wrapper only this path reaches, and the write lands where the script can see
 // it. The caller must have taken savedAddressedScope and deferred restoring it.
+//
+// Mutators that may not write should call addressMutableReceiver instead, so a
+// no-op or a rejected call does not copy.
 func (exec *Execution) resolveMutableReceiver(expr Expression, env *Env) (Value, bool, error) {
 	path, ok := exec.mutablePathFor(expr, env)
 	if !ok {
@@ -461,6 +478,30 @@ func (exec *Execution) resolveMutableReceiver(expr Expression, env *Env) (Value,
 	// so the caller keeps it, but it names no slot the write may update. Leaving
 	// the permission ungranted is what makes that write land on a copy.
 	if addressable {
+		path.captureRoot()
+		exec.addressCollection(leaf, chain, path, env)
+	}
+	return leaf, true, nil
+}
+
+// addressMutableReceiver is resolveMutableReceiver without the isolating pass.
+// It records the path that owns expr so a later write can isolate through it,
+// but it does not copy: arguments have not been evaluated yet, and the
+// mutator may not write at all (`a.push()`, `a.pop(0)`, a rejected call).
+func (exec *Execution) addressMutableReceiver(expr Expression, env *Env) (Value, bool, error) {
+	path, ok := exec.mutablePathFor(expr, env)
+	if !ok {
+		return NewNil(), false, nil
+	}
+	leaf, chain, addressable, resolved, err := exec.readAddressablePath(path, env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if !resolved {
+		return NewNil(), false, nil
+	}
+	if addressable {
+		path.captureRoot()
 		exec.addressCollection(leaf, chain, path, env)
 	}
 	return leaf, true, nil
@@ -479,18 +520,20 @@ func rootAutoInvokes(val Value) bool {
 	}
 }
 
-// resolveMutableTarget is resolveMutableReceiver for a write whose value is only
+// resolveMutableTarget is addressMutableReceiver for a write whose value is only
 // computed after the target is prepared -- a compound assignment evaluates
 // `a[0] += f()` by reading a[0], running f, and writing back. It hands the path
-// back so the write can isolate again immediately before it lands, and it leaves
-// the permission it granted withdrawn, because evaluating the right side runs
-// script code that must not inherit it.
+// back so the write can isolate immediately before it lands, and it leaves the
+// permission withdrawn, because evaluating the right side runs script code that
+// must not inherit it.
 //
-// Isolating twice is not redundant. The right side can bind the receiver
+// Isolation waits until the write. The right side can bind the receiver
 // somewhere new (`a[0] += (b = a; 1)`), so a wrapper that was exclusively held
-// when the target was prepared need not still be when the write happens. The
-// second pass costs a re-read of an already-resolved path, whose keys are cached
-// and whose reads are pure, so nothing is evaluated or invoked twice.
+// when the target was prepared need not still be when the write happens; it can
+// also rebind the root (`a[0] += (a = [9]; 1)`), in which case the write stays
+// on the already-evaluated receiver. The isolating pass rereads an
+// already-resolved path whose keys are cached, so nothing is evaluated or
+// invoked twice.
 func (exec *Execution) resolveMutableTarget(expr Expression, env *Env) (Value, mutablePath, bool, error) {
 	saved := exec.savedAddressedScope()
 	defer exec.restore(saved)
@@ -499,13 +542,14 @@ func (exec *Execution) resolveMutableTarget(expr Expression, env *Env) (Value, m
 	if !ok {
 		return NewNil(), mutablePath{}, false, nil
 	}
-	leaf, _, addressable, resolved, err := exec.walkMutablePath(path, env)
+	leaf, _, addressable, resolved, err := exec.readAddressablePath(path, env)
 	if err != nil || !resolved {
 		return NewNil(), mutablePath{}, false, err
 	}
 	if !addressable {
 		return leaf, mutablePath{}, false, nil
 	}
+	path.captureRoot()
 	return leaf, path, true, nil
 }
 
@@ -668,10 +712,58 @@ func (exec *Execution) readMutablePath(path mutablePath, env *Env) (Value, bool,
 	return current, true, true, nil
 }
 
+// readAddressablePath is the reading pass of walkMutablePath: it resolves the
+// leaf without copying. Mutators and compound writes isolate later, once they
+// know a write will land. The ancestor chain is still recorded so a later
+// detach of an argument that names a container on this path can snapshot it.
+func (exec *Execution) readAddressablePath(path mutablePath, env *Env) (Value, []uintptr, bool, bool, error) {
+	if len(path.steps) == 0 {
+		current, ok := path.root.get()
+		if !ok || rootAutoInvokes(current) {
+			return NewNil(), nil, false, false, nil
+		}
+		return current, nil, true, true, nil
+	}
+	current, ok := path.root.get()
+	if !ok || rootAutoInvokes(current) {
+		return NewNil(), nil, false, false, nil
+	}
+	chain := make([]uintptr, 0, len(path.steps))
+	for i := range path.steps {
+		step := &path.steps[i]
+		if !isCollection(current) {
+			tail, err := exec.readPathTailOrdinarily(current, path.steps[i:], env)
+			return tail, nil, false, true, err
+		}
+		chain = append(chain, collectionIdentity(current))
+		child, found, err := exec.readCollectionStep(current, step, env)
+		if err != nil {
+			return NewNil(), nil, false, true, err
+		}
+		if !found {
+			return NewNil(), chain, true, true, nil
+		}
+		current = child
+	}
+	return current, chain, true, true, nil
+}
+
 // isolateMutablePath is the isolating pass: it descends an addressable path
 // copying and rebinding every level a second slot can still reach.
 func (exec *Execution) isolateMutablePath(path mutablePath, env *Env) (Value, []uintptr, error) {
 	current, ok := path.root.get()
+	rebindRoot := true
+	if path.hasCapture {
+		capturedID := collectionIdentity(path.capturedRoot)
+		if !ok || capturedID != 0 && collectionIdentity(current) != capturedID {
+			// The root slot no longer names the receiver that was evaluated.
+			// Isolate that receiver as a temporary; the live slot belongs to
+			// whatever the right side (or an argument) just bound there.
+			current = path.capturedRoot
+			ok = true
+			rebindRoot = false
+		}
+	}
 	if !ok {
 		return NewNil(), nil, nil
 	}
@@ -680,7 +772,11 @@ func (exec *Execution) isolateMutablePath(path mutablePath, env *Env) (Value, []
 		if err != nil {
 			return NewNil(), nil, err
 		}
-		path.root.rebind(copied)
+		if rebindRoot {
+			path.root.rebind(copied)
+		} else {
+			copied.AdoptSoleRef()
+		}
 		current = copied
 	}
 	// The chain lists the containers above the leaf, which the leaf's own

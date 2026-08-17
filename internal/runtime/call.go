@@ -2793,14 +2793,15 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		err      error
 	)
 	if isCollectionMutator(member.Property) {
-		// A member that writes through its receiver resolves that receiver as
-		// an addressable path, so the write updates the local, instance
-		// variable, or nested path the source names rather than a value the
-		// script cannot see again. A receiver that names no such path is a
-		// temporary and the write is isolated to a copy of it.
+		// A member that writes through its receiver records the path that
+		// owns it, so a later write updates the local, instance variable, or
+		// nested path the source names rather than a value the script cannot
+		// see again. Isolation waits until the mutator actually writes: a
+		// no-op or a rejected call must not copy. A receiver that names no
+		// such path is a temporary and the write is isolated to a copy of it.
 		defer exec.restore(exec.savedAddressedScope())
 		var addressed bool
-		receiver, addressed, err = exec.resolveMutableReceiver(member.Object, env)
+		receiver, addressed, err = exec.addressMutableReceiver(member.Object, env)
 		if !addressed {
 			receiver, err = ordinaryReceiver()
 		}

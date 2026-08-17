@@ -3637,11 +3637,11 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if len(args) == 0 {
 				return receiver, nil
 			}
-			receiver, err := exec.writableCollection(receiver)
+			added, err := exec.detachStoredCollections(args)
 			if err != nil {
 				return NewNil(), err
 			}
-			added, err := exec.detachStoredCollections(args)
+			receiver, err = exec.writableCollection(receiver)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -3664,11 +3664,11 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if len(args) == 0 {
 				return receiver, nil
 			}
-			receiver, err := exec.writableCollection(receiver)
+			args, err := exec.detachStoredCollections(args)
 			if err != nil {
 				return NewNil(), err
 			}
-			args, err = exec.detachStoredCollections(args)
+			receiver, err = exec.writableCollection(receiver)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -3704,10 +3704,6 @@ func arrayMemberTransforms(property string) (Value, error) {
 				}
 				count = n
 			}
-			receiver, err := exec.writableCollection(receiver)
-			if err != nil {
-				return NewNil(), err
-			}
 			arr := receiver.Array()
 			if count > len(arr) {
 				count = len(arr)
@@ -3716,18 +3712,24 @@ func arrayMemberTransforms(property string) (Value, error) {
 				if len(arr) == 0 {
 					return NewNil(), nil
 				}
+			} else if count == 0 {
+				// pop(0), and pop(n) on an empty receiver, remove nothing.
+				// Isolation waits until a write, so a shared receiver is not
+				// copied for a call that changes nothing.
+				return NewArray([]Value{}), nil
+			}
+			var err error
+			receiver, err = exec.writableCollection(receiver)
+			if err != nil {
+				return NewNil(), err
+			}
+			arr = receiver.Array()
+			if len(args) == 0 {
 				popped := arr[len(arr)-1]
 				if err := shrinkArray(exec, receiver, arr, 0, len(arr)-1, args, kwargs, block, 0); err != nil {
 					return NewNil(), err
 				}
 				return popped, nil
-			}
-			// pop(0), and pop(n) on an empty receiver, remove nothing. Falling
-			// through would still take the shrink path, which inside an
-			// iterator copies the whole receiver and bills its elements for a
-			// call that changes nothing.
-			if count == 0 {
-				return NewArray([]Value{}), nil
 			}
 			// pop(n) copies the removed tail out so the returned array does not
 			// share backing storage with the receiver.
@@ -4346,11 +4348,11 @@ func arrayInsert(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	if len(values) == 0 {
 		return receiver, nil
 	}
-	receiver, err = exec.writableCollection(receiver)
+	values, err = exec.detachStoredCollections(values)
 	if err != nil {
 		return NewNil(), err
 	}
-	values, err = exec.detachStoredCollections(values)
+	receiver, err = exec.writableCollection(receiver)
 	if err != nil {
 		return NewNil(), err
 	}

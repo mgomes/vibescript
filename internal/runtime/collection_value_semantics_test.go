@@ -552,6 +552,58 @@ end
 	}
 }
 
+// TestCompoundAssignmentKeepsAReboundRootIntact pins the other half of the
+// second pass: if the right side rebinds the root, the pending write belongs
+// to the receiver that was already evaluated, not the replacement.
+func TestCompoundAssignmentKeepsAReboundRootIntact(t *testing.T) {
+	t.Parallel()
+
+	// Assignment is a statement, so the right side rebinds through a method
+	// rather than `a[0] += (a = [9]; 1)`. The path root is an instance
+	// variable; isolateMutablePath treats it the same as a local.
+	script := compileScriptDefault(t, `class Box
+  def run()
+    @a = [1, 2]
+    @a[0] += replace()
+    @a.inspect
+  end
+  def replace()
+    @a = [9]
+    1
+  end
+end
+
+def run()
+  Box.new.run
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "[9]" {
+		t.Fatalf("run() = %s, want [9]", got)
+	}
+
+	aliased := compileScriptDefault(t, `class Box
+  def run()
+    @a = [1, 2]
+    @b = nil
+    @a[0] += capture_and_replace()
+    @a.inspect + " " + @b.inspect
+  end
+  def capture_and_replace()
+    @b = @a
+    @a = [9]
+    1
+  end
+end
+
+def run()
+  Box.new.run
+end
+`)
+	if got := callFunc(t, aliased, "run", nil).String(); got != "[9] [1, 2]" {
+		t.Fatalf("aliased = %s, want [9] [1, 2]", got)
+	}
+}
+
 // TestCompoundAssignmentStillReachesItsRoot is the other half: isolating must
 // not cost the update. A loop that accumulates through one path has to land
 // every time, or value semantics would just be a way to lose writes.
@@ -567,6 +619,29 @@ end
 
 	if got := callFunc(t, script, "run", nil).String(); got != "{n: 5}" {
 		t.Fatalf("run() = %s, want {n: 5}", got)
+	}
+}
+
+// TestMutatorNoOpDoesNotIsolateASharedReceiver checks that recording a
+// mutator's path does not copy before the mutator decides whether it will
+// write. a.pop(0) and a.push() on a shared receiver must leave both bindings
+// on the same wrapper.
+func TestMutatorNoOpDoesNotIsolateASharedReceiver(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  a = [1, 2]
+  b = a
+  a.pop(0)
+  a.push()
+  a.insert(0)
+  [a, b]
+end
+`)
+	got := callFunc(t, script, "run", nil).Array()
+	if arrayIdentity(got[0]) != arrayIdentity(got[1]) {
+		t.Fatalf("no-op mutators copied shared receiver: identities %d and %d",
+			arrayIdentity(got[0]), arrayIdentity(got[1]))
 	}
 }
 
