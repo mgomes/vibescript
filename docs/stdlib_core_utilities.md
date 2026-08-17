@@ -660,11 +660,10 @@ end
 
 ## Hashes
 
-See [hashes.md](hashes.md) for worked examples. Hash keys keep Ruby-style value
-identity, so symbols and strings are distinct keys and hash-rocket literals can
-use other hashable values such as integers and arrays. `keys`, `values`, and all
-block-based iteration visit entries in Ruby-style insertion order for
-determinism.
+See [hashes.md](hashes.md) for worked examples. Hash keys live in one string
+keyspace: symbols and strings address the same entry, and integer or array
+keys are rejected. `keys`, `values`, and all block-based iteration visit
+entries in Ruby-style insertion order for determinism.
 
 Property access (`record.name`) resolves the hash methods below before stored
 keys, so method names stay stable even when data contains the same key:
@@ -1116,8 +1115,8 @@ Symbols (`:name`) expose the Ruby string/symbol conversion helpers:
 - `to_sym -> symbol` – returns the receiver unchanged.
 
 `"name".to_sym` and `:name.to_s` round-trip between the two representations.
-Hash key identity remains kind-sensitive, matching Ruby: `:name` and `"name"`
-are distinct keys, and `:name == "name"` is `false`.
+`:name == "name"` is still `false`; hash lookup is the exception, where both
+address the same entry.
 
 ## Enum Values
 
