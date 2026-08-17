@@ -797,14 +797,14 @@ func (exec *Execution) readAddressablePath(path mutablePath, env *Env) (Value, [
 // copying and rebinding every level a second slot can still reach.
 func (exec *Execution) isolateMutablePath(path mutablePath, env *Env) (Value, []uintptr, error) {
 	current, ok := path.root.get()
-	if len(path.captured) > 0 {
-		capturedID := collectionIdentity(path.captured[0])
-		if !ok || capturedID != 0 && collectionIdentity(current) != capturedID {
-			// The root slot no longer names the receiver that was evaluated.
-			// Isolate that receiver as a temporary; the live slot belongs to
-			// whatever the right side (or an argument) just bound there.
-			return exec.isolateCapturedLeaf(path)
-		}
+	if len(path.captured) > 0 && (!ok || !capturedReceiverUnchanged(path.captured[0], current)) {
+		// The root slot no longer names the receiver that was evaluated.
+		// Isolate that receiver as a temporary; the live slot belongs to
+		// whatever the right side (or an argument) just bound there.
+		// Scalars have no collection identity, so a string replaced by an
+		// array would otherwise look unchanged and the write would land on
+		// the replacement.
+		return exec.isolateCapturedLeaf(path)
 	}
 	if !ok {
 		return NewNil(), nil, nil
@@ -834,13 +834,10 @@ func (exec *Execution) isolateMutablePath(path mutablePath, env *Env) (Value, []
 			// to the miss, not that newly created receiver.
 			return NewNil(), nil, nil
 		}
-		if i+1 < len(path.captured) {
-			want := collectionIdentity(path.captured[i+1])
-			if want != 0 && collectionIdentity(child) != want {
-				// An intermediate slot was rebound. The pending write belongs
-				// to the receiver already evaluated, not the replacement.
-				return exec.isolateCapturedLeaf(path)
-			}
+		if i+1 < len(path.captured) && !capturedReceiverUnchanged(path.captured[i+1], child) {
+			// An intermediate slot was rebound. The pending write belongs
+			// to the receiver already evaluated, not the replacement.
+			return exec.isolateCapturedLeaf(path)
 		}
 		if isCollection(child) && !exec.exclusivelyHeld(child) {
 			copied, err := exec.copyCollection(child)
@@ -876,6 +873,21 @@ func (exec *Execution) isolateCapturedLeaf(path mutablePath) (Value, []uintptr, 
 		chain = append(chain, collectionIdentity(val))
 	}
 	return leaf, chain, nil
+}
+
+// capturedReceiverUnchanged reports whether live is still the wrapper (or
+// scalar) that was evaluated. Collection identity is zero for strings and
+// nil, so a later collection in that slot is always a replacement.
+func capturedReceiverUnchanged(captured, live Value) bool {
+	capturedID := collectionIdentity(captured)
+	liveID := collectionIdentity(live)
+	if capturedID != 0 {
+		return liveID == capturedID
+	}
+	if liveID != 0 {
+		return false
+	}
+	return captured.Identical(live)
 }
 
 // exclusivelyHeld reports whether a collection reached through the path that

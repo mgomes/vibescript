@@ -725,6 +725,35 @@ end
 	}
 }
 
+func TestIndexAssignmentDoesNotFollowAReboundScalarRoot(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `class Box
+  def run()
+    @a = "x"
+    begin
+      @a[install()] = 1
+    rescue
+      return @a.inspect
+    end
+    @a.inspect
+  end
+  def install()
+    @a = [9]
+    0
+  end
+end
+
+def run()
+  Box.new.run
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "[9]" {
+		t.Fatalf("@a[install()] = 1 after @a = \"x\" = %s, want [9]", got)
+	}
+}
+
+
 func TestFlatMapDoesNotPublishANonArrayResultTwice(t *testing.T) {
 	t.Parallel()
 
