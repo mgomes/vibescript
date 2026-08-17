@@ -1534,6 +1534,21 @@ end
 `,
 		},
 		{
+			name: "declared shape write links a retained container alias",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f(row: { meta: { a: int } })
+  x = { a: 1 }
+  row[:meta] = x
+  x["a"] = "s"
+  takes_string(row[:meta]["a"])
+end
+`,
+		},
+		{
 			name: "skipped member or assignment does not write",
 			source: `
 def f(user: { name: string })

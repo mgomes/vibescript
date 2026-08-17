@@ -11238,8 +11238,11 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 			return false
 		}
 		// A compatible write replaces the same unified-key field. Keep the
-		// declared fact so later reads still see the required field type.
+		// declared fact so later reads still see the required field type,
+		// and link a retained container so a later write through that
+		// value invalidates this field too.
 		receiverAliased := len(c.typeAliases[name]) != 0
+		c.linkContainerWriteAlias(name, value, written)
 		if c.mutationRegionDepth != 0 || receiverAliased || !intact {
 			return false
 		}
