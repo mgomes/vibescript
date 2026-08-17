@@ -252,7 +252,7 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 
 	switch value.Kind() {
 	case KindHash, KindObject:
-		id := hashIdentity(value)
+		id := hashScanIdentity(value)
 		if id != 0 {
 			if _, seen := state.seenHashes[id]; seen {
 				return NewNil(), fmt.Errorf("hash.deep_transform_keys does not support cyclic structures")

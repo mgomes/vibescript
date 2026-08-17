@@ -120,6 +120,24 @@ func TestHashDeepTransformKeysHonorsSandboxDuringTraversal(t *testing.T) {
 	requireErrorIs(t, err, errStepQuotaExceeded)
 }
 
+func TestHashDeepTransformKeysRejectsCyclicObject(t *testing.T) {
+	t.Parallel()
+
+	obj := NewObject(map[string]Value{})
+	if err := hashSet(obj, NewString("self"), obj); err != nil {
+		t.Fatalf("hashSet(cyclic object) error = %v", err)
+	}
+	receiver := NewHash(map[string]Value{"root": obj})
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 64 << 20}
+	_, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, keyIdentityBlock())
+	if err == nil {
+		t.Fatal("deep_transform_keys(hash with cyclic object) error = nil, want cyclic structures")
+	}
+	if !strings.Contains(err.Error(), "does not support cyclic structures") {
+		t.Fatalf("deep_transform_keys(hash with cyclic object) error = %v, want cyclic structures", err)
+	}
+}
+
 func TestHashDeepTransformKeysReservesOutputBuffers(t *testing.T) {
 	t.Parallel()
 
