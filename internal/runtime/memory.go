@@ -959,11 +959,61 @@ func (exec *Execution) checkProjectedValueRendering(val Value, payloadBytes int)
 
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
-	used = saturatingAdd(used, value.HashIterationScratchBytes(val))
+	used = saturatingAdd(used, renderingScratchBytes(val))
 	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
+}
+
+// renderingScratchBytes is the peak heap inspect/to_s holds for iteration
+// buffers while val stays live. A recorded-order hash walks in place; a
+// fallback hash or any object larger than the inline buffer allocates a
+// []HashEntry that remains live while nested values render, so the peak is
+// this node's buffer plus the largest child path rather than the root only.
+func renderingScratchBytes(val Value) int {
+	return walkRenderingScratch(val, make(map[uintptr]struct{}))
+}
+
+func walkRenderingScratch(val Value, seen map[uintptr]struct{}) int {
+	switch val.Kind() {
+	case KindArray:
+		id := arrayIdentity(val)
+		if id != 0 {
+			if _, ok := seen[id]; ok {
+				return 0
+			}
+			seen[id] = struct{}{}
+		}
+		maxChild := 0
+		for _, elem := range val.Array() {
+			if n := walkRenderingScratch(elem, seen); n > maxChild {
+				maxChild = n
+			}
+		}
+		return maxChild
+	case KindHash, KindObject:
+		id := hashScanIdentity(val)
+		if id != 0 {
+			if _, ok := seen[id]; ok {
+				return 0
+			}
+			seen[id] = struct{}{}
+		}
+		own := 0
+		if !val.HashUsesRecordedOrder() {
+			own = sortedHashEntryBufferBytes(val.HashLen())
+		}
+		maxChild := 0
+		for _, item := range val.HashEntryMap() {
+			if n := walkRenderingScratch(item, seen); n > maxChild {
+				maxChild = n
+			}
+		}
+		return saturatingAdd(own, maxChild)
+	default:
+		return 0
+	}
 }
 
 // checkProjectedIntArrayBytes rejects allocations that would exceed the memory
