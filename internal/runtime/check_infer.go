@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"cmp"
-	"fmt"
 	"maps"
 	"math"
 	"reflect"
@@ -15528,30 +15527,17 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 			return nil
 		}
 		fieldType, present := objectType.Shape[key]
-		switch objectType.Name {
-		case shapeKeysStringMarker, shapeKeysSymbolMarker:
-			// String and symbol keys address one entry, so a lookup of
-			// either kind is a hit when the spelling is present.
-			if present {
-				// An optional field may be absent, so its read joins nil.
-				if shapeFieldOptional(fieldType) {
-					return unionTypeExprs(shapeFieldValueType(fieldType), checkTypeNil)
-				}
-				return fieldType
-			}
-			// An open shape may hold an undeclared field of any type, so the
-			// read stays unknown; a closed shape is known to miss.
-			if objectType.Open {
-				return nil
-			}
-			return checkTypeNil
-		}
-		// Unknown store representation: a present display name reads as the
-		// field type or nil depending on the store's key kind; an absent one
-		// misses either store.
+		// String and symbol keys address one entry, including on a declared
+		// markerless shape such as `{ name: string }`. A required field is
+		// therefore an exact hit; an optional field may be absent.
 		if present {
-			return unionTypeExprs(shapeFieldValueType(fieldType), checkTypeNil)
+			if shapeFieldOptional(fieldType) {
+				return unionTypeExprs(shapeFieldValueType(fieldType), checkTypeNil)
+			}
+			return fieldType
 		}
+		// An open shape may hold an undeclared field of any type, so the
+		// read stays unknown; a closed shape is known to miss.
 		if objectType.Open {
 			return nil
 		}
@@ -15639,64 +15625,23 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 	}
 }
 
-// unknownShapeKeyKindHint explains a nil arm that comes from not knowing how a
-// shape's keys are stored, rather than from the field being optional.
-//
-// Scope: this reaches diagnostics raised through checkInferredArgument, which
-// is the direct argument path. A mismatch raised on the rest/splat aggregate
-// path carries no explanation, because the read that produced the nil arm is
-// usually not an argument of that call at all -- `args = [row[:name]]` then
-// `accept(*args)` performs the read in a previous statement, so there is no
-// captured hint to carry and re-deriving it from the local's static value did
-// not recover one either. Extending it there means tracing the local back to
-// its assignment, which is dataflow work rather than a diagnostic tweak.
-//
-// A shape parameter accepts either key kind -- {name: "a"} and {"name": "b"}
-// both satisfy { name: string }, and JSON.parse produces the string-keyed form
-// -- so the checker cannot know which one a read will hit, and a read of even
-// a required field joins nil. Without saying so the diagnostic reads as though
-// the field were optional, which is how #1046 concluded that `?` had no
-// effect: it does, but only where the key kind is known, as in a hash literal.
+// unknownShapeKeyKindHint used to explain a nil arm that came from not knowing
+// how a shape's keys were stored. Strings and symbols now share one keyspace,
+// so a required field is an exact hit and the hint is empty.
+func (c *scriptChecker) unknownShapeKeyKindHint(Expression) string {
+	return ""
+}
+
 // capturedShapeKeyKindHint prefers the hint captured when the argument was
-// evaluated. A later argument can mutate the shape an earlier one read --
-// accept(row[:name], row.delete(:name)) -- which poisons the receiver fact, so
-// re-deriving it here would silently drop the explanation.
+// evaluated. A later argument can mutate the shape an earlier one read, which
+// poisons the receiver fact, so re-deriving it here would silently drop a
+// captured explanation. Under the unified keyspace a required field is an
+// exact hit, so the derived hint is empty.
 func (c *scriptChecker) capturedShapeKeyKindHint(expr Expression) string {
 	if hint, captured := c.callArgumentHints[expr]; captured {
 		return hint
 	}
 	return c.unknownShapeKeyKindHint(expr)
-}
-
-func (c *scriptChecker) unknownShapeKeyKindHint(expr Expression) string {
-	index, ok := expr.(*IndexExpr)
-	if !ok || len(index.Indices) != 1 {
-		return ""
-	}
-	key, ok := staticLiteralHashKey(index.Indices[0])
-	if !ok {
-		return ""
-	}
-	objectType := c.inferExpressionType(index.Object)
-	if objectType == nil || objectType.Kind != TypeShape || objectType.Nullable {
-		return ""
-	}
-	// A known store representation already reads a required field exactly.
-	if objectType.Name == shapeKeysStringMarker || objectType.Name == shapeKeysSymbolMarker {
-		return ""
-	}
-	field, present := objectType.Shape[key]
-	if !present || shapeFieldOptional(field) {
-		return ""
-	}
-	// A field whose declared type already admits nil produces the same
-	// `T | nil` read under a known key kind, so the nil arm is not the key
-	// kind's doing and saying it is would misattribute the diagnostic.
-	if !typeExprNeverNil(shapeFieldValueType(field)) {
-		return ""
-	}
-	return fmt.Sprintf("; %s is required, but this shape's key kind is unknown,"+
-		" so the read may still miss", key)
 }
 
 // bareMemberArgumentCallableFact mirrors the runtime's callable-parameter

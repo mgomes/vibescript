@@ -955,7 +955,7 @@ def run(user: { name: string }, flag)
   end
 end
 `)
-	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string | nil")
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
 }
 
 func TestCheckInferLoopHeadersSeePreLoopFacts(t *testing.T) {
@@ -1908,7 +1908,7 @@ def run(user: { name: string, age: int })
   takes_int(user["age"])
 end
 `)
-	requireCheckWarningContains(t, age, "call to takes_int argument value expected int, got int | nil")
+	requireNoCheckWarnings(t, age)
 }
 
 func TestCheckInferShapeUnknownFieldReadsNil(t *testing.T) {
@@ -3289,9 +3289,8 @@ def run(raw: string)
 end
 `))
 
-	// An annotated shape parameter has an unknown key representation: a
-	// present field reads as field-or-nil, so it still contradicts a
-	// disjoint boundary but never over-claims the field type.
+	// An annotated shape parameter uses the same keyspace, so a required
+	// field is an exact hit and a disjoint boundary still contradicts.
 	param := compileScript(t, `
 def takes_int(value: int)
   value
@@ -3301,7 +3300,7 @@ def run(user: { name: string })
   takes_int(user["name"])
 end
 `)
-	requireCheckWarningContains(t, param, "call to takes_int argument value expected int, got string | nil")
+	requireCheckWarningContains(t, param, "call to takes_int argument value expected int, got string")
 }
 
 func TestCheckInferBranchJoinsKeepDistinctMarkers(t *testing.T) {
