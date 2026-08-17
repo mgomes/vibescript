@@ -2743,6 +2743,9 @@ func arrayMemberGrep(property string) (Value, error) {
 				continue
 			}
 			if runner == nil {
+				// adoptArray will not publish; each kept element is a new
+				// handle on the same wrapper the receiver still names.
+				publishCollection(item)
 				out = append(out, item)
 				continue
 			}
