@@ -5882,7 +5882,7 @@ func (c *scriptChecker) hashOwnedMemberWriteArmType(
 	builtin *TypeExpr,
 ) *TypeExpr {
 	if keyBound, valueBound := declaredHashEntryTypes(receiver); valueBound != nil {
-		if typeExprsDisjoint(checkTypeString, keyBound, c.checkNamedTypeResolver()) {
+		if hashKeyTypesDisjoint(checkTypeString, keyBound, c.checkNamedTypeResolver()) {
 			return builtin
 		}
 		if typeExprMayIncludeCallable(valueBound) {
@@ -5923,7 +5923,7 @@ func (c *scriptChecker) memberWriteUsesUniversalDispatch(receiver *TypeExpr, pro
 				return true
 			}
 			if keyBound, valueBound := declaredHashEntryTypes(arm); valueBound != nil &&
-				typeExprsDisjoint(checkTypeString, keyBound, c.checkNamedTypeResolver()) {
+				hashKeyTypesDisjoint(checkTypeString, keyBound, c.checkNamedTypeResolver()) {
 				return true
 			}
 		}
