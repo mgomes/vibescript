@@ -753,7 +753,6 @@ end
 	}
 }
 
-
 func TestPushSelfRejectsWhenTheCloneWouldExceedQuota(t *testing.T) {
 	t.Parallel()
 
@@ -773,6 +772,29 @@ func TestPushSelfRejectsWhenTheCloneWouldExceedQuota(t *testing.T) {
 		t.Fatal("a.push(a) under a quota that cannot hold the clone must error")
 	}
 	requireErrorContains(t, err, "quota exceeded")
+}
+
+func TestNestedWriteDoesNotMutateTaggedMatchData(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  m = "ab".match(/(a)(b)/)
+  copy = m.captures
+  begin
+    m.captures.push("bad")
+    return "mutated " + m.captures.inspect + " " + copy.inspect
+  rescue => e
+    return e.message + " " + m.captures.inspect + " " + copy.inspect
+  end
+end
+`)
+	got := callFunc(t, script, "run", nil).String()
+	if !strings.Contains(got, "cannot modify match data") {
+		t.Fatalf("m.captures.push = %s, want a match-data mutation error", got)
+	}
+	if !strings.Contains(got, `["a", "b"] ["a", "b"]`) {
+		t.Fatalf("m.captures.push = %s, want both captures bindings to stay [\"a\", \"b\"]", got)
+	}
 }
 
 func TestFlatMapDoesNotPublishANonArrayResultTwice(t *testing.T) {

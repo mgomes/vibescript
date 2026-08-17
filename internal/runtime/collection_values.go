@@ -1027,6 +1027,9 @@ func (exec *Execution) storeMutableStep(container Value, step *mutablePathStep, 
 		elems[i] = val
 		return nil
 	case KindHash, KindObject:
+		if err := objectTagMutationError(container, "assignment"); err != nil {
+			return exec.errorAt(step.pos, "%s", err.Error())
+		}
 		if err := container.HashSetOwned(step.index, val); err != nil {
 			return exec.errorAt(step.pos, "%s", err.Error())
 		}
