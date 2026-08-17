@@ -91,7 +91,7 @@ func (v Value) Array() []Value {
 // order lives on the wrapper and is reached through HashEntries.
 func (v Value) Hash() map[string]Value {
 	if v.kind == KindHash {
-		v.data.(*hashData).orderUntrusted = true
+		v.data.(*hashData).orderUntrusted.Store(true)
 	}
 	return v.hashEntryMap()
 }

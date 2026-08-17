@@ -181,13 +181,20 @@ func (hd *hashData) orderCoversEntries() bool {
 	return true
 }
 
-func (hd *hashData) orderHasName(name string) bool {
-	for i := range hd.order {
-		if hd.order[i].data.(string) == name {
-			return true
+// reconcileRecordedOrder drops order slots the live map no longer holds.
+// Hash() can leave the record stale; doing this once on the next write
+// restores the append-only invariant without a linear scan per insert.
+func (hd *hashData) reconcileRecordedOrder() {
+	if hd.orderCoversEntries() {
+		return
+	}
+	kept := hd.order[:0]
+	for _, key := range hd.order {
+		if _, ok := hd.entries[key.data.(string)]; ok {
+			kept = append(kept, key)
 		}
 	}
-	return false
+	hd.order = kept
 }
 
 func sortedMapKeysInto(m map[string]Value, buf []Value) []Value {
@@ -270,12 +277,11 @@ func (v Value) hashSetInternal(key, val Value, bump bool) error {
 		// pays one boxing as it normalizes.
 		//
 		// After Hash() a host may have deleted this name from the live map
-		// while it is still in order. Appending again would duplicate it and
-		// let a later live insert keep the length match. Scan only then:
-		// trusted HashSet traffic stays an O(1) map probe.
-		if hd.orderUntrusted && hd.orderHasName(name) {
-			hd.entries[name] = val
-			return nil
+		// while it is still in order. Reconcile once so the next append cannot
+		// duplicate it, then trusted HashSet traffic stays an O(1) map probe.
+		if hd.orderUntrusted.Load() {
+			hd.reconcileRecordedOrder()
+			hd.orderUntrusted.Store(false)
 		}
 		keyValue := key
 		if key.kind != KindString {
@@ -335,6 +341,7 @@ func (v Value) HashClearEntries() {
 		}
 		hd.entryCapacity = 0
 		hd.order = nil
+		hd.orderUntrusted.Store(false)
 	case KindObject:
 		BumpMutationEpoch()
 		clear(v.data.(*objectData).entries)

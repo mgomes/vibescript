@@ -2,6 +2,7 @@ package value_test
 
 import (
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mgomes/vibescript/vibes/value"
@@ -245,6 +246,38 @@ func TestHostDeleteReinsertThenDirectInsertFallsBackToSortedKeys(t *testing.T) {
 		value.NewString("b"),
 		value.NewString("c"),
 	})
+}
+
+func TestHashReadDoesNotLeaveLaterInsertsUntrusted(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{})
+	if err := hash.HashSet(value.NewString("a"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(a) error = %v, want nil", err)
+	}
+	_ = hash.Hash()
+	if err := hash.HashSet(value.NewString("b"), value.NewInt(2)); err != nil {
+		t.Fatalf("HashSet(b) after Hash() error = %v, want nil", err)
+	}
+	if !hash.HashUsesRecordedOrder() {
+		t.Fatal("Hash() then HashSet(b) dropped the recorded order, want insertion order kept")
+	}
+	requireKeyOrder(t, hash, []value.Value{value.NewString("a"), value.NewString("b")})
+}
+
+func TestConcurrentHashReadsAreRaceFree(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{"a": value.NewInt(1)})
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Go(func() {
+			if got := hash.Hash(); got["a"].Int() != 1 {
+				t.Errorf("Hash()[a] = %v, want 1", got["a"])
+			}
+		})
+	}
+	wg.Wait()
 }
 
 func TestHostKeySwapFallbackSortsTheEntryBuffer(t *testing.T) {

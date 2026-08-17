@@ -2,6 +2,7 @@ package value
 
 import (
 	"math"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -210,9 +211,10 @@ type hashData struct {
 	// orderUntrusted is set when Hash() hands out the live map. A host can
 	// then delete a key, HashSet it again (which would append a duplicate),
 	// and insert another key through the map, leaving a same-length order
-	// that names a key twice. HashSet consults the existing record before
-	// appending once this is set.
-	orderUntrusted bool
+	// that names a key twice. The next HashSet reconciles the record once
+	// and clears the flag so later inserts stay O(1). The flag is atomic
+	// because Hash() is a documented concurrent read.
+	orderUntrusted atomic.Bool
 }
 
 // HashDataBytes is the heap footprint of the hashData wrapper every KindHash
