@@ -2793,7 +2793,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		receiver Value
 		err      error
 	)
-	if isCollectionMutator(member.Property) {
+	if recordsMutableReceiver(member.Property) {
 		// A member that writes through its receiver records the path that
 		// owns it, so a later write updates the local, instance variable, or
 		// nested path the source names rather than a value the script cannot

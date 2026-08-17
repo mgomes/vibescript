@@ -239,6 +239,12 @@ func newUniversalSendBuiltin(name string, allowPrivate bool) Value {
 		if err := exec.checkCallMemoryRootsWithCallee(member, receiver, callArgs, kwargs, block); err != nil {
 			return NewNil(), err
 		}
+		if !isCollectionMutator(method) {
+			// send recorded the receiver path in case it dispatched to a
+			// mutator. A non-mutating target must not inherit that path,
+			// or an enclosing mutator's write could land on the wrong slot.
+			exec.restore(addressedScope{})
+		}
 		return exec.invokeCallable(member, receiver, callArgs, kwargs, block, Position{})
 	})
 }

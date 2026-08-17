@@ -705,17 +705,55 @@ func TestMutatorNoOpDoesNotIsolateASharedReceiver(t *testing.T) {
 	script := compileScriptDefault(t, `def run()
   a = [1, 2]
   b = a
+  h = { a: 1 }
+  g = h
   a.pop(0)
   a.shift(0)
   a.push()
   a.insert(0)
-  [a, b]
+  a.delete(99)
+  h.delete("missing")
+  [a, b, h, g]
 end
 `)
 	got := callFunc(t, script, "run", nil).Array()
 	if arrayIdentity(got[0]) != arrayIdentity(got[1]) {
-		t.Fatalf("no-op mutators copied shared receiver: identities %d and %d",
+		t.Fatalf("no-op mutators copied shared array: identities %d and %d",
 			arrayIdentity(got[0]), arrayIdentity(got[1]))
+	}
+	if hashIdentity(got[2]) != hashIdentity(got[3]) {
+		t.Fatalf("hash.delete miss copied shared hash: identities %d and %d",
+			hashIdentity(got[2]), hashIdentity(got[3]))
+	}
+}
+
+func TestSendPushUpdatesTheAddressableReceiver(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  a = [1]
+  b = a
+  a.send(:push, 2)
+  a.inspect + " " + b.inspect
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "[1, 2] [1]" {
+		t.Fatalf("a.send(:push, 2) = %s, want [1, 2] [1]", got)
+	}
+}
+
+func TestDupPublishesRepeatedChildren(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  child = [1]
+  copy = [child, child].dup
+  copy[0].push(2)
+  copy.inspect
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "[[1, 2], [1]]" {
+		t.Fatalf("[child, child].dup then copy[0].push(2) = %s, want [[1, 2], [1]]", got)
 	}
 }
 

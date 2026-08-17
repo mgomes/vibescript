@@ -993,6 +993,15 @@ func isCollectionMutator(property string) bool {
 	}
 }
 
+// recordsMutableReceiver reports whether a member call should record the
+// receiver's addressable path. Collection mutators need it so the write can
+// rebind the source. send and public_send need it when they dispatch to one
+// of those mutators; the send builtin drops the record if the target is not
+// a mutator.
+func recordsMutableReceiver(property string) bool {
+	return isCollectionMutator(property) || property == "send" || property == "public_send"
+}
+
 // skipUnderCollectionCopyVerify reports whether the always-copy oracle is on,
 // for the tests that measure what a write costs rather than what it means.
 //
