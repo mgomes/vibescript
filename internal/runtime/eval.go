@@ -1845,11 +1845,28 @@ func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots .
 	if err := runner.exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
-	// A block result is on its way into a slot of the collection the caller is
-	// building, and later iterations can run script code that reaches it again
-	// -- `out = out.push(v)` inside a map body hands back the same collection
-	// every time. Counting the slot here rather than when the finished array is
-	// wrapped is what makes each result the value it was when it was produced.
+	return val, nil
+}
+
+// callRetained invokes the block and publishes the result: the caller is
+// about to store it in a durable slot. Callers that discard the result
+// (each, predicates) use call so an ignored collection is not marked shared.
+func (runner *blockCallRunner) callRetained(args []Value) (Value, error) {
+	val, err := runner.call(args)
+	if err != nil {
+		return val, err
+	}
+	publishCollection(val)
+	return val, nil
+}
+
+// callRetainedWithChargedRoots is callWithChargedRoots plus publication of
+// a result the caller will retain.
+func (runner *blockCallRunner) callRetainedWithChargedRoots(args []Value, chargedRoots ...Value) (Value, error) {
+	val, err := runner.callWithChargedRoots(args, chargedRoots...)
+	if err != nil {
+		return val, err
+	}
 	publishCollection(val)
 	return val, nil
 }

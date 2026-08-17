@@ -1194,7 +1194,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				blockArg[0] = item
-				val, err := runner.call(blockArg[:])
+				val, err := runner.callRetained(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -1257,7 +1257,7 @@ func arrayMemberQuery(property string) (Value, error) {
 				}
 				blockArgs[0] = item
 				blockArgs[1] = NewInt(int64(i))
-				val, err := runner.call(blockArgs[:])
+				val, err := runner.callRetained(blockArgs[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -1303,7 +1303,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				blockArg[0] = item
-				val, err := runner.call(blockArg[:])
+				val, err := runner.callRetained(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -1386,7 +1386,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				blockArg[0] = item
-				val, err := runner.call(blockArg[:])
+				val, err := runner.callRetained(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -2528,7 +2528,7 @@ func arrayReduce(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		// against the snapshotted call roots, so a no-seed accumulator that is the
 		// receiver's first element deduplicates against the receiver and is charged
 		// only its structural slots -- never a second copy of the receiver's data.
-		next, err := runner.callWithChargedRoots(blockArgs[:], acc)
+		next, err := runner.callRetainedWithChargedRoots(blockArgs[:], acc)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -2742,7 +2742,7 @@ func arrayMemberGrep(property string) (Value, error) {
 				continue
 			}
 			blockArg[0] = item
-			transformed, err := runner.call(blockArg[:])
+			transformed, err := runner.callRetained(blockArg[:])
 			if err != nil {
 				return NewNil(), err
 			}
@@ -3274,7 +3274,7 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		pair := item
 		if runner != nil {
 			blockArg[0] = item
-			mapped, err := runner.call(blockArg[:])
+			mapped, err := runner.callRetained(blockArg[:])
 			if err != nil {
 				return NewNil(), err
 			}
@@ -3446,7 +3446,7 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 			var val Value
 			if runner != nil {
 				blockArg[0] = NewInt(int64(i))
-				val, err = runner.call(blockArg[:])
+				val, err = runner.callRetained(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}

@@ -631,7 +631,7 @@ func hashMemberQuery(property string) (Value, error) {
 				// window sized to it. Weighing that window against a baseline the
 				// key is missing from let an ephemeral array key's copy be
 				// allocated before anything accounted for the key itself.
-				blockValue, err := runner.callWithChargedRoots(blockArg[:], arg)
+				blockValue, err := runner.callRetainedWithChargedRoots(blockArg[:], arg)
 				if err != nil {
 					return NewNil(), err
 				}
@@ -1648,11 +1648,11 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					blockArg[0] = pair
-					val, err = runner.call(blockArg[:])
+					val, err = runner.callRetained(blockArg[:])
 				} else {
 					blockArgs[0] = entry.Key
 					blockArgs[1] = entry.Value
-					val, err = runner.call(blockArgs[:])
+					val, err = runner.callRetained(blockArgs[:])
 				}
 				if err != nil {
 					return NewNil(), err
@@ -1716,7 +1716,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				blockArgs[0] = pair
 				blockArgs[1] = NewInt(int64(i))
-				val, err := runner.call(blockArgs[:])
+				val, err := runner.callRetained(blockArgs[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -1897,7 +1897,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				blockArg[0] = ordered[i].Value
-				nextValue, err := runner.call(blockArg[:])
+				nextValue, err := runner.callRetained(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}

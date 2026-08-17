@@ -278,6 +278,21 @@ end
 	}
 }
 
+func TestEachDoesNotShareAnIgnoredBlockResult(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  a = [1]
+  [0].each { a }
+  a
+end
+`)
+	got := callFunc(t, script, "run", nil)
+	if !got.SoleRef() {
+		t.Fatalf("each { a } left a shared, SoleRef() = false, want true")
+	}
+}
+
 func TestCapabilityClonePublishesRepeatedChildren(t *testing.T) {
 	t.Parallel()
 
