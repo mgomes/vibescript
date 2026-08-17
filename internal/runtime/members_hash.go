@@ -1241,10 +1241,15 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			// Snapshot the replacement's entries before clearing so h.replace(h)
 			// is a harmless no-op rather than wiping the entries it is about to
-			// copy.
+			// copy. Detach first: a.replace(a.x) or a.x.replace(a) must store
+			// the value the ancestor had, not a window onto the receiver.
+			source, err := exec.detachStoredCollection(args[0])
+			if err != nil {
+				return NewNil(), err
+			}
 			var entryBuf [smallHashKeyBufferSize]HashEntry
-			entries := args[0].HashEntriesInto(entryBuf[:])
-			receiver, err := exec.writableCollection(receiver)
+			entries := source.HashEntriesInto(entryBuf[:])
+			receiver, err = exec.writableCollection(receiver)
 			if err != nil {
 				return NewNil(), err
 			}

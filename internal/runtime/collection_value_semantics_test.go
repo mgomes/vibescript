@@ -237,6 +237,8 @@ func TestCollectionsCannotContainThemselves(t *testing.T) {
   h.inspect`, `{a: 1, self: {a: 1}}`},
 		{"nested path self", "a = [[1]]\n  a[0].push(a)\n  a.inspect", "[[1, [[1]]]]"},
 		{"hash store self", "h = { a: 1 }\n  h.store(\"self\", h)\n  h.inspect", "{a: 1, self: {a: 1}}"},
+		{"hash replace ancestor", "a = { x: {} }\n  a.x.replace(a)\n  a.inspect", "{x: {x: {}}}"},
+		{"hash replace child", "a = { x: { y: 1 } }\n  a.replace(a.x)\n  a.inspect", "{y: 1}"},
 	}
 
 	for _, tc := range cases {
