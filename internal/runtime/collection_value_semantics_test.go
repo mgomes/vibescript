@@ -770,6 +770,26 @@ end
 	}
 }
 
+func TestFillSelfEmptyWindowDoesNotCloneTheReceiver(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 240 << 10, StepQuota: Unlimited}, `
+    def run()
+      a = []
+      i = 0
+      while i < 2000
+        a << "xxxxxxxxxxxxxxxx"
+        i += 1
+      end
+      a.fill(a, 0, 0)
+      a.size
+    end
+    `)
+	if got := callFunc(t, script, "run", nil).Int(); got != 2000 {
+		t.Fatalf("a.fill(a, 0, 0) size = %d, want 2000", got)
+	}
+}
+
 func TestFillEmptyWindowDoesNotCopyASharedReceiver(t *testing.T) {
 	t.Parallel()
 

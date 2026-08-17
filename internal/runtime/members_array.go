@@ -3369,10 +3369,6 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	if len(kwargs) > 0 {
 		return NewNil(), fmt.Errorf("array.fill does not take keyword arguments")
 	}
-	args, err := exec.detachStoredCollections(args)
-	if err != nil {
-		return NewNil(), err
-	}
 	arr := receiver.Array()
 	hasBlock := valueBlock(block) != nil
 
@@ -3394,9 +3390,14 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		return NewNil(), err
 	}
 	// An empty window inside the current length changes nothing, so do not
-	// rebuild or isolate a shared receiver for a semantic no-op.
+	// rebuild or isolate a shared receiver for a semantic no-op. Detach the
+	// fill value only after this check: a.fill(a, 0, 0) must not deep-clone a.
 	if span.begin == span.end && span.finalLength == len(arr) {
 		return receiver, nil
+	}
+	args, err = exec.detachStoredCollections(args)
+	if err != nil {
+		return NewNil(), err
 	}
 
 	// Reject an oversized result up front so a window far past the receiver
