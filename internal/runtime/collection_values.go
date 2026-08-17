@@ -332,11 +332,32 @@ func (exec *Execution) detachStoredCollection(val Value) (Value, error) {
 	// right answer rather than a workaround -- what the write stores is the
 	// value the container had, all the way down, not a window onto the value it
 	// is about to have.
+	if err := exec.preflightDeepClone(val); err != nil {
+		return NewNil(), err
+	}
 	detached := deepCloneValue(val)
 	if err := exec.checkMemoryValue(detached); err != nil {
 		return NewNil(), err
 	}
 	return detached, nil
+}
+
+// preflightDeepClone charges the walk and rejects a clone that would not fit
+// before deepCloneValue allocates it. checkMemoryValue after the clone cannot
+// unspend that peak.
+func (exec *Execution) preflightDeepClone(val Value) error {
+	est := newMemoryEstimator()
+	projected := est.value(val)
+	if err := exec.chargeScanSteps(est.walked); err != nil {
+		return err
+	}
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	if exec.memoryExceeded(saturatingAdd(exec.estimateMemoryUsage(), projected)) {
+		return exec.memoryQuotaExceededError()
+	}
+	return nil
 }
 
 // shovelArray implements array << value with the same isolation, detachment,

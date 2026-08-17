@@ -754,6 +754,27 @@ end
 }
 
 
+func TestPushSelfRejectsWhenTheCloneWouldExceedQuota(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 240 << 10, StepQuota: Unlimited}, `
+    def run()
+      a = []
+      i = 0
+      while i < 2000
+        a << "xxxxxxxxxxxxxxxx"
+        i += 1
+      end
+      a.push(a)
+    end
+    `)
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatal("a.push(a) under a quota that cannot hold the clone must error")
+	}
+	requireErrorContains(t, err, "quota exceeded")
+}
+
 func TestFlatMapDoesNotPublishANonArrayResultTwice(t *testing.T) {
 	t.Parallel()
 
