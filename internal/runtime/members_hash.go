@@ -607,6 +607,9 @@ func hashMemberQuery(property string) (Value, error) {
 					out[i] = value
 					produced = out[:i+1]
 					exec.addRetainedOutput(value)
+					// adoptArray will not publish; each output slot is a
+					// new handle, including a repeated requested key.
+					publishCollection(value)
 					continue
 				}
 				if !hasBlock {

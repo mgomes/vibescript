@@ -992,6 +992,36 @@ func TestReduceShovelDoesNotMutateTheSourceElement(t *testing.T) {
 	}
 }
 
+func TestFetchValuesPublishesPresentEntries(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  h = { a: [] }
+  vals = h.fetch_values(:a)
+  vals[0].push(1)
+  h[:a].inspect + " " + vals[0].inspect
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "[] [1]" {
+		t.Fatalf("h.fetch_values(:a) then vals[0].push(1) = %s, want [] [1]", got)
+	}
+}
+
+func TestGrepPublishesUntransformedMatches(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  source = [[]]
+  out = source.grep_v(1)
+  out[0].push(1)
+  source[0].inspect + " " + out[0].inspect
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "[] [1]" {
+		t.Fatalf("source.grep_v(1) then out[0].push(1) = %s, want [] [1]", got)
+	}
+}
+
 func TestArrayRangeMutatorWritesATemporary(t *testing.T) {
 	t.Parallel()
 
