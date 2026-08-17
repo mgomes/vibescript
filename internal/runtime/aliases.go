@@ -306,6 +306,8 @@ func NewArray(a []Value) Value { return value.NewArray(a) }
 // collection it stored in a.
 func adoptArray(a []Value) Value { return value.AdoptArray(a) }
 
+func adoptHash(h map[string]Value) Value { return value.AdoptHash(h) }
+
 // NewHash returns a hash (map) Value.
 func NewHash(h map[string]Value) Value { return value.NewHash(h) }
 

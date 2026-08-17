@@ -1960,7 +1960,7 @@ func (exec *Execution) expandKeywordSplat(expr Expression, env *Env, kwargs map[
 		}
 		kwargs[entry.Key.String()] = entry.Value
 	}
-	return exec.checkMemoryValue(NewHash(kwargs))
+	return exec.checkMemoryValue(adoptHash(kwargs))
 }
 
 func (exec *Execution) evalCallArgumentForType(arg Expression, env *Env, ty *TypeExpr) (Value, error) {

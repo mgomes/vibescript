@@ -1155,6 +1155,21 @@ end
 	})
 }
 
+func TestKeywordSplatMemoryCheckDoesNotPublishValues(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  h = { x: [] }
+  assert(true, **h)
+  h[:x]
+end
+`)
+	got := callFunc(t, script, "run", nil)
+	if !got.SoleRef() {
+		t.Fatal("h[:x] after assert(true, **h) SoleRef() = false, want true")
+	}
+}
+
 func TestSplatMemoryCheckDoesNotPublishReceiverElements(t *testing.T) {
 	t.Parallel()
 

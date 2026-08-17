@@ -283,6 +283,21 @@ func NewHash(h map[string]Value) Value {
 	return Value{kind: KindHash, data: hd}
 }
 
+// AdoptHash wraps h without publishing its values. Callers use it when the
+// map is accounting scratch that disappears after a memory check, so the
+// wrapper must not mark those values retained.
+//
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func AdoptHash(h map[string]Value) Value {
+	hd := &hashData{entries: h, entryCapacity: int32(len(h))}
+	if len(h) > 0 {
+		hd.order = sortedMapKeysInto(h, nil)
+	}
+	return Value{kind: KindHash, data: hd}
+}
+
 // NewHashWithOrder returns a hash over entries that iterates in the given key
 // order. The order slice is adopted, so callers must not retain or reuse it; an
 // order that does not cover entries falls back to sorted iteration. It exists
