@@ -138,9 +138,6 @@ func (exec *Execution) digPath(name string, current Value, args []Value) (Value,
 			}
 			next, ok, err := hashGet(current, arg)
 			if err != nil {
-				if current.Kind() == KindObject {
-					return NewNil(), nil
-				}
 				return NewNil(), err
 			}
 			if !ok {

@@ -200,6 +200,18 @@ func TestDigPathUnit(t *testing.T) {
 			args:    []Value{NewString("0")},
 			wantErr: "test.dig array index must be integer",
 		},
+		{
+			name:    "object integer key is unsupported",
+			current: NewObject(map[string]Value{"a": NewInt(1)}),
+			args:    []Value{NewInt(1)},
+			wantErr: "unsupported hash key",
+		},
+		{
+			name:    "hash integer key is unsupported",
+			current: NewHash(map[string]Value{"a": NewInt(1)}),
+			args:    []Value{NewInt(1)},
+			wantErr: "unsupported hash key",
+		},
 	}
 
 	exec := &Execution{ctx: context.Background()}
