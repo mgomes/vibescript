@@ -1093,6 +1093,21 @@ end
 	})
 }
 
+func TestSplatMemoryCheckDoesNotPublishReceiverElements(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  a = [[1]]
+  assert(*a)
+  a[0]
+end
+`)
+	got := callFunc(t, script, "run", nil)
+	if !got.SoleRef() {
+		t.Fatal("a[0] after assert(*a) SoleRef() = false, want true")
+	}
+}
+
 func TestSetOpScratchDoesNotPublishReceiverElements(t *testing.T) {
 	t.Parallel()
 

@@ -1863,7 +1863,7 @@ func (exec *Execution) evalCallArgsWithSplats(call *CallExpr, env *Env, paramInf
 				}
 				args = append(args, item)
 			}
-			if err := exec.checkMemoryValue(NewArray(args)); err != nil {
+			if err := exec.checkMemoryValue(adoptArray(args)); err != nil {
 				return nil, err
 			}
 			continue
