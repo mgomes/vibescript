@@ -389,7 +389,10 @@ func (exec *Execution) writableCollection(val Value) (Value, error) {
 	if val.Unpublished() {
 		return val, nil
 	}
-	if val.SoleRef() && exec.addressed.leaf != 0 && exec.addressed.leaf == collectionIdentity(val) {
+	// A sole nested leaf can still be visible through a shared ancestor
+	// (`a = [[1]]; b = a; a[0].push(2)`). Only a root with no ancestors
+	// can skip isolation on SoleRef alone.
+	if val.SoleRef() && exec.addressed.leaf != 0 && exec.addressed.leaf == collectionIdentity(val) && len(exec.addressed.path) == 0 {
 		return val, nil
 	}
 	// The receiver was resolved as an addressable path, and script code has

@@ -811,6 +811,21 @@ func TestSharedClearDoesNotCopyDiscardedContents(t *testing.T) {
 	}
 }
 
+func TestNestedWriteIsolatesASharedAncestor(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  a = [[1]]
+  b = a
+  a[0].push(2)
+  a.inspect + " " + b.inspect
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "[[1, 2]] [[1]]" {
+		t.Fatalf("a[0].push(2) with sibling b = %s, want [[1, 2]] [[1]]", got)
+	}
+}
+
 func TestEmptyFilterDoesNotOverwriteAReboundNestedSlot(t *testing.T) {
 	t.Parallel()
 
