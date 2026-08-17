@@ -725,6 +725,19 @@ end
 	}
 }
 
+func TestFlatMapDoesNotPublishANonArrayResultTwice(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  [1].flat_map { {} }[0]
+end
+`)
+	got := callFunc(t, script, "run", nil)
+	if !got.SoleRef() {
+		t.Fatalf("[1].flat_map { {} }[0] SoleRef() = false, want true")
+	}
+}
+
 
 // TestMutatorNoOpDoesNotIsolateASharedReceiver checks that recording a
 // mutator's path does not copy before the mutator decides whether it will

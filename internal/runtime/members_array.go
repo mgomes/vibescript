@@ -1303,13 +1303,14 @@ func arrayMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				blockArg[0] = item
-				val, err := runner.callRetained(blockArg[:])
+				val, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
 				// Ruby flattens exactly one level: an array result contributes
 				// its elements, anything else contributes itself, and a nested
-				// array inside the result is left alone.
+				// array inside the result is left alone. The block wrapper is
+				// not retained: NewArray publishes each appended slot once.
 				if val.Kind() != KindArray {
 					out = append(out, val)
 					if err := acc.addConservative(val, cap(out)); err != nil {
