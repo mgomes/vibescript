@@ -61,9 +61,11 @@ type setOpScratch struct {
 // materializing a combined source list, which would itself be an O(arity)
 // Go-local buffer allocated before any reservation. The inputs are wrapped
 // as extra roots for every validation; the wrappers alias the callers'
-// backings, so an input that is also reachable from an execution root
-// deduplicates rather than double-counting. The wrapper slice is itself a
-// Go-local buffer that grows with the operation's arity, so its backing
+// backings without publishing their elements, so an input that is also
+// reachable from an execution root deduplicates rather than double-counting
+// and a later write through a sole child is not forced to copy. The wrapper
+// slice is itself a Go-local buffer that grows with the operation's arity, so
+// its backing
 // joins held scratch before it is materialized and is validated immediately:
 // a caller may never reserve anything else (a high-arity union of empty
 // arrays), leaving this the only check that sees the backing.
@@ -75,9 +77,9 @@ func newSetOpScratch(exec *Execution, lead []Value, rest ...[]Value) (setOpScrat
 	count := len(rest) + 1
 	s.held += exec.reserveLoopScratch(valueSliceScratchBytes(count))
 	s.roots = make([]Value, 0, count)
-	s.roots = append(s.roots, NewArray(lead))
+	s.roots = append(s.roots, adoptArray(lead))
 	for _, src := range rest {
-		s.roots = append(s.roots, NewArray(src))
+		s.roots = append(s.roots, adoptArray(src))
 	}
 	return s, exec.checkMemoryWith(s.roots...)
 }

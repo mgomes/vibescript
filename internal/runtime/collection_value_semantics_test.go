@@ -1093,6 +1093,21 @@ end
 	})
 }
 
+func TestSetOpScratchDoesNotPublishReceiverElements(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 64 << 10, StepQuota: Unlimited}, `def run()
+  a = [[]]
+  a.difference([[]])
+  a[0]
+end
+`)
+	got := callFunc(t, script, "run", nil)
+	if !got.SoleRef() {
+		t.Fatal("a[0] after a.difference([[]]) SoleRef() = false, want true")
+	}
+}
+
 func TestFetchValuesPublishesPresentEntries(t *testing.T) {
 	t.Parallel()
 
