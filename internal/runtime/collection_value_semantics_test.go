@@ -793,6 +793,29 @@ func TestFillEmptyWindowDoesNotCopyASharedReceiver(t *testing.T) {
 	}
 }
 
+func TestHashReplaceSelfDoesNotCopyASharedReceiver(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 400 << 10, StepQuota: Unlimited}, `
+    def run()
+      h = {}
+      i = 0
+      while i < 2000
+        h[i.to_s] = "xxxxxxxxxxxxxxxx"
+        i += 1
+      end
+      g = h
+      h.replace(h)
+      [h, g]
+    end
+    `)
+	got := callFunc(t, script, "run", nil).Array()
+	if hashIdentity(got[0]) != hashIdentity(got[1]) {
+		t.Fatalf("h.replace(h) copied a shared receiver: identities %d and %d",
+			hashIdentity(got[0]), hashIdentity(got[1]))
+	}
+}
+
 func TestPushSelfRejectsWhenTheCloneWouldExceedQuota(t *testing.T) {
 	t.Parallel()
 
@@ -910,6 +933,7 @@ func TestMutatorNoOpDoesNotIsolateASharedReceiver(t *testing.T) {
   h.delete("missing")
   h.delete_if { false }
   h.keep_if { true }
+  h.replace(h)
   [a, b, h, g]
 end
 `)

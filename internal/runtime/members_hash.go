@@ -1225,6 +1225,11 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) != 1 || (args[0].Kind() != KindHash && args[0].Kind() != KindObject) {
 				return NewNil(), fmt.Errorf("hash.replace expects a single hash argument")
 			}
+			// Replacing a hash with itself changes nothing; skip the detach,
+			// isolation, and rebuild that would otherwise copy a shared receiver.
+			if collectionIdentity(receiver) == collectionIdentity(args[0]) {
+				return receiver, nil
+			}
 			// Ruby's Hash#replace discards the receiver's contents and adopts the
 			// argument's entries (and default) in place, returning the receiver.
 			// Preflight the adopted entries before the receiver grows, plus the
