@@ -4219,10 +4219,6 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 		}
 		count = n
 	}
-	receiver, err := exec.writableCollection(receiver)
-	if err != nil {
-		return NewNil(), err
-	}
 	arr := receiver.Array()
 	if count > len(arr) {
 		count = len(arr)
@@ -4231,17 +4227,23 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 		if len(arr) == 0 {
 			return NewNil(), nil
 		}
+	} else if count == 0 {
+		// shift(0), and shift(n) on an empty receiver, remove nothing.
+		// Isolation waits until a write, so a shared receiver is not
+		// copied for a call that changes nothing.
+		return NewArray([]Value{}), nil
+	}
+	receiver, err := exec.writableCollection(receiver)
+	if err != nil {
+		return NewNil(), err
+	}
+	arr = receiver.Array()
+	if len(args) == 0 {
 		shifted := arr[0]
 		if err := shrinkArray(exec, receiver, arr, 1, len(arr), args, kwargs, block, 0); err != nil {
 			return NewNil(), err
 		}
 		return shifted, nil
-	}
-	// shift(0), and shift(n) on an empty receiver, remove nothing. Falling
-	// through would still take the shrink path, which inside an iterator copies
-	// the whole receiver and bills its elements for a call that changes nothing.
-	if count == 0 {
-		return NewArray([]Value{}), nil
 	}
 	// shift(n) copies the removed head out so the returned array does not share
 	// backing storage with the receiver.

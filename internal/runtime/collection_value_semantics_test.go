@@ -709,6 +709,7 @@ func TestMutatorNoOpDoesNotIsolateASharedReceiver(t *testing.T) {
   a = [1, 2]
   b = a
   a.pop(0)
+  a.shift(0)
   a.push()
   a.insert(0)
   [a, b]
