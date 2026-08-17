@@ -98,10 +98,20 @@ func (v Value) RangeHashEntries(visit func(key string, val Value)) {
 	if m == nil {
 		return
 	}
-	var keyBuf [smallHashIterationBuffer]Value
-	for _, key := range v.hashIterationKeys(keyBuf[:]) {
-		name := key.data.(string)
-		visit(name, m[name])
+	if v.kind == KindHash {
+		hd := v.data.(*hashData)
+		if hd.orderCoversEntries() {
+			for _, key := range hd.order {
+				name := key.data.(string)
+				visit(name, m[name])
+			}
+			return
+		}
+	}
+	// Fallback walks the live map without allocating a key slice. Callers
+	// that need a sorted snapshot (JSON.stringify) sort their own buffer.
+	for key, val := range m {
+		visit(key, val)
 	}
 }
 

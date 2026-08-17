@@ -1,11 +1,13 @@
 package runtime
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"math"
 	"math/big"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -667,13 +669,24 @@ func jsonObjectIdentity(val Value) uintptr {
 // Ruby's JSON.generate does, and sorted keys for a bare host map or an object,
 // which record no order.
 func jsonObjectEntries(val Value) ([]jsonObjectEntry, error) {
-	// Filled through RangeHashEntries rather than HashEntries so stringify does
-	// not allocate an intermediate entry slice per object on top of the one it
-	// returns. Stringify never re-enters script code, so walking in place
-	// cannot observe a mutation mid-walk.
-	entries := make([]jsonObjectEntry, 0, val.HashLen())
-	val.RangeHashEntries(func(key string, item Value) {
+	// Fill the returned buffer directly and sort it in place when insertion
+	// order is unavailable. RangeHashEntries' fallback used to allocate a
+	// second []Value of keys on top of this slice, which stringify's quota
+	// checks never reserved.
+	n := val.HashLen()
+	entries := make([]jsonObjectEntry, 0, n)
+	if val.Kind() == KindHash {
+		var buf [smallHashKeyBufferSize]HashEntry
+		for _, entry := range val.HashEntriesInto(buf[:]) {
+			entries = append(entries, jsonObjectEntry{key: entry.Key.String(), value: entry.Value})
+		}
+		return entries, nil
+	}
+	for key, item := range val.Hash() {
 		entries = append(entries, jsonObjectEntry{key: key, value: item})
+	}
+	slices.SortFunc(entries, func(a, b jsonObjectEntry) int {
+		return cmp.Compare(a.key, b.key)
 	})
 	return entries, nil
 }
