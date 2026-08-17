@@ -666,6 +666,7 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		for i, item := range items {
 			clonedItems[i] = cloneValueForHostWithState(item, state)
 		}
+		publishCollectionElems(clonedItems)
 		return cloned
 	case KindHash:
 		return cloneHostHashValue(val, state)

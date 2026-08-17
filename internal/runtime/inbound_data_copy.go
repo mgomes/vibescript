@@ -247,6 +247,7 @@ func (r *callFunctionRebinder) copyAndRegisterInboundValue(val Value) Value {
 				cloned[i] = r.copyAndRegisterInboundValue(item)
 			}
 		}
+		publishCollectionElems(cloned)
 		return clonedVal
 	case KindHash:
 		entries := val.HashEntryMap()

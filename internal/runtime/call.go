@@ -974,6 +974,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		for i := range items {
 			clonedItems[i] = r.rebindValue(items[i])
 		}
+		publishCollectionElems(clonedItems)
 		return clonedArray
 	case KindHash:
 		id := hashIdentity(val)

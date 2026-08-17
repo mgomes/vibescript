@@ -278,6 +278,26 @@ end
 	}
 }
 
+func TestCapabilityClonePublishesRepeatedChildren(t *testing.T) {
+	t.Parallel()
+
+	child := NewArray([]Value{NewInt(1)})
+	cloned, err := cloneCapabilityDataOnlyValue("probe.result", NewArray([]Value{child, child}))
+	if err != nil {
+		t.Fatalf("cloneCapabilityDataOnlyValue(probe.result, [child, child]) error = %v", err)
+	}
+	items := cloned.Array()
+	if len(items) != 2 {
+		t.Fatalf("cloneCapabilityDataOnlyValue(...) len = %d, want 2", len(items))
+	}
+	if arrayIdentity(items[0]) != arrayIdentity(items[1]) {
+		t.Fatalf("cloneCapabilityDataOnlyValue([child, child]) = distinct children, want one shared clone")
+	}
+	if items[0].SoleRef() {
+		t.Fatal("cloneCapabilityDataOnlyValue([child, child]) left the child sole; mutating one slot would change the other")
+	}
+}
+
 // TestRemovedCollectionBangMembersStayRemoved fails if a bang variant that
 // duplicates a non-bang transformation is ever registered again, and names the
 // replacement in the message so a reintroduction is answered where it happens.

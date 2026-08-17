@@ -430,6 +430,9 @@ func (s *capabilityDataCloneScanner) cloneArray(val Value) (Value, error) {
 		}
 		clonedValues[i] = clonedItem
 	}
+	// NewArray published the zero-filled slice, not these later inserts.
+	// A repeated child ([child, child]) must be shared, not left fresh.
+	publishCollectionElems(clonedValues)
 	if id != 0 {
 		delete(s.visitingArrays, id)
 	}
