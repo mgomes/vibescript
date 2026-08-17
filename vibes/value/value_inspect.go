@@ -151,23 +151,38 @@ func (v Value) appendInspectHash(buf *strings.Builder, state *valueStringState, 
 		return err
 	}
 	first := true
-	var keyBuf [smallHashIterationBuffer]Value
-	for _, key := range v.hashIterationKeys(keyBuf[:]) {
+	write := func(name string, val Value) error {
 		if !first {
 			if err := appendBounded(buf, elementSeparator, limit); err != nil {
 				return err
 			}
 		}
 		first = false
-		name := key.data.(string)
 		if err := appendInspectHashKeyBounded(buf, name, limit); err != nil {
 			return err
 		}
 		if err := appendBounded(buf, keyValueSeparator, limit); err != nil {
 			return err
 		}
-		if err := entries[name].appendInspect(buf, state, limit); err != nil {
-			return err
+		return val.appendInspect(buf, state, limit)
+	}
+	if v.HashUsesRecordedOrder() {
+		var walkErr error
+		v.RangeHashEntries(func(name string, val Value) {
+			if walkErr != nil {
+				return
+			}
+			walkErr = write(name, val)
+		})
+		if walkErr != nil {
+			return walkErr
+		}
+	} else {
+		var entryBuf [smallHashIterationBuffer]HashEntry
+		for _, entry := range v.HashEntriesInto(entryBuf[:]) {
+			if err := write(entry.Key.String(), entry.Value); err != nil {
+				return err
+			}
 		}
 	}
 	return appendByteBounded(buf, '}', limit)
