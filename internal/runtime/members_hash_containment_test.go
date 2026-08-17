@@ -2052,32 +2052,30 @@ func selfCyclicHash() Value {
 	return h
 }
 
-// TestHashMergeZeroArgWithBlockOverLargeReceiverSucceeds pins the P2 finding on PR
-// #776: a bare `h.merge { ... }` with no argument hashes short-circuits to a copy
-// of the receiver and never runs the block or sorts the base, so the conflict
-// block's base scratch buffer is never allocated. The projection must not charge
-// that phantom scratch. A receiver whose real copy fits the quota but whose
-// phantom base scratch would not must still be admitted.
+// TestHashMergeZeroArgWithBlockOverLargeReceiverSucceeds pins that a bare
+// `h.merge { ... }` copies the receiver through HashEntriesInto and must reserve
+// that receiver-sized snapshot, while still not charging unused conflict-block
+// scratch for zero arguments.
 func TestHashMergeZeroArgWithBlockOverLargeReceiverSucceeds(t *testing.T) {
 	t.Parallel()
 
 	const count = 50_000
 	receiver := largeHashReceiver(count)
 
-	// Size the quota to fit the live receiver plus the copied output map exactly,
-	// with no headroom for a base-sized sorted key scratch buffer. The phantom
-	// scratch the pre-fix projection charged would push this over the limit.
+	// Size the quota to fit the live receiver, the copied output, and the
+	// receiver-sized HashEntriesInto scratch that the copy walk actually
+	// allocates. A conflict-block base scratch is still unused (zero args),
+	// but the entry snapshot is live alongside the output.
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, NewNil())
 	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
 	outputStructure := estimatedEmptyOutputHashBytes + count*perEntry + hashOrderBackingBytes(count)
 	scratch := sortedHashEntryBufferBytes(count)
-	quota := liveWithRoots + outputStructure + scratch/2
+	quota := liveWithRoots + outputStructure + scratch + 64*1024
 
-	// Sanity: the pre-fix projection added the full base scratch on top, which would
-	// exceed this quota, so admitting the call proves the phantom charge is gone.
-	if liveWithRoots+outputStructure+scratch <= quota {
-		t.Fatalf("test setup expects the phantom-scratch projection (%d) to exceed the quota (%d)", liveWithRoots+outputStructure+scratch, quota)
+	tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: liveWithRoots + outputStructure + scratch/2}
+	if _, err := callHashMember(t, tight, receiver, "merge", nil, emptyHashBlock()); err == nil {
+		t.Fatal("zero-arg merge under a quota that omits receiver entry scratch must reject")
 	}
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}

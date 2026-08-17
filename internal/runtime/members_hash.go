@@ -1170,7 +1170,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					maxArgLen = argLen
 				}
 			}
-			scratchBytes := sortedHashEntryBufferBytes(maxArgLen)
+			scratchBytes := sortedHashEntryBufferBytes(max(receiver.HashLen(), maxArgLen))
 			// looseEntries counts every overlapping key separately. Like the
 			// legacy path, fall back to the exact distinct union when that bound
 			// matters so an overlapping merge (e.g. h.merge(h), or an argument that
@@ -1877,12 +1877,11 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("hash.remap_keys expects a key mapping hash")
 			}
 			count := receiver.HashLen()
-			if err := exec.checkProjectedHashTransformBytes(count, sortedHashEntryBufferBytes(count), receiver, args, kwargs, block); err != nil {
+			if err := exec.checkProjectedHashBytes(count, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := NewHashWithCapacity(count)
-			var entryBuf [smallHashKeyBufferSize]HashEntry
-			for _, entry := range receiver.HashEntriesInto(entryBuf[:]) {
+			for _, entry := range receiver.HashEntries() {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
@@ -1992,11 +1991,12 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("hash.compact does not take arguments")
 			}
 			count := receiver.HashLen()
-			if err := exec.checkProjectedHashBytes(count, receiver, args, kwargs, block); err != nil {
+			if err := exec.checkProjectedHashTransformBytes(count, sortedHashEntryBufferBytes(count), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := NewHashWithCapacity(count)
-			for _, entry := range receiver.HashEntries() {
+			var entryBuf [smallHashKeyBufferSize]HashEntry
+			for _, entry := range receiver.HashEntriesInto(entryBuf[:]) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
