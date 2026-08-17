@@ -414,7 +414,14 @@ func hashMemberQuery(property string) (Value, error) {
 			// while each probe charges a step and its string bytes — the scan
 			// used to be free, so the quota never bounded it (#1135).
 			equality := exec.meteredEquality()
-			for _, entry := range receiver.HashEntries() {
+			count := receiver.HashLen()
+			delta := exec.reserveLoopScratch(sortedHashEntryBufferBytes(count))
+			defer exec.releaseLoopScratch(delta)
+			if err := exec.checkMemory(); err != nil {
+				return NewNil(), err
+			}
+			var entryBuf [smallHashKeyBufferSize]HashEntry
+			for _, entry := range receiver.HashEntriesInto(entryBuf[:]) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
