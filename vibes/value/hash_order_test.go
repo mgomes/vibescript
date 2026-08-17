@@ -376,3 +376,23 @@ func TestHostKeySwapFallbackSortsTheEntryBuffer(t *testing.T) {
 		t.Fatalf("HashEntriesInto[0] = %q, want %q", got, want)
 	}
 }
+
+func TestNewHashRetainedMapDeleteReinsertFallsBack(t *testing.T) {
+	t.Parallel()
+
+	entries := map[string]value.Value{
+		"a": value.NewInt(1),
+		"b": value.NewInt(2),
+	}
+	hash := value.NewHash(entries)
+	delete(entries, "a")
+	if err := hash.HashSet(value.NewString("a"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(a) after delete through NewHash map error = %v, want nil", err)
+	}
+	entries["c"] = value.NewInt(3)
+	requireKeyOrder(t, hash, []value.Value{
+		value.NewString("a"),
+		value.NewString("b"),
+		value.NewString("c"),
+	})
+}

@@ -208,12 +208,13 @@ type hashData struct {
 	entries       map[string]Value
 	entryCapacity int
 	order         []Value
-	// orderUntrusted is set when Hash() hands out the live map. A host can
-	// then delete a key, HashSet it again (which would append a duplicate),
-	// and insert another key through the map, leaving a same-length order
-	// that names a key twice. The next HashSet reconciles the record once
-	// and clears the flag so later inserts stay O(1). The flag is atomic
-	// because Hash() is a documented concurrent read.
+	// orderUntrusted is set when Hash() hands out the live map, or when
+	// NewHash retains a non-empty caller map. A host can then delete a
+	// key, HashSet it again (which would append a duplicate), and insert
+	// another key through the map, leaving a same-length order that names
+	// a key twice. The flag stays set for the life of that exposure so
+	// later HashSet traffic keeps reconciling rather than trusting the
+	// record. It is atomic because Hash() is a documented concurrent read.
 	orderUntrusted atomic.Bool
 }
 
@@ -227,11 +228,14 @@ type hashData struct {
 const HashDataBytes = int(unsafe.Sizeof(hashData{}))
 
 // NewHash returns a hash (map) Value over h. A non-empty map records no
-// insertion order, so the hash iterates in sorted key order.
+// insertion order, so the hash iterates in sorted key order. The map is
+// retained, not copied: if the caller keeps it, later mutation is treated
+// like Hash() exposure and the recorded order stays untrusted.
 func NewHash(h map[string]Value) Value {
 	hd := &hashData{entries: h, entryCapacity: len(h)}
 	if len(h) > 0 {
 		hd.order = sortedMapKeysInto(h, nil)
+		hd.orderUntrusted.Store(true)
 	}
 	return Value{kind: KindHash, data: hd}
 }
