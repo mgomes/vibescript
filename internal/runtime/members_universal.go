@@ -498,6 +498,9 @@ func setBoundReceiver(builtin *Builtin, cell *boundReceiver, receiver Value) {
 	if len(builtin.CapturedValues) > 0 {
 		builtin.CapturedValues[0] = receiver
 	}
+	// The replacement is the handle the cloned builtin now retains, so it
+	// must be published the same way the original capture was.
+	publishCollection(receiver)
 	if builtin.BoundReceiver != nil && builtin.BoundReceiver.retarget != nil {
 		builtin.BoundReceiver.retarget(builtin, receiver)
 	}

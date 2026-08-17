@@ -957,6 +957,40 @@ end
 	}
 }
 
+func TestBoundPredicatePublishesItsReceiver(t *testing.T) {
+	t.Parallel()
+
+	for _, pred := range []string{"eql?", "equal?"} {
+		t.Run(pred, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  a = [1]\n  p = a."+pred+"\n  a.push(2)\n  a.inspect + \" \" + p.call([1]).to_s + \" \" + p.call([1, 2]).to_s\nend\n")
+			if got := callFunc(t, script, "run", nil).String(); got != "[1, 2] true false" {
+				t.Fatalf("a.%s then a.push(2) = %s, want [1, 2] true false", pred, got)
+			}
+		})
+	}
+}
+
+func TestReboundBoundPredicatePublishesItsReceiver(t *testing.T) {
+	t.Parallel()
+
+	maker := compileScriptDefault(t, `def make()
+  a = [1]
+  p = a.eql?
+  [p, a]
+end
+`)
+	pair := callFunc(t, maker, "make", nil)
+	script := compileScriptDefault(t, `def run(pair)
+  pair[1].push(2)
+  pair[1].inspect + " " + pair[0].call([1]).to_s
+end
+`)
+	if got := callFunc(t, script, "run", []Value{pair}).String(); got != "[1, 2] true" {
+		t.Fatalf("rebound a.eql? then pair[1].push(2) = %s, want [1, 2] true", got)
+	}
+}
+
 // TestWritesIsolateAfterScriptCodeRuns closes the class the compound-assignment
 // finding opened. A write is licensed by an isolation check, and between that
 // check and the write itself script code can run and bind the receiver somewhere

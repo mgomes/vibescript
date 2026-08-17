@@ -1295,6 +1295,12 @@ func DeclareNonRetaining(v Value) Value {
 func NewCapturingBuiltin(name string, fn BuiltinFunc, captured ...Value) Value {
 	val := newBuiltin(name, fn, false)
 	valueBuiltin(val).CapturedValues = captured
+	// A captured collection is a durable handle. Leaving it unpublished lets
+	// the sole-ref write path mutate a wrapper the builtin still names —
+	// `a = [1]; p = a.eql?; a.push(2)` would then change what p compares.
+	for _, item := range captured {
+		publishCollection(item)
+	}
 	return val
 }
 
