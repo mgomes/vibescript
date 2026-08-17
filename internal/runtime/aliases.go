@@ -312,7 +312,7 @@ func NewHashWithCapacity(capacity int) Value { return value.NewHashWithCapacity(
 // order, for the cloners that reuse a shared entry map and must still give each
 // wrapper its own order.
 func newHashWithOrder(entries map[string]Value, order []Value) Value {
-	return value.NewHashWithOrder(entries, order)
+	return value.NewHashWithTrustedOrder(entries, order)
 }
 
 // hashIdentity returns a stable identity for a hash wrapper, or 0 when v is not

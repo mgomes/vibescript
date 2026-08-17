@@ -245,24 +245,30 @@ func NewHash(h map[string]Value) Value {
 // it, and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
 func NewHashWithOrder(entries map[string]Value, order []Value) Value {
-	hd := &hashData{
-		entries:       entries,
-		entryCapacity: len(entries),
-		order:         order,
-	}
 	if !orderNamesUnique(order) {
 		// A caller-supplied order that repeats a name can match the
 		// entry count while omitting another live key. Drop it so
 		// iteration takes the sorted fallback.
-		hd.order = nil
+		order = nil
 	}
-	return Value{kind: KindHash, data: hd}
+	return NewHashWithTrustedOrder(entries, order)
+}
+
+// NewHashWithTrustedOrder is NewHashWithOrder for an order that is already
+// unique, such as HashKeyOrder() output. The inbound clone path uses this
+// so Script.Call does not re-validate a snapshot it just took.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func NewHashWithTrustedOrder(entries map[string]Value, order []Value) Value {
+	return Value{kind: KindHash, data: &hashData{
+		entries:       entries,
+		entryCapacity: len(entries),
+		order:         order,
+	}}
 }
 
 func orderNamesUnique(order []Value) bool {
-	// Allocation-free: NewHashWithOrder sits on the Script.Call inbound
-	// clone path, and a map here showed up as tens of KB per 1000-key
-	// hash in HashEachHostBuilt / HashSelectHostBuilt.
 	for i := range order {
 		name := order[i].data.(string)
 		for j := i + 1; j < len(order); j++ {
