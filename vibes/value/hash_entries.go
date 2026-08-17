@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"unsafe"
 )
 
 // HashEntry is one hash entry. Hash keys live in one string keyspace, so Key is
@@ -359,6 +360,29 @@ func (v Value) HashUsesRecordedOrder() bool {
 		return false
 	}
 	return v.data.(*hashData).orderCoversEntries()
+}
+
+// HashIterationScratchBytes is the heap []Value hashIterationKeys allocates
+// when it cannot use the recorded order and the hash is larger than the
+// inline key buffer. Rendering projections reserve this so a live-map
+// fallback cannot push an otherwise admitted to_s past the memory quota.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func HashIterationScratchBytes(v Value) int {
+	n := v.HashLen()
+	if n <= smallHashIterationBuffer {
+		return 0
+	}
+	if v.HashUsesRecordedOrder() {
+		return 0
+	}
+	switch v.kind {
+	case KindHash, KindObject:
+		return n * int(unsafe.Sizeof(Value{}))
+	default:
+		return 0
+	}
 }
 
 // HashOrderCapacity returns the capacity of the insertion-order backing a hash

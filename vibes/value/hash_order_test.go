@@ -248,6 +248,47 @@ func TestHostDeleteReinsertThenDirectInsertFallsBackToSortedKeys(t *testing.T) {
 	})
 }
 
+func TestHashIterationScratchBytesOnlyWhenOrderFallsBack(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{})
+	for i := range 20 {
+		name := string(rune('a' + i))
+		if err := hash.HashSet(value.NewString(name), value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet(%s) error = %v, want nil", name, err)
+		}
+	}
+	if got := value.HashIterationScratchBytes(hash); got != 0 {
+		t.Fatalf("HashIterationScratchBytes(ordered) = %d, want 0", got)
+	}
+	live := hash.Hash()
+	delete(live, "a")
+	live["zz"] = value.NewInt(2)
+	if got := value.HashIterationScratchBytes(hash); got <= 0 {
+		t.Fatalf("HashIterationScratchBytes(invalidated) = %d, want > 0", got)
+	}
+}
+
+func TestNewHashWithOrderDuplicateNamesFallsBackToSortedKeys(t *testing.T) {
+	t.Parallel()
+
+	entries := map[string]value.Value{
+		"a": value.NewInt(1),
+		"b": value.NewInt(2),
+		"c": value.NewInt(3),
+	}
+	order := []value.Value{value.NewString("a"), value.NewString("b"), value.NewString("a")}
+	hash := value.NewHashWithOrder(entries, order)
+	if hash.HashUsesRecordedOrder() {
+		t.Fatal("NewHashWithOrder(duplicate names) used the adopted order, want sorted fallback")
+	}
+	requireKeyOrder(t, hash, []value.Value{
+		value.NewString("a"),
+		value.NewString("b"),
+		value.NewString("c"),
+	})
+}
+
 func TestHashReadDoesNotLeaveLaterInsertsUntrusted(t *testing.T) {
 	t.Parallel()
 

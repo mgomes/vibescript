@@ -959,6 +959,7 @@ func (exec *Execution) checkProjectedValueRendering(val Value, payloadBytes int)
 
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
+	used = saturatingAdd(used, value.HashIterationScratchBytes(val))
 	if exec.memoryExceeded(used) {
 		return exec.memoryQuotaExceededError()
 	}
