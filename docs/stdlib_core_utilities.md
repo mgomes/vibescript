@@ -719,7 +719,7 @@ methods.
 - `each_key { |key| } -> hash` – yield each key.
 - `each_value { |value| } -> hash` – yield each value.
 - `to_a -> array` – nested `[key, value]` pairs in insertion order, with keys
-  exposed as symbols. The inverse of `Array#to_h`, equivalent to `flatten(0)`.
+  exposed as strings. The inverse of `Array#to_h`, equivalent to `flatten(0)`.
 - `map_with_index { |pair, index| } -> array` – new array of block results,
   yielding each `[key, value]` pair with its 0-based index in insertion order.
   Takes no arguments.

@@ -55,7 +55,7 @@ end
 
 A `for` loop may also iterate a hash, matching Ruby's behavior of looping over
 `each`. Each iteration binds a two-element `[key, value]` pair; keys are exposed
-as symbols and entries are visited in insertion order, exactly as Ruby's hash
+as strings and entries are visited in insertion order, exactly as Ruby's hash
 iteration contract promises.
 
 ```vibe
@@ -66,7 +66,7 @@ def entries
   end
   out
 end
-# entries => [[:a, 1], [:b, 2]]
+# entries => [["b", 2], ["a", 1]]
 ```
 
 ## `case` / `when` expressions
