@@ -90,6 +90,9 @@ func (v Value) Array() []Value {
 // Hash keys are strings, so this is the whole content of the value; iteration
 // order lives on the wrapper and is reached through HashEntries.
 func (v Value) Hash() map[string]Value {
+	if v.kind == KindHash {
+		v.data.(*hashData).orderUntrusted = true
+	}
 	return v.hashEntryMap()
 }
 

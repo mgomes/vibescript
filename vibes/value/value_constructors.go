@@ -207,6 +207,12 @@ type hashData struct {
 	entries       map[string]Value
 	entryCapacity int
 	order         []Value
+	// orderUntrusted is set when Hash() hands out the live map. A host can
+	// then delete a key, HashSet it again (which would append a duplicate),
+	// and insert another key through the map, leaving a same-length order
+	// that names a key twice. HashSet consults the existing record before
+	// appending once this is set.
+	orderUntrusted bool
 }
 
 // HashDataBytes is the heap footprint of the hashData wrapper every KindHash

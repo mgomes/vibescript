@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"sync"
 )
 
 // HashEntry is one hash entry. Hash keys live in one string keyspace, so Key is
@@ -168,50 +167,28 @@ func (v Value) hashIterationKeys(buf []Value) []Value {
 }
 
 // orderCoversEntries reports whether the recorded order still names exactly the
-// live entry set. Length plus membership is not enough: a duplicate recorded
-// name can hide a live key that is not in the record. See hashIterationKeys.
+// live entry set. See hashIterationKeys for why membership plus length is
+// exact once HashSet refuses to append a name that is already recorded.
 func (hd *hashData) orderCoversEntries() bool {
 	if len(hd.order) != len(hd.entries) {
 		return false
 	}
-	// Length plus membership is not enough: a host can delete a key through
-	// Hash(), reinsert it with HashSet (which appends), then add a new key
-	// through the live map. The record then names a twice and omits the new
-	// key while lengths still match.
-	if n := len(hd.order); n <= smallHashIterationBuffer {
-		for i := range n {
-			name := hd.order[i].data.(string)
-			if _, ok := hd.entries[name]; !ok {
-				return false
-			}
-			for j := range i {
-				if hd.order[j].data.(string) == name {
-					return false
-				}
-			}
-		}
-		return true
-	}
-	seen := orderSeenPool.Get().(map[string]struct{})
-	clear(seen)
-	covered := true
 	for i := range hd.order {
-		name := hd.order[i].data.(string)
-		if _, ok := hd.entries[name]; !ok {
-			covered = false
-			break
+		if _, ok := hd.entries[hd.order[i].data.(string)]; !ok {
+			return false
 		}
-		if _, dup := seen[name]; dup {
-			covered = false
-			break
-		}
-		seen[name] = struct{}{}
 	}
-	orderSeenPool.Put(seen)
-	return covered
+	return true
 }
 
-var orderSeenPool = sync.Pool{New: func() any { return make(map[string]struct{}, 16) }}
+func (hd *hashData) orderHasName(name string) bool {
+	for i := range hd.order {
+		if hd.order[i].data.(string) == name {
+			return true
+		}
+	}
+	return false
+}
 
 func sortedMapKeysInto(m map[string]Value, buf []Value) []Value {
 	keys := buf[:0]
@@ -291,6 +268,15 @@ func (v Value) hashSetInternal(key, val Value, bump bool) error {
 		// already a string is stored as-is, so copying entries between hashes
 		// (select, merge, transform_values) boxes nothing at all; only a symbol
 		// pays one boxing as it normalizes.
+		//
+		// After Hash() a host may have deleted this name from the live map
+		// while it is still in order. Appending again would duplicate it and
+		// let a later live insert keep the length match. Scan only then:
+		// trusted HashSet traffic stays an O(1) map probe.
+		if hd.orderUntrusted && hd.orderHasName(name) {
+			hd.entries[name] = val
+			return nil
+		}
 		keyValue := key
 		if key.kind != KindString {
 			keyValue = NewString(name)
