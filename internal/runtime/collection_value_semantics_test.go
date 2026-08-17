@@ -740,6 +740,32 @@ end
 	if got := callFunc(t, script, "run", nil).String(); got != "[1, 2] [1]" {
 		t.Fatalf("a.send(:push, 2) = %s, want [1, 2] [1]", got)
 	}
+
+	nested := compileScriptDefault(t, `def run()
+  a = [1]
+  b = a
+  a.send(:send, :push, 2)
+  a.inspect + " " + b.inspect
+end
+`)
+	if got := callFunc(t, nested, "run", nil).String(); got != "[1, 2] [1]" {
+		t.Fatalf("a.send(:send, :push, 2) = %s, want [1, 2] [1]", got)
+	}
+}
+
+func TestFillPublishesEachRepeatedSlot(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  a = [0, 0]
+  a.fill([])
+  a[0].push(1)
+  a.inspect
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "[[1], []]" {
+		t.Fatalf("a.fill([]) then a[0].push(1) = %s, want [[1], []]", got)
+	}
 }
 
 func TestDupPublishesRepeatedChildren(t *testing.T) {

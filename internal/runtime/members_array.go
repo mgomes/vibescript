@@ -3361,7 +3361,6 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	if err != nil {
 		return NewNil(), err
 	}
-	publishCollectionElems(args)
 	arr := receiver.Array()
 	hasBlock := valueBlock(block) != nil
 
@@ -3452,6 +3451,10 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 				}
 			} else {
 				val = args[0]
+				// The same wrapper is installed in every window slot, so
+				// count it once per slot. Publishing only once leaves a
+				// multi-slot fill looking sole.
+				publishCollection(val)
 			}
 			if err := appendValue(val, runner != nil); err != nil {
 				return NewNil(), err
