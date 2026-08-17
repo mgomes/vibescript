@@ -1312,14 +1312,18 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err := exec.checkProjectedHashBytes(1, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
-			receiver, err := exec.writableCollection(receiver)
+			stored, err := exec.detachStoredCollection(args[1])
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := hashSet(receiver, args[0], args[1]); err != nil {
+			receiver, err = exec.writableCollection(receiver)
+			if err != nil {
+				return NewNil(), err
+			}
+			if err := hashSet(receiver, args[0], stored); err != nil {
 				return NewNil(), fmt.Errorf("hash.store key is an unsupported hash key: %w", err)
 			}
-			return args[1], nil
+			return stored, nil
 		}), nil
 	case "delete":
 		return NewBuiltin("hash.delete", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
