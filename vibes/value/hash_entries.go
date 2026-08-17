@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sync"
 )
 
 // HashEntry is one hash entry. Hash keys live in one string keyspace, so Key is
@@ -177,19 +178,40 @@ func (hd *hashData) orderCoversEntries() bool {
 	// Hash(), reinsert it with HashSet (which appends), then add a new key
 	// through the live map. The record then names a twice and omits the new
 	// key while lengths still match.
-	seen := make(map[string]struct{}, len(hd.order))
+	if n := len(hd.order); n <= smallHashIterationBuffer {
+		for i := range n {
+			name := hd.order[i].data.(string)
+			if _, ok := hd.entries[name]; !ok {
+				return false
+			}
+			for j := range i {
+				if hd.order[j].data.(string) == name {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	seen := orderSeenPool.Get().(map[string]struct{})
+	clear(seen)
+	covered := true
 	for i := range hd.order {
 		name := hd.order[i].data.(string)
 		if _, ok := hd.entries[name]; !ok {
-			return false
+			covered = false
+			break
 		}
 		if _, dup := seen[name]; dup {
-			return false
+			covered = false
+			break
 		}
 		seen[name] = struct{}{}
 	}
-	return true
+	orderSeenPool.Put(seen)
+	return covered
 }
+
+var orderSeenPool = sync.Pool{New: func() any { return make(map[string]struct{}, 16) }}
 
 func sortedMapKeysInto(m map[string]Value, buf []Value) []Value {
 	keys := buf[:0]
