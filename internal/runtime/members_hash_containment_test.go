@@ -1217,7 +1217,8 @@ func TestHashExceptChargesExclusionSet(t *testing.T) {
 	// A quota generously above roots + output + exclusion set still admits the call
 	// and returns the empty result, proving the new charge does not over-tighten a
 	// valid except.
-	roomy := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: preFixBudget + exclusion + 64*1024}
+	entryScratch := sortedHashEntryBufferBytes(count)
+	roomy := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: preFixBudget + exclusion + entryScratch + 64*1024}
 	out, err := callHashMember(t, roomy, receiver, "except", args, NewNil())
 	if err != nil {
 		t.Fatalf("except within an ample quota failed: %v", err)

@@ -1486,7 +1486,8 @@ func hashMemberTransforms(property string) (Value, error) {
 		return NewAutoBuiltin("hash.except", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			count := receiver.HashLen()
 			exclusionEntries := min(len(args), count)
-			if err := exec.checkProjectedHashTransformBytes(count, exclusionSetBytes(exclusionEntries), receiver, args, kwargs, block); err != nil {
+			scratch := saturatingAdd(exclusionSetBytes(exclusionEntries), sortedHashEntryBufferBytes(count))
+			if err := exec.checkProjectedHashTransformBytes(count, scratch, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			var excluded map[string]struct{}
@@ -1510,7 +1511,8 @@ func hashMemberTransforms(property string) (Value, error) {
 				excluded[key] = struct{}{}
 			}
 			out := NewHashWithCapacity(count)
-			for _, entry := range receiver.HashEntries() {
+			var entryBuf [smallHashKeyBufferSize]HashEntry
+			for _, entry := range receiver.HashEntriesInto(entryBuf[:]) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
@@ -1877,11 +1879,12 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("hash.remap_keys expects a key mapping hash")
 			}
 			count := receiver.HashLen()
-			if err := exec.checkProjectedHashBytes(count, receiver, args, kwargs, block); err != nil {
+			if err := exec.checkProjectedHashTransformBytes(count, sortedHashEntryBufferBytes(count), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := NewHashWithCapacity(count)
-			for _, entry := range receiver.HashEntries() {
+			var entryBuf [smallHashKeyBufferSize]HashEntry
+			for _, entry := range receiver.HashEntriesInto(entryBuf[:]) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
