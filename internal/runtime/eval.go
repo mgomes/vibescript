@@ -1351,31 +1351,7 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		// epoch bump, keeping loop-grown arrays linear under the quota
 		// (#1129); when it is not eligible, charge the backing reallocation
 		// up front and take the ordinary epoch-bumping path.
-		if left.Kind() == KindArray {
-			detached, detachErr := exec.detachStoredCollection(right)
-			if detachErr != nil {
-				return NewNil(), exec.wrapError(detachErr, pos)
-			}
-			right = detached
-			writable, writableErr := exec.writableCollection(left)
-			if writableErr != nil {
-				return NewNil(), exec.wrapError(writableErr, pos)
-			}
-			left = writable
-			publishCollection(right)
-			handled, appendErr := exec.appendArrayCharged(left, right)
-			if appendErr != nil {
-				return NewNil(), exec.wrapError(appendErr, pos)
-			}
-			if handled {
-				result = left
-				break
-			}
-			if err := arrayReserveInPlaceGrowth(exec, left, []Value{right}, nil, NewNil(), 1); err != nil {
-				return NewNil(), exec.wrapError(err, pos)
-			}
-		}
-		result, err = shovelValues(left, right)
+		result, err = exec.shovelArray(left, right)
 	case tokenAmpersand:
 		result, err = intersectValues(exec, left, right)
 	case tokenEQ:

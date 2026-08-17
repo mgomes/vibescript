@@ -339,6 +339,36 @@ func (exec *Execution) detachStoredCollection(val Value) (Value, error) {
 	return detached, nil
 }
 
+// shovelArray implements array << value with the same isolation, detachment,
+// and publication the operator uses. Reduce's "<<" shorthand and &:<< must
+// go through this rather than shovelValues, or they mutate a shared element
+// and can install a cycle.
+func (exec *Execution) shovelArray(left, right Value) (Value, error) {
+	if left.Kind() != KindArray {
+		return shovelValues(left, right)
+	}
+	detached, err := exec.detachStoredCollection(right)
+	if err != nil {
+		return NewNil(), err
+	}
+	writable, err := exec.writableCollection(left)
+	if err != nil {
+		return NewNil(), err
+	}
+	publishCollection(detached)
+	handled, err := exec.appendArrayCharged(writable, detached)
+	if err != nil {
+		return NewNil(), err
+	}
+	if handled {
+		return writable, nil
+	}
+	if err := arrayReserveInPlaceGrowth(exec, writable, []Value{detached}, nil, NewNil(), 1); err != nil {
+		return NewNil(), err
+	}
+	return shovelValues(writable, detached)
+}
+
 // detachStoredCollections applies detachStoredCollection across a mutator's
 // arguments, returning the original slice untouched when none of them names a
 // container on the write's own path.

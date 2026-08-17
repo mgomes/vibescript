@@ -2653,7 +2653,9 @@ func reduceOperationName(v Value) (string, bool) {
 // operation form to the runtime helpers that implement them. Ruby exposes these
 // as methods on its numeric and collection types; Vibescript implements them as
 // operators, so the symbol shorthand routes through the same helpers the `+`,
-// `-`, `*`, `/`, `%`, and `**` operators use.
+// `-`, `*`, `/`, `%`, and `**` operators use. `<<` is handled in
+// reduceSendOperation so it can isolate through shovelArray without an
+// initialization cycle.
 var reduceArithmeticOps = map[string]func(exec *Execution, left, right Value) (Value, error){
 	"+":  func(_ *Execution, l, r Value) (Value, error) { return addValues(l, r) },
 	"-":  subtractValues,
@@ -2661,7 +2663,6 @@ var reduceArithmeticOps = map[string]func(exec *Execution, left, right Value) (V
 	"/":  func(_ *Execution, l, r Value) (Value, error) { return divideValues(l, r) },
 	"%":  func(_ *Execution, l, r Value) (Value, error) { return moduloValues(l, r) },
 	"**": func(_ *Execution, l, r Value) (Value, error) { return powerValues(l, r) },
-	"<<": func(_ *Execution, l, r Value) (Value, error) { return shovelValues(l, r) },
 	"&":  intersectValues,
 }
 
@@ -2673,6 +2674,9 @@ var reduceArithmeticOps = map[string]func(exec *Execution, left, right Value) (V
 // accumulator that happens to be the current self cannot reach private methods,
 // matching public_send's privacy guarantee.
 func (exec *Execution) reduceSendOperation(accumulator Value, operation string, item Value) (Value, error) {
+	if operation == "<<" {
+		return exec.shovelArray(accumulator, item)
+	}
 	if op, ok := reduceArithmeticOps[operation]; ok {
 		if accumulator.Kind() == KindInt && item.Kind() == KindInt {
 			// Mirror the operator guards: big operands charge scaled steps and

@@ -757,6 +757,24 @@ end
 	}
 }
 
+func TestReduceShovelDoesNotMutateTheSourceElement(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ name, call string }{
+		{"string op", `a.reduce("<<")`},
+		{"symbol proc", "a.reduce(&:<<)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  a = [[], 1]\n  out = "+tc.call+"\n  a.inspect + \" \" + out.inspect\nend\n")
+			if got := callFunc(t, script, "run", nil).String(); got != "[[], 1] [1]" {
+				t.Fatalf("%s = %s, want [[], 1] [1]", tc.call, got)
+			}
+		})
+	}
+}
+
 func TestFillPublishesEachRepeatedSlot(t *testing.T) {
 	t.Parallel()
 
