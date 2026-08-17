@@ -264,7 +264,7 @@ func normalizeHashForType(val Value, ty *TypeExpr, ctx typeContext) (Value, erro
 	if val.Kind() == KindHash {
 		return normalizeHashEntriesForType(val, ty, keyType, valueType, ctx)
 	}
-	entries := val.Hash()
+	entries := val.HashEntryMap()
 	var out map[string]Value
 
 	if decided, keyMatches := typeAllowsStringHashKey(keyType); decided {
@@ -480,7 +480,7 @@ func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 }
 
 func normalizeStringKeyShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {
-	entries := val.Hash()
+	entries := val.HashEntryMap()
 	// An open shape's entry count says nothing about coverage (extras may
 	// stand in for missing declared fields), so it always scans.
 	if (ty.Open || len(entries) != len(ty.Shape)) && shapeMissingRequiredField(ty, func(field string) bool {
@@ -735,7 +735,7 @@ func enumFromNamespaceValue(val Value, enumName string) (*EnumDef, bool, error) 
 	if val.Kind() != KindObject {
 		return nil, false, nil
 	}
-	entries := val.Hash()
+	entries := val.HashEntryMap()
 	if enumVal, ok := entries[enumName]; ok && enumVal.Kind() == KindEnum {
 		return valueEnum(enumVal), true, nil
 	}
@@ -1059,7 +1059,7 @@ func sameNormalizedValue(left, right Value) bool {
 	case KindHash:
 		return hashIdentity(left) == hashIdentity(right)
 	case KindObject:
-		return reflect.ValueOf(left.Hash()).Pointer() == reflect.ValueOf(right.Hash()).Pointer()
+		return reflect.ValueOf(left.HashEntryMap()).Pointer() == reflect.ValueOf(right.HashEntryMap()).Pointer()
 	case KindFunction:
 		return valueFunction(left) == valueFunction(right)
 	case KindBuiltin:

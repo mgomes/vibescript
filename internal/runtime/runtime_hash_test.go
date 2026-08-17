@@ -2313,3 +2313,19 @@ func TestSharedEntryMapClonesKeepEachWrappersOrder(t *testing.T) {
 		t.Fatalf("insertion-ordered wrapper cloned as %s, want %s", arms[1].Inspect(), want)
 	}
 }
+
+func TestHashInspectCompareAndTypeCheckKeepInsertionOrder(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run()
+  h = {}
+  h["z"] = 1
+  h.inspect
+  h == {z: 1}
+  h["a"] = 2
+  h.keys
+end
+`)
+	got := callFunc(t, script, "run", nil)
+	compareArrays(t, got, []Value{NewString("z"), NewString("a")})
+}

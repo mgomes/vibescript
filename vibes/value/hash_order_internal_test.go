@@ -27,3 +27,29 @@ func TestHashIterationFallsBackToSortedKeysWithoutOrder(t *testing.T) {
 		t.Fatalf("fallback second key = %q, want %q", got, "b")
 	}
 }
+
+func TestInspectAndEqualDoNotMarkHashOrderUntrusted(t *testing.T) {
+	t.Parallel()
+
+	hash := NewHash(map[string]Value{})
+	if err := hash.HashSet(NewString("a"), NewInt(1)); err != nil {
+		t.Fatalf("HashSet(a) error = %v, want nil", err)
+	}
+	_ = hash.Inspect()
+	if !hash.Equal(hash) {
+		t.Fatal("hash.Equal(hash) = false, want true")
+	}
+	hd, ok := hash.data.(*hashData)
+	if !ok {
+		t.Fatalf("hash.data type = %T, want *hashData", hash.data)
+	}
+	if hd.orderUntrusted.Load() {
+		t.Fatal("Inspect/Equal marked order untrusted, want HashEntryMap read")
+	}
+	if err := hash.HashSet(NewString("b"), NewInt(2)); err != nil {
+		t.Fatalf("HashSet(b) error = %v, want nil", err)
+	}
+	if !hash.HashUsesRecordedOrder() {
+		t.Fatal("HashUsesRecordedOrder() after Inspect/Equal = false, want true")
+	}
+}

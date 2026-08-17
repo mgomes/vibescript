@@ -110,7 +110,7 @@ func newNamedCaptures(names []string, values []Value) Value {
 // matchDataNamedCapture reads a named capture by name, reporting false when
 // the match data has no group of that name.
 func matchDataNamedCapture(obj Value, name string) (Value, bool) {
-	named, ok := obj.Hash()[matchDataNamedCapturesKey]
+	named, ok := obj.HashEntryMap()[matchDataNamedCapturesKey]
 	if !ok || named.Kind() != KindHash {
 		return NewNil(), false
 	}
@@ -148,7 +148,7 @@ func matchDataOffset(name string, offsets, args []Value, kwargs map[string]Value
 // entries: group 0 is the whole match and the rest are the captures. Keeping
 // no separate copy is the point -- a second array is what leaked.
 func matchDataPositionalValues(obj Value) ([]Value, bool) {
-	entries := obj.Hash()
+	entries := obj.HashEntryMap()
 	whole, hasWhole := entries[matchDataWholeKey]
 	captures, hasCaptures := entries["captures"]
 	if !hasWhole || !hasCaptures || captures.Kind() != KindArray {
@@ -162,7 +162,7 @@ func matchDataPositionalValues(obj Value) ([]Value, bool) {
 }
 
 func matchDataIndex(obj, index Value) (Value, bool, error) {
-	if _, ok := obj.Hash()[matchDataWholeKey]; !ok {
+	if _, ok := obj.HashEntryMap()[matchDataWholeKey]; !ok {
 		return NewNil(), false, nil
 	}
 	// A string or symbol index reads a named capture, which is how any
@@ -171,7 +171,7 @@ func matchDataIndex(obj, index Value) (Value, bool, error) {
 	// that entry, so adding named access cannot shadow the existing shape.
 	if index.Kind() == KindString || index.Kind() == KindSymbol {
 		name := index.String()
-		if _, isEntry := obj.Hash()[name]; isEntry {
+		if _, isEntry := obj.HashEntryMap()[name]; isEntry {
 			return NewNil(), false, nil
 		}
 		if val, found := matchDataNamedCapture(obj, name); found {

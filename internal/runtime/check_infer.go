@@ -8140,7 +8140,7 @@ func (c *scriptChecker) bindParamValueFact(param Param, val Value, present bool)
 	}
 	fact := typeFactForValue(val)
 	if param.Kind == ParamKeywordRest && val.Kind() == KindHash {
-		fact = keywordRestFact(val.Hash())
+		fact = keywordRestFact(val.HashEntryMap())
 	}
 	if fact != nil {
 		c.bindLocalTypeInCurrentFrame(param.Name, fact)

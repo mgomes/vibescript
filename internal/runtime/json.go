@@ -661,7 +661,7 @@ func jsonObjectIdentity(val Value) uintptr {
 			return id
 		}
 	}
-	return reflect.ValueOf(val.Hash()).Pointer()
+	return reflect.ValueOf(val.HashEntryMap()).Pointer()
 }
 
 // jsonObjectEntries returns the members stringify emits, in the order the hash

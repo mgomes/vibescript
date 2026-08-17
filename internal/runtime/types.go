@@ -85,7 +85,7 @@ func quickTypeCheck(val Value, ty *TypeExpr) (bool, bool) {
 			}
 			// The open shape `{ ... }` accepts any hash; the exact `{}`
 			// accepts only an empty one.
-			return true, ty.Open || len(val.Hash()) == 0
+			return true, ty.Open || len(val.HashEntryMap()) == 0
 		}
 		return false, false
 	case TypeUnion:
@@ -261,7 +261,7 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 			if !keyMatches {
 				return false, nil
 			}
-			for _, value := range val.Hash() {
+			for _, value := range val.HashEntryMap() {
 				valueMatches, err := s.matches(value, valueType)
 				if err != nil {
 					return false, err
@@ -272,7 +272,7 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 			}
 			return true, nil
 		}
-		for key, value := range val.Hash() {
+		for key, value := range val.HashEntryMap() {
 			keyMatches, err := s.matches(NewString(key), keyType)
 			if err != nil {
 				return false, err
@@ -306,7 +306,7 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 		if val.Kind() != KindHash && val.Kind() != KindObject {
 			return false, nil
 		}
-		entries := val.Hash()
+		entries := val.HashEntryMap()
 		if !ty.Open && len(entries) > len(ty.Shape) {
 			return false, nil
 		}
@@ -388,7 +388,7 @@ func typeValidationVisitFor(val Value, ty *TypeExpr) (typeValidationVisit, bool)
 	case KindArray:
 		valueID = reflect.ValueOf(val.Array()).Pointer()
 	case KindHash, KindObject:
-		valueID = reflect.ValueOf(val.Hash()).Pointer()
+		valueID = reflect.ValueOf(val.HashEntryMap()).Pointer()
 	default:
 		return typeValidationVisit{}, false
 	}
@@ -538,7 +538,7 @@ func (s *valueTypeFormatState) format(val Value, depth int) string {
 	case KindArray:
 		return s.formatArray(val.Array(), depth)
 	case KindHash, KindObject:
-		return s.formatHash(val.Hash(), depth)
+		return s.formatHash(val.HashEntryMap(), depth)
 	default:
 		return val.Kind().String()
 	}

@@ -870,7 +870,7 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 			return clone
 		}
 	}
-	entries := val.Hash()
+	entries := val.HashEntryMap()
 	entriesPtr := reflect.ValueOf(entries).Pointer()
 	// A distinct wrapper that shares this entry map already cloned it; reuse
 	// that cloned map so both cloned wrappers mutate one map in place and the
@@ -911,7 +911,7 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 }
 
 func cloneHostMapValue(val Value, state hostValueCloneState, construct func(map[string]Value) Value) Value {
-	entries := val.Hash()
+	entries := val.HashEntryMap()
 	ptr := reflect.ValueOf(entries).Pointer()
 	if ptr != 0 {
 		if clone, ok := state.maps[ptr]; ok {

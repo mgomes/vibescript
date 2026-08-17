@@ -54,7 +54,7 @@ func hashScanIdentity(val Value) uintptr {
 	if ptr := hashIdentity(val); ptr != 0 {
 		return ptr
 	}
-	return reflect.ValueOf(val.Hash()).Pointer()
+	return reflect.ValueOf(val.HashEntryMap()).Pointer()
 }
 
 // anyHashValue reports whether pred holds for any value a hash or object

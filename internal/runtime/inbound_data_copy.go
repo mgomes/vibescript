@@ -96,7 +96,7 @@ func (s *inboundDataScanner) scan(val Value) bool {
 		// wrappers sharing one mutable entry map must dedup to one cloned map
 		// (the rebinder's seenHashEntries contract), which the tight copier
 		// cannot provide.
-		entries := val.Hash()
+		entries := val.HashEntryMap()
 		if entries == nil {
 			return true
 		}
@@ -110,7 +110,7 @@ func (s *inboundDataScanner) scan(val Value) bool {
 		}
 		return true
 	case KindObject:
-		entries := val.Hash()
+		entries := val.HashEntryMap()
 		if entries == nil {
 			return true
 		}
@@ -191,7 +191,7 @@ func copyInboundDataValue(val Value) Value {
 		// map alone would not preserve.
 		return value.NewHashWithTrustedOrder(copyInboundDataEntries(val.HashEntryMap()), val.HashKeyOrder())
 	case KindObject:
-		return retagClonedObject(val, copyInboundDataEntries(val.Hash()))
+		return retagClonedObject(val, copyInboundDataEntries(val.HashEntryMap()))
 	default:
 		return val
 	}
@@ -262,7 +262,7 @@ func (r *callFunctionRebinder) copyAndRegisterInboundValue(val Value) Value {
 		}
 		return clonedVal
 	case KindObject:
-		entries := val.Hash()
+		entries := val.HashEntryMap()
 		clonedEntries := r.copyAndRegisterInboundEntries(entries)
 		if entries != nil {
 			ptr := reflect.ValueOf(entries).Pointer()

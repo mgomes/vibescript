@@ -1568,10 +1568,10 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 		}
 		// Hash keys live in one string keyspace, so two hashes compare as the
 		// string-keyed maps they are, exactly like objects below.
-		return hashMapsEqual(v.Hash(), other.Hash(), state, strictKinds)
+		return hashMapsEqual(v.HashEntryMap(), other.HashEntryMap(), state, strictKinds)
 	case KindObject:
-		left := v.Hash()
-		right := other.Hash()
+		left := v.HashEntryMap()
+		right := other.HashEntryMap()
 		if len(left) != len(right) {
 			return false
 		}

@@ -131,7 +131,7 @@ func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 		}
 		return cloned
 	case KindObject:
-		obj := val.Hash()
+		obj := val.HashEntryMap()
 		id := reflect.ValueOf(obj).Pointer()
 		if id != 0 {
 			// A wrapper whose tag differs from the cached clone's gets its own
@@ -234,12 +234,12 @@ func (state *deepCloneState) wrapCloned(src, cloned Value) Value {
 		if cloned.ObjectTag() == ObjectTagNone {
 			return cloned
 		}
-		return NewObject(cloned.Hash())
+		return NewObject(cloned.HashEntryMap())
 	}
 	if cloned.ObjectTag() == src.ObjectTag() {
 		return cloned
 	}
-	return retagClonedObject(src, cloned.Hash())
+	return retagClonedObject(src, cloned.HashEntryMap())
 }
 
 // objectCacheID folds the wrapper's provenance into the cache id, so a tagged
@@ -468,7 +468,7 @@ func (s *capabilityDataCloneScanner) cloneHash(val Value) (Value, error) {
 }
 
 func (s *capabilityDataCloneScanner) cloneObject(val Value) (Value, error) {
-	entries := val.Hash()
+	entries := val.HashEntryMap()
 	ptr := reflect.ValueOf(entries).Pointer()
 	if ptr != 0 {
 		if _, visiting := s.visitingMaps[ptr]; visiting {
@@ -987,7 +987,7 @@ func (s *capabilityContractScanner) bindContracts(
 			s.bindContracts(item, scope, target, scopes)
 		}
 	case KindHash, KindObject:
-		entries := val.Hash()
+		entries := val.HashEntryMap()
 		// Key on the whole hash wrapper (or the entry-map pointer for objects) so
 		// a second wrapper sharing one entry map but carrying distinct defaults
 		// still has those defaults scanned for exposed builtins.
@@ -1083,7 +1083,7 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 			s.collectBuiltins(item, out)
 		}
 	case KindHash, KindObject:
-		entries := val.Hash()
+		entries := val.HashEntryMap()
 		// Key on the whole hash wrapper (or the entry-map pointer for objects) so
 		// a second wrapper sharing one entry map but carrying distinct defaults
 		// still has those defaults scanned for exposed builtins.

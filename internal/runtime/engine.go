@@ -346,7 +346,7 @@ func (e *Engine) builtinCallSpec(name string) (staticCallSpec, bool) {
 		if val.Kind() != KindObject {
 			return staticCallSpec{}, false
 		}
-		val, ok = val.Hash()[member]
+		val, ok = val.HashEntryMap()[member]
 		if !ok {
 			return staticCallSpec{}, false
 		}
@@ -464,9 +464,9 @@ func cloneBuiltinValueForCall(val Value) Value {
 		}
 		return NewArray(cloned)
 	case KindHash:
-		return NewHash(cloneBuiltinMapForCall(val.Hash()))
+		return NewHash(cloneBuiltinMapForCall(val.HashEntryMap()))
 	case KindObject:
-		return retagClonedObject(val, cloneBuiltinMapForCall(val.Hash()))
+		return retagClonedObject(val, cloneBuiltinMapForCall(val.HashEntryMap()))
 	default:
 		return val
 	}
@@ -523,9 +523,9 @@ func cloneBuiltinValue(val Value) Value {
 		}
 		return NewArray(cloned)
 	case KindHash:
-		return NewHash(cloneBuiltinMap(val.Hash()))
+		return NewHash(cloneBuiltinMap(val.HashEntryMap()))
 	case KindObject:
-		return retagClonedObject(val, cloneBuiltinMap(val.Hash()))
+		return retagClonedObject(val, cloneBuiltinMap(val.HashEntryMap()))
 	default:
 		return val
 	}

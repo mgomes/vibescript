@@ -961,7 +961,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 				return clone
 			}
 		}
-		entries := val.Hash()
+		entries := val.HashEntryMap()
 		entriesPtr := reflect.ValueOf(entries).Pointer()
 		// A distinct wrapper that shares this entry map already cloned it;
 		// reuse that cloned map so both rebound wrappers mutate one map in
@@ -1006,7 +1006,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		return cloned
 	case KindObject:
-		entries := val.Hash()
+		entries := val.HashEntryMap()
 		ptr := reflect.ValueOf(entries).Pointer()
 		key := objectCloneKey{ptr: ptr, tag: val.ObjectTag()}
 		if cloneMap, seen := r.seenMaps[key]; seen {
@@ -1167,7 +1167,7 @@ func (r *callFunctionRebinder) inboundValueUnseen(val Value) bool {
 	case KindHash:
 		return r.inboundHashUnseen(val)
 	case KindObject:
-		key := objectCloneKey{ptr: reflect.ValueOf(val.Hash()).Pointer(), tag: val.ObjectTag()}
+		key := objectCloneKey{ptr: reflect.ValueOf(val.HashEntryMap()).Pointer(), tag: val.ObjectTag()}
 		_, seen := r.seenMaps[key]
 		return !seen
 	default:
@@ -1181,7 +1181,7 @@ func (r *callFunctionRebinder) inboundHashUnseen(val Value) bool {
 	if _, seen := r.seenHashes[hashIdentity(val)]; seen {
 		return false
 	}
-	entries := val.Hash()
+	entries := val.HashEntryMap()
 	if entries == nil {
 		return true
 	}
@@ -2870,7 +2870,7 @@ func memberDataCallable(receiver Value, property string, member Value) bool {
 		data, ok := hashMemberData(receiver, property)
 		return ok && data.Identical(member)
 	case KindObject:
-		data, ok := receiver.Hash()[property]
+		data, ok := receiver.HashEntryMap()[property]
 		return ok && data.Identical(member)
 	case KindInstance:
 		data, ok := valueInstance(receiver).Ivars[property]
@@ -3295,7 +3295,7 @@ func (exec *Execution) isCoreObjectBuiltin(builtin *Builtin, namespace, member s
 	if !ok || obj.Kind() != KindObject {
 		return false
 	}
-	core, ok := obj.Hash()[member]
+	core, ok := obj.HashEntryMap()[member]
 	if !ok {
 		return false
 	}

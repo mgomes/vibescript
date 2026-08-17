@@ -1290,7 +1290,7 @@ func (c *scriptChecker) collectModuleExports(entry moduleEntry) {
 	if root == nil {
 		root = c.typeRoot
 	}
-	for name, val := range c.moduleExportValue(entry).Hash() {
+	for name, val := range c.moduleExportValue(entry).HashEntryMap() {
 		if _, exists := root.Get(name); exists {
 			continue
 		}
@@ -15205,7 +15205,7 @@ func (c *scriptChecker) hostGlobalMemberCallable(object, property string) (stati
 	if !ok || val.Kind() != KindObject {
 		return staticCallable{}, false
 	}
-	memberVal, ok := val.Hash()[property]
+	memberVal, ok := val.HashEntryMap()[property]
 	if !ok {
 		return staticCallable{}, false
 	}
@@ -15609,7 +15609,7 @@ func (c *scriptChecker) typeRootObjectFunction(name, property string) (*ScriptFu
 		if !ok || val.Kind() != KindObject {
 			continue
 		}
-		member, ok := val.Hash()[property]
+		member, ok := val.HashEntryMap()[property]
 		if !ok || member.Kind() != KindFunction {
 			continue
 		}
@@ -15638,7 +15638,7 @@ func (c *scriptChecker) requiredModuleObjectFunction(expr Expression, property s
 	if !c.canBindRequireAlias(alias, exports) {
 		return "", nil, false
 	}
-	member, ok := exports.Hash()[property]
+	member, ok := exports.HashEntryMap()[property]
 	if !ok || member.Kind() != KindFunction {
 		return "", nil, false
 	}
@@ -17562,7 +17562,7 @@ func (c *scriptChecker) coreNamespaceBuiltinBinding(
 		if object.Kind() != KindObject {
 			return false
 		}
-		value, ok := object.Hash()[member]
+		value, ok := object.HashEntryMap()[member]
 		return ok && builtinValueUsesFunction(value, fn)
 	}
 	return !c.hostBuiltinOverrides(namespace) &&
