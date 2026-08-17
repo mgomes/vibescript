@@ -188,13 +188,11 @@ content and integers do not match equal-looking floats.
 - `dig(*path)` for nested lookup. A path component descends one level: a
   symbol or string key into a hash, or an integer index into an array, so a
   single `dig` can walk JSON-shaped data that mixes hashes and arrays. Each hash
-  step is a `[]` lookup, so a missing key consults that hash's default (see
-  [Default values](#default-values)); plain hash literals and out-of-range array
-  indexes yield `nil`. Indexing an array with a non-integer component raises,
-  matching how arrays reject non-integer indexes elsewhere.
+  step is a `[]` lookup, so a missing key yields `nil`. Out-of-range array
+  indexes also yield `nil`. Indexing an array with a non-integer component
+  raises, matching how arrays reject non-integer indexes elsewhere.
 - `values_at(*keys)` to read several values at once, in requested key order. Each
-  key is a `[]` lookup, so a missing key consults the hash default; a plain hash
-  literal yields `nil`.
+  key is a `[]` lookup, so a missing key yields `nil`.
 
 ```vibe
 def display_name_or_default(records, player_id)
@@ -229,9 +227,9 @@ end
   conflict block win exactly as with `merge`) and return the receiver, so every
   alias of the hash observes the merge. Called with no arguments they are
   no-ops returning the receiver.
-- `replace(other)` discards the receiver's entries and adopts `other`'s entries
-  and default metadata in place, returning the receiver, matching Ruby's
-  mutating `Hash#replace`.
+- `replace(other)` discards the receiver's entries and adopts `other`'s
+  entries in place, returning the receiver. It does not carry default
+  metadata: hashes have none.
 - `flatten(depth = 1)` returns a flat array of the entries. At the default depth
   the result is `[key, value, ...]`; values that are arrays are kept nested
   unless a deeper `depth` is given. A `depth` of `0` returns the `[key, value]`
