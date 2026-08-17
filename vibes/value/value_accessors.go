@@ -96,6 +96,16 @@ func (v Value) Hash() map[string]Value {
 	return v.hashEntryMap()
 }
 
+// HashEntryMap returns the live entry map without recording that a host
+// can mutate it. Internal walks and clones use this; Hash() is the
+// embedding API that exposes the map for mutation.
+// It is intended for the interpreter's internal use; hosts should not
+// rely on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func (v Value) HashEntryMap() map[string]Value {
+	return v.hashEntryMap()
+}
+
 // hashEntries returns the entry map of a KindHash value. Callers must already
 // know v.kind == KindHash; it is the unchecked counterpart to Hash used on the
 // internal rendering and equality paths that have switched on the kind.

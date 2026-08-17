@@ -189,7 +189,7 @@ func copyInboundDataValue(val Value) Value {
 	case KindHash:
 		// The copy iterates the way its source does, which cloning the entry
 		// map alone would not preserve.
-		return value.NewHashWithOrder(copyInboundDataEntries(val.Hash()), val.HashKeyOrder())
+		return value.NewHashWithTrustedOrder(copyInboundDataEntries(val.HashEntryMap()), val.HashKeyOrder())
 	case KindObject:
 		return retagClonedObject(val, copyInboundDataEntries(val.Hash()))
 	default:
@@ -247,9 +247,9 @@ func (r *callFunctionRebinder) copyAndRegisterInboundValue(val Value) Value {
 		}
 		return clonedVal
 	case KindHash:
-		entries := val.Hash()
+		entries := val.HashEntryMap()
 		clonedEntries := r.copyAndRegisterInboundEntries(entries)
-		clonedVal := value.NewHashWithOrder(clonedEntries, val.HashKeyOrder())
+		clonedVal := value.NewHashWithTrustedOrder(clonedEntries, val.HashKeyOrder())
 		if r.seenHashes == nil {
 			r.seenHashes = make(map[uintptr]Value)
 		}

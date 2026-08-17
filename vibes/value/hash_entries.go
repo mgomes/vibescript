@@ -123,7 +123,15 @@ func (v Value) RangeHashEntries(visit func(key string, val Value)) {
 // it, and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
 func (v Value) HashKeyOrder() []Value {
-	return slices.Clone(v.hashIterationKeys(nil))
+	if v.kind == KindHash {
+		hd := v.data.(*hashData)
+		if hd.orderCoversEntries() {
+			return slices.Clone(hd.order)
+		}
+	}
+	// sortedMapKeysInto already returns an owned snapshot; cloning it
+	// would keep the fallback buffer live beside the result.
+	return sortedMapKeysInto(v.hashEntryMap(), nil)
 }
 
 // hashEntryMap returns the live entry map of a hash or object, or nil for
@@ -281,8 +289,10 @@ func (v Value) hashSetInternal(key, val Value, bump bool) error {
 		// while it is still in order. Reconcile once so the next append cannot
 		// duplicate it, then trusted HashSet traffic stays an O(1) map probe.
 		if hd.orderUntrusted.Load() {
+			// The host may still hold the live map from Hash(), so the
+			// record cannot become trusted again. Reconcile stale names,
+			// then append; later live-map edits keep the flag set.
 			hd.reconcileRecordedOrder()
-			hd.orderUntrusted.Store(false)
 		}
 		keyValue := key
 		if key.kind != KindString {

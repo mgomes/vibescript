@@ -3184,7 +3184,7 @@ func (est *memoryEstimator) value(val Value) int {
 		// over-count the slice base already makes for them.
 		size += estimatedArrayWrapperExtraBytes
 	case KindHash:
-		size += est.hash(val.Hash())
+		size += est.hash(val.HashEntryMap())
 		// A KindHash wraps its entry map in a hashData struct that also holds the
 		// insertion order; that wrapper is a real per-hash heap allocation
 		// outside the entry map, so it counts toward the quota too. Charged once
@@ -3203,7 +3203,7 @@ func (est *memoryEstimator) value(val Value) int {
 			size += estimatedStringHeaderBytes
 			size += est.stringPayloadSize(form)
 		}
-		size += est.hash(val.Hash())
+		size += est.hash(val.HashEntryMap())
 	case KindClass:
 		cl := valueClass(val)
 		if cl == nil {

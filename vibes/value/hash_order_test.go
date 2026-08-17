@@ -289,6 +289,32 @@ func TestNewHashWithOrderDuplicateNamesFallsBackToSortedKeys(t *testing.T) {
 	})
 }
 
+func TestLiveMapStaysUntrustedAfterHashSet(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{})
+	for _, name := range []string{"a", "b"} {
+		if err := hash.HashSet(value.NewString(name), value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet(%s) error = %v, want nil", name, err)
+		}
+	}
+	live := hash.Hash()
+	if err := hash.HashSet(value.NewString("c"), value.NewInt(3)); err != nil {
+		t.Fatalf("HashSet(c) error = %v, want nil", err)
+	}
+	delete(live, "a")
+	live["d"] = value.NewInt(4)
+	if err := hash.HashSet(value.NewString("a"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(a) after live-map swap error = %v, want nil", err)
+	}
+	requireKeyOrder(t, hash, []value.Value{
+		value.NewString("a"),
+		value.NewString("b"),
+		value.NewString("c"),
+		value.NewString("d"),
+	})
+}
+
 func TestHashReadDoesNotLeaveLaterInsertsUntrusted(t *testing.T) {
 	t.Parallel()
 
