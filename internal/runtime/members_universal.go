@@ -239,10 +239,12 @@ func newUniversalSendBuiltin(name string, allowPrivate bool) Value {
 		if err := exec.checkCallMemoryRootsWithCallee(member, receiver, callArgs, kwargs, block); err != nil {
 			return NewNil(), err
 		}
-		if !isCollectionMutator(method) {
+		if !isCollectionMutator(method) && method != "send" && method != "public_send" {
 			// send recorded the receiver path in case it dispatched to a
 			// mutator. A non-mutating target must not inherit that path,
 			// or an enclosing mutator's write could land on the wrong slot.
+			// Nested send/public_send keeps the path so a.send(:send, :push, 2)
+			// can still rebind the original receiver.
 			exec.restore(addressedScope{})
 		}
 		return exec.invokeCallable(member, receiver, callArgs, kwargs, block, Position{})
