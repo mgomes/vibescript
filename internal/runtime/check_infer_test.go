@@ -2475,9 +2475,9 @@ end
 func TestCheckInferKeywordRestKeyKinds(t *testing.T) {
 	t.Parallel()
 
-	// Rest keywords bind as a string-keyed hash, so a symbol key type
-	// always fails at call binding even with compatible values.
-	script := compileScript(t, `
+	// Rest keywords bind as a string-keyed hash, which is the same
+	// keyspace as hash<symbol, V>.
+	requireNoCheckWarnings(t, compileScript(t, `
 def accept(**opts: hash<symbol, int>)
   opts
 end
@@ -2486,8 +2486,7 @@ def run()
   v = 1
   accept(limit: v)
 end
-`)
-	requireCheckWarningContains(t, script, "call to accept argument opts expected hash<symbol, int>, got string-keyed keywords")
+`))
 
 	// Shape-annotated keyword rests check per field: unknown keywords fail
 	// the exact shape, known ones check their field types.

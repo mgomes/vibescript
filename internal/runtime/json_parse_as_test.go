@@ -1243,9 +1243,9 @@ def run()
 end
 `))
 
-	// Known key representations contradict disjoint hash key types: a
-	// parse_as result is string-keyed.
-	keys := compileScript(t, `
+	// parse_as results are string-keyed, which is the same keyspace as
+	// hash<symbol, V>.
+	requireNoCheckWarnings(t, compileScript(t, `
 def sym_hash(x: hash<symbol, any>)
   x
 end
@@ -1254,8 +1254,7 @@ def run(raw: string)
   body = JSON.parse_as(raw, { name: string })
   sym_hash(body)
 end
-`)
-	requireCheckWarningContains(t, keys, "call to sym_hash argument x expected hash<symbol, any>, got { name: string }")
+`))
 
 	requireNoCheckWarnings(t, compileScript(t, `
 def str_hash(x: hash<string, string>)

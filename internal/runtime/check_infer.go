@@ -5682,12 +5682,11 @@ func (c *scriptChecker) inferAssignStatementTypes(
 }
 
 // applyMemberWriteFacts checks hash/object field assignment syntax against a
-// local-rooted receiver's declared hash or shape fact. At runtime a hash
-// setter updates an existing symbol key first, then an existing string key,
-// and otherwise inserts a symbol; an object setter uses a string key. A typed
-// hash can select a string only when its key bound permits an existing string,
-// while a declared shape checks the property's logical field name independent
-// of its backing representation.
+// local-rooted receiver's declared hash or shape fact. Member assignment
+// writes the property name as a hash key, and strings and symbols share that
+// keyspace, so hash<string, V> and hash<symbol, V> both admit h.foo = ....
+// A declared shape checks the property's logical field name independent of
+// its backing representation.
 func (c *scriptChecker) applyMemberWriteFacts(
 	function string,
 	stmt *AssignStmt,
@@ -5743,13 +5742,13 @@ func (c *scriptChecker) applyMemberWriteFacts(
 
 	if keyBound, valueBound := declaredHashEntryTypes(contentFact); keyBound != nil {
 		resolve := c.checkNamedTypeResolver()
+		// Member assignment writes the property name as a hash key. Strings
+		// and symbols share that keyspace, so hash<string, V> and
+		// hash<symbol, V> both admit h.foo = ....
 		keyType := checkTypeSymbol
-		if !typeExprsDisjoint(checkTypeString, keyBound, resolve) {
-			keyType = unionTypeExprs(checkTypeString, checkTypeSymbol)
-		}
-		keyCompatible := typeExprSatisfies(keyType, keyBound, resolve)
+		keyCompatible := hashKeyTypeSatisfies(keyType, keyBound, resolve)
 		valueCompatible := written != nil && typeExprSatisfies(written, valueBound, resolve)
-		if typeExprsDisjoint(keyType, keyBound, resolve) {
+		if hashKeyTypesDisjoint(keyType, keyBound, resolve) {
 			c.add(function, stmt.Pos(), "write to %s expected key %s, got %s",
 				name, formatTypeExpr(keyBound), formatTypeExpr(keyType))
 		}
@@ -10792,11 +10791,11 @@ func (c *scriptChecker) applyHashEntryWriteFacts(function string, stmt *AssignSt
 	preserved := intact
 	if keyType := c.inferExpressionType(index); keyType == nil {
 		preserved = false
-	} else if typedWriteRejected(keyType, keyBound, resolve) {
+	} else if hashKeyTypesDisjoint(keyType, keyBound, resolve) {
 		c.add(function, stmt.Pos(), "write to %s expected key %s, got %s",
 			name, formatTypeExpr(keyBound), formatTypeExpr(keyType))
 		preserved = false
-	} else if !typeExprSatisfies(keyType, keyBound, resolve) {
+	} else if !hashKeyTypeSatisfies(keyType, keyBound, resolve) {
 		preserved = false
 	}
 	if valueType := c.inferExpressionType(stmt.Value); valueType == nil {
@@ -14292,13 +14291,19 @@ func (c *scriptChecker) applyHashMutatorCallFacts(
 				preserved = false
 				return
 			}
-			if typedWriteRejected(written, bound, resolve) {
+			rejected := typedWriteRejected(written, bound, resolve)
+			satisfies := typeExprSatisfies(written, bound, resolve)
+			if noun == "key" {
+				rejected = hashKeyTypesDisjoint(written, bound, resolve)
+				satisfies = hashKeyTypeSatisfies(written, bound, resolve)
+			}
+			if rejected {
 				c.add(function, arg.Pos(), "write to %s expected %s %s, got %s",
 					name, noun, formatTypeExpr(bound), formatTypeExpr(written))
 				preserved = false
 				return
 			}
-			if !typeExprSatisfies(written, bound, resolve) {
+			if !satisfies {
 				preserved = false
 				return
 			}
@@ -15188,7 +15193,13 @@ func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit 
 			compatible = false
 			return false
 		}
-		if typedWriteRejected(written, bound, resolve) {
+		rejected := typedWriteRejected(written, bound, resolve)
+		satisfies := typeExprSatisfies(written, bound, resolve)
+		if noun == "key" {
+			rejected = hashKeyTypesDisjoint(written, bound, resolve)
+			satisfies = hashKeyTypeSatisfies(written, bound, resolve)
+		}
+		if rejected {
 			if warn {
 				c.add(function, expr.Pos(), "write to %s expected %s %s, got %s",
 					name, noun, formatTypeExpr(bound), formatTypeExpr(written))
@@ -15196,7 +15207,7 @@ func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit 
 			compatible = false
 			return true
 		}
-		if !typeExprSatisfies(written, bound, resolve) {
+		if !satisfies {
 			compatible = false
 		}
 		return false
@@ -15284,8 +15295,10 @@ func shapeVsTypedHashDisjoint(shape, hash *TypeExpr, resolve namedTypeResolver) 
 	if len(hash.TypeArgs) != 2 {
 		return false
 	}
-	// A known key representation contradicts a disjoint hash key type: a
-	// string-keyed store never satisfies hash<symbol, ...> and vice versa.
+	// A known key representation contradicts a disjoint hash key type. Strings
+	// and symbols share one keyspace, so a string-keyed store satisfies
+	// hash<symbol, ...> and vice versa; an "other" witness still contradicts
+	// a bound that admits only those two.
 	if len(shape.Shape) > 0 {
 		var keyType *TypeExpr
 		switch {
@@ -15294,14 +15307,11 @@ func shapeVsTypedHashDisjoint(shape, hash *TypeExpr, resolve namedTypeResolver) 
 		case shape.Name == shapeKeysSymbolMarker:
 			keyType = checkTypeSymbol
 		case strings.HasPrefix(shape.Name, shapeKeysMixedPrefix):
-			// A witnessed key kind provably violates a bound that excludes
-			// that kind entirely, and an "other" witness — neither a symbol
-			// nor a string — violates a bound admitting only those two.
 			flags := strings.TrimPrefix(shape.Name, shapeKeysMixedPrefix)
-			if strings.Contains(flags, "s") && typeExprsDisjoint(checkTypeSymbol, hash.TypeArgs[0], resolve) {
+			if strings.Contains(flags, "s") && hashKeyTypesDisjoint(checkTypeSymbol, hash.TypeArgs[0], resolve) {
 				return true
 			}
-			if strings.Contains(flags, "t") && typeExprsDisjoint(checkTypeString, hash.TypeArgs[0], resolve) {
+			if strings.Contains(flags, "t") && hashKeyTypesDisjoint(checkTypeString, hash.TypeArgs[0], resolve) {
 				return true
 			}
 			if strings.Contains(flags, "o") && typeExprArmsAll(hash.TypeArgs[0], func(arm *TypeExpr) bool {
@@ -15310,7 +15320,7 @@ func shapeVsTypedHashDisjoint(shape, hash *TypeExpr, resolve namedTypeResolver) 
 				return true
 			}
 		}
-		if keyType != nil && typeExprsDisjoint(keyType, hash.TypeArgs[0], resolve) {
+		if keyType != nil && hashKeyTypesDisjoint(keyType, hash.TypeArgs[0], resolve) {
 			return true
 		}
 	}
@@ -17274,6 +17284,25 @@ func boundaryArrayRelation(
 	return relation
 }
 
+func boundaryHashKeyRelation(
+	inferred,
+	required *TypeExpr,
+	ctx boundaryTypeContext,
+	depth int,
+) boundaryTypeRelation {
+	decidedInf, matchesInf := typeAllowsStringHashKey(inferred)
+	decidedReq, matchesReq := typeAllowsStringHashKey(required)
+	if decidedInf && decidedReq {
+		if matchesInf && matchesReq {
+			return boundaryRelationAccepted
+		}
+		if matchesInf != matchesReq {
+			return boundaryRelationRejected
+		}
+	}
+	return boundaryTypeExprRelation(inferred, required, ctx, depth)
+}
+
 func boundaryHashRelation(
 	inferred,
 	required *TypeExpr,
@@ -17286,7 +17315,7 @@ func boundaryHashRelation(
 	if len(required.TypeArgs) != 2 || len(inferred.TypeArgs) != 2 {
 		return boundaryRelationGradual
 	}
-	keyRelation := boundaryTypeExprRelation(inferred.TypeArgs[0], required.TypeArgs[0], ctx, depth)
+	keyRelation := boundaryHashKeyRelation(inferred.TypeArgs[0], required.TypeArgs[0], ctx, depth)
 	if keyRelation == boundaryRelationRejected {
 		return boundaryRelationRejected
 	}
@@ -17373,7 +17402,7 @@ func boundaryShapeHashRelation(
 	result := boundaryRelationAccepted
 	if keyType == nil {
 		result = boundaryRelationGradual
-	} else if relation := boundaryTypeExprRelation(keyType, required.TypeArgs[0], ctx, depth); relation == boundaryRelationRejected {
+	} else if relation := boundaryHashKeyRelation(keyType, required.TypeArgs[0], ctx, depth); relation == boundaryRelationRejected {
 		return boundaryRelationRejected
 	} else if relation == boundaryRelationGradual {
 		result = boundaryRelationGradual
@@ -17500,7 +17529,7 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 			if len(declared.TypeArgs) != 2 || len(written.TypeArgs) != 2 {
 				return false
 			}
-			return typeExprSatisfies(written.TypeArgs[0], declared.TypeArgs[0], resolve) &&
+			return hashKeyTypeSatisfies(written.TypeArgs[0], declared.TypeArgs[0], resolve) &&
 				typeExprSatisfies(written.TypeArgs[1], declared.TypeArgs[1], resolve)
 		case TypeShape:
 			// A shape is a hash at runtime; with a known key representation
@@ -17547,7 +17576,7 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 			default:
 				return false
 			}
-			if !typeExprSatisfies(keyType, declared.TypeArgs[0], resolve) {
+			if !hashKeyTypeSatisfies(keyType, declared.TypeArgs[0], resolve) {
 				return false
 			}
 			if written.Open && !typeExprSatisfies(

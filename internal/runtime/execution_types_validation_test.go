@@ -58,6 +58,30 @@ func TestTypeAllowsStringHashKeyDefersForAmbiguousUnions(t *testing.T) {
 	}
 }
 
+func TestValueMatchesTypeHashSymbolAnnotation(t *testing.T) {
+	t.Parallel()
+
+	hash := NewHashWithCapacity(1)
+	if err := hash.HashSet(NewSymbol("name"), NewInt(1)); err != nil {
+		t.Fatalf("HashSet(name) error = %v, want nil", err)
+	}
+	hashType := &TypeExpr{
+		Kind: TypeHash,
+		TypeArgs: []*TypeExpr{
+			{Name: "symbol", Kind: TypeSymbol},
+			{Name: "int", Kind: TypeInt},
+		},
+	}
+
+	matches, err := valueMatchesType(hash, hashType)
+	if err != nil {
+		t.Fatalf("valueMatchesType({name: 1}, hash<symbol, int>) error = %v, want nil", err)
+	}
+	if !matches {
+		t.Fatal("valueMatchesType({name: 1}, hash<symbol, int>) = false, want true")
+	}
+}
+
 func TestValueMatchesTypeHashUnknownKeyUnionReturnsError(t *testing.T) {
 	t.Parallel()
 	hashType := &TypeExpr{

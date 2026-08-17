@@ -14808,7 +14808,7 @@ func (c *scriptChecker) keywordRestArgumentsMayBindTypeArm(
 		if len(ty.TypeArgs) != 2 {
 			return true
 		}
-		if typeExprsDisjoint(checkTypeString, ty.TypeArgs[0], c.checkNamedTypeResolver()) {
+		if hashKeyTypesDisjoint(checkTypeString, ty.TypeArgs[0], c.checkNamedTypeResolver()) {
 			return false
 		}
 		for _, expr := range values {
@@ -16591,7 +16591,7 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 			}
 			switch {
 			case ty.Kind == TypeHash && len(ty.TypeArgs) == 2:
-				if typeExprsDisjoint(checkTypeString, ty.TypeArgs[0], c.checkNamedTypeResolver()) {
+				if hashKeyTypesDisjoint(checkTypeString, ty.TypeArgs[0], c.checkNamedTypeResolver()) {
 					c.add(function, kwarg.Value.Pos(), "call to %s argument %s expected %s, got string-keyed keywords",
 						callName, paramName, formatTypeExpr(ty))
 					return

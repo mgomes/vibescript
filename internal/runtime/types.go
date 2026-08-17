@@ -229,13 +229,23 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 		keyType := ty.TypeArgs[0]
 		valueType := ty.TypeArgs[1]
 		if val.Kind() == KindHash {
+			// Every stored key is a string. Decide the key type once for the
+			// whole hash: hash<symbol, V> names the same keyspace as
+			// hash<string, V>, so a per-entry KindString match would reject a
+			// valid annotation before typeAllowsStringHashKey could accept it.
+			decided, keyMatches := typeAllowsStringHashKey(keyType)
+			if decided && !keyMatches {
+				return false, nil
+			}
 			for _, entry := range val.HashEntries() {
-				keyMatches, err := s.matches(entry.Key, keyType)
-				if err != nil {
-					return false, err
-				}
-				if !keyMatches {
-					return false, nil
+				if !decided {
+					matches, err := s.matches(entry.Key, keyType)
+					if err != nil {
+						return false, err
+					}
+					if !matches {
+						return false, nil
+					}
 				}
 				valueMatches, err := s.matches(entry.Value, valueType)
 				if err != nil {
@@ -430,6 +440,34 @@ func typeAllowsStringHashKey(ty *TypeExpr) (bool, bool) {
 		}
 		return true, false
 	}
+}
+
+// hashKeyTypeSatisfies reports whether every written hash-key type is admitted
+// by the declared bound. Strings and symbols share one keyspace, so
+// hash<string, V> and hash<symbol, V> describe the same hashes.
+func hashKeyTypeSatisfies(written, declared *TypeExpr, resolve namedTypeResolver) bool {
+	if decided, matches := typeAllowsStringHashKey(declared); decided {
+		if !matches {
+			return false
+		}
+		return typeExprArmsAll(written, func(arm *TypeExpr) bool {
+			decided, matches := typeAllowsStringHashKey(arm)
+			return decided && matches
+		})
+	}
+	return typeExprSatisfies(written, declared, resolve)
+}
+
+// hashKeyTypesDisjoint reports whether no hash key can satisfy both types
+// under the unified string keyspace. String and symbol overlap; a bound that
+// admits that keyspace is disjoint from one that excludes it.
+func hashKeyTypesDisjoint(a, b *TypeExpr, resolve namedTypeResolver) bool {
+	decidedA, matchesA := typeAllowsStringHashKey(a)
+	decidedB, matchesB := typeAllowsStringHashKey(b)
+	if decidedA && decidedB && (matchesA || matchesB) {
+		return matchesA != matchesB
+	}
+	return typeExprsDisjoint(a, b, resolve)
 }
 
 func formatValueTypeExpr(val Value) string {
