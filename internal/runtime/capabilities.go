@@ -115,6 +115,8 @@ func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 		for i, elem := range arr {
 			cloned[i] = deepCloneValueWithState(elem, state)
 		}
+		// NewArray published the zero-filled slice, not these later inserts.
+		publishCollectionElems(cloned)
 		return clonedValue
 	case KindHash:
 		id := hashIdentity(val)
