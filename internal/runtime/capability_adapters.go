@@ -80,7 +80,7 @@ func (c *jobQueueCapability) callEnqueue(exec *Execution, receiver Value, args [
 
 	job := jobqueue.JobQueueJob{
 		Name:    args[0].String(),
-		Payload: cloneHash(args[1].Hash()),
+		Payload: cloneHash(args[1].HashEntryMap()),
 		Options: options,
 	}
 
@@ -119,7 +119,7 @@ func (c *jobQueueCapability) callRetry(exec *Execution, receiver Value, args []V
 		if optsVal.Kind() != KindHash && optsVal.Kind() != KindObject {
 			return NewNil(), fmt.Errorf("%s.retry options must be hash", name)
 		}
-		options = mergeHash(options, cloneHash(optsVal.Hash()))
+		options = mergeHash(options, cloneHash(optsVal.HashEntryMap()))
 	}
 	options = mergeHash(options, cloneCapabilityKwargs(kwargs))
 
