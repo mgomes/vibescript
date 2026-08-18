@@ -83,7 +83,6 @@ var builtinTypeAtoms = map[string]TypeKind{
 	"hash":     TypeHash,
 	"object":   TypeHash,
 	"range":    TypeRange,
-	"function": TypeFunction,
 	"duration": TypeDuration,
 	"time":     TypeTime,
 	"money":    TypeMoney,

@@ -372,9 +372,7 @@ func registerCoreBuiltins(engine *Engine) {
 	for _, builtin := range []builtinDefinition{
 		{name: "assert", fn: builtinAssert, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: -1, resultType: checkTypeNil}},
 		{name: "format", fn: builtinFormat, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: -1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString}, resultType: checkTypeString}},
-		{name: "lambda", fn: builtinLambda, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, usesBlock: true, resultType: checkTypeFunction}},
 		{name: "loop", fn: builtinLoop},
-		{name: "proc", fn: builtinProc, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, usesBlock: true, resultType: checkTypeFunction}},
 		{name: "money", fn: builtinMoney, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: 1, paramTypes: []*TypeExpr{checkTypeString}, resultType: checkTypeMoney}},
 		{name: "money_cents", fn: builtinMoneyCents, checkSpec: &staticCallSpec{minArgs: 2, maxArgs: 2, paramTypes: []*TypeExpr{checkTypeNumber, checkTypeString}, resultType: checkTypeMoney}},
 		{name: "p", fn: builtinP},
@@ -496,8 +494,6 @@ func cloneBuiltinValue(val Value) Value {
 		clonedBuiltin.SignatureParams = builtin.SignatureParams
 		clonedBuiltin.OptionsHashTarget = builtin.OptionsHashTarget
 		clonedBuiltin.ReturnTypeTarget = builtin.ReturnTypeTarget
-		clonedBuiltin.DirectCallAlias = builtin.DirectCallAlias
-		clonedBuiltin.DirectCallAliasPos = builtin.DirectCallAliasPos
 		clonedBuiltin.CapturedValues = builtin.CapturedValues
 		clonedBuiltin.Capability = builtin.Capability
 		clonedBuiltin.hostDriven = builtin.hostDriven
@@ -613,9 +609,6 @@ func registerDataBuiltins(engine *Engine) {
 		"parse":     newCheckedBuiltin("JSON.parse", builtinJSONParse, staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString}}),
 		"parse_as":  newCheckedBuiltin("JSON.parse_as", builtinJSONParseAs, staticCallSpec{minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true}),
 		"stringify": newCheckedBuiltin("JSON.stringify", builtinJSONStringify, staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, resultType: checkTypeString}),
-	})
-	engine.builtins["Proc"] = NewObject(map[string]Value{
-		"new": newCheckedAutoBuiltin("Proc.new", builtinProc, staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, usesBlock: true, resultType: checkTypeFunction}),
 	})
 	engine.builtins["Regex"] = NewObject(map[string]Value{
 		"match":       newCheckedBuiltin("Regex.match", builtinRegexMatch, staticCallSpec{minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString, checkTypeString}, resultType: builtinTypeNullableString}),

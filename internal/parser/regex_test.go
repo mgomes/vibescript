@@ -280,12 +280,10 @@ func TestParserSlashDisambiguation(t *testing.T) {
 		"def run(total)\n  total /2\nend",
 		"def run\n  Total = 4\n  Total /2\nend",
 		// The implicit `it` block parameter is pre-declared like the
-		// numbered candidates, so a slash after either divides in brace,
-		// do/end, and lambda bodies alike, and a nested block still infers
-		// its own `it`.
+		// numbered candidates, so a slash after either divides in brace and
+		// do/end bodies alike, and a nested block still infers its own `it`.
 		"def run\n  [8, 4].map { it /2 }\nend",
 		"def run\n  [8, 4].map do\n    it /2\n  end\nend",
-		"def run\n  f = -> { it /2 }\n  f\nend",
 		"def run\n  [8, 4].map { _1 /2 }\nend",
 		"def run\n  x = 2\n  [8, 4].map { it /2/ x }\nend",
 		"def run\n  [[8]].map { it.map { it /2 } }\nend",
@@ -638,11 +636,6 @@ func TestParserSigilArmsShareSlashLocality(t *testing.T) {
 			}
 			if _, ok := node.(*ast.SplatArg); ok {
 				t.Fatalf("parseSource(%q) produced a splat argument, want operator %v", tc.source, tc.operator)
-			}
-			if call, ok := node.(*ast.CallExpr); ok {
-				if _, isIdent := call.BlockArg.(*ast.Identifier); isIdent {
-					t.Fatalf("parseSource(%q) produced a block-pass argument, want operator %v", tc.source, tc.operator)
-				}
 			}
 		})
 		if !found {

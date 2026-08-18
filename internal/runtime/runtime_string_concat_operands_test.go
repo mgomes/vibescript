@@ -148,26 +148,6 @@ func TestStringConcatRejectsClassInstances(t *testing.T) {
 	}
 }
 
-// A callable renders as the placeholder "<block>", so it belongs with the other
-// non-renderable kinds. The allowlist means a kind has to opt in deliberately
-// rather than inherit concatenation, which is what let objects, instances, and
-// callables each slip through in turn.
-func TestStringConcatRejectsCallables(t *testing.T) {
-	t.Parallel()
-	script := compileScript(t, `
-    def run()
-      "fn: " + ->(x) { x }
-    end
-    `)
-	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err == nil {
-		t.Fatalf("expected a callable operand to be rejected")
-	}
-	if !strings.Contains(err.Error(), "unsupported addition operands") {
-		t.Fatalf("unexpected error %v", err)
-	}
-}
-
 func mustRegexValue(t *testing.T, pattern string) Value {
 	t.Helper()
 	script := compileScript(t, "def run()\n  /"+pattern+"/\nend")

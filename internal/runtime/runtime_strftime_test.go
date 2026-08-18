@@ -414,7 +414,6 @@ func TestTimeStrftimeThroughRuntime(t *testing.T) {
     def run()
       utc = Time.utc(2024, 1, 2, 3, 4, 5)
       offset = Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "+05:30")
-      formatter = utc.strftime
       {
         date:      utc.strftime("%Y-%m-%d"),
         time:      utc.strftime("%H:%M:%S"),
@@ -422,7 +421,6 @@ func TestTimeStrftimeThroughRuntime(t *testing.T) {
         meridian:  utc.strftime("%I:%M %p"),
         escaped:   utc.strftime("%% literal"),
         unknown:   utc.strftime("%Q"),
-        bound:     formatter("%Y/%m/%d"),
         matches_format: utc.strftime("%Y-%m-%d %H:%M:%S") == utc.format("2006-01-02 15:04:05")
       }
     end
@@ -439,7 +437,6 @@ func TestTimeStrftimeThroughRuntime(t *testing.T) {
 		"meridian":       NewString("03:04 AM"),
 		"escaped":        NewString("% literal"),
 		"unknown":        NewString("%Q"),
-		"bound":          NewString("2024/01/02"),
 		"matches_format": NewBool(true),
 	}
 	got := result.Hash()

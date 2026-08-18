@@ -123,7 +123,7 @@ end`,
 		},
 		{
 			name: "shape_typed_required_keyword",
-			source: `def f(opts: { cb: function }:)
+			source: `def f(opts: { cb: string }:)
   opts
 end`,
 			want: []ast.Param{
@@ -133,7 +133,7 @@ end`,
 					Type: &ast.TypeExpr{
 						Kind: ast.TypeShape,
 						Shape: map[string]*ast.TypeExpr{
-							"cb": {Name: "function", Kind: ast.TypeFunction},
+							"cb": {Name: "string", Kind: ast.TypeString},
 						},
 					},
 				},

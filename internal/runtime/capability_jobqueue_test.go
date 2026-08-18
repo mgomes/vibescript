@@ -276,25 +276,20 @@ end`,
 			wantErr: "jobs.enqueue payload expected hash, got int",
 		},
 		{
+			// A bare function name is no longer a value, so the one callable a
+			// script can still place in a payload is a capability object,
+			// whose builtins the data-only scan must reject the same way.
 			name: "callable_payload",
-			source: `def helper(value)
-  value
-end
-
-def run()
-  jobs.enqueue("demo", { callback: helper })
+			source: `def run()
+  jobs.enqueue("demo", { callback: jobs })
 end`,
 			queue:   &jobQueueStub{},
 			wantErr: "jobs.enqueue payload must be data-only",
 		},
 		{
 			name: "callable_keyword",
-			source: `def helper(value)
-  value
-end
-
-def run()
-  jobs.enqueue("demo", { foo: "bar" }, callback: helper)
+			source: `def run()
+  jobs.enqueue("demo", { foo: "bar" }, callback: jobs)
 end`,
 			queue:   &jobQueueStub{},
 			wantErr: "jobs.enqueue keyword callback must be data-only",

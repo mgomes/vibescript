@@ -216,7 +216,7 @@ func (c *scriptChecker) summaryCallParamFacts(
 }
 
 func callMaySupplyBlock(call *CallExpr) bool {
-	return call != nil && (call.Block != nil || call.BlockArg != nil)
+	return call != nil && call.Block != nil
 }
 
 func (c *scriptChecker) scriptCallFailureArgumentFacts(expr Expression) map[string]checkReachableParamFact {

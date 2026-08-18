@@ -177,25 +177,6 @@ end`)
 	}
 }
 
-// TestDirectBlockInvocationIsNotAHostBoundary pins that script-to-script
-// invocation of a block-valued binding pays no boundary copy: the closure's
-// captured environment stays live and the result is the script's own value.
-func TestDirectBlockInvocationIsNotAHostBoundary(t *testing.T) {
-	t.Parallel()
-
-	script := compileScriptDefault(t, `def run()
-  count = { n: 0 }
-  bump = -> { count[:n] = count[:n] + 1 }
-  wrap = -> { { b: bump } }
-  h = wrap()
-  h[:b].call
-  count[:n]
-end`)
-	if got := callFunc(t, script, "run", nil); got.Int() != 1 {
-		t.Fatalf("direct block invocation severed its closure: %v", got.Int())
-	}
-}
-
 // TestInstalledWrapperIsIndependentTheMomentTheDispatchEnds pins the timing
 // of the boundary: a wrapper a factory installed is shared before any later
 // statement runs, so a script write copies instead of reaching the host's

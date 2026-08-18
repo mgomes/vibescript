@@ -45,8 +45,6 @@ func ResolveType(name string) (TypeKind, bool) {
 		return TypeRange, nullable
 	case "symbol":
 		return TypeSymbol, nullable
-	case "function":
-		return TypeFunction, nullable
 	}
 	return TypeUnknown, nullable
 }
@@ -177,8 +175,6 @@ func FormatParamTarget(param Param) string {
 		label = "*" + label
 	case ParamKeywordRest:
 		label = "**" + label
-	case ParamBlock:
-		label = "&" + label
 	}
 	return label
 }

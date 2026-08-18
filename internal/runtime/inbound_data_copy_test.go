@@ -152,51 +152,6 @@ end`)
 	}
 }
 
-// TestInboundBuriedForwardedCapabilityStillRevoked pins that a callable buried
-// deep inside an otherwise data-shaped argument graph disables the fast path
-// for the whole call, so the inbound rebinder still revokes a captured
-// capability grant on re-entry.
-func TestInboundBuriedForwardedCapabilityStillRevoked(t *testing.T) {
-	t.Parallel()
-
-	stub := &jobQueueStub{}
-	script := compileScriptDefault(t, `
-def id(&b)
-  b
-end
-
-def make()
-  id(&jobs.enqueue)
-end
-
-def use(payload)
-  payload[:rows][0][:cb].call("demo", { key: "k" })
-end
-`)
-
-	exported := callScript(t, context.Background(), script, "make", nil,
-		callOptionsWithCapabilities(MustNewJobQueueCapability("jobs", stub)),
-	)
-	if exported.Kind() != KindBlock {
-		t.Fatalf("make returned %v, want a block", exported.Kind())
-	}
-
-	payload := NewHash(map[string]Value{
-		"rows": NewArray([]Value{
-			NewHash(map[string]Value{
-				"id": NewInt(1),
-				"cb": exported,
-			}),
-		}),
-	})
-	err := callScriptErr(t, context.Background(), script, "use",
-		[]Value{payload}, CallOptions{})
-	requireErrorContains(t, err, "capability jobs.enqueue was not granted to this call")
-	if len(stub.enqueueCalls) != 0 {
-		t.Fatalf("capability invoked %d times from a call that granted no capabilities", len(stub.enqueueCalls))
-	}
-}
-
 // TestLazyGlobalUnusedIsNeverMaterialized pins the lazy-global contract with
 // the memory quota: a global too large for the quota no longer fails a call
 // that never reads it, and still fails (identically to the eager behavior)

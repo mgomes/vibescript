@@ -63,19 +63,11 @@ var (
 
 type checkTypeFrame map[string]*TypeExpr
 
-type checkBlockLiteralValue struct {
-	block  *BlockLiteral
-	lambda bool
-}
-
 type checkLocalValueFact struct {
 	classNames              []string
 	instanceOrigins         []Expression
 	callables               []*ScriptFunction
-	blocks                  []checkBlockLiteralValue
-	blockChoiceMayNil       bool
 	staticVals              []Expression
-	blockValues             []capturedBlockLiteralValue
 	staticChoice            checkStaticChoiceFact
 	keywordSplatFails       bool
 	invalidKeywordSplatKeys map[string]struct{}
@@ -132,11 +124,7 @@ func (c *scriptChecker) directLocalConditionTruthiness(condition Expression) (bo
 		return false, false
 	}
 	if fact, exact := c.localValueFactFor(ident.Name); exact {
-		blockMayAutoInvoke := false
-		for _, value := range fact.blockValues {
-			blockMayAutoInvoke = blockMayAutoInvoke || value.block != nil
-		}
-		if len(fact.callables) > 0 || len(fact.blocks) > 0 || blockMayAutoInvoke {
+		if len(fact.callables) > 0 {
 			return false, false
 		}
 		if truthy, known := localValueFactTruthiness(fact, true); known {
@@ -216,7 +204,7 @@ func (c *scriptChecker) stableEvaluatedClassNames(
 	case *CallExpr:
 		member, ok := typed.Callee.(*MemberExpr)
 		if !ok || member.Property != "itself" || len(typed.Args) != 0 ||
-			len(typed.KwArgs) != 0 || typed.Block != nil || typed.BlockArg != nil {
+			len(typed.KwArgs) != 0 || typed.Block != nil {
 			return nil, false
 		}
 		classNames, exact := c.stableEvaluatedClassNames(member.Object, stateIndependent)
@@ -331,10 +319,7 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 			classNames:              append([]string(nil), fact.classNames...),
 			instanceOrigins:         append([]Expression(nil), fact.instanceOrigins...),
 			callables:               append([]*ScriptFunction(nil), fact.callables...),
-			blocks:                  append([]checkBlockLiteralValue(nil), fact.blocks...),
-			blockChoiceMayNil:       fact.blockChoiceMayNil,
 			staticVals:              append([]Expression(nil), fact.staticVals...),
-			blockValues:             append([]capturedBlockLiteralValue(nil), fact.blockValues...),
 			staticChoice:            cloneCheckStaticChoiceFact(fact.staticChoice),
 			keywordSplatFails:       fact.keywordSplatFails,
 			invalidKeywordSplatKeys: cloneCheckStringSet(fact.invalidKeywordSplatKeys),
@@ -347,7 +332,6 @@ func (c *scriptChecker) localClassValueFor(name string) (string, bool) {
 	fact, ok := c.localValueFactFor(name)
 	if !ok || len(fact.classNames) != 1 || len(fact.callables) > 0 || len(fact.staticVals) > 0 ||
 		len(fact.instanceOrigins) > 0 ||
-		len(fact.blocks) > 0 || len(fact.blockValues) > 0 ||
 		fact.keywordSplatFails {
 		return "", false
 	}
@@ -358,8 +342,7 @@ func (c *scriptChecker) localClassValuesFor(name string) ([]string, bool) {
 	fact, ok := c.localValueFactFor(name)
 	return fact.classNames, ok && len(fact.classNames) > 0 && len(fact.callables) == 0 &&
 		len(fact.instanceOrigins) == 0 &&
-		len(fact.blocks) == 0 && len(fact.staticVals) == 0 &&
-		len(fact.blockValues) == 0 &&
+		len(fact.staticVals) == 0 &&
 		!fact.keywordSplatFails
 }
 
@@ -406,7 +389,6 @@ func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, boo
 	fact, ok := c.localValueFactFor(name)
 	if !ok || len(fact.callables) != 1 || len(fact.classNames) > 0 || len(fact.staticVals) > 0 ||
 		len(fact.instanceOrigins) > 0 ||
-		len(fact.blocks) > 0 || len(fact.blockValues) > 0 ||
 		fact.keywordSplatFails {
 		return nil, false
 	}
@@ -417,8 +399,7 @@ func (c *scriptChecker) localCallableValuesFor(name string) ([]*ScriptFunction, 
 	fact, ok := c.localValueFactFor(name)
 	return fact.callables, ok && len(fact.callables) > 0 && len(fact.classNames) == 0 &&
 		len(fact.instanceOrigins) == 0 &&
-		len(fact.blocks) == 0 && len(fact.staticVals) == 0 &&
-		len(fact.blockValues) == 0 &&
+		len(fact.staticVals) == 0 &&
 		!fact.keywordSplatFails
 }
 
@@ -442,25 +423,6 @@ func (c *scriptChecker) bindLocalCallableValues(name string, fns []*ScriptFuncti
 	}
 }
 
-func (c *scriptChecker) localBlockLiteralValuesFor(name string) ([]checkBlockLiteralValue, bool) {
-	fact, ok := c.localValueFactFor(name)
-	return append([]checkBlockLiteralValue(nil), fact.blocks...), ok && len(fact.blocks) > 0 &&
-		!fact.blockChoiceMayNil &&
-		len(fact.instanceOrigins) == 0 &&
-		len(fact.classNames) == 0 && len(fact.callables) == 0 &&
-		len(fact.staticVals) == 0 && !fact.keywordSplatFails
-}
-
-func (c *scriptChecker) localArrayFillBlockLiteralValuesFor(
-	name string,
-) ([]checkBlockLiteralValue, bool) {
-	fact, ok := c.localValueFactFor(name)
-	return append([]checkBlockLiteralValue(nil), fact.blocks...), ok && len(fact.blocks) > 0 &&
-		len(fact.instanceOrigins) == 0 &&
-		len(fact.classNames) == 0 && len(fact.callables) == 0 &&
-		len(fact.staticVals) == 0 && !fact.keywordSplatFails
-}
-
 func (c *scriptChecker) localStaticValuesFor(name string) ([]Expression, bool) {
 	if _, poisoned := c.typePoison[name]; poisoned {
 		return nil, false
@@ -472,7 +434,7 @@ func (c *scriptChecker) localStaticValuesFor(name string) ([]Expression, bool) {
 	return append([]Expression(nil), fact.staticVals...), ok && len(fact.staticVals) > 0 &&
 		len(fact.instanceOrigins) == 0 &&
 		len(fact.classNames) == 0 && len(fact.callables) == 0 &&
-		len(fact.blocks) == 0 && !fact.keywordSplatFails
+		!fact.keywordSplatFails
 }
 
 func (c *scriptChecker) captureArrayReceiverLength(expr Expression) checkArrayReceiverCapture {
@@ -616,12 +578,9 @@ func (c *scriptChecker) bindLocalExactValueFact(name string, valueFact checkLoca
 		}
 		originalStaticValues := valueFact.staticVals
 		valueFact.instanceOrigins = normalizeCheckExpressionIdentities(valueFact.instanceOrigins)
-		valueFact.blocks = normalizeCheckBlockLiterals(valueFact.blocks)
 		valueFact.staticVals = c.normalizeCheckStaticValues(valueFact.staticVals)
-		valueFact.blockValues = normalizeCapturedBlockLiteralValues(valueFact.blockValues)
 		if len(valueFact.instanceOrigins) == 0 &&
-			len(valueFact.blocks) == 0 && len(valueFact.staticVals) == 0 &&
-			len(valueFact.blockValues) == 0 {
+			len(valueFact.staticVals) == 0 {
 			delete(c.localClassValues[i], name)
 			return
 		}
@@ -777,9 +736,6 @@ func (c *scriptChecker) checkStaticValueCandidate(expr Expression) bool {
 	if _, static := staticLiteralValue(expr); static {
 		return true
 	}
-	if lambdaLiteralBlock(expr) != nil {
-		return true
-	}
 	return c.capturedDestructureProjectionContainer(expr)
 }
 
@@ -815,10 +771,7 @@ func (c *scriptChecker) bindLocalKeywordSplatFailure(name string, keys ...string
 		fact.classNames = nil
 		fact.instanceOrigins = nil
 		fact.callables = nil
-		fact.blocks = nil
-		fact.blockChoiceMayNil = false
 		fact.staticVals = nil
-		fact.blockValues = nil
 		fact.staticChoice = checkStaticChoiceFact{}
 		fact.keywordSplatFails = true
 		c.localClassValues[i][name] = fact
@@ -848,7 +801,7 @@ func (c *scriptChecker) bindLocalKeywordSplatFailureAliases(name string, keys ..
 }
 
 func (c *scriptChecker) applyKeywordSplatDeleteFact(call *CallExpr) {
-	if call == nil || len(call.Args) != 1 || len(call.KwArgs) != 0 || call.BlockArg != nil {
+	if call == nil || len(call.Args) != 1 || len(call.KwArgs) != 0 {
 		return
 	}
 	member, ok := call.Callee.(*MemberExpr)
@@ -1857,7 +1810,6 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousWidenedIvars := c.widenedIvarFacts
 	previousInstanceIvarsDirty := c.instanceIvarFactsDirty
 	previousIfClassFacts := c.evaluatedIfClassFacts
-	previousBlockValues := c.evaluatedBlockValues
 	c.typePoison = nil
 	c.staticValuePoison = nil
 	c.staticValueDependents = nil
@@ -1879,7 +1831,6 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	// leave at worst a spuriously dirty marker, which costs one widening
 	// pass over facts that do not exist.
 	c.evaluatedIfClassFacts = nil
-	c.evaluatedBlockValues = nil
 	return func() {
 		c.typePoison = previousPoison
 		c.staticValuePoison = previousStaticValuePoison
@@ -1897,46 +1848,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 		c.widenedIvarFacts = previousWidenedIvars
 		c.instanceIvarFactsDirty = previousInstanceIvarsDirty
 		c.evaluatedIfClassFacts = previousIfClassFacts
-		c.evaluatedBlockValues = previousBlockValues
 	}
-}
-
-// withClonedLocalInferenceScope lets an out-of-order validation walk read the
-// current facts while restoring every mutable inference-side fact afterward.
-func (c *scriptChecker) withClonedLocalInferenceScope() func() {
-	scopeState := c.snapshotScopeState()
-	typePoison := cloneCheckStringSet(c.typePoison)
-	staticValuePoison := cloneCheckStringSet(c.staticValuePoison)
-	bindingGenerations := maps.Clone(c.localBindingGenerations)
-	pinnedFacts := maps.Clone(c.pinnedExpressionFacts)
-	pinnedSources := maps.Clone(c.pinnedExpressionSources)
-	pinnedOrigins := maps.Clone(c.pinnedInstanceOrigins)
-	constructorFacts := maps.Clone(c.constructorInstanceFacts)
-	widenedIvars := cloneCheckStringSet(c.widenedIvarFacts)
-	ifClassFacts := maps.Clone(c.evaluatedIfClassFacts)
-	blockValues := maps.Clone(c.evaluatedBlockValues)
-	destructureFacts := maps.Clone(c.evaluatedDestructureFacts)
-	projectionFacts := maps.Clone(c.destructureProjectionFacts)
-	stmtNoFallthrough := c.stmtNoFallthroughInferred
-
-	restore := func() {
-		c.localBindingGenerations = maps.Clone(bindingGenerations)
-		c.restoreScopeState(scopeState)
-		c.typePoison = cloneCheckStringSet(typePoison)
-		c.staticValuePoison = cloneCheckStringSet(staticValuePoison)
-		c.pinnedExpressionFacts = maps.Clone(pinnedFacts)
-		c.pinnedExpressionSources = maps.Clone(pinnedSources)
-		c.pinnedInstanceOrigins = maps.Clone(pinnedOrigins)
-		c.constructorInstanceFacts = maps.Clone(constructorFacts)
-		c.widenedIvarFacts = cloneCheckStringSet(widenedIvars)
-		c.evaluatedIfClassFacts = maps.Clone(ifClassFacts)
-		c.evaluatedBlockValues = maps.Clone(blockValues)
-		c.evaluatedDestructureFacts = maps.Clone(destructureFacts)
-		c.destructureProjectionFacts = maps.Clone(projectionFacts)
-		c.stmtNoFallthroughInferred = stmtNoFallthrough
-	}
-	restore()
-	return restore
 }
 
 // withIsolatedLocalInference walls off the local type-fact environment so a
@@ -2304,7 +2216,6 @@ func (c *scriptChecker) collectMutationCandidateRootsFromExpression(expr Express
 			*out = append(*out, kwarg.Value)
 			c.collectMutationCandidateRootsFromExpression(kwarg.Value, out)
 		}
-		c.collectMutationCandidateRootsFromExpression(typed.BlockArg, out)
 		if typed.Block != nil {
 			for _, param := range typed.Block.Params {
 				c.collectMutationCandidateRootsFromExpression(param.DefaultVal, out)
@@ -2398,30 +2309,6 @@ type regionIvarEffects struct {
 	// run again with state the first pass has already changed.
 	reentrant bool
 	unknown   bool
-}
-
-type capturedBlockLiteralValue struct {
-	block  *BlockLiteral
-	strict bool
-}
-
-func normalizeCapturedBlockLiteralValues(
-	values []capturedBlockLiteralValue,
-) []capturedBlockLiteralValue {
-	var normalized []capturedBlockLiteralValue
-	for _, candidate := range values {
-		duplicate := false
-		for _, existing := range normalized {
-			if candidate.block == existing.block && candidate.strict == existing.strict {
-				duplicate = true
-				break
-			}
-		}
-		if !duplicate {
-			normalized = append(normalized, candidate)
-		}
-	}
-	return normalized
 }
 
 func mergeRegionIvarEffects(dst *regionIvarEffects, src regionIvarEffects) {
@@ -3154,44 +3041,23 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		}
 	case *CallExpr:
 		target, resolved := c.resolveCallable(typed)
-		blockCapturingBuiltin := c.callTargetsBlockCapturingBuiltin(typed, target, resolved)
-		var invokedLambda *BlockLiteral
-		var invokedStoredBlocks []capturedBlockLiteralValue
-		storedBlocksExact := false
 		unknownDispatch := false
 		implicitSelfCall := false
 		if member, ok := typed.Callee.(*MemberExpr); ok {
-			objectAutoCall := !blockCapturingBuiltin
-			if member.Property == "call" &&
-				typeExprMayIncludeCallable(c.inferExpressionType(member.Object)) {
-				objectAutoCall = false
-			}
-			c.collectRepeatedRegionIvarEffectsFromExpression(
-				member.Object,
-				effects,
-				objectAutoCall,
-			)
+			c.collectRepeatedRegionIvarEffectsFromExpression(member.Object, effects, true)
 			if !c.expressionMayCompleteForBinding(member.Object) {
 				return
 			}
 			if staticNilSafeNavigationCall(typed) {
 				return
 			}
-			if member.Property == "call" {
-				invokedLambda = c.resolveImmediateLambdaBlock(member.Object)
-				if invokedLambda == nil {
-					invokedStoredBlocks, storedBlocksExact = c.capturedBlockLiteralValueAlternatives(member.Object)
-				}
-			}
-			unknownDispatch = invokedLambda == nil && !storedBlocksExact &&
-				!blockCapturingBuiltin &&
-				c.memberCallMayWriteUnknownIvar(typed)
+			unknownDispatch = c.memberCallMayWriteUnknownIvar(typed)
 		} else {
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Callee, effects, false)
 			if !c.expressionMayCompleteForBindingWithAuto(typed.Callee, false) {
 				return
 			}
-			unknownDispatch = !blockCapturingBuiltin
+			unknownDispatch = true
 		}
 		dynamicCandidates := c.captureDynamicCallCandidates(typed)
 		deferForwardedTargets := callResolvesForwardedTargetAfterArguments(
@@ -3232,25 +3098,7 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 				return
 			}
 		}
-		c.collectRepeatedRegionIvarEffectsFromExpression(typed.BlockArg, effects, false)
-		if !c.expressionMayCompleteForBindingWithAuto(typed.BlockArg, false) ||
-			!c.blockArgumentConversionMaySucceed(
-				typed.BlockArg,
-				c.inferExpressionType(typed.BlockArg),
-			) {
-			return
-		}
-		if invokedLambda != nil {
-			if c.immediateLambdaCallEntry(invokedLambda, typed).mayEnter {
-				c.collectRepeatedRegionIvarEffectsFromBlock(invokedLambda, effects)
-			}
-		} else if storedBlocksExact {
-			for _, block := range invokedStoredBlocks {
-				if c.capturedBlockLiteralCallEntry(block, typed).mayEnter {
-					c.collectRepeatedRegionIvarEffectsFromBlock(block.block, effects)
-				}
-			}
-		} else if dispatch, exact := c.implicitSelfCallDispatch(typed); exact {
+		if dispatch, exact := c.implicitSelfCallDispatch(typed); exact {
 			implicitSelfCall = true
 			if dispatch.mayRunScript() {
 				mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
@@ -3259,25 +3107,12 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		if unknownDispatch && !implicitSelfCall {
 			effects.unknown = true
 		}
-		blockMayRun := invokedLambda == nil && c.callMayInvokeSuppliedBlock(typed)
-		if blockMayRun && typed.BlockArg != nil {
-			c.collectRepeatedRegionIvarEffectsFromExpression(typed.BlockArg, effects, true)
-			effects.unknown = true
-		}
+		blockMayRun := c.callMayInvokeSuppliedBlock(typed)
 		if blockMayRun && typed.Block != nil {
 			c.collectRepeatedRegionIvarEffectsFromBlock(typed.Block, effects)
 		}
 	case *MemberExpr:
-		objectAutoCall := true
-		if typed.Property == "call" &&
-			typeExprMayIncludeCallable(c.inferExpressionType(typed.Object)) {
-			objectAutoCall = false
-		}
-		c.collectRepeatedRegionIvarEffectsFromExpression(
-			typed.Object,
-			effects,
-			objectAutoCall,
-		)
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Object, effects, true)
 		if !c.expressionMayCompleteForBinding(typed.Object) {
 			return
 		}
@@ -3286,32 +3121,7 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 			if staticNilSafeNavigationMember(typed) {
 				return
 			}
-			var invokedLambda *BlockLiteral
-			var invokedStoredBlocks []capturedBlockLiteralValue
-			storedBlocksExact := false
-			if typed.Property == "call" {
-				invokedLambda = c.resolveImmediateLambdaBlock(typed.Object)
-				if invokedLambda == nil {
-					invokedStoredBlocks, storedBlocksExact = c.capturedBlockLiteralValueAlternatives(typed.Object)
-				}
-			}
-			if invokedLambda != nil {
-				if lambdaLiteralArity(invokedLambda) == 0 {
-					c.collectRepeatedRegionIvarEffectsFromBlock(invokedLambda, effects)
-				}
-			} else if storedBlocksExact {
-				call := &CallExpr{
-					Callee:             typed,
-					KeywordOptionsHash: true,
-					Safe:               typed.Safe,
-					Position:           typed.Pos(),
-				}
-				for _, block := range invokedStoredBlocks {
-					if c.capturedBlockLiteralCallEntry(block, call).mayEnter {
-						c.collectRepeatedRegionIvarEffectsFromBlock(block.block, effects)
-					}
-				}
-			} else if c.memberDispatchEffect(typed) == effectUnknown {
+			if c.memberDispatchEffect(typed) == effectUnknown {
 				effects.unknown = true
 			}
 		}
@@ -3476,612 +3286,6 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 	case *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
 		c.collectRepeatedRegionIvarEffects([]Statement{typed.(Statement)}, effects)
 	}
-}
-
-func (c *scriptChecker) capturedBlockLiteralCallEntry(
-	value capturedBlockLiteralValue,
-	call *CallExpr,
-) blockLiteralCallEntryOutcome {
-	if value.block == nil || call == nil || call.Block != nil {
-		return blockLiteralCallEntryOutcome{mayReject: true}
-	}
-
-	outcome := blockLiteralCallEntryOutcome{}
-	if call.BlockArg != nil {
-		blockType, captured := c.callArgumentFacts[call.BlockArg]
-		if !captured {
-			blockType = c.inferExpressionTypeWithExpectation(
-				call.BlockArg,
-				typeExpressionExpectation(checkTypeFunction),
-			)
-		}
-		if typeExprNeverNil(blockType) {
-			return blockLiteralCallEntryOutcome{mayReject: true}
-		}
-		outcome.mayReject = !typeExprIsNilOnly(blockType) ||
-			!c.blockArgumentConversionMustSucceed(call.BlockArg, blockType)
-	}
-	for _, kwarg := range call.KwArgs {
-		if !c.keywordArgumentMayExpandEmpty(kwarg) {
-			return blockLiteralCallEntryOutcome{mayReject: true}
-		}
-		if !c.keywordArgumentMustExpandEmpty(kwarg) {
-			outcome.mayReject = true
-		}
-	}
-
-	checkedCall, exact := c.staticallyExpandedCall(call)
-	if !exact {
-		return blockLiteralCallEntryOutcome{
-			mayEnter:  true,
-			mayReject: true,
-		}
-	}
-	binding := c.blockLiteralBindingOutcome(
-		value.block,
-		checkedCall.Args,
-		value.strict,
-		nil,
-	)
-	if !binding.mayBind {
-		return blockLiteralCallEntryOutcome{mayReject: true}
-	}
-	outcome.mayEnter = true
-	outcome.mayReject = outcome.mayReject || !binding.mustBind
-	return outcome
-}
-
-func (c *scriptChecker) capturedBlockLiteralValueAlternatives(
-	expr Expression,
-) ([]capturedBlockLiteralValue, bool) {
-	if values, evaluated := c.evaluatedBlockValues[expr]; evaluated {
-		return append([]capturedBlockLiteralValue(nil), values...), true
-	}
-	switch typed := expr.(type) {
-	case *NilLiteral:
-		return []capturedBlockLiteralValue{{}}, true
-	case *BlockLiteral:
-		if typed.Lambda {
-			return []capturedBlockLiteralValue{{block: typed, strict: true}}, true
-		}
-		return nil, false
-	case *Identifier:
-		if _, poisoned := c.typePoison[typed.Name]; poisoned {
-			return nil, false
-		}
-		if _, poisoned := c.staticValuePoison[typed.Name]; poisoned {
-			return nil, false
-		}
-		fact, exact := c.localValueFactFor(typed.Name)
-		if !exact || len(fact.blockValues) == 0 {
-			return nil, false
-		}
-		return append([]capturedBlockLiteralValue(nil), fact.blockValues...), true
-	case *ConditionalExpr:
-		if branch, known := staticConditionalExpressionBranch(typed); known {
-			return c.capturedBlockLiteralValueAlternatives(branch)
-		}
-		return c.mergeCapturedBlockLiteralExpressions(
-			[]Expression{typed.Consequent, typed.Alternate},
-		)
-	case *IfExpr:
-		if branch, known := staticIfExpressionBranch(typed); known {
-			return c.capturedBlockLiteralValueAlternatives(branch)
-		}
-		expressions := make([]Expression, 0, len(typed.ElseIf)+2)
-		expressions = append(expressions, typed.Consequent)
-		for _, branch := range typed.ElseIf {
-			expressions = append(expressions, branch.Result)
-		}
-		expressions = append(expressions, typed.Alternate)
-		return c.mergeCapturedBlockLiteralExpressions(expressions)
-	case *RescueExpr:
-		if expressionProvenNonRaising(typed.Body) {
-			return c.capturedBlockLiteralValueAlternatives(typed.Body)
-		}
-		return c.mergeCapturedBlockLiteralExpressions(
-			[]Expression{typed.Body, typed.Fallback},
-		)
-	case *CaseExpr:
-		if result, known := staticCaseExpressionResult(typed); known {
-			return c.capturedBlockLiteralValueAlternatives(result)
-		}
-		expressions := make([]Expression, 0, len(typed.Clauses)+1)
-		for _, clause := range typed.Clauses {
-			expressions = append(expressions, clause.Result)
-		}
-		expressions = append(expressions, typed.ElseExpr)
-		return c.mergeCapturedBlockLiteralExpressions(expressions)
-	case *CallExpr:
-		target, resolved := c.resolveCallable(typed)
-		return c.captureResolvedCoreBlockValues(
-			typed,
-			target,
-			c.callTargetsBlockCapturingBuiltin(typed, target, resolved),
-		)
-	}
-	return nil, false
-}
-
-func (c *scriptChecker) mergeCapturedBlockLiteralExpressions(
-	expressions []Expression,
-) ([]capturedBlockLiteralValue, bool) {
-	var values []capturedBlockLiteralValue
-	for _, expression := range expressions {
-		alternatives, exact := c.capturedBlockLiteralValueAlternatives(expression)
-		if !exact || len(values)+len(alternatives) > 32 {
-			return nil, false
-		}
-		values = append(values, alternatives...)
-	}
-	values = normalizeCapturedBlockLiteralValues(values)
-	return values, len(values) > 0
-}
-
-func (c *scriptChecker) captureResolvedCoreBlockValues(
-	call *CallExpr,
-	target staticCallable,
-	blockCapturing bool,
-) ([]capturedBlockLiteralValue, bool) {
-	if !blockCapturing {
-		return nil, false
-	}
-	switch target.name {
-	case "lambda", "proc", "Proc.new":
-	default:
-		return nil, false
-	}
-	checkedCall, exact := c.staticallyExpandedCall(call)
-	if !exact || len(checkedCall.Args) != 0 || len(checkedCall.KwArgs) != 0 {
-		return nil, false
-	}
-	strict := target.name == "lambda"
-	if checkedCall.Block != nil {
-		if checkedCall.BlockArg != nil {
-			return nil, false
-		}
-		return []capturedBlockLiteralValue{{
-			block:  checkedCall.Block,
-			strict: strict || checkedCall.Block.Lambda,
-		}}, true
-	}
-	if checkedCall.BlockArg == nil {
-		return nil, false
-	}
-	values, exact := c.capturedBlockLiteralValueAlternatives(checkedCall.BlockArg)
-	if !exact {
-		return nil, false
-	}
-	converted := make([]capturedBlockLiteralValue, 0, len(values))
-	for _, value := range values {
-		if value.block == nil {
-			continue
-		}
-		if strict {
-			value.strict = true
-		}
-		converted = append(converted, value)
-	}
-	converted = normalizeCapturedBlockLiteralValues(converted)
-	return converted, len(converted) > 0
-}
-
-func (c *scriptChecker) captureEvaluatedRetainedConstructor(
-	call *CallExpr,
-	target staticCallable,
-	blockCapturing bool,
-) {
-	if call == nil {
-		return
-	}
-	delete(c.evaluatedBlockValues, call)
-	if values, exact := c.captureResolvedCoreBlockValues(
-		call,
-		target,
-		blockCapturing,
-	); exact {
-		if c.evaluatedBlockValues == nil {
-			c.evaluatedBlockValues = make(map[Expression][]capturedBlockLiteralValue)
-		}
-		c.evaluatedBlockValues[call] = append([]capturedBlockLiteralValue(nil), values...)
-	}
-}
-
-// blockLiteralBindingOutcome reports whether a block's complete binding phase
-// can succeed and whether it succeeds for every represented argument value.
-// It follows runtime order: parameter normalization precedes its target, and
-// each destructure element normalizes before recursion into a nested target.
-func (c *scriptChecker) blockLiteralBindingOutcome(
-	block *BlockLiteral,
-	args []Expression,
-	strict bool,
-	firstValue *Value,
-) blockLiteralBindingOutcome {
-	if block == nil {
-		return blockLiteralBindingOutcome{}
-	}
-	strict = strict || block.Lambda
-	if strict && len(args) != lambdaLiteralArity(block) {
-		return blockLiteralBindingOutcome{}
-	}
-
-	inputs := make([]blockLiteralBindingInput, len(args))
-	for i, arg := range args {
-		inputs[i].expression = arg
-	}
-	if firstValue != nil && len(inputs) > 0 {
-		inputs[0].value = firstValue
-	}
-	if !strict && len(inputs) == 1 &&
-		rubyBlockPositionalBindCount(block.Params) > 1 {
-		return c.blockLiteralProcAutosplatBindingOutcome(block, inputs[0])
-	}
-	return c.blockLiteralBindingInputsOutcome(block, inputs)
-}
-
-type blockLiteralBindingInput struct {
-	expression Expression
-	value      *Value
-}
-
-func (c *scriptChecker) blockLiteralProcAutosplatBindingOutcome(
-	block *BlockLiteral,
-	input blockLiteralBindingInput,
-) blockLiteralBindingOutcome {
-	if input.value != nil {
-		if input.value.Kind() != KindArray {
-			return c.blockLiteralBindingInputsOutcome(
-				block,
-				[]blockLiteralBindingInput{input},
-			)
-		}
-		values := input.value.Array()
-		inputs := make([]blockLiteralBindingInput, len(values))
-		for i := range values {
-			inputs[i].value = &values[i]
-		}
-		return c.blockLiteralBindingInputsOutcome(block, inputs)
-	}
-
-	if alternatives, exact := c.callStaticValueAlternatives(input.expression); exact {
-		outcomes := make([]blockLiteralBindingOutcome, 0, len(alternatives))
-		for _, alternative := range alternatives {
-			if array, ok := alternative.(*ArrayLiteral); ok {
-				inputs := make([]blockLiteralBindingInput, len(array.Elements))
-				for i, element := range array.Elements {
-					inputs[i].expression = element
-				}
-				outcomes = append(
-					outcomes,
-					c.blockLiteralBindingInputsOutcome(block, inputs),
-				)
-				continue
-			}
-			outcomes = append(
-				outcomes,
-				c.blockLiteralBindingInputsOutcome(
-					block,
-					[]blockLiteralBindingInput{{expression: alternative}},
-				),
-			)
-		}
-		return mergeBlockLiteralBindingAlternatives(outcomes)
-	}
-
-	inferred, captured := c.callArgumentFacts[input.expression]
-	if !captured {
-		inferred = c.inferExpressionType(input.expression)
-	}
-	if inferred != nil &&
-		typeExprsDisjoint(inferred, checkTypeArray, c.checkNamedTypeResolver()) {
-		return c.blockLiteralBindingInputsOutcome(
-			block,
-			[]blockLiteralBindingInput{input},
-		)
-	}
-	// An abstract value that may be an array can take either the ordinary
-	// single-argument path or Ruby's element-wise proc binding path. Without
-	// exact elements or cardinality, either binding result remains possible.
-	return blockLiteralBindingOutcome{mayBind: true}
-}
-
-func (c *scriptChecker) blockLiteralBindingInputsOutcome(
-	block *BlockLiteral,
-	inputs []blockLiteralBindingInput,
-) blockLiteralBindingOutcome {
-	outcome := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	for i, param := range block.Params {
-		if param.Kind != ParamNormal {
-			outcome.mustBind = false
-			continue
-		}
-		var binding blockLiteralBindingOutcome
-		if i < len(inputs) && inputs[i].value != nil {
-			binding = c.blockLiteralValueBindingOutcome(
-				*inputs[i].value,
-				param.Type,
-				param.Target,
-			)
-		} else {
-			var arg Expression = &NilLiteral{}
-			if i < len(inputs) && inputs[i].expression != nil {
-				arg = inputs[i].expression
-			}
-			binding = c.blockLiteralExpressionBindingOutcome(
-				arg,
-				param.Type,
-				param.Target,
-			)
-		}
-		outcome = combineBlockLiteralBindingOutcomes(outcome, binding)
-		if !outcome.mayBind {
-			return outcome
-		}
-	}
-	return outcome
-}
-
-func (c *scriptChecker) lambdaLiteralParamBindingOutcome(
-	block *BlockLiteral,
-	index int,
-	arg Expression,
-) blockLiteralBindingOutcome {
-	if block == nil || index < 0 {
-		return blockLiteralBindingOutcome{}
-	}
-	if index >= len(block.Params) {
-		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	}
-	param := block.Params[index]
-	return c.blockLiteralExpressionBindingOutcome(arg, param.Type, param.Target)
-}
-
-func (c *scriptChecker) lambdaLiteralParamTypeBindingOutcome(
-	block *BlockLiteral,
-	index int,
-	ty *TypeExpr,
-) blockLiteralBindingOutcome {
-	if block == nil || index < 0 {
-		return blockLiteralBindingOutcome{}
-	}
-	if index >= len(block.Params) {
-		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	}
-	param := block.Params[index]
-	return c.blockLiteralTypeBindingOutcome(ty, param.Type, param.Target)
-}
-
-func combineBlockLiteralBindingOutcomes(
-	left blockLiteralBindingOutcome,
-	right blockLiteralBindingOutcome,
-) blockLiteralBindingOutcome {
-	return blockLiteralBindingOutcome{
-		mayBind:  left.mayBind && right.mayBind,
-		mustBind: left.mustBind && right.mustBind,
-	}
-}
-
-func mergeBlockLiteralBindingAlternatives(
-	alternatives []blockLiteralBindingOutcome,
-) blockLiteralBindingOutcome {
-	if len(alternatives) == 0 {
-		return blockLiteralBindingOutcome{}
-	}
-	outcome := blockLiteralBindingOutcome{mustBind: true}
-	for _, alternative := range alternatives {
-		outcome.mayBind = outcome.mayBind || alternative.mayBind
-		outcome.mustBind = outcome.mustBind && alternative.mustBind
-	}
-	return outcome
-}
-
-func (c *scriptChecker) blockLiteralExpressionBindingOutcome(
-	expr Expression,
-	ty *TypeExpr,
-	target Expression,
-) blockLiteralBindingOutcome {
-	if alternatives, exact := c.callStaticValueAlternatives(expr); exact {
-		outcomes := make([]blockLiteralBindingOutcome, 0, len(alternatives))
-		for _, alternative := range alternatives {
-			outcomes = append(
-				outcomes,
-				c.blockLiteralExpressionBindingCandidateOutcome(alternative, ty, target),
-			)
-		}
-		return mergeBlockLiteralBindingAlternatives(outcomes)
-	}
-	return c.blockLiteralExpressionBindingCandidateOutcome(expr, ty, target)
-}
-
-func (c *scriptChecker) blockLiteralExpressionBindingCandidateOutcome(
-	expr Expression,
-	ty *TypeExpr,
-	target Expression,
-) blockLiteralBindingOutcome {
-	if value, exact := staticLiteralValue(expr); exact {
-		return c.blockLiteralValueBindingOutcome(value, ty, target)
-	}
-	normalization := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	var valueType *TypeExpr
-	if ty != nil {
-		var captured bool
-		valueType, captured = c.callArgumentFacts[expr]
-		if !captured {
-			valueType = c.inferExpressionTypeWithExpectation(
-				expr,
-				typeExpressionExpectation(ty),
-			)
-		}
-		normalization = blockLiteralBindingOutcome{
-			mayBind:  c.blockLiteralTypeMayNormalize(valueType, ty),
-			mustBind: c.blockLiteralTypeMustNormalize(valueType, ty),
-		}
-	}
-	if !normalization.mayBind || target == nil {
-		return normalization
-	}
-
-	var targetOutcome blockLiteralBindingOutcome
-	switch typed := target.(type) {
-	case *Identifier:
-		targetOutcome = blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	case *DestructureTarget:
-		if ty != nil {
-			return c.blockLiteralTypeBindingOutcome(valueType, ty, typed)
-		}
-		targetOutcome = c.blockLiteralDestructureExpressionOutcome(
-			typed,
-			expr,
-			c.inferExpressionType(expr),
-		)
-	default:
-		return blockLiteralBindingOutcome{}
-	}
-	return combineBlockLiteralBindingOutcomes(normalization, targetOutcome)
-}
-
-func (c *scriptChecker) blockLiteralValueBindingOutcome(
-	value Value,
-	ty *TypeExpr,
-	target Expression,
-) blockLiteralBindingOutcome {
-	if ty != nil {
-		normalized, err := normalizeValueForType(value, ty, c.runtimeTypeContext())
-		if err != nil {
-			return blockLiteralBindingOutcome{}
-		}
-		value = normalized
-	}
-	if target == nil {
-		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	}
-	switch typed := target.(type) {
-	case *Identifier:
-		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	case *DestructureTarget:
-		err := assignDestructureWithNormalizer(
-			typed,
-			value,
-			func(Expression, Value) error { return nil },
-			destructureCharge{check: noopDestructureCheck, step: noopDestructureStep, liveRoot: value},
-			func(element DestructureElement, elementValue Value) (Value, error) {
-				return normalizeValueForType(
-					elementValue,
-					element.Type,
-					c.runtimeTypeContext(),
-				)
-			},
-		)
-		if err == nil {
-			return blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-		}
-	}
-	return blockLiteralBindingOutcome{}
-}
-
-func (c *scriptChecker) blockLiteralDestructureExpressionOutcome(
-	target *DestructureTarget,
-	value Expression,
-	effectiveType *TypeExpr,
-) blockLiteralBindingOutcome {
-	if target == nil {
-		return blockLiteralBindingOutcome{}
-	}
-	array, exactArray := value.(*ArrayLiteral)
-	if exactArray {
-		for _, element := range array.Elements {
-			if _, splat := element.(*SplatArg); splat {
-				exactArray = false
-				break
-			}
-		}
-	}
-	if !exactArray && !c.checkStaticValueCandidate(value) {
-		return c.blockLiteralDestructureTypeOutcome(target, effectiveType)
-	}
-
-	values := destructureAssignmentExpressions(target, value)
-	outcome := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	for i, element := range target.Elements {
-		if element.Rest && element.Target == nil {
-			continue
-		}
-		var elementValue Expression
-		if i < len(values) {
-			elementValue = values[i]
-		}
-		binding := c.blockLiteralExpressionBindingOutcome(
-			elementValue,
-			element.Type,
-			element.Target,
-		)
-		outcome = combineBlockLiteralBindingOutcomes(outcome, binding)
-		if !outcome.mayBind {
-			return outcome
-		}
-	}
-	return outcome
-}
-
-func (c *scriptChecker) blockLiteralTypeBindingOutcome(
-	valueType *TypeExpr,
-	ty *TypeExpr,
-	target Expression,
-) blockLiteralBindingOutcome {
-	if arms, exact := typeExprArms(valueType, 0); exact {
-		outcomes := make([]blockLiteralBindingOutcome, 0, len(arms))
-		for _, arm := range arms {
-			outcomes = append(
-				outcomes,
-				c.blockLiteralTypeBindingCandidateOutcome(arm, ty, target),
-			)
-		}
-		return mergeBlockLiteralBindingAlternatives(outcomes)
-	}
-	return c.blockLiteralTypeBindingCandidateOutcome(valueType, ty, target)
-}
-
-func (c *scriptChecker) blockLiteralTypeBindingCandidateOutcome(
-	valueType *TypeExpr,
-	ty *TypeExpr,
-	target Expression,
-) blockLiteralBindingOutcome {
-	normalization := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	effectiveType := valueType
-	if ty != nil {
-		if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
-			return blockLiteralBindingOutcome{}
-		}
-		if valueType != nil && valueType.Kind == TypeArray {
-			if destructure, ok := target.(*DestructureTarget); ok {
-				return c.blockLiteralArrayTypeBindingOutcome(
-					valueType,
-					ty,
-					destructure,
-				)
-			}
-		}
-		normalization.mustBind = c.blockLiteralTypeMustNormalize(valueType, ty)
-		normalization.mayBind = c.blockLiteralTypeMayNormalize(valueType, ty)
-		if !normalization.mayBind {
-			return normalization
-		}
-		effectiveType = c.blockLiteralNormalizedType(valueType, ty)
-	}
-	if target == nil {
-		return normalization
-	}
-
-	var targetOutcome blockLiteralBindingOutcome
-	switch typed := target.(type) {
-	case *Identifier:
-		targetOutcome = blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	case *DestructureTarget:
-		targetOutcome = c.blockLiteralDestructureTypeOutcome(typed, effectiveType)
-	default:
-		return blockLiteralBindingOutcome{}
-	}
-	return combineBlockLiteralBindingOutcomes(normalization, targetOutcome)
 }
 
 func (c *scriptChecker) blockLiteralTypeMayNormalize(
@@ -4328,421 +3532,6 @@ func blockLiteralNormalizationTypeOptions(ty *TypeExpr) []*TypeExpr {
 	return []*TypeExpr{&nonNil, checkTypeNil}
 }
 
-const (
-	maxBlockLiteralBindingDepth              = 6
-	maxBlockLiteralArrayRepresentativeLength = 24
-	maxBlockLiteralConservativeElements      = 512
-)
-
-func (c *scriptChecker) blockLiteralDestructureTypeOutcome(
-	target *DestructureTarget,
-	valueType *TypeExpr,
-) blockLiteralBindingOutcome {
-	if target == nil {
-		return blockLiteralBindingOutcome{}
-	}
-	if c.blockLiteralBindingDepth >= maxBlockLiteralBindingDepth {
-		return c.conservativeBlockLiteralDestructureOutcome(target)
-	}
-	c.blockLiteralBindingDepth++
-	defer func() { c.blockLiteralBindingDepth-- }()
-
-	if arms, exact := typeExprArms(valueType, 0); exact {
-		outcomes := make([]blockLiteralBindingOutcome, 0, len(arms))
-		for _, arm := range arms {
-			outcomes = append(
-				outcomes,
-				c.blockLiteralDestructureTypeArmOutcome(target, arm),
-			)
-		}
-		return mergeBlockLiteralBindingAlternatives(outcomes)
-	}
-	return c.blockLiteralDestructureUnknownTypeOutcome(target)
-}
-
-func (c *scriptChecker) conservativeBlockLiteralDestructureOutcome(
-	target *DestructureTarget,
-) blockLiteralBindingOutcome {
-	outcome := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	stack := []*DestructureTarget{target}
-	visited := 0
-	for len(stack) > 0 {
-		if visited >= maxBlockLiteralConservativeElements {
-			outcome.mustBind = false
-			return outcome
-		}
-		current := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		for _, element := range current.Elements {
-			visited++
-			if element.Rest && element.Target == nil {
-				continue
-			}
-			if element.Type != nil {
-				if err := validateTypeExprResolved(
-					element.Type,
-					c.runtimeTypeContext(),
-				); err != nil {
-					return blockLiteralBindingOutcome{}
-				}
-				if !blockLiteralTypeAcceptsAny(element.Type) {
-					outcome.mustBind = false
-				}
-			}
-			if nested, ok := element.Target.(*DestructureTarget); ok {
-				stack = append(stack, nested)
-			}
-		}
-	}
-	return outcome
-}
-
-type blockLiteralBindingValue struct {
-	typeExpr       *TypeExpr
-	normalizations []*TypeExpr
-}
-
-func (c *scriptChecker) blockLiteralDestructureTypeArmOutcome(
-	target *DestructureTarget,
-	arm *TypeExpr,
-) blockLiteralBindingOutcome {
-	if arm == nil {
-		return c.blockLiteralDestructureUnknownTypeOutcome(target)
-	}
-	if arm.Kind == TypeArray {
-		return c.blockLiteralArrayTypeBindingOutcome(
-			arm,
-			nil,
-			target,
-		)
-	}
-	return c.blockLiteralDestructureArrayElementsOutcome(
-		target,
-		[]blockLiteralBindingValue{{typeExpr: arm}},
-	)
-}
-
-func (c *scriptChecker) blockLiteralDestructureUnknownTypeOutcome(
-	target *DestructureTarget,
-) blockLiteralBindingOutcome {
-	return mergeBlockLiteralBindingAlternatives([]blockLiteralBindingOutcome{
-		c.blockLiteralDestructureArrayElementsOutcome(
-			target,
-			[]blockLiteralBindingValue{{}},
-		),
-		c.blockLiteralArrayTypeBindingOutcome(
-			checkTypeArray,
-			nil,
-			target,
-		),
-	})
-}
-
-func (c *scriptChecker) blockLiteralArrayTypeBindingOutcome(
-	valueType *TypeExpr,
-	ty *TypeExpr,
-	target Expression,
-) blockLiteralBindingOutcome {
-	var normalizations []*TypeExpr
-	if ty != nil {
-		normalizations = []*TypeExpr{ty}
-	}
-	return c.blockLiteralArrayTypeSequenceOutcome(
-		valueType,
-		normalizations,
-		target,
-	)
-}
-
-func (c *scriptChecker) blockLiteralArrayTypeSequenceOutcome(
-	valueType *TypeExpr,
-	normalizations []*TypeExpr,
-	target Expression,
-) blockLiteralBindingOutcome {
-	limit := 1
-	complete := true
-	if destructure, ok := target.(*DestructureTarget); ok {
-		limit, complete = blockLiteralArrayRepresentativeLength(destructure, 0)
-	}
-	if !complete {
-		return blockLiteralBindingOutcome{mayBind: true}
-	}
-	elementType := splattedElementBound(valueType)
-	outcomes := make([]blockLiteralBindingOutcome, 0, limit+1)
-	for length := range limit + 1 {
-		elements := make([]blockLiteralBindingValue, length)
-		for i := range elements {
-			elements[i].typeExpr = elementType
-		}
-		outcomes = append(
-			outcomes,
-			c.blockLiteralArrayElementsSequenceOutcome(
-				elements,
-				normalizations,
-				target,
-			),
-		)
-	}
-	return mergeBlockLiteralBindingAlternatives(outcomes)
-}
-
-func blockLiteralArrayRepresentativeLength(
-	target *DestructureTarget,
-	depth int,
-) (int, bool) {
-	if target == nil || depth >= maxBlockLiteralBindingDepth {
-		return 0, false
-	}
-	restIndex := -1
-	for i, element := range target.Elements {
-		if element.Rest {
-			restIndex = i
-			break
-		}
-	}
-	limit := len(target.Elements) + 1
-	complete := true
-	if restIndex >= 0 {
-		restLength := 1
-		if nested, ok := target.Elements[restIndex].Target.(*DestructureTarget); ok {
-			restLength, complete = blockLiteralArrayRepresentativeLength(
-				nested,
-				depth+1,
-			)
-			restLength = max(restLength, 1)
-		}
-		limit = len(target.Elements) - 1 + restLength
-	}
-	if limit > maxBlockLiteralArrayRepresentativeLength {
-		return maxBlockLiteralArrayRepresentativeLength, false
-	}
-	return limit, complete
-}
-
-func (c *scriptChecker) blockLiteralArrayElementsBindingOutcome(
-	elements []blockLiteralBindingValue,
-	ty *TypeExpr,
-	target Expression,
-) blockLiteralBindingOutcome {
-	var normalizations []*TypeExpr
-	if ty != nil {
-		normalizations = []*TypeExpr{ty}
-	}
-	return c.blockLiteralArrayElementsSequenceOutcome(
-		elements,
-		normalizations,
-		target,
-	)
-}
-
-func (c *scriptChecker) blockLiteralArrayElementsSequenceOutcome(
-	elements []blockLiteralBindingValue,
-	normalizations []*TypeExpr,
-	target Expression,
-) blockLiteralBindingOutcome {
-	if len(normalizations) == 0 {
-		return c.blockLiteralArrayElementsTargetOutcome(elements, target)
-	}
-	ty := normalizations[0]
-	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
-		return blockLiteralBindingOutcome{}
-	}
-
-	options := blockLiteralNormalizationTypeOptions(ty)
-	outcome := blockLiteralBindingOutcome{mustBind: true}
-	remaining := true
-	for _, option := range options {
-		normalization, normalized := c.blockLiteralArrayNormalizationOptionOutcome(
-			elements,
-			option,
-		)
-		if !normalization.mayBind {
-			continue
-		}
-		targetOutcome := c.blockLiteralArrayElementsSequenceOutcome(
-			normalized,
-			normalizations[1:],
-			target,
-		)
-		success := combineBlockLiteralBindingOutcomes(
-			normalization,
-			targetOutcome,
-		)
-		outcome.mayBind = outcome.mayBind || success.mayBind
-		if !targetOutcome.mustBind {
-			outcome.mustBind = false
-		}
-		if normalization.mustBind {
-			remaining = false
-			break
-		}
-	}
-	if remaining {
-		outcome.mustBind = false
-	}
-	return outcome
-}
-
-func (c *scriptChecker) blockLiteralArrayNormalizationOptionOutcome(
-	elements []blockLiteralBindingValue,
-	option *TypeExpr,
-) (blockLiteralBindingOutcome, []blockLiteralBindingValue) {
-	if option == nil {
-		return blockLiteralBindingOutcome{}, nil
-	}
-	if option.Kind == TypeAny {
-		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}, elements
-	}
-	if option.Kind != TypeArray {
-		return blockLiteralBindingOutcome{}, nil
-	}
-	if len(option.TypeArgs) == 0 || len(elements) == 0 {
-		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}, elements
-	}
-	if len(option.TypeArgs) != 1 {
-		return blockLiteralBindingOutcome{}, nil
-	}
-
-	outcome := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	normalized := make([]blockLiteralBindingValue, len(elements))
-	for i, element := range elements {
-		normalized[i] = element
-		normalized[i].normalizations = append(
-			append([]*TypeExpr(nil), element.normalizations...),
-			option.TypeArgs[0],
-		)
-		binding := c.blockLiteralBindingValueOutcome(normalized[i], nil, nil)
-		outcome = combineBlockLiteralBindingOutcomes(outcome, binding)
-		if !outcome.mayBind {
-			return outcome, nil
-		}
-	}
-	return outcome, normalized
-}
-
-func (c *scriptChecker) blockLiteralBindingValueOutcome(
-	value blockLiteralBindingValue,
-	ty *TypeExpr,
-	target Expression,
-) blockLiteralBindingOutcome {
-	normalizations := append([]*TypeExpr(nil), value.normalizations...)
-	if ty != nil {
-		normalizations = append(normalizations, ty)
-	}
-	if value.typeExpr != nil && value.typeExpr.Kind == TypeArray {
-		return c.blockLiteralArrayTypeSequenceOutcome(
-			value.typeExpr,
-			normalizations,
-			target,
-		)
-	}
-
-	outcome := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	effectiveType := value.typeExpr
-	for _, normalization := range normalizations {
-		binding := c.blockLiteralTypeBindingCandidateOutcome(
-			effectiveType,
-			normalization,
-			nil,
-		)
-		outcome = combineBlockLiteralBindingOutcomes(outcome, binding)
-		if !outcome.mayBind {
-			return outcome
-		}
-		effectiveType = c.blockLiteralNormalizedType(
-			effectiveType,
-			normalization,
-		)
-	}
-	targetOutcome := c.blockLiteralTypeBindingCandidateOutcome(
-		effectiveType,
-		nil,
-		target,
-	)
-	return combineBlockLiteralBindingOutcomes(outcome, targetOutcome)
-}
-
-func (c *scriptChecker) blockLiteralArrayElementsTargetOutcome(
-	elements []blockLiteralBindingValue,
-	target Expression,
-) blockLiteralBindingOutcome {
-	if target == nil {
-		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	}
-	switch typed := target.(type) {
-	case *Identifier:
-		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	case *DestructureTarget:
-		if c.blockLiteralBindingDepth >= maxBlockLiteralBindingDepth {
-			return c.conservativeBlockLiteralDestructureOutcome(typed)
-		}
-		c.blockLiteralBindingDepth++
-		defer func() { c.blockLiteralBindingDepth-- }()
-		return c.blockLiteralDestructureArrayElementsOutcome(typed, elements)
-	default:
-		return blockLiteralBindingOutcome{}
-	}
-}
-
-func (c *scriptChecker) blockLiteralDestructureArrayElementsOutcome(
-	target *DestructureTarget,
-	elements []blockLiteralBindingValue,
-) blockLiteralBindingOutcome {
-	restIndex := -1
-	for i, element := range target.Elements {
-		if element.Rest {
-			restIndex = i
-			break
-		}
-	}
-	valueAt := func(index int) blockLiteralBindingValue {
-		if index >= 0 && index < len(elements) {
-			return elements[index]
-		}
-		return blockLiteralBindingValue{typeExpr: checkTypeNil}
-	}
-	restStart := 0
-	restEnd := 0
-	if restIndex >= 0 {
-		trailing := len(target.Elements) - restIndex - 1
-		restStart = min(restIndex, len(elements))
-		restEnd = max(restStart, len(elements)-trailing)
-	}
-
-	outcome := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
-	for i, element := range target.Elements {
-		if element.Rest && element.Target == nil {
-			continue
-		}
-		var binding blockLiteralBindingOutcome
-		switch {
-		case restIndex < 0 || i < restIndex:
-			binding = c.blockLiteralBindingValueOutcome(
-				valueAt(i),
-				element.Type,
-				element.Target,
-			)
-		case i == restIndex:
-			binding = c.blockLiteralArrayElementsBindingOutcome(
-				elements[restStart:restEnd],
-				element.Type,
-				element.Target,
-			)
-		default:
-			binding = c.blockLiteralBindingValueOutcome(
-				valueAt(restEnd+i-restIndex-1),
-				element.Type,
-				element.Target,
-			)
-		}
-		outcome = combineBlockLiteralBindingOutcomes(outcome, binding)
-		if !outcome.mayBind {
-			return outcome
-		}
-	}
-	return outcome
-}
-
 func collectRegionIvarWriteTargets(target Expression, effects *regionIvarEffects) {
 	switch typed := target.(type) {
 	case *IvarExpr:
@@ -4869,102 +3658,6 @@ func (c *scriptChecker) widenRepeatedRegionBlockIvarFacts(block *BlockLiteral) {
 	c.collectRepeatedRegionIvarEffectsFromBlock(block, &effects)
 	c.restoreScopeState(scopeState)
 	c.widenRegionIvarFacts(effects)
-	if effects.reentrant {
-		c.applyReentrantLambdaNamespaceMutations(block)
-	}
-}
-
-// refineOneShotBlockIvarFacts restores exact scalar facts only on a normally
-// completing direct-call arm. Failure exits already captured the ordinary
-// widened state, and repeated regions keep that state unchanged.
-func (c *scriptChecker) refineOneShotBlockIvarFacts(
-	base checkScopeState,
-	blocks []capturedBlockLiteralValue,
-	entries []blockLiteralCallEntryOutcome,
-) {
-	if c.mutationRegionDepth != 0 ||
-		c.speculativeInference != 0 ||
-		c.oneShotIvarRefinementDepth != 0 ||
-		len(blocks) == 0 ||
-		len(blocks) != len(entries) {
-		return
-	}
-
-	completing := make([]map[string]*TypeExpr, 0, len(blocks))
-	written := make(map[string]struct{})
-	for i, value := range blocks {
-		if !entries[i].mayEnter ||
-			!c.blockLiteralBodyMayComplete(value.block, value.strict) {
-			continue
-		}
-		facts, exact := c.straightLineBlockIvarFacts(value.block)
-		if !exact {
-			return
-		}
-		completing = append(completing, facts)
-		for name := range facts {
-			written[name] = struct{}{}
-		}
-	}
-	if len(completing) == 0 || len(written) == 0 {
-		return
-	}
-
-	for name := range written {
-		facts := make([]*TypeExpr, 0, len(completing))
-		exact := true
-		for _, candidate := range completing {
-			fact, assigned := candidate[name]
-			if !assigned {
-				fact = scopeStateLocalType(base, ivarFactKey(name))
-			}
-			if fact == nil {
-				exact = false
-				break
-			}
-			facts = append(facts, fact)
-		}
-		if exact {
-			c.bindLocalType(ivarFactKey(name), unionTypeExprs(facts...))
-		}
-	}
-}
-
-// straightLineBlockIvarFacts accepts only writes whose value and successful
-// store are statically known. Every other body shape retains normal widening.
-func (c *scriptChecker) straightLineBlockIvarFacts(
-	block *BlockLiteral,
-) (map[string]*TypeExpr, bool) {
-	if block == nil {
-		return nil, false
-	}
-	facts := make(map[string]*TypeExpr)
-	for _, stmt := range block.Body {
-		assign, ok := stmt.(*AssignStmt)
-		if !ok || assign.Operator != tokenNone || !expressionProvenNonRaising(assign.Value) {
-			return nil, false
-		}
-		target, ok := assign.Target.(*IvarExpr)
-		if !ok || !c.ivarWriteProvablyCompletes(target.Name, assign.Value) {
-			return nil, false
-		}
-		ty := c.instanceIvarContract(target.Name)
-		if ty == nil {
-			facts[target.Name] = nil
-			continue
-		}
-		facts[target.Name] = c.writtenIvarFact(ty, assign.Value)
-	}
-	return facts, true
-}
-
-func scopeStateLocalType(state checkScopeState, name string) *TypeExpr {
-	for i := len(state.types) - 1; i >= 0; i-- {
-		if ty, ok := state.types[i][name]; ok {
-			return ty
-		}
-	}
-	return nil
 }
 
 func (c *scriptChecker) widenRegionIvarFacts(effects regionIvarEffects) {
@@ -5153,17 +3846,8 @@ func (c *scriptChecker) mergeLocalValueFacts(
 	if len(left.callables) > 0 && len(right.callables) > 0 {
 		merged.callables = normalizeCheckCallables(append(left.callables, right.callables...))
 	}
-	if len(left.blocks) > 0 && len(right.blocks) > 0 {
-		merged.blocks = normalizeCheckBlockLiterals(append(left.blocks, right.blocks...))
-		merged.blockChoiceMayNil = left.blockChoiceMayNil || right.blockChoiceMayNil
-	}
 	if len(left.staticVals) > 0 && len(right.staticVals) > 0 {
 		merged.staticVals = c.normalizeCheckStaticValues(append(left.staticVals, right.staticVals...))
-	}
-	if len(left.blockValues) > 0 && len(right.blockValues) > 0 {
-		merged.blockValues = normalizeCapturedBlockLiteralValues(
-			append(left.blockValues, right.blockValues...),
-		)
 	}
 	if left.keywordSplatFails && right.keywordSplatFails {
 		merged.keywordSplatFails = true
@@ -5187,9 +3871,7 @@ func (c *scriptChecker) mergeLocalValueFacts(
 	exact := len(merged.classNames) > 0 ||
 		len(merged.instanceOrigins) > 0 ||
 		len(merged.callables) > 0 ||
-		len(merged.blocks) > 0 ||
 		len(merged.staticVals) > 0 ||
-		len(merged.blockValues) > 0 ||
 		merged.keywordSplatFails
 	return merged, exact
 }
@@ -5288,33 +3970,6 @@ func normalizeCheckCallables(fns []*ScriptFunction) []*ScriptFunction {
 	for _, fn := range normalized {
 		if len(out) == 0 || out[len(out)-1] != fn {
 			out = append(out, fn)
-		}
-	}
-	return out
-}
-
-func normalizeCheckBlockLiterals(blocks []checkBlockLiteralValue) []checkBlockLiteralValue {
-	if len(blocks) == 0 {
-		return nil
-	}
-	normalized := append([]checkBlockLiteralValue(nil), blocks...)
-	slices.SortFunc(normalized, func(a, b checkBlockLiteralValue) int {
-		if c := cmp.Compare(reflect.ValueOf(a.block).Pointer(), reflect.ValueOf(b.block).Pointer()); c != 0 {
-			return c
-		}
-		switch {
-		case a.lambda == b.lambda:
-			return 0
-		case b.lambda:
-			return -1
-		default:
-			return 1
-		}
-	})
-	out := normalized[:0]
-	for _, block := range normalized {
-		if len(out) == 0 || out[len(out)-1] != block {
-			out = append(out, block)
 		}
 	}
 	return out
@@ -6316,13 +4971,8 @@ func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expressio
 		classNames, classExact = c.dispatchClassValueExpressionNames(identityExpr)
 	}
 	staticValues, staticExact := c.staticValueExpressionAlternatives(expr)
-	blockValues, blockExact := c.capturedBlockLiteralValueAlternatives(expr)
-	blocks, blockChoiceMayNil, blocksExact := c.blockLiteralValueChoices(identityExpr)
 	var staticChoice checkStaticChoiceFact
-	if blocksExact {
-		staticValues = nil
-		staticExact = false
-	} else if staticExact {
+	if staticExact {
 		if choice, correlated := c.staticValueChoiceForExpression(expr); correlated {
 			staticChoice = choice
 		}
@@ -6335,13 +4985,10 @@ func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expressio
 		c.bindLocalClassValues(name, classNames)
 	} else if fns, ok := c.callableExpressionFunctions(identityExpr); ok {
 		c.bindLocalCallableValues(name, fns)
-	} else if blocksExact || staticExact || blockExact {
+	} else if staticExact {
 		c.bindLocalExactValueFact(name, checkLocalValueFact{
-			blocks:            blocks,
-			blockChoiceMayNil: blockChoiceMayNil,
-			staticVals:        staticValues,
-			blockValues:       blockValues,
-			staticChoice:      staticChoice,
+			staticVals:   staticValues,
+			staticChoice: staticChoice,
 		})
 	} else if c.keywordSplatExpressionAlwaysFails(expr) &&
 		c.expressionMayHaveExpansionType(expr, KindHash, checkTypeHash) {
@@ -6564,18 +5211,8 @@ func localValueFactTruthiness(fact checkLocalValueFact, tracked bool) (bool, boo
 		return false, false
 	}
 	if len(fact.classNames) > 0 || len(fact.callables) > 0 ||
-		len(fact.instanceOrigins) > 0 ||
-		len(fact.blocks) > 0 && !fact.blockChoiceMayNil {
+		len(fact.instanceOrigins) > 0 {
 		return true, true
-	}
-	if len(fact.blockValues) > 0 {
-		truthy := fact.blockValues[0].block != nil
-		for _, value := range fact.blockValues[1:] {
-			if (value.block != nil) != truthy {
-				return false, false
-			}
-		}
-		return truthy, true
 	}
 	if len(fact.staticVals) == 0 {
 		return false, false
@@ -7684,9 +6321,6 @@ func (c *scriptChecker) staticValueExpressionAlternatives(expr Expression) ([]Ex
 			return c.staticValueExpressionAlternatives(result)
 		}
 	}
-	if lambdaLiteralBlock(expr) != nil {
-		return []Expression{expr}, true
-	}
 	if c.checkStaticValueCandidate(expr) {
 		return []Expression{expr}, true
 	}
@@ -7846,7 +6480,7 @@ func (c *scriptChecker) classValueExpressionNamesSeen(
 		return merged, len(merged) > 0
 	case *CallExpr:
 		if member, ok := typed.Callee.(*MemberExpr); ok && member.Property == "itself" &&
-			len(typed.Args) == 0 && len(typed.KwArgs) == 0 && typed.Block == nil && typed.BlockArg == nil {
+			len(typed.Args) == 0 && len(typed.KwArgs) == 0 && typed.Block == nil {
 			candidates, exact := c.classValueExpressionNamesSeen(member.Object, seen, allowFunctionReturns)
 			if !exact {
 				return nil, false
@@ -9105,7 +7739,7 @@ func typeExprMayIncludeCallable(ty *TypeExpr) bool {
 // and a block runs user code during the dispatch itself — the receiver's
 // fact must not survive either.
 func (c *scriptChecker) memberCallPreservesReceiverFacts(call *CallExpr) bool {
-	if call == nil || len(call.KwArgs) > 0 || call.Block != nil || call.BlockArg != nil {
+	if call == nil || len(call.KwArgs) > 0 || call.Block != nil {
 		return false
 	}
 	for _, arg := range call.Args {
@@ -9120,6 +7754,57 @@ func (c *scriptChecker) memberCallPreservesReceiverFacts(call *CallExpr) bool {
 // memberCallMayWriteUnknownIvar reports whether dispatch can run unclassified
 // code whose writes to the current self are not visible in its arguments. A
 // supplied block's effects are handled separately when the dispatch may run it.
+// callTargetsCoreHashNew recognizes the core Hash.new constructor, which
+// builds an empty hash and runs no script code, so the caller's ivar facts
+// survive the call. The resolved target and builtin identity both matter:
+// a script binding or host replacement may use the same spelling while
+// doing anything at all.
+func (c *scriptChecker) callTargetsCoreHashNew(
+	call *CallExpr,
+	target staticCallable,
+	resolved bool,
+) bool {
+	if call == nil || !resolved || target.fn != nil || target.constructor {
+		return false
+	}
+	callee, ok := call.Callee.(*MemberExpr)
+	if !ok || callee.Property != "new" {
+		return false
+	}
+	object, ok := callee.Object.(*Identifier)
+	if !ok || object.Name != "Hash" || target.name != "Hash.new" {
+		return false
+	}
+	return c.coreNamespaceBuiltinBinding("Hash", "new", builtinHashNew)
+}
+
+// coreNamespaceBuiltinBinding reports whether namespace.member still resolves
+// to the engine's own builtin rather than a host replacement or a mutated
+// snapshot; the function identity is what carries the purity claim.
+func (c *scriptChecker) coreNamespaceBuiltinBinding(
+	namespace string,
+	member string,
+	fn BuiltinFunc,
+) bool {
+	if c.hostGlobalShadows(namespace) &&
+		(c.optionGlobalsOverride || c.optionGlobalSeeded(namespace)) {
+		object := c.optionGlobals[namespace]
+		if object.Kind() != KindObject {
+			return false
+		}
+		value, ok := object.Hash()[member]
+		return ok && builtinValueUsesFunction(value, fn)
+	}
+	return !c.hostBuiltinOverrides(namespace) &&
+		!c.namespaceMemberMutated(namespace, member)
+}
+
+func builtinValueUsesFunction(value Value, fn BuiltinFunc) bool {
+	builtin := valueBuiltin(value)
+	return builtin != nil && builtin.Fn != nil &&
+		reflect.ValueOf(builtin.Fn).Pointer() == reflect.ValueOf(fn).Pointer()
+}
+
 func (c *scriptChecker) memberCallMayWriteUnknownIvar(call *CallExpr) bool {
 	member, ok := call.Callee.(*MemberExpr)
 	if !ok {
@@ -9525,7 +8210,7 @@ func bareIdentifierCallableValue(expr Expression) (Expression, bool) {
 		return typed, true
 	case *CallExpr:
 		if typed.Parenthesized || len(typed.Args) > 0 || len(typed.KwArgs) > 0 ||
-			typed.Block != nil || typed.BlockArg != nil {
+			typed.Block != nil {
 			return nil, false
 		}
 		ident, ok := typed.Callee.(*Identifier)
@@ -11453,42 +10138,13 @@ func arrayFillElementWrites(
 			call.Args,
 		)
 	}
-	if call.BlockArg == nil || arrayFillBlockArgumentIsNil(call.BlockArg, argumentFacts) {
-		return arrayFillValueElementWrites(
-			call.Args,
-			argumentFacts,
-			argumentStaticValues,
-			argumentStaticChoices,
-			receiverLength,
-		)
-	}
-	blockFact := argumentFacts[call.BlockArg]
-	if typeExprNeverNil(blockFact) {
-		return blockWrites(
-			call.BlockArg,
-			call.Args,
-		)
-	}
-
-	// An unknown or nullable forwarded block selects the value form when nil
-	// and the block form otherwise. Keep both call outcomes: either form can
-	// reject its own arity before mutation, and only successful outcomes can
-	// return the receiver to a consuming expression.
-	valueModel, valueModeled := arrayFillValueElementWrites(
+	return arrayFillValueElementWrites(
 		call.Args,
 		argumentFacts,
 		argumentStaticValues,
 		argumentStaticChoices,
 		receiverLength,
 	)
-	blockModel, blockModeled := blockWrites(
-		call.BlockArg,
-		call.Args,
-	)
-	if !valueModeled || !blockModeled {
-		return arrayMutatorWriteModel{}, false
-	}
-	return mergeArrayMutatorWriteModels(valueModel, blockModel), true
 }
 
 func arrayFillValueElementWrites(
@@ -11865,14 +10521,9 @@ func (c *scriptChecker) arrayMutatorShapeArityMayComplete(
 		switch {
 		case call.Block != nil:
 			return arity <= 2
-		case call.BlockArg == nil || arrayFillBlockArgumentIsNil(call.BlockArg, c.callArgumentFacts):
+		default:
 			return arity >= 1 && arity <= 3
 		}
-		blockFact := c.callArgumentFacts[call.BlockArg]
-		if typeExprNeverNil(blockFact) {
-			return arity <= 2
-		}
-		return arity <= 3
 	default:
 		return true
 	}
@@ -11926,15 +10577,9 @@ func (c *scriptChecker) arrayFillCallMayComplete(call *CallExpr) bool {
 		return true
 	case call.Block != nil:
 		return c.arrayFillFormMayComplete(call.Args)
-	case call.BlockArg == nil || arrayFillBlockArgumentIsNil(call.BlockArg, c.callArgumentFacts):
+	default:
 		return c.arrayFillValueFormMayComplete(call.Args)
 	}
-	blockFact := c.callArgumentFacts[call.BlockArg]
-	if typeExprNeverNil(blockFact) {
-		return c.arrayFillFormMayComplete(call.Args)
-	}
-	return c.arrayFillValueFormMayComplete(call.Args) ||
-		c.arrayFillFormMayComplete(call.Args)
 }
 
 func (c *scriptChecker) arrayFillCallMayCompleteWithoutInvokingBlock(call *CallExpr) bool {
@@ -11962,25 +10607,8 @@ func (c *scriptChecker) arrayFillCallMayCompleteWithoutInvokingBlock(call *CallE
 			if !selectorsExact || !skipped.alwaysRaises {
 				return true
 			}
-		case variant.call.BlockArg == nil ||
-			arrayFillBlockArgumentIsNil(variant.call.BlockArg, c.callArgumentFacts):
-			if c.arrayFillValueFormMayComplete(variant.call.Args) {
-				return true
-			}
 		default:
-			blockFact := c.callArgumentFacts[variant.call.BlockArg]
-			if !typeExprNeverNil(blockFact) &&
-				c.arrayFillValueFormMayComplete(variant.call.Args) {
-				return true
-			}
-			skipped, _, selectorsExact := staticArrayFillBlockSelectorOutcomes(
-				variant.call.Args,
-				c.callArgumentFacts,
-				c.callArgumentStaticValues,
-				c.callArgumentStaticChoices,
-				c.callArrayReceiverLength,
-			)
-			if !selectorsExact || !skipped.alwaysRaises {
+			if c.arrayFillValueFormMayComplete(variant.call.Args) {
 				return true
 			}
 		}
@@ -12112,7 +10740,7 @@ func arrayFillSelectorFactMayComplete(fact *TypeExpr, allowRange bool) bool {
 }
 
 func (c *scriptChecker) arrayFillBlockMayEvaluate(call *CallExpr) bool {
-	if call == nil || call.Block == nil && call.BlockArg == nil {
+	if call == nil || call.Block == nil {
 		return false
 	}
 	variants, exact := c.staticallyExpandedArrayMutatorCalls(
@@ -12127,9 +10755,7 @@ func (c *scriptChecker) arrayFillBlockMayEvaluate(call *CallExpr) bool {
 		if variant.expansionRaises || variant.call == nil || len(variant.call.KwArgs) > 0 {
 			continue
 		}
-		if variant.call.Block == nil &&
-			(variant.call.BlockArg == nil ||
-				arrayFillBlockArgumentIsNil(variant.call.BlockArg, c.callArgumentFacts)) {
+		if variant.call.Block == nil {
 			continue
 		}
 		_, blockMayRun, selectorsExact := staticArrayFillBlockSelectorOutcomes(
@@ -12692,16 +11318,6 @@ func mergeArrayFillWriteEffect(
 	}
 	model.mayWrite = model.mayWrite || effect.mayWrite
 	model.preservable = model.preservable && effect.preservable
-}
-
-func arrayFillBlockArgumentIsNil(
-	blockArg Expression,
-	argumentFacts map[Expression]*TypeExpr,
-) bool {
-	if _, literal := blockArg.(*NilLiteral); literal {
-		return true
-	}
-	return typeExprIsNilOnly(argumentFacts[blockArg])
 }
 
 func staticMutatorArgumentValues(
@@ -13901,7 +12517,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		splatOrigin := nextSplatOrigin(arg)
 		written, captured := argumentFacts[arg]
 		if member.Property == "fill" && blockResult.fact != nil &&
-			(arg == writesCall.Block || arg == writesCall.BlockArg) {
+			arg == writesCall.Block {
 			written = blockResult.fact
 		} else if !captured {
 			written = c.inferExpressionType(arg)
@@ -14364,11 +12980,7 @@ func blockLiteralMayRun(e Expression, invocable bool, assignedName string) bool 
 				return true
 			}
 		}
-		if blockLiteralMayRun(typed.BlockArg, true, assignedName) {
-			return true
-		}
 	case *MemberExpr:
-		// Member dispatch on a function value ((-> {}).call) may run it.
 		return blockLiteralMayRun(typed.Object, true, assignedName)
 	case *ScopeExpr:
 		return blockLiteralMayRun(typed.Object, invocable, assignedName)
@@ -15497,7 +14109,7 @@ func (c *scriptChecker) applyExactScriptArrayArgumentMutations(
 ) map[Expression]struct{} {
 	if !resolved || call == nil || target.fn == nil || target.fn.owner != c.script ||
 		callExpandsArguments(call) || len(call.KwArgs) > 0 ||
-		call.Block != nil || call.BlockArg != nil ||
+		call.Block != nil ||
 		len(call.Args) != len(target.fn.Params) || c.mutationRegionDepth != 0 {
 		return nil
 	}
@@ -15600,7 +14212,7 @@ func (c *scriptChecker) nonCompletingScriptCallLeavesParametersUnused(
 	resolved bool,
 ) bool {
 	if !resolved || target.fn == nil || target.fn.owner != c.script || call == nil ||
-		callExpandsArguments(call) || call.Block != nil || call.BlockArg != nil {
+		callExpandsArguments(call) || call.Block != nil {
 		return false
 	}
 	plan := c.scriptCallBindingPlan(call, target)
@@ -15732,9 +14344,6 @@ func expressionReferencesAnyName(expr Expression, names map[string]struct{}) boo
 			if expressionReferencesAnyName(kwarg.Value, names) {
 				return true
 			}
-		}
-		if expressionReferencesAnyName(typed.BlockArg, names) {
-			return true
 		}
 		if typed.Block != nil {
 			for _, param := range typed.Block.Params {

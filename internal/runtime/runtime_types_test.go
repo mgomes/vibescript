@@ -872,12 +872,6 @@ func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
     end
     `)
 
-	anyBuiltin := NewBuiltin("tmp.any", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-		return NewNil(), nil
-	})
-	if got := callFunc(t, script, "takes_any", []Value{anyBuiltin}); got.Kind() != KindBuiltin {
-		t.Fatalf("takes_any builtin mismatch: %#v", got)
-	}
 	if got := callFunc(t, script, "takes_any", []Value{NewHash(map[string]Value{"x": NewInt(1)})}); got.Kind() != KindHash {
 		t.Fatalf("takes_any hash mismatch: %#v", got)
 	}
@@ -900,65 +894,6 @@ func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
 		t.Fatalf("takes_nullable_union string mismatch: %#v", got)
 	}
 	requireCallErrorContains(t, script, "takes_nullable_union", []Value{NewInt(1)}, CallOptions{}, "argument v expected string | nil, got int")
-}
-
-func TestFunctionTypeAnnotationAcceptsCallableValues(t *testing.T) {
-	t.Parallel()
-	script := compileScript(t, `
-def takes_callable(fn: function)
-  fn
-end
-
-def inc(n)
-  n + 1
-end
-
-def script_function_ok
-  takes_callable(inc)(2)
-end
-
-def builtin_ok
-  takes_callable(assert)(true)
-end
-
-def block_ok(&block)
-  takes_callable(block).call(2)
-end
-
-def call_block_ok
-  block_ok do |n|
-    n * 2
-  end
-end
-
-def block_annotation_ok(&block: function)
-  block.call(3)
-end
-
-def call_block_annotation_ok
-  block_annotation_ok do |n|
-    n * 2
-  end
-end
-
-def reject_non_callable
-  takes_callable(1)
-end
-`)
-
-	if got := callFunc(t, script, "script_function_ok", nil); !got.Equal(NewInt(3)) {
-		t.Fatalf("script function annotation = %v, want 3", got)
-	}
-	if got := callFunc(t, script, "builtin_ok", nil); got.Kind() != KindNil {
-		t.Fatalf("builtin function annotation = %v, want nil", got)
-	}
-	if got := callFunc(t, script, "call_block_ok", nil); !got.Equal(NewInt(4)) {
-		t.Fatalf("block function annotation = %v, want 4", got)
-	}
-	if got := callFunc(t, script, "call_block_annotation_ok", nil); !got.Equal(NewInt(6)) {
-		t.Fatalf("typed block annotation = %v, want 6", got)
-	}
-	requireCallErrorContains(t, script, "reject_non_callable", nil, CallOptions{}, "argument fn expected function, got int")
 }
 
 func TestNullableCompoundTypeSuffixes(t *testing.T) {

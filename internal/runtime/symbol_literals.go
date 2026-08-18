@@ -170,7 +170,6 @@ func (c *symbolLiteralCollector) collectExpression(expr Expression) {
 		for _, kwarg := range typed.KwArgs {
 			c.collectExpression(kwarg.Value)
 		}
-		c.collectExpression(typed.BlockArg)
 		c.collectBlock(typed.Block)
 	case *MemberExpr:
 		c.collectExpression(typed.Object)

@@ -9,22 +9,18 @@ import "strconv"
 const blockRestElementsMarker = "\x00block-rest-elements"
 
 type checkBlockInvocation struct {
-	arguments   []*TypeExpr
-	strictArity bool
+	arguments []*TypeExpr
 }
 
 // blockLiteralInvocationMayEnter reports whether exact yielded arguments can
-// bind a block literal. Plain blocks and procs nil-fill missing parameters;
-// lambdas opt into strict arity through the invocation.
+// bind a block literal. A block nil-fills missing parameters, so only a
+// declared parameter type or destructuring shape can reject the invocation.
 func (c *scriptChecker) blockLiteralInvocationMayEnter(
 	block *BlockLiteral,
 	invocation *checkBlockInvocation,
 ) bool {
 	if block == nil || invocation == nil {
 		return block != nil
-	}
-	if invocation.strictArity && lambdaLiteralArity(block) != len(invocation.arguments) {
-		return false
 	}
 	resolve := c.checkNamedTypeResolver()
 	for i, param := range block.Params {

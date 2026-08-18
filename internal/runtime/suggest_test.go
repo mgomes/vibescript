@@ -295,14 +295,6 @@ func TestMemberSuggestionCandidatesResolve(t *testing.T) {
 			},
 		},
 		{
-			kind:  "function",
-			names: functionMemberNames,
-			resolve: func(name string) error {
-				_, err := (&Execution{}).functionMember(NewFunction(&ScriptFunction{Name: "fn"}), name, Position{})
-				return err
-			},
-		},
-		{
 			kind:  "range",
 			names: rangeMemberNames,
 			resolve: func(name string) error {

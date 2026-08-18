@@ -350,32 +350,6 @@ func (c importingContractCapability) CapabilityContracts() map[string]Capability
 	}
 }
 
-type siblingRootForeignLeakProbeCapability struct{}
-
-func (siblingRootForeignLeakProbeCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
-	return map[string]Value{
-		"publisher": NewObject(map[string]Value{
-			"touch": NewBuiltin("publisher.touch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-				return NewString("ok"), nil
-			}),
-		}),
-		"peer": NewObject(map[string]Value{}),
-	}, nil
-}
-
-func (siblingRootForeignLeakProbeCapability) CapabilityContracts() map[string]CapabilityMethodContract {
-	return map[string]CapabilityMethodContract{
-		"foo.call": {
-			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
-				if len(args) != 1 || args[0].Kind() != KindInt {
-					return fmt.Errorf("provider foo.call expects int")
-				}
-				return nil
-			},
-		},
-	}
-}
-
 type argMutationContractCapability struct {
 	invokeCount *int
 }
@@ -405,74 +379,6 @@ func (c argMutationContractCapability) CapabilityContracts() map[string]Capabili
 					return fmt.Errorf("cap.call expects int")
 				}
 				return nil
-			},
-		},
-	}
-}
-
-type foreignArgCapability struct {
-	invokeCount *int
-}
-
-func (c foreignArgCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
-	return map[string]Value{
-		"foreign": NewObject(map[string]Value{
-			"call": NewBuiltin("foo.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-				*c.invokeCount = *c.invokeCount + 1
-				if len(args) != 1 || args[0].Kind() != KindString {
-					return NewNil(), fmt.Errorf("foreign foo.call expects string")
-				}
-				return NewString("foreign-ok"), nil
-			}),
-		}),
-	}, nil
-}
-
-type argPassThroughContractCapability struct{}
-
-func (argPassThroughContractCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
-	return map[string]Value{
-		"cap2": NewObject(map[string]Value{
-			"install": NewBuiltin("cap2.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-				if len(args) != 1 || (args[0].Kind() != KindHash && args[0].Kind() != KindObject) {
-					return NewNil(), fmt.Errorf("cap2.install expects target hash")
-				}
-				return NewString("ok"), nil
-			}),
-		}),
-	}, nil
-}
-
-func (argPassThroughContractCapability) CapabilityContracts() map[string]CapabilityMethodContract {
-	return map[string]CapabilityMethodContract{
-		"foo.call": {
-			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
-				if len(args) != 1 || args[0].Kind() != KindInt {
-					return fmt.Errorf("provider foo.call expects int")
-				}
-				return nil
-			},
-		},
-	}
-}
-
-type hashStoreContractLeakProbeCapability struct{}
-
-func (hashStoreContractLeakProbeCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
-	return map[string]Value{
-		"cap": NewObject(map[string]Value{
-			"touch": NewBuiltin("cap.touch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-				return NewString("ok"), nil
-			}),
-		}),
-	}, nil
-}
-
-func (hashStoreContractLeakProbeCapability) CapabilityContracts() map[string]CapabilityMethodContract {
-	return map[string]CapabilityMethodContract{
-		"hash.store": {
-			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
-				return fmt.Errorf("hash.store contract should not bind to foreign builtin")
 			},
 		},
 	}
@@ -761,34 +667,6 @@ end`)
 	}
 }
 
-func TestCapabilityContractsDoNotHijackForeignBuiltinsFromSiblingRoots(t *testing.T) {
-	t.Parallel()
-	script := compileScriptDefault(t, `def run()
-  peer.call = foreign.call
-  publisher.touch()
-  peer.call("ok")
-end`)
-	var err error
-
-	shared := &foreignBuiltinRef{}
-	invocations := 0
-	result, err := script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{
-			legacyForeignFooCapability{shared: shared, invokeCount: &invocations},
-			siblingRootForeignLeakProbeCapability{},
-		},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if invocations != 1 {
-		t.Fatalf("expected foreign call once, got %d", invocations)
-	}
-	if result.Kind() != KindString || result.String() != "legacy-foreign" {
-		t.Fatalf("unexpected result: %#v", result)
-	}
-}
-
 // Inverted deliberately for #1210 (host boundary hands out independent
 // values): a host builtin can no longer publish behavior by mutating an
 // argument. The argument crosses the boundary as an independent value, so
@@ -815,62 +693,6 @@ end`)
 	requireErrorContains(t, err, "unknown hash method call")
 	if invocations != 0 {
 		t.Fatalf("a builtin installed into a host-side copy executed %d times, want never", invocations)
-	}
-}
-
-func TestCapabilityContractsDoNotHijackForeignBuiltinsFromArguments(t *testing.T) {
-	t.Parallel()
-	script := compileScriptDefault(t, `def run()
-  target = { passthrough: foreign.call }
-  cap2.install(target)
-  target.passthrough("ok")
-end`)
-	var err error
-
-	invocations := 0
-	result, err := script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{
-			foreignArgCapability{invokeCount: &invocations},
-			argPassThroughContractCapability{},
-		},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if invocations != 1 {
-		t.Fatalf("expected foreign call once, got %d", invocations)
-	}
-	if result.Kind() != KindString || result.String() != "foreign-ok" {
-		t.Fatalf("unexpected result: %#v", result)
-	}
-}
-
-func TestCapabilityContractsDoNotHijackReceiverStoredForeignBuiltins(t *testing.T) {
-	t.Parallel()
-	// hash.store stays a non-auto-invoked builtin (it requires a key and value),
-	// so a bare `{ a: 1 }.store` yields the unbound method value rather than
-	// auto-invoking. The test stores that foreign builtin on a capability slot and
-	// confirms the capability's hash.store contract does not bind to it.
-	script := compileScriptDefault(t, `def run()
-  cap.foreign = { a: 1 }.store
-  cap.touch()
-  cap.foreign(:b, 2)
-end`)
-	var err error
-
-	result, err := script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{
-			hashStoreContractLeakProbeCapability{},
-		},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// hash.store mutates its bound receiver in place and returns the stored
-	// value; the foreign builtin surfacing that contract proves the
-	// capability's own store contract did not bind to it.
-	if result.Kind() != KindInt || result.Int() != 2 {
-		t.Fatalf("expected the stored value 2, got %#v", result)
 	}
 }
 
@@ -919,79 +741,6 @@ end`)
 	}
 	if !got["remap_value"].Equal(NewString("Alex")) {
 		t.Fatalf("remap_value mismatch: %v", got["remap_value"])
-	}
-}
-
-func TestCapabilityContractsStayEnforcedThroughExpandedStdlibTransforms(t *testing.T) {
-	t.Parallel()
-	script := compileScriptDefault(t, `def call_through_transforms()
-  hash_handler = { handler: probe.call }.remap_keys({ handler: :run }).fetch(:run)
-  chunk_handler = [probe.call].chunk(1).first.first
-  {
-    hash_ok: hash_handler(1),
-    chunk_ok: chunk_handler(2)
-  }
-end
-
-def fail_through_remap()
-  handler = { handler: probe.call }.remap_keys({ handler: :run }).fetch(:run)
-  handler("bad")
-end
-
-def fail_through_chunk()
-  handler = [probe.call].chunk(1).first.first
-  handler("bad")
-end`)
-	var err error
-
-	successInvocations := 0
-	okResult, err := script.Call(context.Background(), "call_through_transforms", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{
-			contractProbeCapability{invokeCount: &successInvocations},
-		},
-	})
-	if err != nil {
-		t.Fatalf("unexpected success-call error: %v", err)
-	}
-	if successInvocations != 2 {
-		t.Fatalf("expected two successful capability invocations, got %d", successInvocations)
-	}
-	if okResult.Kind() != KindHash {
-		t.Fatalf("expected hash result, got %v", okResult.Kind())
-	}
-	if !okResult.Hash()["hash_ok"].Equal(NewString("ok")) {
-		t.Fatalf("hash_ok mismatch: %v", okResult.Hash()["hash_ok"])
-	}
-	if !okResult.Hash()["chunk_ok"].Equal(NewString("ok")) {
-		t.Fatalf("chunk_ok mismatch: %v", okResult.Hash()["chunk_ok"])
-	}
-
-	remapInvocations := 0
-	_, err = script.Call(context.Background(), "fail_through_remap", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{
-			contractProbeCapability{invokeCount: &remapInvocations},
-		},
-	})
-	if err == nil {
-		t.Fatalf("expected remap path contract validation error")
-	}
-	requireErrorContains(t, err, "probe.call expects a single int argument")
-	if remapInvocations != 0 {
-		t.Fatalf("contract should reject remap path before invoke, got %d calls", remapInvocations)
-	}
-
-	chunkInvocations := 0
-	_, err = script.Call(context.Background(), "fail_through_chunk", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{
-			contractProbeCapability{invokeCount: &chunkInvocations},
-		},
-	})
-	if err == nil {
-		t.Fatalf("expected chunk path contract validation error")
-	}
-	requireErrorContains(t, err, "probe.call expects a single int argument")
-	if chunkInvocations != 0 {
-		t.Fatalf("contract should reject chunk path before invoke, got %d calls", chunkInvocations)
 	}
 }
 
@@ -1170,79 +919,6 @@ end`)
 	}
 }
 
-// yieldingPublisherCapability creates a contract-covered builtin and yields it,
-// so a block can make it the call's result by breaking with it.
-type yieldingPublisherCapability struct {
-	invokeCount *int
-}
-
-func (c yieldingPublisherCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
-	return map[string]Value{
-		"mut": NewObject(map[string]Value{
-			"install": NewBuiltin("mut.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-				fresh := NewBuiltin("mut.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-					*c.invokeCount = *c.invokeCount + 1
-					return NewString("ok"), nil
-				})
-				if block.IsNil() {
-					return NewString("installed"), nil
-				}
-				return exec.callBlockValue(block, []Value{fresh}, Position{})
-			}),
-		}),
-	}, nil
-}
-
-func (c yieldingPublisherCapability) CapabilityContracts() map[string]CapabilityMethodContract {
-	return map[string]CapabilityMethodContract{
-		"mut.call": {
-			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
-				if len(args) != 1 || args[0].Kind() != KindInt {
-					return fmt.Errorf("mut.call expects int")
-				}
-				return nil
-			},
-		},
-	}
-}
-
-// A builtin the capability itself created and yielded becomes the call's
-// result when the block breaks with it, while staying absent from
-// preCallKnownBuiltins and unreachable through the receiver, roots, or
-// arguments. Suppressing the result scan for absorbed breaks let it escape
-// without its contract.
-func TestYieldedBuiltinBrokenOutStillEnforcesItsContract(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		body string
-	}{
-		{name: "assigned", body: "published = mut.install { |b| break b }\n  published(\"bad\", 2)"},
-		{name: "called immediately", body: "mut.install { |b| break b }(\"bad\", 2)"},
-		{name: "wrapped in an array", body: "out = mut.install { |b| break [b] }\n  out[0](\"bad\", 2)"},
-		{name: "wrapped in a hash", body: "out = mut.install { |b| break {fn: b} }\n  out[:fn](\"bad\", 2)"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			script := compileScriptDefault(t, "def run()\n  "+tc.body+"\nend")
-			invocations := 0
-			_, err := script.Call(context.Background(), "run", nil, CallOptions{
-				Capabilities: []CapabilityAdapter{yieldingPublisherCapability{invokeCount: &invocations}},
-			})
-			if err == nil {
-				t.Fatalf("%s: a yielded builtin escaped its contract", tc.name)
-			}
-			requireErrorContains(t, err, "mut.call expects int")
-			if invocations != 0 {
-				t.Fatalf("%s: contract-violating call executed %d times, want it blocked", tc.name, invocations)
-			}
-		})
-	}
-}
-
 // The ambient walk's budget must actually stop it. Treating zero as
 // "unbounded" meant an exhausted walk became unbounded again on the next
 // node, restoring the very cost the budget exists to cap.
@@ -1393,57 +1069,12 @@ func (c yieldFactoryCapability) CapabilityContracts() map[string]CapabilityMetho
 	}
 }
 
-// TestCapabilityContractsBindBuiltinsRetainedByBlocks pins that a builtin a
-// capability yields to a script block keeps its contract when the block
-// retains it in an enclosing local. The block's captured environment is the
-// one place a published builtin can survive that the receiver, capability
-// roots, arguments, and result do not reach — and when the block breaks with
-// the value, the return validator rejects it, so the result sweep is skipped
-// entirely and rescuing the error left the retained builtin uncontracted.
-func TestCapabilityContractsBindBuiltinsRetainedByBlocks(t *testing.T) {
-	t.Parallel()
-
-	tests := map[string]string{
-		"rejected break": `def run()
-  leaked = nil
-  begin
-    cap.factory do |fn|
-      leaked = fn
-      break fn
-    end
-  rescue
-    nil
-  end
-  leaked(42)
-end`,
-		"plain yield": `def run()
-  leaked = nil
-  cap.factory do |fn|
-    leaked = fn
-    "fine"
-  end
-  leaked(42)
-end`,
-	}
-	for name, src := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			uncontracted := 0
-			script := compileScriptDefault(t, src)
-			_, err := script.Call(context.Background(), "run", nil,
-				callOptionsWithCapabilities(yieldFactoryCapability{uncontractedCalls: &uncontracted}))
-			requireErrorContains(t, err, "cap.made expects a single string argument")
-			if uncontracted != 0 {
-				t.Fatalf("retained builtin ran without its contract %d time(s)", uncontracted)
-			}
-		})
-	}
-}
-
-// TestCapabilityYieldedBuiltinStaysUsableUnderContract pins the other side of
-// the binding: attaching the contract must not break the legitimate use, so a
-// conforming call through the retained reference still succeeds.
-func TestCapabilityYieldedBuiltinStaysUsableUnderContract(t *testing.T) {
+// TestYieldedBuiltinCannotBeDetached pins the removal fence on the one
+// channel a host can still hand script a callable: a capability may yield a
+// builtin to a block for direct use, but naming it as a value is an error,
+// so no reference survives the call and the old retained-builtin contract
+// sweeps have nothing left to guard.
+func TestYieldedBuiltinCannotBeDetached(t *testing.T) {
 	t.Parallel()
 
 	uncontracted := 0
@@ -1453,18 +1084,53 @@ func TestCapabilityYieldedBuiltinStaysUsableUnderContract(t *testing.T) {
     leaked = fn
     "fine"
   end
-  leaked("ok")
+  leaked(42)
+end`)
+	_, err := script.Call(context.Background(), "run", nil,
+		callOptionsWithCapabilities(yieldFactoryCapability{uncontractedCalls: &uncontracted}))
+	requireErrorContains(t, err, "cannot be used as a value")
+	if uncontracted != 0 {
+		t.Fatalf("a detached builtin ran %d time(s), want never", uncontracted)
+	}
+}
+
+// TestCapabilityYieldedBuiltinStaysUsableUnderContract pins the legitimate
+// use: a yielded builtin called directly inside the block runs under its
+// contract -- a conforming call succeeds and a violating one is rejected.
+func TestCapabilityYieldedBuiltinStaysUsableUnderContract(t *testing.T) {
+	t.Parallel()
+
+	uncontracted := 0
+	script := compileScriptDefault(t, `def run()
+  out = nil
+  cap.factory do |fn|
+    out = fn("ok")
+    "fine"
+  end
+  out
 end`)
 	result, err := script.Call(context.Background(), "run", nil,
 		callOptionsWithCapabilities(yieldFactoryCapability{uncontractedCalls: &uncontracted}))
 	if err != nil {
-		t.Fatalf("a conforming call through the retained builtin must succeed: %v", err)
+		t.Fatalf("a conforming direct call must succeed: %v", err)
 	}
 	if result.Kind() != KindString || result.String() != "invoked" {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	if uncontracted != 0 {
 		t.Fatalf("contract counted %d uncontracted calls", uncontracted)
+	}
+
+	violating := compileScriptDefault(t, `def run()
+  cap.factory do |fn|
+    fn(42)
+  end
+end`)
+	_, err = violating.Call(context.Background(), "run", nil,
+		callOptionsWithCapabilities(yieldFactoryCapability{uncontractedCalls: &uncontracted}))
+	requireErrorContains(t, err, "cap.made expects a single string argument")
+	if uncontracted != 0 {
+		t.Fatalf("a violating call ran uncontracted %d time(s)", uncontracted)
 	}
 }
 
@@ -1488,35 +1154,6 @@ func (c foreignFactoryCapability) Bind(binding CapabilityBinding) (map[string]Va
 			}),
 		}),
 	}, nil
-}
-
-// TestCapabilityContractsBindYieldsWhenBlockRaises pins that a value the
-// capability yielded keeps its contract even when the block raises an
-// ordinary rescuable error: dispatch returns before the post-call sweeps, so
-// a script could otherwise rescue its own error and keep an uncontracted
-// reference to what was yielded.
-func TestCapabilityContractsBindYieldsWhenBlockRaises(t *testing.T) {
-	t.Parallel()
-
-	uncontracted := 0
-	script := compileScriptDefault(t, `def run()
-  leaked = nil
-  begin
-    cap.factory do |fn|
-      leaked = fn
-      raise "boom"
-    end
-  rescue
-    nil
-  end
-  leaked(42)
-end`)
-	_, err := script.Call(context.Background(), "run", nil,
-		callOptionsWithCapabilities(yieldFactoryCapability{uncontractedCalls: &uncontracted}))
-	requireErrorContains(t, err, "cap.made expects a single string argument")
-	if uncontracted != 0 {
-		t.Fatalf("retained builtin ran without its contract %d time(s)", uncontracted)
-	}
 }
 
 // TestCapabilityContractsDoNotClaimForeignBuiltinsCreatedInBlocks pins that
@@ -1589,19 +1226,19 @@ func TestCapabilityContractsDoNotClaimNestedScriptYields(t *testing.T) {
 
 	uncontracted := 0
 	foreignCalls := 0
-	script := compileScriptDefault(t, `def relay(v)
-  yield v
+	script := compileScriptDefault(t, `def relay()
+  yield other.make()
 end
 
 def run()
-  stolen = nil
+  out = nil
   cap.factory do |fn|
-    relay(other.make()) do |passed|
-      stolen = passed
+    relay do |passed|
+      out = passed(42)
     end
     "fine"
   end
-  stolen(42)
+  out
 end`)
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{
 		Capabilities: []CapabilityAdapter{

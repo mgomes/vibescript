@@ -262,17 +262,6 @@ func TestHostSignatureResultEnforcedAtRuntime(t *testing.T) {
 	}
 }
 
-func TestHostSignatureRejectsForwardedBlockStatically(t *testing.T) {
-	t.Parallel()
-
-	script := compileScriptWithEngine(t, typedGreetEngine(t), `
-def run(s: string, blk: function)
-  greet(s, &blk)
-end
-`)
-	requireCheckWarningContains(t, script, "call to greet does not accept a block")
-}
-
 func TestHostSignatureUnresolvedNamedTypeWarns(t *testing.T) {
 	t.Parallel()
 
@@ -285,37 +274,6 @@ func TestHostSignatureUnresolvedNamedTypeWarns(t *testing.T) {
 	}
 	script := compileScriptWithEngine(t, engine, "def run()\n  advance(:draft)\nend")
 	requireCheckWarningContains(t, script, "call to advance argument status uses unknown type Status")
-}
-
-func TestHostSignatureFunctionParamPreservesCallable(t *testing.T) {
-	t.Parallel()
-
-	engine := MustNewEngine(Config{})
-	err := engine.RegisterBuiltinWithSignature("accept", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-		if !isCallableValue(args[0]) {
-			return NewNil(), fmt.Errorf("accept received %s, want a callable", args[0].Kind())
-		}
-		return NewBool(true), nil
-	}, Signature{Params: []SignatureParam{{Name: "fn", Type: "function"}}})
-	if err != nil {
-		t.Fatalf("RegisterBuiltinWithSignature: %v", err)
-	}
-	script := compileScriptWithEngine(t, engine, `
-def cb()
-  "ran"
-end
-
-def run()
-  accept(cb)
-end
-`)
-	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("Call(accept cb) error: %v", err)
-	}
-	if got.Kind() != KindBool || !got.Bool() {
-		t.Fatalf("Call(accept cb) = %#v, want true", got)
-	}
 }
 
 func TestHostSignatureModuleContextResolvesNamedTypes(t *testing.T) {

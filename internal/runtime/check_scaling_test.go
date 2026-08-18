@@ -631,77 +631,13 @@ end
 	}
 }
 
-// mutatorReceiverRebindSource builds a witnessed shape whose `w` field nests
-// depth levels deep, rebinds the local to a shape differing only at that leaf
-// while the mutator's own value operand is being walked, and then reads the
-// leaf. write is the mutator statement; the rebind happens inside a string
-// interpolation so the written value stays a known type and the write lands.
-func mutatorReceiverRebindSource(depth int, write string) string {
-	nest := func(leaf string) string {
-		return strings.Repeat("{ a: ", depth) + leaf + strings.Repeat(" }", depth)
-	}
-	return fmt.Sprintf(`
-def take(v: string)
-  v
-end
-
-def f()
-  h = { w: %s, pad: 1 }
-  rebind = -> { h = { w: %s, pad: 1 }; "x" }
-%s
-  take(h[:w]%s)
-end
-`, nest("1"), nest(`"s"`), write, strings.Repeat("[:a]", depth))
-}
-
-// A mutator preserves its receiver's fact only when the local still carries the
-// fact the writes were checked against, and the write it applies lands on that
-// captured fact and is bound back to the local. Deciding "still carries" from
-// typeFactKey could not tell: the key stops at maxTypeArmDepth and renders
-// everything below as `?`, so a value operand that rebound the local to a shape
-// differing only that deep produced a matching key, the rebind was read as
-// having left the local alone, and the write put the shape the script had
-// stopped holding back in place. Reading the rebound field then answered from
-// the old shape and the call was reported against correct code.
-//
-// Both predicates that decide this are covered: the indexed write reaches
-// mutatorReceiverFactIntact and the store reaches mutatorCallPreservable.
-//
-// The depths bracket the cutoff on both sides so the test states where the
-// boundary is rather than that one exists. The control is the same body without
-// the rebind, which must stay diagnosed at every depth -- otherwise the shallow
-// cases pass because the read stopped resolving rather than because the fact
-// survived, and the deep ones would mean nothing.
-func TestMutatorPreservationTracksFactsBelowTheKeyDepth(t *testing.T) {
-	for _, write := range []string{
-		`  h[:pad] = "v#{rebind.call}"`,
-		`  h.store(:pad, "v#{rebind.call}")`,
-	} {
-		for _, depth := range []int{2, 7, 8, 9, 10, 14} {
-			t.Run(fmt.Sprintf("%s depth %d", strings.TrimSpace(write), depth), func(t *testing.T) {
-				source := mutatorReceiverRebindSource(depth, write)
-				if warnings := checkWarningMessages(compileScript(t, source).CheckWarnings()); len(warnings) != 0 {
-					t.Fatalf("a %d-level rebind was read as leaving the receiver alone, so the"+
-						" mutator put back the shape the local stopped holding: %v", depth, warnings)
-				}
-
-				control := mutatorReceiverRebindSource(depth, `  h[:pad] = "v"`)
-				warnings := checkWarningMessages(compileScript(t, control).CheckWarnings())
-				if len(warnings) != 1 || !strings.Contains(warnings[0], "expected string, got int") {
-					t.Fatalf("the un-rebound control must still be diagnosed at depth %d, or the"+
-						" assertion above passes for the wrong reason: %v", depth, warnings)
-				}
-			})
-		}
-	}
-}
-
 // sharedFactDagSource builds a fact that binds the same node under both keys at
 // every level, so levels lines produce a fact with levels nodes and 2^levels
 // paths through them, then hands two independently built copies of it to the
-// exact comparison: the mutator's operand rebinds the receiver to the second.
-// Nothing shares a node between the two, so the pointer-identity shortcut never
-// fires and every pair has to be compared on its own.
+// exact comparison: the branch below joins the two, and the join's arm dedup
+// has to confirm they are the same fact before dropping one. Nothing shares a
+// node between the two, so the pointer-identity shortcut never fires and every
+// pair has to be compared on its own.
 func sharedFactDagSource(levels int) string {
 	build := func(name string) string {
 		var b strings.Builder
@@ -712,13 +648,8 @@ func sharedFactDagSource(levels int) string {
 		return b.String()
 	}
 	return fmt.Sprintf(`
-def f()
-%s  h = { w: x, pad: 1 }
-  rebind = -> {
-%s    h = { w: y, pad: 1 }
-    "s"
-  }
-  h[:pad] = "v#{rebind.call}"
+def f(flag)
+%s%s  h = flag ? x : y
   h
 end
 `, build("x"), build("y"))
@@ -727,7 +658,7 @@ end
 // A fact is a DAG, not a tree. Walking one as a tree reaches the same left/right
 // child pair once per path rather than once per pair, so comparing two
 // independently built copies of a fact that shares its nodes cost 2^levels
-// comparisons: 20 lines took 2,097,152 of them and every line after that
+// comparisons: 20 lines took 2,097,151 of them and every line after that
 // doubled it, inside CheckWarnings where no script step or memory quota applies.
 // Only pairs that came back equal can be reached twice -- the first difference
 // ends the whole comparison -- so remembering those walks the DAG as a DAG.
@@ -735,8 +666,8 @@ func TestExactFactComparisonWalksSharedNodesOnce(t *testing.T) {
 	small := measureCheckWork(t, sharedFactDagSource(10))
 	large := measureCheckWork(t, sharedFactDagSource(20))
 
-	// Measured 65 then 68 node-pair comparisons, a 1.05x step for ten more
-	// levels of sharing. Before, the same pair compared 2,048 and 2,097,152, a
+	// Measured 65 then 67 node-pair comparisons, a 1.03x step for ten more
+	// levels of sharing. Before, the same pair compared 2,047 and 2,097,151, a
 	// 1,024x step. The assertion allows up to 3x so it states the complexity
 	// rather than pinning counts that ordinary checker changes would shift.
 	if large > small*3 {
@@ -1081,273 +1012,5 @@ end
 `)
 	if warnings := after.CheckWarnings(); len(warnings) != 0 {
 		t.Fatalf("a reassigned namespace member left the callee decided: %v", warnings)
-	}
-}
-
-func storedBlockFillSource(n int) string {
-	var body strings.Builder
-	for i := range n {
-		fmt.Fprintf(&body, "    v%d = index + %d\n", i, i)
-	}
-	return fmt.Sprintf(`
-def f(items: array<int>)
-  callback = proc do |index|
-%s    1
-  end
-%send
-`, body.String(), strings.Repeat("  items.fill(&callback)\n", n))
-}
-
-// A block reached through a stored callable is written once and walked again
-// for its result at every site that passes it, so a proc body and the sites
-// passing it multiplied: N body statements filled N times walked N*N (#10).
-func TestCheckStoredBlockResultWalksStayLinear(t *testing.T) {
-	small := measureCheckWork(t, storedBlockFillSource(200))
-	large := measureCheckWork(t, storedBlockFillSource(400))
-
-	// Measured 8,030 then 8,015 nodes walked, which is the cap plus the walk
-	// that reached it. Before, the same pair walked 40,200 and 160,400
-	// statements, a 3.99x step. The assertion allows up to 3x so it states the
-	// complexity rather than pinning counts.
-	if large > small*3 {
-		t.Fatalf("doubling the source walked %d stored block nodes against %d -- over 3x,"+
-			" so resolving a stored block's result is superlinear in the sites passing it again", large, small)
-	}
-}
-
-// A body of one wide expression is one statement, so charging the budget per
-// statement left it able to walk any number of nodes per site: the proc below
-// rechecks every element of its array literal at every site that passes it
-// (#10).
-func wideExpressionStoredBlockSource(n int) string {
-	elements := strings.TrimSuffix(strings.Repeat("1, ", n), ", ")
-	return fmt.Sprintf(`
-def f(items: array<int>)
-  callback = proc do |index|
-    [%s]
-  end
-%send
-`, elements, strings.Repeat("  items.fill(&callback)\n", n))
-}
-
-func TestCheckWideExpressionStoredBlockWalksStayLinear(t *testing.T) {
-	small := measureCheckAllocation(t, wideExpressionStoredBlockSource(400))
-	large := measureCheckAllocation(t, wideExpressionStoredBlockSource(800))
-
-	// Measured 1.4MB then 1.6MB. Charging the budget per statement instead, the
-	// same pair allocated 19MB and 62MB while the budget recorded 400 and 800
-	// units, since one statement is one unit however wide it is. This counts
-	// allocated bytes because the point is what the repeated walks cost, not
-	// what the budget believes they cost.
-	if large > small*3 {
-		t.Fatalf("doubling the source allocated %d bytes against %d -- over 3x, so a wide"+
-			" expression in a stored block escapes the walk budget again", large, small)
-	}
-}
-
-// The cap has to leave ordinary code alone: a proc of a few statements is
-// walked for its result at thousands of sites before it binds, and every one of
-// those sites still decides the receiver's element type exactly, which is what
-// the append below contradicts.
-func TestStoredBlockFillKeepsResultDiagnostics(t *testing.T) {
-	source := func(sites int) string {
-		return fmt.Sprintf(`
-def f(items: array<int>)
-  callback = proc do |index|
-    1
-  end
-%s  items << true
-end
-`, strings.Repeat("  items.fill(&callback)\n", sites))
-	}
-	const want = "write to items expected element int, got bool"
-
-	requireCheckWarning(t, compileScript(t, source(1)).CheckWarnings(), want)
-	requireCheckWarning(t, compileScript(t, source(1000)).CheckWarnings(), want)
-
-	// Past the cap the result reads as inexact, which weakens the receiver's
-	// fact. That can only cost the diagnostic above, never produce another.
-	warnings := compileScript(t, storedBlockFillSource(200)+"").CheckWarnings()
-	if len(warnings) != 0 {
-		t.Fatalf("a stored block past the walk cap reported %v", warnings)
-	}
-}
-
-// rescuedStoredBlockFillSource repeats a fill of the same stored block inside a
-// rescue so that a body which always raises still lets the next site be
-// reached, which is what lets the sites accumulate against the walk cap before
-// the unrescued fill at the end.
-func rescuedStoredBlockFillSource(body, sites int, result string) string {
-	var statements strings.Builder
-	for i := range body {
-		fmt.Fprintf(&statements, "    v%d = index + %d\n", i, i)
-	}
-	guarded := strings.Repeat(`  begin
-    items.fill(&callback)
-  rescue
-    nil
-  end
-`, sites)
-	return fmt.Sprintf(`
-def take(v: int)
-  v
-end
-
-def f()
-  items = [1, 2, 3]
-  callback = proc do |index|
-%s    %s
-  end
-%s  items.fill(&callback)
-  take("bad")
-end
-`, statements.String(), result, guarded)
-}
-
-// Declining the walk must report no more than performing it would. A stored
-// block that always raises leaves the code after the fill unreachable, so the
-// call to take is never diagnosed -- and a run of sites long enough to exhaust
-// the walk cap must not make it reachable again by assuming the body it skipped
-// completes (#10).
-func TestStoredBlockWalkCapAddsNoDiagnostics(t *testing.T) {
-	for _, result := range []string{`raise "boom"`, "1"} {
-		t.Run(result, func(t *testing.T) {
-			underCap := checkWarningMessages(compileScript(t, rescuedStoredBlockFillSource(10, 10, result)).CheckWarnings())
-			overCap := checkWarningMessages(compileScript(t, rescuedStoredBlockFillSource(100, 100, result)).CheckWarnings())
-
-			for _, message := range overCap {
-				if !slices.Contains(underCap, message) {
-					t.Fatalf("exhausting the walk cap reported %q, which the same shape under the"+
-						" cap does not: %v against %v", message, overCap, underCap)
-				}
-			}
-		})
-	}
-
-	// Exhausting the cap also weakens the receiver the fills write to, and a
-	// weakened fact stops proving the branches it decided. The fills below are
-	// rescued, so the branch after them is reachable whatever the cap did, and
-	// it must not start reporting the call in its dead arm.
-	branch := func(body, sites int) string {
-		return strings.TrimSuffix(rescuedStoredBlockFillSource(body, sites, "1"), `  items.fill(&callback)
-  take("bad")
-end
-`) + `  if items[0]
-    1
-  else
-    take("bad")
-  end
-end
-`
-	}
-	underCap := checkWarningMessages(compileScript(t, branch(10, 10)).CheckWarnings())
-	overCap := checkWarningMessages(compileScript(t, branch(100, 100)).CheckWarnings())
-	for _, message := range overCap {
-		if !slices.Contains(underCap, message) {
-			t.Fatalf("exhausting the walk cap reported %q on a branch the same shape under the"+
-				" cap decides: %v against %v", message, overCap, underCap)
-		}
-	}
-
-	// The raising body is the shape the cap could have made reachable, so pin
-	// it directly rather than only as a subset.
-	if messages := checkWarningMessages(compileScript(t, rescuedStoredBlockFillSource(100, 100, `raise "boom"`)).CheckWarnings()); len(messages) != 0 {
-		t.Fatalf("code after a fill whose block always raises was diagnosed: %v", messages)
-	}
-}
-
-// selfCallingLambdaSource builds a lambda body holding sites recursive
-// `h.call` statements. The repeated-region ivar effect walk resolves each one
-// back to the body it is written in, so the body is a region that reaches
-// itself once per site.
-func selfCallingLambdaSource(sites int) string {
-	var body strings.Builder
-	for range sites {
-		body.WriteString("    h.call\n")
-	}
-	return fmt.Sprintf(`
-def f()
-  h = -> {
-%s  }
-  h.call
-  0
-end
-`, body.String())
-}
-
-// A body that reaches itself is walked twice: once under the caller's facts and
-// once under the state the recursive call left behind. Restoring the walk count
-// when a nested walk returned handed that second walk back to every later site,
-// so a body holding N recursive calls started N walks over the same N
-// statements. CheckWarnings and CheckedCall run before any script step quota,
-// so an embedder statically checking a tenant script paid it in full.
-// This counts allocated bytes because the repeated walks are the allocation:
-// each one pushes a block scope and collects the body's local bindings afresh.
-func TestCheckReentrantIvarEffectWalkStaysLinear(t *testing.T) {
-	small := measureCheckAllocation(t, selfCallingLambdaSource(400))
-	large := measureCheckAllocation(t, selfCallingLambdaSource(800))
-
-	// Measured 882KB then 1.7MB, a 1.97x step for a doubled body. Before, the
-	// same pair allocated 28MB and 109MB, a 3.94x step. The assertion allows up
-	// to 3x so it states the complexity rather than pinning byte counts that
-	// ordinary checker changes would shift.
-	if large > small*3 {
-		t.Fatalf("doubling the recursive calls in one lambda body allocated %d bytes"+
-			" against %d -- over 3x, so collecting a re-entrant region's ivar effects is"+
-			" superlinear in the source", large, small)
-	}
-}
-
-// yieldingSelfCallingLambdaSource builds a summarized function holding a lambda
-// that reaches itself at sites call sites and yields at the end. The summary
-// walk re-checks the whole body once per site to find the yields a recursive
-// call can enable, so the body is walked once per site it holds.
-func yieldingSelfCallingLambdaSource(sites int) string {
-	var body strings.Builder
-	for range sites {
-		body.WriteString("    h.call\n")
-	}
-	return fmt.Sprintf(`
-def f()
-  h = -> {
-%s    yield
-  }
-  h.call
-  0
-end
-
-def g()
-  f() do
-    1
-  end
-end
-`, body.String())
-}
-
-// The walk that lets a reachable yield poison a function summary re-enters the
-// lambda body at every recursive call site, because a yield only a later site
-// enables is reachable only from there. The count that bounds re-entry is
-// restored when a nested walk returns and has to be, so a body holding N
-// recursive calls walked its own N statements N times. CheckWarnings and
-// CheckedCall run before any script step quota, so an embedder statically
-// checking a tenant script paid that on a source well inside MaxSourceBytes:
-// 320 recursive calls in one yielding body took 4m14s.
-//
-// What bounds it instead is that a re-entry can only ever record one thing, and
-// recording it saturates the summary. This counts the statements the summary
-// walks visit, which is the work itself rather than a proxy for it.
-func TestCheckSummaryYieldReentryWalkStaysLinear(t *testing.T) {
-	small := measureCheckWork(t, yieldingSelfCallingLambdaSource(40))
-	large := measureCheckWork(t, yieldingSelfCallingLambdaSource(80))
-
-	// Measured 164 then 324 statement visits, a 1.98x step for a doubled body.
-	// Before, the same pair visited 3,362 and 13,122, a 3.90x step, and took
-	// 608ms and 4.5s against 25ms and 97ms. The assertion allows up to 3x so it
-	// states the complexity rather than pinning counts that ordinary checker
-	// changes would shift.
-	if large > small*3 {
-		t.Fatalf("doubling the recursive calls in one yielding lambda body visited %d"+
-			" statements against %d -- over 3x, so re-checking an invoked lambda for"+
-			" summary yields is superlinear in the source", large, small)
 	}
 }

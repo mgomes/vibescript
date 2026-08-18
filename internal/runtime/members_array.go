@@ -1553,8 +1553,11 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "find":
 		return NewAutoBuiltin("array.find", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 1 {
-				return NewNil(), fmt.Errorf("array.find expects at most one fallback callable")
+			// Ruby's optional ifnone argument was a callable, and executable
+			// code is no longer a value; a miss reads as nil and the caller
+			// writes its own fallback after the call.
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.find does not take arguments; a miss returns nil")
 			}
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("array.find does not take keyword arguments")
@@ -1574,19 +1577,6 @@ func arrayMemberQuery(property string) (Value, error) {
 				if match.Truthy() {
 					return item, nil
 				}
-			}
-			if len(args) == 1 && args[0].Kind() != KindNil {
-				if err := exec.checkCallMemoryRootsWithCallee(args[0], receiver, nil, nil, NewNil()); err != nil {
-					return NewNil(), err
-				}
-				result, err := exec.invokeCallable(args[0], NewNil(), nil, nil, NewNil(), Position{})
-				if err != nil {
-					return NewNil(), err
-				}
-				if err := exec.checkMemoryWith(receiver, result); err != nil {
-					return NewNil(), err
-				}
-				return result, nil
 			}
 			return NewNil(), nil
 		}), nil

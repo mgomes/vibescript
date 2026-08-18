@@ -6,48 +6,6 @@ import (
 	"testing"
 )
 
-func TestIsTypePredicate(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name string
-		expr string
-		want bool
-	}{
-		{name: "int matches int", expr: "1.is_type?(:int)", want: true},
-		{name: "int is not float", expr: "1.is_type?(:float)", want: false},
-		{name: "int matches number", expr: "1.is_type?(:number)", want: true},
-		{name: "float matches number", expr: "1.5.is_type?(:number)", want: true},
-		{name: "string does not coerce to int", expr: "\"5\".is_type?(:int)", want: false},
-		{name: "string matches string", expr: "\"5\".is_type?(:string)", want: true},
-		{name: "string atom spelling", expr: "1.is_type?(\"int\")", want: true},
-		{name: "bool matches bool", expr: "true.is_type?(:bool)", want: true},
-		{name: "nil matches nil", expr: "nil.is_type?(:nil)", want: true},
-		{name: "nil matches nullable", expr: "nil.is_type?(\"int?\")", want: true},
-		{name: "int matches nullable int", expr: "1.is_type?(\"int?\")", want: true},
-		{name: "string misses nullable int", expr: "\"s\".is_type?(\"int?\")", want: false},
-		{name: "symbol matches symbol", expr: ":ok.is_type?(:symbol)", want: true},
-		{name: "symbol is not string", expr: ":ok.is_type?(:string)", want: false},
-		{name: "array matches array", expr: "[1].is_type?(:array)", want: true},
-		{name: "hash matches hash", expr: "({\"a\": 1}).is_type?(:hash)", want: true},
-		{name: "object alias matches hash", expr: "({\"a\": 1}).is_type?(:object)", want: true},
-		{name: "nullable object alias", expr: "nil.is_type?('object?')", want: true},
-		{name: "range matches range", expr: "(1..3).is_type?(:range)", want: true},
-		{name: "lambda matches function", expr: "->(x) { x }.is_type?(:function)", want: true},
-		{name: "duration matches duration", expr: "5.minutes.is_type?(:duration)", want: true},
-		{name: "duration is not time", expr: "5.minutes.is_type?(:time)", want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := evalUniversal(t, tc.expr)
-			if got.Kind() != KindBool || got.Bool() != tc.want {
-				t.Fatalf("%s = %#v, want %v", tc.expr, got, tc.want)
-			}
-		})
-	}
-}
-
 // TestIsTypeAtomIdentSegments pins the accept/reject set of the qualified-atom
 // check, whose segment counting no longer runs off a split of every dot.
 func TestIsTypeAtomIdentSegments(t *testing.T) {

@@ -79,26 +79,6 @@ end`)
 	}
 }
 
-func TestScriptCallReturnsIsolatedBuiltinFunctions(t *testing.T) {
-	script := compileScriptDefault(t, `def leak
-  to_int
-end
-
-def convert
-  to_int("7")
-end`)
-
-	leaked := callScript(t, context.Background(), script, "leak", nil, CallOptions{})
-	valueBuiltin(leaked).Fn = func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-		return NewInt(99), nil
-	}
-
-	result := callScript(t, context.Background(), script, "convert", nil, CallOptions{})
-	if !result.Equal(NewInt(7)) {
-		t.Fatalf("convert after host-mutated returned to_int = %#v, want 7", result)
-	}
-}
-
 func TestValueEqualityForContainersDoesNotPanic(t *testing.T) {
 	script := compileScriptDefault(t, `def facts
   a = []
@@ -301,14 +281,6 @@ enum Status
   Draft
 end
 
-def exported_answer(value)
-  return 7
-end
-
-def export_function
-  exported_answer
-end
-
 def export_class
   Box
 end
@@ -325,26 +297,12 @@ def enum_name
   Status::Draft.name
 end`)
 
-	exportedFunction := valueFunction(callScript(t, context.Background(), script, "export_function", nil, CallOptions{}))
-	returnStmt, ok := exportedFunction.Body[0].(*ReturnStmt)
-	if !ok {
-		t.Fatalf("exported answer body[0] = %T, want *ReturnStmt", exportedFunction.Body[0])
-	}
-	literal, ok := returnStmt.Value.(*IntegerLiteral)
-	if !ok {
-		t.Fatalf("exported answer return value = %T, want *IntegerLiteral", returnStmt.Value)
-	}
-	literal.Value = 99
-	if result := callScript(t, context.Background(), script, "exported_answer", []Value{NewString("arg")}, CallOptions{}); !result.Equal(NewInt(7)) {
-		t.Fatalf("exported_answer after mutating returned function = %#v, want 7", result)
-	}
-
 	exportedClass := valueClass(callScript(t, context.Background(), script, "export_class", nil, CallOptions{}))
-	returnStmt, ok = exportedClass.Methods["value"].Body[0].(*ReturnStmt)
+	returnStmt, ok := exportedClass.Methods["value"].Body[0].(*ReturnStmt)
 	if !ok {
 		t.Fatalf("exported Box.value body[0] = %T, want *ReturnStmt", exportedClass.Methods["value"].Body[0])
 	}
-	literal, ok = returnStmt.Value.(*IntegerLiteral)
+	literal, ok := returnStmt.Value.(*IntegerLiteral)
 	if !ok {
 		t.Fatalf("exported Box.value return value = %T, want *IntegerLiteral", returnStmt.Value)
 	}

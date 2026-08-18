@@ -49,6 +49,12 @@ func revokedCapabilityBuiltin(name string) Value {
 	})
 }
 
+// autoInvokeIfNeeded resolves a name that stands for executable code in a
+// value position. A zero-argument function and an auto-invoking builtin run
+// there, as they always have. Anything else that resolves to executable code
+// would have to become a value, which ADR-006 removed, so it is rejected here
+// with the direct call as the replacement -- the one place every value-position
+// read of a function, method, or capability member passes through.
 func (exec *Execution) autoInvokeIfNeeded(expr Expression, val, receiver Value) (Value, error) {
 	switch val.Kind() {
 	case KindFunction:
@@ -61,8 +67,38 @@ func (exec *Execution) autoInvokeIfNeeded(expr Expression, val, receiver Value) 
 		if builtin != nil && builtin.AutoInvoke {
 			return exec.invokeCallable(val, receiver, nil, nil, NewNil(), expr.Pos())
 		}
+	default:
+		return val, nil
 	}
-	return val, nil
+	return NewNil(), exec.errorAt(
+		expr.Pos(),
+		"%s is a %s and cannot be used as a value; call it with %s(...)",
+		callableReferenceName(expr),
+		callableReferenceKind(val),
+		callableReferenceName(expr),
+	)
+}
+
+// callableReferenceName spells the reference the way the author wrote it, so
+// the diagnostic names the call they need rather than an internal symbol.
+func callableReferenceName(expr Expression) string {
+	switch typed := expr.(type) {
+	case *Identifier:
+		return typed.Name
+	case *MemberExpr:
+		return typed.Property
+	case *ScopeExpr:
+		return typed.Property
+	default:
+		return "this reference"
+	}
+}
+
+func callableReferenceKind(val Value) string {
+	if val.Kind() == KindFunction {
+		return "function"
+	}
+	return "method"
 }
 
 func memberReceiverAutoInvokes(object Expression, property string, env *Env) bool {
@@ -87,7 +123,7 @@ func callMemberCallReceiverAutoInvokes(call *CallExpr, object Expression, env *E
 }
 
 func callHasNoValueArguments(call *CallExpr) bool {
-	return len(call.Args) == 0 && len(call.KwArgs) == 0 && call.BlockArg == nil
+	return len(call.Args) == 0 && len(call.KwArgs) == 0
 }
 
 func isStaticZeroArityFunctionReceiver(object Expression, env *Env) bool {
@@ -818,10 +854,6 @@ type callFunctionRebinder struct {
 	// caching the clone keeps aliases of one bound predicate identical across the
 	// host boundary.
 	seenBoundBuiltins map[*Builtin]Value
-	// seenDirectCallAliases caches rebuilt function.call/block.call aliases keyed
-	// on the source builtin pointer, so an escaped alias reachable through
-	// several inbound paths keeps builtin identity after rebinding.
-	seenDirectCallAliases map[*Builtin]Value
 	// inboundDataFast marks a call whose positional and keyword arguments were
 	// verified data-only and alias-free by scanInboundCallValues, so top-level
 	// inbound composites may deep-copy through the tight data copier instead
@@ -884,9 +916,6 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			r.seenBoundBuiltins[builtin] = clone
 			reboundReceiver := r.rebindValue(builtin.BoundReceiver.receiver.value)
 			setBoundReceiver(valueBuiltin(clone), clonedCell, reboundReceiver)
-			return clone
-		}
-		if clone, ok := r.rebindDirectCallAlias(builtin); ok {
 			return clone
 		}
 		// A capability copied into a local (for example `cap = jobs` captured by a
@@ -991,9 +1020,6 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		clone := *blk
 		clone.Env = r.rebindCapturedEnv(blk.Env)
-		// A forwarding block's target rebinds too, so a captured capability
-		// grant is revoked exactly as it would be behind a plain builtin.
-		clone.forward = r.rebindValue(blk.forward)
 		cloneVal := wrapBlock(&clone)
 		if r.seenBlocks == nil {
 			r.seenBlocks = make(map[*Block]Value)
@@ -1092,36 +1118,6 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	default:
 		return val
 	}
-}
-
-func (r *callFunctionRebinder) rebindDirectCallAlias(builtin *Builtin) (Value, bool) {
-	if !builtin.DirectCallAlias || len(builtin.CapturedValues) != 1 {
-		return NewNil(), false
-	}
-	if clone, ok := r.seenDirectCallAliases[builtin]; ok {
-		return clone, true
-	}
-	reboundTarget := r.rebindValue(builtin.CapturedValues[0])
-	var clone Value
-	switch builtin.Name {
-	case functionCallBuiltinName:
-		if reboundTarget.Kind() != KindFunction {
-			return NewNil(), false
-		}
-		clone = newFunctionCallAlias(reboundTarget, builtin.DirectCallAliasPos)
-	case blockCallBuiltinName:
-		if reboundTarget.Kind() != KindBlock {
-			return NewNil(), false
-		}
-		clone = newBlockCallAlias(reboundTarget, builtin.DirectCallAliasPos)
-	default:
-		return NewNil(), false
-	}
-	if r.seenDirectCallAliases == nil {
-		r.seenDirectCallAliases = make(map[*Builtin]Value)
-	}
-	r.seenDirectCallAliases[builtin] = clone
-	return clone, true
 }
 
 // rebindCapturedEnv re-roots the captured environment of an escaped closure onto
@@ -2138,7 +2134,7 @@ func generatedAccessorKind(member Value) functionAccessorKind {
 
 func (exec *Execution) evalBareCallableArgument(arg Expression, env *Env) (Value, bool, error) {
 	call, ok := arg.(*CallExpr)
-	if !ok || call.Parenthesized || len(call.Args) > 0 || len(call.KwArgs) > 0 || call.Block != nil || call.BlockArg != nil {
+	if !ok || call.Parenthesized || len(call.Args) > 0 || len(call.KwArgs) > 0 || call.Block != nil {
 		return NewNil(), false, nil
 	}
 	if _, ok := call.Callee.(*Identifier); !ok {
@@ -2180,12 +2176,6 @@ func callableParamTypes(callee Value) (callableParamInfo, bool) {
 		}
 		if len(builtin.SignatureParams) > 0 {
 			return callableParamInfo{params: builtin.SignatureParams}, true
-		}
-		if builtin.Name == blockCallBuiltinName && len(builtin.CapturedValues) == 1 && builtin.CapturedValues[0].Kind() == KindBlock {
-			blk := valueBlock(builtin.CapturedValues[0])
-			if blk != nil {
-				return callableParamInfo{params: blk.Params, usesRubyBlockBinding: true}, true
-			}
 		}
 	}
 	return callableParamInfo{}, false
@@ -2617,10 +2607,7 @@ func calleeCollapsesOptionsHash(call *CallExpr, callee Value, resolution calleeR
 	case calleeForwardedMethod:
 		return true
 	case calleeMemberValue:
-		if callee.Kind() == KindFunction {
-			return true
-		}
-		return builtin != nil && builtin.DirectCallAlias
+		return callee.Kind() == KindFunction
 	default:
 		return callee.Kind() == KindFunction
 	}
@@ -2706,23 +2693,7 @@ func (exec *Execution) evalCallBlock(call *CallExpr, env *Env) (Value, error) {
 		}
 		return block, nil
 	}
-	if call.BlockArg == nil {
-		return NewNil(), nil
-	}
-	// The `&` argument evaluates with a callable expectation so a bare
-	// function reference forwards as a value instead of auto-invoking.
-	val, err := exec.evalCallArgument(call.BlockArg, env, true)
-	if err != nil {
-		return NewNil(), err
-	}
-	block, err := exec.blockArgumentValue(val, call.BlockArg.Pos())
-	if err != nil {
-		return NewNil(), err
-	}
-	if err := exec.checkMemoryValue(block); err != nil {
-		return NewNil(), err
-	}
-	return block, nil
+	return NewNil(), nil
 }
 
 func (exec *Execution) checkCallMemoryRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
@@ -2814,6 +2785,7 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	}
 
 	result, callErr := exec.invokeCallable(callee, receiver, args, kwargs, block, call.Pos())
+	retireCallBlock(block)
 	if callErr != nil {
 		return NewNil(), callErr
 	}
@@ -2913,7 +2885,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		}
 	}
 
-	if fn := singleNormalArgFunction(callee); fn != nil && len(call.Args) == 1 && len(call.KwArgs) == 0 && call.Block == nil && call.BlockArg == nil && !callHasSplatArg(call) {
+	if fn := singleNormalArgFunction(callee); fn != nil && len(call.Args) == 1 && len(call.KwArgs) == 0 && call.Block == nil && !callHasSplatArg(call) {
 		return exec.evalSingleNormalArgFunctionMemberCallExpr(call, receiver, fn, env)
 	}
 
@@ -2938,6 +2910,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	}
 
 	result, callErr := exec.invokeCallable(callee, receiver, args, kwargs, block, call.Pos())
+	retireCallBlock(block)
 	if callErr != nil {
 		return NewNil(), callErr
 	}
@@ -3063,6 +3036,7 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 	}
 
 	result, err := callBuiltinMemberDirect(exec, receiver, property, args, kwargs, block)
+	retireCallBlock(block)
 	if err != nil {
 		if ok, controlErr := exec.callBoundaryControlError(err, call.Pos()); ok {
 			return NewNil(), controlErr
@@ -3082,7 +3056,7 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 }
 
 func (exec *Execution) evalDirectStringMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, bool, error) {
-	if receiver.Kind() != KindString || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil || callHasSplatArg(call) {
+	if receiver.Kind() != KindString || len(call.KwArgs) != 0 || call.Block != nil || callHasSplatArg(call) {
 		return NewNil(), false, nil
 	}
 
@@ -3185,7 +3159,7 @@ func (exec *Execution) evalDirectStringSplitCall(call *CallExpr, receiver Value,
 }
 
 func (exec *Execution) evalDirectArrayMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, bool, error) {
-	if receiver.Kind() != KindArray || property != "join" || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil || callHasSplatArg(call) {
+	if receiver.Kind() != KindArray || property != "join" || len(call.KwArgs) != 0 || call.Block != nil || callHasSplatArg(call) {
 		return NewNil(), false, nil
 	}
 	if len(call.Args) > 1 {
@@ -3415,7 +3389,7 @@ func checkDirectStringMemberCallRoots(exec *Execution, receiver, first, second V
 }
 
 func (exec *Execution) evalDirectCoreObjectMemberCallExpr(call *CallExpr, receiver Value, member *MemberExpr, env *Env) (Value, bool, error) {
-	if receiver.Kind() != KindObject || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil || callHasSplatArg(call) {
+	if receiver.Kind() != KindObject || len(call.KwArgs) != 0 || call.Block != nil || callHasSplatArg(call) {
 		return NewNil(), false, nil
 	}
 
@@ -3534,7 +3508,7 @@ func (exec *Execution) evalDirectTimeParseCall(call *CallExpr, receiver Value, e
 }
 
 func (exec *Execution) evalDirectTimeMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, bool, error) {
-	if receiver.Kind() != KindTime || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil || callHasSplatArg(call) {
+	if receiver.Kind() != KindTime || len(call.KwArgs) != 0 || call.Block != nil || callHasSplatArg(call) {
 		return NewNil(), false, nil
 	}
 	switch property {
@@ -3849,9 +3823,6 @@ func (exec *Execution) validateCallShape(fn *ScriptFunction, args []Value, kwarg
 					usedKw[name] = true
 				}
 			}
-		case ParamBlock:
-			// A block parameter binds from the call environment, never from the
-			// positional or keyword arguments, so it imposes no shape constraint.
 		case ParamNormal:
 			if argIdx < len(args) {
 				argIdx++
@@ -3940,12 +3911,6 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 				}
 			}
 			val = NewHash(rest)
-		case ParamBlock:
-			if block, ok := env.lookupCallBlock(); ok {
-				val = block
-			} else {
-				val = NewNil()
-			}
 		case ParamNormal:
 			if argIdx < len(args) {
 				val = args[argIdx]

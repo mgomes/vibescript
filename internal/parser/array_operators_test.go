@@ -288,11 +288,11 @@ func TestParserIntersectionSpacingShapes(t *testing.T) {
 	}
 }
 
-// TestParserBlockPassShapeParsesBlockArgument confirms the spacing rule
-// reads the "foo &bar" shape — ampersand detached from the callee but flush
-// against the operand — as a parenless block-pass argument after a
-// non-local identifier and after a member expression.
-func TestParserBlockPassShapeParsesBlockArgument(t *testing.T) {
+// TestParserBlockPassShapeIsDiagnosed confirms the spacing rule still reads
+// the "foo &bar" shape -- ampersand detached from the callee but flush against
+// the operand -- as an attempted block argument, so the author sees the
+// removal diagnostic rather than a confusing operator parse.
+func TestParserBlockPassShapeIsDiagnosed(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -316,21 +316,9 @@ end`,
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			program, errs := parseSource(t, tc.source)
-			if len(errs) > 0 {
-				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
-			}
-			body := parsedFunctionBody(t, program)
-			stmt, ok := body[0].(*ast.ExprStmt)
-			if !ok {
-				t.Fatalf("statement is %T, want *ast.ExprStmt", body[0])
-			}
-			call, ok := stmt.Expr.(*ast.CallExpr)
-			if !ok {
-				t.Fatalf("expression is %T, want *ast.CallExpr", stmt.Expr)
-			}
-			if call.BlockArg == nil {
-				t.Fatal("call has no BlockArg")
+			_, errs := parseSource(t, tc.source)
+			if len(errs) == 0 {
+				t.Fatalf("parseSource(%q) produced no error, want the block-argument removal diagnostic", tc.source)
 			}
 		})
 	}

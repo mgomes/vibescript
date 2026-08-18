@@ -195,7 +195,6 @@ colon disambiguates the keyword and typed forms:
 | `name: default` | optional keyword-only parameter |
 | `*rest` | captures extra positional arguments |
 | `**rest` | captures extra keyword arguments |
-| `&block` | captures a passed block |
 
 A keyword-only parameter is bound only by a matching keyword label; it never
 accepts a positional argument. The optional form supplies its default when the
@@ -235,35 +234,15 @@ earlier parameter directly, including as a bare identifier
 `name: { field: Type }` spelling, whose field values are themselves types, stays
 a typed positional parameter with a shape type.
 
-### Function values
+### Functions are not values
 
-A function referenced by name (without calling it) is a value that can be
-passed to other functions and invoked. Both direct `fn(...)` invocation and
-Ruby-style `fn.call(...)` are supported and behave identically, forwarding
-positional arguments, keyword arguments, and an optional block:
-
-```vibe
-def inc(n)
-  n + 1
-end
-
-def twice_direct(fn)
-  fn(2)
-end
-
-def twice_call(fn)
-  fn.call(2)
-end
-```
-
-Argument arity and type errors raised by `fn.call(...)` point at the call
-site, the same as direct invocation. The only member exposed on a function
-value is `call`.
-
-A function with at least one parameter becomes a value when referenced by
-name. A zero-arity function is auto-invoked when referenced by name, so it
-cannot yet be passed as a function value (and therefore cannot be reached by
-`fn.call`); passing zero-arity functions as values is tracked separately.
+Executable code does not escape: referencing a function by name without
+calling it is an error rather than a value, there is no `.call`, and methods
+cannot be detached as callable values. A function or method is invoked where
+it is named, and behavior is passed between calls with a block, which the
+callee runs synchronously with `yield`. See
+[Blocks and Enumerables](blocks.md#blocks-do-not-escape) for the migration
+shapes.
 
 ## Classes
 
@@ -354,11 +333,9 @@ accept_options retry: true, limit: 3
 accept_options(retry: true, limit: 3)
 ```
 
-Invoking a function value through its `call` alias follows the same rule, so
-`accept_options.call(retry: true, limit: 3)` binds the options hash exactly like
-the direct `accept_options(retry: true, limit: 3)` form. A function value reached
-through member access binds the same way, so calling a module function such as
-`rules.accept_options(retry: true, limit: 3)` matches the direct form too.
+A function reached through member access binds the same way, so calling a
+module function such as `rules.accept_options(retry: true, limit: 3)` matches
+the direct form too.
 
 The synthesized hash is type-checked against a typed options parameter, so
 `accept_options(retry: "soon")` is rejected with the shape mismatch when the
@@ -423,11 +400,11 @@ through the index exactly like `a[0]`. Member callees have no local reading,
 so `xs.first [0]` passes `[0]` as an argument to `first`; write
 `xs.first[0]` to index the result.
 
-Ruby-style ampersand block arguments forward a callable as the call's block:
-`m(&blk)` passes a captured block, function value, or bound method along, and
-`m(&:name)` is the symbol-to-proc shorthand that sends `name` to each yielded
-value. The `&` argument must be last and cannot be combined with a literal
-block. See [Blocks and Enumerables](blocks.md) for details.
+There are no ampersand block arguments: a block is not a value, so it cannot
+be captured with a `&param` or forwarded with `m(&blk)`, and the `m(&:name)`
+symbol-to-proc shorthand is gone with it. Write the block at the call that
+runs it. See [Blocks and Enumerables](blocks.md#blocks-do-not-escape) for the
+migration shapes.
 
 Ruby-style safe navigation (`receiver&.member`) reads a member or calls a
 method only when the receiver is not `nil`. When the receiver is `nil`, the

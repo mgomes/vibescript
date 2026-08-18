@@ -4104,31 +4104,6 @@ func TestHashFetchValuesDoesNotOverCharge(t *testing.T) {
 	compareArrays(t, got, want)
 }
 
-// A default proc is script code, so values_at has the same shape as
-// fetch_values: each miss can resolve to a fresh near-quota value that lives
-// only in the Go-local out slice. The 29 retained 20KB defaults and the final
-// 600KB temporary each fit the 1MB quota alone, and the returned array is small
-// enough for the post-call check.
-func TestHashValuesAtWalksRetainedOutputDuringDefaultProcs(t *testing.T) {
-	t.Parallel()
-
-	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, `
-    def run()
-      h = Hash.new { |hash, k|
-        if k == :m029
-          ("y" * 600000).length
-        else
-          "x" * 20000
-        end
-      }
-      h.values_at(`+lookupKeyList(30)+`)
-    end
-    `)
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("retained values_at output plus an in-proc temporary exceeded the quota but was accepted")
-	}
-}
-
 // A callback can detach a result it previously stored: here the first callback
 // memoizes a 400KB value into the hash, and the second clears the hash -- so
 // the payload is live only in the Go-local output -- before allocating a 700KB

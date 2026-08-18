@@ -225,7 +225,7 @@ class Builder
   end
 end
 
-def accept(*values: array<function>)
+def accept(*values: array<int>)
   values
 end
 
@@ -243,7 +243,7 @@ class Builder
   end
 end
 
-def accept(**options: hash<string, function>)
+def accept(**options: hash<string, int>)
   options
 end
 
@@ -254,22 +254,9 @@ end
 			warning: "call to Builder.new is missing argument required",
 		},
 		{
-			name: "rescue does not propagate structured callable expectations",
+			name: "member with required arguments still auto invokes in argument position",
 			source: `
-def accept(values: array<function>)
-  values
-end
-
-def run()
-  accept(([User.new] rescue [User.new]))
-end
-`,
-			warning: "call to accept argument values expected array<function>, got array<User>",
-		},
-		{
-			name: "non bindable member still auto invokes under callable expectation",
-			source: `
-def accept(fn: function)
+def accept(fn: int)
   fn
 end
 
@@ -386,180 +373,15 @@ end
 `,
 		},
 		{
-			name: "bare constructor remains callable under a function boundary",
-			source: `
-def takes_function(value: function)
-  value
-end
-
-def run()
-  takes_function(User.new)
-end
-`,
-		},
-		{
-			name: "callable constructor is not auto invoked for shape checking",
-			source: `
-class Builder
-  def initialize(required)
-  end
-end
-
-def takes_function(value: function)
-  value
-end
-
-def run()
-  takes_function(Builder.new)
-end
-`,
-		},
-		{
-			name: "conditional constructors inherit callable expectation",
-			source: `
-class Builder
-  def initialize(required)
-  end
-end
-
-def takes_function(value: function)
-  value
-end
-
-def run(flag)
-  takes_function(flag ? Builder.new : Builder.new)
-end
-`,
-		},
-		{
-			name: "if constructors inherit callable expectation",
-			source: `
-class Builder
-  def initialize(required)
-  end
-end
-
-def takes_function(value: function)
-  value
-end
-
-def run(flag)
-  takes_function(if flag then Builder.new else Builder.new end)
-end
-`,
-		},
-		{
-			name: "case constructors inherit callable expectation",
-			source: `
-class Builder
-  def initialize(required)
-  end
-end
-
-def takes_function(value: function)
-  value
-end
-
-def run(flag)
-  takes_function(case flag when true then Builder.new else Builder.new end)
-end
-`,
-		},
-		{
-			name: "array constructors inherit callable element expectation",
-			source: `
-class Builder
-  def initialize(required)
-  end
-end
-
-def takes_functions(values: array<function>)
-  values
-end
-
-def run()
-  takes_functions([Builder.new])
-end
-`,
-		},
-		{
-			name: "shape constructors inherit callable field expectation",
-			source: `
-class Builder
-  def initialize(required)
-  end
-end
-
-def takes_options(options: { callback: function })
-  options
-end
-
-def run()
-  takes_options({ callback: Builder.new })
-end
-`,
-		},
-		{
-			name: "conditional arrays retain callable element expectation",
-			source: `
-class Builder
-  def initialize(required)
-  end
-end
-
-def takes_functions(values: array<function>)
-  values
-end
-
-def run(flag)
-  takes_functions(flag ? [Builder.new] : [Builder.new])
-end
-`,
-		},
-		{
-			name: "constructor default inherits callable expectation",
-			source: `
-class Builder
-  def initialize(required)
-  end
-end
-
-def takes_default(value: function = Builder.new)
-  value
-end
-
-def run()
-  takes_default()
-end
-`,
-		},
-		{
-			name: "collapsed options hash inherits callable field expectation",
-			source: `
-class Builder
-  def initialize(required)
-  end
-end
-
-def accept(options: { cb: function })
-  options
-end
-
-def run()
-  accept cb: Builder.new
-end
-`,
-		},
-		{
 			name: "nullable safe method requires nullable boundary",
 			source: `
 class Worker
-  def build(required) -> string
-    required
+  def build() -> string
+    "built"
   end
 end
 
-def accept(fn: function)
+def accept(fn: string)
   fn
 end
 
@@ -567,19 +389,7 @@ def run(worker: Worker?)
   accept(worker&.build)
 end
 `,
-			warning: "call to accept argument fn expected function, got function | nil",
-		},
-		{
-			name: "bare builtin identifier remains callable",
-			source: `
-def accept(fn: function)
-  fn
-end
-
-def run()
-  accept(rand)
-end
-`,
+			warning: "call to accept argument fn expected string, got string?",
 		},
 	}
 	for _, tc := range cases {

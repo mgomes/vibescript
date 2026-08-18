@@ -102,33 +102,6 @@ func TestCallBlockChargesWhatTheCallerHolds(t *testing.T) {
 	}
 }
 
-// TestCallBlockDoesNotChargeWhatTheCallerPassed pins the other side: a driver
-// whose argument is the block's argument must be charged for it once.
-//
-// `proc.call` passes on everything it holds, so it never had the gap above.
-// Charging the caller's roots without excluding what it passed billed its
-// argument twice -- once bound into the block's scope, once as a root -- which
-// is the failure a test for the undercharge alone would not have seen.
-func TestCallBlockDoesNotChargeWhatTheCallerPassed(t *testing.T) {
-	t.Parallel()
-
-	seed := NewString(strings.Repeat("abcdefghij", 10))
-	const payload = 2_000_000
-
-	holds := minAdmittingQuota(t, "def run(s)\n  blk = ->(x) { s * 20_000 }\n  blk.call(s * 20_000)\nend", seed, false)
-	passesOnly := minAdmittingQuota(t, "def run(s)\n  blk = ->(x) { s * 20_000 }\n  blk.call(0)\nend", seed, false)
-
-	grew := holds - passesOnly
-	if grew < payload*3/4 {
-		t.Fatalf("the argument moved the quota by %d, want about %d: it is live alongside the "+
-			"body and must be charged", grew, payload)
-	}
-	if grew > payload*3/2 {
-		t.Fatalf("the argument moved the quota by %d, want about %d: it is charged once as the "+
-			"block's binding and must not be charged again as a root", grew, payload)
-	}
-}
-
 // TestCallBlockDoesNotWalkWhenTheFrameHoldsNothing pins that the caller-root
 // reservation costs nothing when there is no caller root to measure.
 //

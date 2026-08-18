@@ -140,31 +140,6 @@ value = loop do
 end
 ```
 
-## Procs and Lambdas
-
-### `proc { |args| ... } -> proc` / `Proc.new { |args| ... } -> proc`
-
-Captures the block as a first-class proc value invoked with `.call`. A proc
-keeps block semantics: missing arguments pad to `nil`, extra arguments are
-dropped, and `return` in the body returns from the method whose body created
-the proc. See [Blocks](blocks.md#procs-and-lambdas) for the full semantics.
-
-```vibe
-doubler = proc { |x| x * 2 }
-doubler.call(21)  # 42
-```
-
-### `lambda { |args| ... } -> lambda`
-
-Captures the block as a lambda, which behaves like an anonymous method: arity
-is strict, and `return`, `break`, and `next` in the body are local to the
-lambda call. The stabby form `->(args) { ... }` builds the same value.
-
-```vibe
-add = lambda { |a, b| a + b }
-add.call(2, 3)  # 5
-```
-
 ## Formatting
 
 ### `format(pattern, *values) -> string` / `sprintf(pattern, *values) -> string`

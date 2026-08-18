@@ -61,13 +61,6 @@ func TestCheckerRejectsNonConcatenableOperandPairs(t *testing.T) {
 			source:  "def f(a: number?, b: array<int>) -> string\n  a + b\nend",
 			wantErr: "unsupported addition operands",
 		},
-		{
-			// A callable renders as a placeholder and nil renders as empty, so
-			// neither alternative of function? can concatenate.
-			name:    "string plus nullable callable",
-			source:  "def f(s: string, cb: function?) -> string\n  s + cb\nend",
-			wantErr: "unsupported addition operands",
-		},
 	}
 
 	for _, tc := range tests {

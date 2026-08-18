@@ -166,7 +166,11 @@ func TestHostCloneFunctionPreservesAliasIdentity(t *testing.T) {
   n + 1
 end`)
 
-	inc := exportedFunctionValue(t, script, "inc")
+	fn, ok := script.functions["inc"]
+	if !ok {
+		t.Fatal("inc not defined in script")
+	}
+	inc := NewFunction(fn)
 
 	cloned := cloneValueForHost(NewArray([]Value{inc, inc}))
 	items := cloned.Array()
@@ -307,39 +311,6 @@ func TestEqualPredicateRebindsToHostClone(t *testing.T) {
 	}
 	if !got.Bool() {
 		t.Fatal("cloned equal? against the original receiver returned false; a collection is its contents on both sides")
-	}
-}
-
-// TestEqualPredicateRebindsAcrossScriptCalls exercises the rebind end to end
-// through Script.Call: one call exports a hash and its bound equal? predicate,
-// and a second call receives that host-cloned pair and invokes the predicate
-// against the receiver from the same pair. The predicate must report identity
-// even though Script.Call host-cloned the receiver between the two calls.
-func TestEqualPredicateRebindsAcrossScriptCalls(t *testing.T) {
-	t.Parallel()
-	script := compileScriptDefault(t, `def export_probe
-  obj = {a: 1}
-  [obj, obj.equal?]
-end
-
-def check(pair)
-  pair[1](pair[0])
-end`)
-
-	exported, err := script.Call(context.Background(), "export_probe", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("export_probe failed: %v", err)
-	}
-	if exported.Kind() != KindArray {
-		t.Fatalf("expected array result, got %#v", exported)
-	}
-
-	result, err := script.Call(context.Background(), "check", []Value{exported}, CallOptions{})
-	if err != nil {
-		t.Fatalf("check failed: %v", err)
-	}
-	if result.Kind() != KindBool || !result.Bool() {
-		t.Fatalf("exported equal? against its own receiver reported %#v; the predicate did not rebind to the host-cloned receiver", result)
 	}
 }
 
@@ -528,78 +499,6 @@ func TestCallRebindBoundPredicatePreservesAliasIdentity(t *testing.T) {
 		if !got.Bool() {
 			t.Fatalf("rebound equal? alias %d returned false against the rebound receiver; it did not rebind", i)
 		}
-	}
-}
-
-// TestEqualPredicateAliasIdentityAcrossScriptCalls exercises alias preservation
-// end to end through Script.Call: one call exports a receiver and the same bound
-// equal? predicate twice, and a second call receives that host-cloned graph and
-// compares the two predicate aliases with equal?. They must report identical
-// even though Script.Call host-cloned and rebound the graph between the calls.
-func TestEqualPredicateAliasIdentityAcrossScriptCalls(t *testing.T) {
-	t.Parallel()
-	script := compileScriptDefault(t, `def export_probe
-  obj = {a: 1}
-  probe = obj.equal?
-  [probe, probe]
-end
-
-def check(pair)
-  pair[0].equal?(pair[1])
-end`)
-
-	exported, err := script.Call(context.Background(), "export_probe", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("export_probe failed: %v", err)
-	}
-	if exported.Kind() != KindArray {
-		t.Fatalf("expected array result, got %#v", exported)
-	}
-
-	result, err := script.Call(context.Background(), "check", []Value{exported}, CallOptions{})
-	if err != nil {
-		t.Fatalf("check failed: %v", err)
-	}
-	if result.Kind() != KindBool || !result.Bool() {
-		t.Fatalf("two aliases of one bound predicate reported %#v; they must stay equal? across the host boundary", result)
-	}
-}
-
-// TestPlainBuiltinAliasIdentityAcrossScriptCalls is the plain-builtin counterpart
-// to TestEqualPredicateAliasIdentityAcrossScriptCalls, exercising the finding's
-// exact scenario end to end through Script.Call: one call binds a plain (non
-// receiver-bound) builtin to a local and returns it through two array slots
-// (`p = JSON.parse; [p, p]`), and a second call receives that host-cloned graph
-// and compares the two aliases with equal?. cloneBuiltinForHost mints a fresh
-// *Builtin per occurrence, so without memoizing the clone on the source builtin
-// the two slots would cross the host boundary as distinct pointers; equal?
-// compares builtins by backing pointer, so the aliases would wrongly report
-// not-identical even though they were one callable inside the script.
-func TestPlainBuiltinAliasIdentityAcrossScriptCalls(t *testing.T) {
-	t.Parallel()
-	script := compileScriptDefault(t, `def export_probe
-  p = JSON.parse
-  [p, p]
-end
-
-def check(pair)
-  pair[0].equal?(pair[1])
-end`)
-
-	exported, err := script.Call(context.Background(), "export_probe", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("export_probe failed: %v", err)
-	}
-	if exported.Kind() != KindArray {
-		t.Fatalf("expected array result, got %#v", exported)
-	}
-
-	result, err := script.Call(context.Background(), "check", []Value{exported}, CallOptions{})
-	if err != nil {
-		t.Fatalf("check failed: %v", err)
-	}
-	if result.Kind() != KindBool || !result.Bool() {
-		t.Fatalf("two aliases of one plain builtin reported %#v; they must stay equal? across the host boundary", result)
 	}
 }
 
@@ -1321,46 +1220,6 @@ end`)
 	}
 }
 
-// TestEqualityPredicateStoredBuiltin confirms the stored-member-call path, where
-// the bound predicate builtin is invoked separately from the receiver, follows
-// the same contract as a direct call.
-func TestEqualityPredicateStoredBuiltin(t *testing.T) {
-	t.Parallel()
-	script := compileScript(t, `def run()
-  probe = 1.eql?
-  identity = 1.equal?
-  [probe(1), probe(1.0), probe(2), identity(1), identity(2)]
-end`)
-	result := callFunc(t, script, "run", nil)
-	compareArrays(t, result, []Value{
-		NewBool(true),
-		NewBool(false),
-		NewBool(false),
-		NewBool(true),
-		NewBool(false),
-	})
-}
-
-// TestEqualityPredicateStoredBuiltinChargesReceiver confirms a stored bound
-// predicate is charged against the memory quota for the receiver it keeps alive.
-// Each iteration binds a probe to a distinct, growing string, so the retained
-// receivers accumulate well beyond the builtin slots alone. The quota sits above
-// the slots-only footprint (what treating builtins as free would charge) but
-// below the slots-plus-receivers footprint, so the run must trip the quota.
-func TestEqualityPredicateStoredBuiltinChargesReceiver(t *testing.T) {
-	t.Parallel()
-	script := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 8192}, `def run
-  probes = []
-  big = ""
-  for i in 1..50
-    big = big + "abcdefghij"
-    probes = probes.push(big.eql?)
-  end
-  probes.size
-end`)
-	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
-}
-
 // TestEqualityPredicateLoopWithoutStoredBuiltinFits is the control for
 // TestEqualityPredicateStoredBuiltinChargesReceiver: the identical loop that
 // grows the same strings but does not retain any probe stays within the same
@@ -1379,51 +1238,6 @@ func TestEqualityPredicateLoopWithoutStoredBuiltinFits(t *testing.T) {
 end`)
 	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
 		t.Fatalf("expected control loop to stay within quota, got %v", err)
-	}
-}
-
-// TestEqualityPredicateTemporaryBuiltinChargesCapturedReceiver confirms a bound
-// predicate produced as an immediately invoked temporary callee charges its
-// captured receiver against the memory quota, just like a stored probe does.
-//
-// In `make_probe()(arg)` the inner call returns `big.eql?`, a builtin that
-// captures the large `big` string, and the outer call invokes it with a large
-// transient `arg` built inline. Neither `big` nor `arg` is reachable from any
-// environment at the outer call — `big` lives only inside the returned builtin's
-// capture and `arg` only on the Go call stack — so the environment-walking base
-// sees neither. Only charging the callee's captured payload alongside the outer
-// arguments accounts for the peak where both are live at once. The quota sits
-// above either operand alone but below their combination, so the run must trip
-// the quota; a regression that skipped charging the temporary callee would let
-// the combined footprint slip past.
-func TestEqualityPredicateTemporaryBuiltinChargesCapturedReceiver(t *testing.T) {
-	t.Parallel()
-	script := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 7000}, `def make_probe
-  "abcdefghij".ljust(3000, "z").eql?
-end
-
-def run
-  make_probe()("y".ljust(3000, "w"))
-end`)
-	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
-}
-
-// TestEqualityPredicateTemporaryBuiltinFitsUnderGenerousQuota is the control for
-// TestEqualityPredicateTemporaryBuiltinChargesCapturedReceiver: the identical
-// temporary-callee invocation succeeds once the quota comfortably exceeds the
-// captured receiver plus the transient argument. This isolates the rejection to
-// the combined peak rather than either operand on its own.
-func TestEqualityPredicateTemporaryBuiltinFitsUnderGenerousQuota(t *testing.T) {
-	t.Parallel()
-	script := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 1 << 20}, `def make_probe
-  "abcdefghij".ljust(3000, "z").eql?
-end
-
-def run
-  make_probe()("y".ljust(3000, "w"))
-end`)
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
-		t.Fatalf("expected temporary-callee invocation to stay within a generous quota, got %v", err)
 	}
 }
 

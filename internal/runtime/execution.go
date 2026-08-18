@@ -315,7 +315,6 @@ type Execution struct {
 	validatedCapabilityArgsArr [4]string
 	loopDepth                  int
 	blockDepth                 int
-	lambdaDepth                int
 	rescueDepth                int
 	rescuedErrors              []error
 	returnTokens               []uint64

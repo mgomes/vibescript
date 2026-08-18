@@ -59,12 +59,10 @@ end`)
 func TestEventsCapabilityRejectsCallablePayload(t *testing.T) {
 	t.Parallel()
 	stub := &eventsCapabilityStub{}
-	script := compileScriptDefault(t, `def helper(value)
-  value
-end
-
-def run()
-  events.publish("topic", { callback: helper })
+	// A bare function name is no longer a value; a capability object is the
+	// one callable-bearing value a script can still place in a payload.
+	script := compileScriptDefault(t, `def run()
+  events.publish("topic", { callback: events })
 end`)
 
 	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(

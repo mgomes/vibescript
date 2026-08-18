@@ -291,6 +291,10 @@ func TestDBCapabilityRejectsInvalidScriptInputs(t *testing.T) {
 		wantErr string
 	}{
 		{
+			// A script can no longer build a callable value to smuggle into a
+			// capability payload (ADR-006), so the language rejects the
+			// reference before the capability's data-only check sees it. The
+			// capability keeps its own check for callables a host put in scope.
 			name: "callable_update_attributes",
 			source: `def helper(value)
   value
@@ -301,7 +305,7 @@ def run()
 end`,
 			fn:      "run",
 			stub:    &dbCapabilityStub{},
-			wantErr: "db.update attributes must be data-only",
+			wantErr: "helper is a function and cannot be used as a value",
 		},
 		{
 			name: "non_hash_update_attributes",

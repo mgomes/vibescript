@@ -229,57 +229,6 @@ end`)
 	requireCallErrorContains(t, script, "run", []Value{NewArray([]Value{NewString("nope")})}, CallOptions{}, "return value for find expected int, got string")
 }
 
-// TestBlockNonLocalReturnDeadFrameLocalJumpError pins the escape case: a block
-// held by the host past its method's return has no live frame to return from,
-// so invoking it later reports LocalJumpError instead of hijacking an
-// unrelated invocation.
-func TestBlockNonLocalReturnDeadFrameLocalJumpError(t *testing.T) {
-	t.Parallel()
-
-	var stashed Value
-	adapter := NewObject(map[string]Value{
-		"stash": NewBuiltin("adapter.stash", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			stashed = block
-			return NewNil(), nil
-		}),
-		"invoke": NewBuiltin("adapter.invoke", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return exec.CallBlock(stashed, []Value{NewInt(1)})
-		}),
-	})
-
-	script := compileScript(t, `def maker
-  adapter.stash do |x|
-    return x
-  end
-  "made"
-end
-
-def run
-  maker
-  adapter.invoke()
-  "unreachable"
-end
-
-def rescued_run
-  maker
-  begin
-    adapter.invoke()
-    "unreachable"
-  rescue LocalJumpError
-    "caught local jump"
-  end
-end`)
-
-	opts := CallOptions{Globals: map[string]Value{"adapter": adapter}}
-	requireCallErrorContains(t, script, "run", nil, opts, "unexpected return")
-
-	// The error is raised at the invocation site as a regular LocalJumpError,
-	// so a surrounding rescue can catch it like any other local jump failure.
-	if got := callScript(t, context.Background(), script, "rescued_run", nil, opts); got.String() != "caught local jump" {
-		t.Fatalf("rescued_run = %v, want caught local jump", got)
-	}
-}
-
 // TestBlockNonLocalReturnFromDefaultArgument pins token ordering around
 // argument binding: a block in a default-argument expression homes to the
 // invocation being bound, so a return inside it returns from that method —

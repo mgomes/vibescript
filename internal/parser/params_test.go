@@ -11,7 +11,7 @@ import (
 
 func TestParserFunctionCaptureParameters(t *testing.T) {
 	t.Parallel()
-	source := `def collect(prefix, *items: array, **opts: hash, &block)
+	source := `def collect(prefix, *items: array, **opts: hash)
   nil
 end`
 
@@ -36,7 +36,6 @@ end`
 						Kind: ast.ParamKeywordRest,
 						Type: &ast.TypeExpr{Name: "hash", Kind: ast.TypeHash},
 					},
-					{Name: "block", Kind: ast.ParamBlock},
 				},
 				Body: []ast.Statement{
 					&ast.ExprStmt{Expr: &ast.NilLiteral{}},
@@ -199,14 +198,14 @@ func TestParserFunctionCaptureParameterErrors(t *testing.T) {
 			source: `def bad(*items, tail)
   nil
 end`,
-			wantErr: "ordinary parameters must precede rest, keyword, keyword rest, and block capture parameters",
+			wantErr: "ordinary parameters must precede rest, keyword, and keyword rest parameters",
 		},
 		{
-			name: "block_not_last",
-			source: `def bad(&block, value)
+			name: "block_capture_removed",
+			source: `def bad(&block)
   nil
 end`,
-			wantErr: "block capture parameter must be last",
+			wantErr: "block capture parameters are not supported",
 		},
 		{
 			name: "duplicate_keyword_rest",

@@ -77,10 +77,6 @@ def splat_with_block
   end
 end
 
-def splat_with_block_arg
-  with_block(*[20, 22], &->(n) { n * 2 })
-end
-
 def builtin_splat
   positions = [0, 2]
   ["a", "b", "c"].values_at(*positions)
@@ -115,9 +111,6 @@ end`)
 		[]Value{NewInt(1), NewInt(0), NewInt(0)})
 	if got := callScript(t, ctx, script, "splat_with_block", nil, CallOptions{}); got.Int() != 42 {
 		t.Fatalf("splat_with_block = %v, want 42", got)
-	}
-	if got := callScript(t, ctx, script, "splat_with_block_arg", nil, CallOptions{}); got.Int() != 84 {
-		t.Fatalf("splat_with_block_arg = %v, want 84", got)
 	}
 	compareArrays(t, callScript(t, ctx, script, "builtin_splat", nil, CallOptions{}),
 		[]Value{NewString("a"), NewString("c")})

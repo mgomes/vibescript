@@ -470,9 +470,6 @@ var memberContractExemptions = map[string][]string{
 		"sort_by", "sum", "take", "take_while", "tally", "to_h", "transpose",
 		"union", "uniq", "unshift", "values_at", "window", "zip",
 	},
-	"block": {
-		"call", "lambda?",
-	},
 	"bool": {
 		"inspect",
 	},
@@ -487,9 +484,6 @@ var memberContractExemptions = map[string][]string{
 		"abs", "between?", "ceil", "clamp", "div", "divmod", "fdiv", "finite?",
 		"floor", "infinite?", "inspect", "modulo", "nan?", "negative?",
 		"nonzero?", "positive?", "remainder", "round", "zero?",
-	},
-	"function": {
-		"call",
 	},
 	"hash": {
 		"clear", "compact", "deep_transform_keys",
