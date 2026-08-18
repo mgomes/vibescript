@@ -326,6 +326,22 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			var prepErr error
 			receiver, args, kwargs, prepErr = exec.prepareHostDrivenCollections(builtin, receiver, args, kwargs)
 			if prepErr != nil {
+				// Unwind everything dispatch set up above this point: a
+				// rescued prep error must not leak the yield frame, the
+				// depth counters, the metered-section suspension, the
+				// return-proof slot, or the validated-args entry.
+				exec.popCapabilityYieldFrame(yieldFrame)
+				exec.builtinDepth--
+				if !declaredPure {
+					exec.undeclaredBuiltinDepth--
+				}
+				exec.accumMeteredSections = savedSections
+				if savedReturnProof.recorded {
+					exec.capabilityReturnProof = savedReturnProof
+				}
+				if popValidatedArgs != nil {
+					popValidatedArgs()
+				}
 				return NewNil(), prepErr
 			}
 		}
@@ -344,23 +360,10 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// non-mutation and then wrote to the reachable graph without advancing
 		// the epoch panics here rather than silently costing a later check its
 		// accuracy.
-		var receiverBefore map[uintptr]struct{}
-		if builtin.hostDriven && !builtin.declaredNonMutating() && isCollection(receiver) {
-			receiverBefore = make(map[uintptr]struct{})
-			collectCollectionIdentities(receiver, receiverBefore)
-		}
 		contractCheck := exec.beginContractVerification(builtin)
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		if err == nil && builtin.hostDriven && !builtin.declaredNonRetaining() {
 			result, err = exec.detachHostBuiltinResult(builtin, result)
-		}
-		if receiverBefore != nil {
-			// A factory may have installed fresh wrappers into the live
-			// receiver during the call (the sanctioned publication channel);
-			// they are host-held handles and must not transfer out of the
-			// Call boundary live (#1210). This runs on the error path too --
-			// a script can rescue the error and still reach the install.
-			exec.markInstalledCollections(receiver, receiverBefore, make(map[uintptr]struct{}))
 		}
 		contractCheck.check(exec, builtin)
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = prevReceiver, prevArgs, prevKwargs
@@ -1426,6 +1429,7 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 			}
 			rebound := rebinder.rebindValue(val)
 			root.Define(name, rebound)
+			exec.capabilityBoundRoots = append(exec.capabilityBoundRoots, rebound)
 			if len(scope.contracts) > 0 {
 				scope.roots = append(scope.roots, rebound)
 			}

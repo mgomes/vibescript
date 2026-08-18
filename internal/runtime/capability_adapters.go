@@ -51,14 +51,16 @@ func MustNewJobQueueCapability(name string, impl JobQueue) CapabilityAdapter {
 func (c *jobQueueCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
 	name := c.inner.Name
 	methods := map[string]Value{
-		// The first-party adapters clone what they keep and never write a
-		// script wrapper, so each declares non-mutation: dispatch then skips
-		// the isolation copy and the adapter's own clone is the only one --
-		// the double copy the boundary otherwise charges a quota for.
-		"enqueue": DeclareNonMutating(NewBuiltin(name+".enqueue", c.callEnqueue)),
+		// The first-party adapters clone everything both ways -- what they
+		// keep, what they return, what they yield -- and never write a
+		// script wrapper, so each declares non-mutation and non-retention:
+		// dispatch then skips the isolation copy, the return detach, and
+		// the CallBlock boundary copies, leaving the adapter's own clone as
+		// the only one.
+		"enqueue": DeclareNonMutating(DeclareNonRetaining(NewBuiltin(name+".enqueue", c.callEnqueue))),
 	}
 	if c.inner.HasRetry() {
-		methods["retry"] = DeclareNonMutating(NewBuiltin(name+".retry", c.callRetry))
+		methods["retry"] = DeclareNonMutating(DeclareNonRetaining(NewBuiltin(name+".retry", c.callRetry)))
 	}
 	return map[string]Value{name: NewObject(methods)}, nil
 }
@@ -289,11 +291,11 @@ func (a *dbCapabilityAdapter) Bind(_ CapabilityBinding) (map[string]Value, error
 	name := a.cap.Name()
 	contracts := a.cap.Contracts()
 	methods := map[string]Value{
-		"find":   DeclareNonMutating(NewBuiltin(name+".find", a.wrapCall(name+".find", a.cap.CallFind, contracts[name+".find"].CallValidated))),
-		"query":  DeclareNonMutating(NewBuiltin(name+".query", a.wrapCall(name+".query", a.cap.CallQuery, contracts[name+".query"].CallValidated))),
-		"update": DeclareNonMutating(NewBuiltin(name+".update", a.wrapCall(name+".update", a.cap.CallUpdate, contracts[name+".update"].CallValidated))),
-		"sum":    DeclareNonMutating(NewBuiltin(name+".sum", a.wrapCall(name+".sum", a.cap.CallSum, contracts[name+".sum"].CallValidated))),
-		"each":   DeclareNonMutating(NewBuiltin(name+".each", a.wrapCall(name+".each", a.cap.CallEach, contracts[name+".each"].CallValidated))),
+		"find":   DeclareNonMutating(DeclareNonRetaining(NewBuiltin(name+".find", a.wrapCall(name+".find", a.cap.CallFind, contracts[name+".find"].CallValidated)))),
+		"query":  DeclareNonMutating(DeclareNonRetaining(NewBuiltin(name+".query", a.wrapCall(name+".query", a.cap.CallQuery, contracts[name+".query"].CallValidated)))),
+		"update": DeclareNonMutating(DeclareNonRetaining(NewBuiltin(name+".update", a.wrapCall(name+".update", a.cap.CallUpdate, contracts[name+".update"].CallValidated)))),
+		"sum":    DeclareNonMutating(DeclareNonRetaining(NewBuiltin(name+".sum", a.wrapCall(name+".sum", a.cap.CallSum, contracts[name+".sum"].CallValidated)))),
+		"each":   DeclareNonMutating(DeclareNonRetaining(NewBuiltin(name+".each", a.wrapCall(name+".each", a.cap.CallEach, contracts[name+".each"].CallValidated)))),
 	}
 	return map[string]Value{name: NewObject(methods)}, nil
 }
@@ -367,7 +369,7 @@ func (c *eventsCapability) CapabilityContracts() map[string]CapabilityMethodCont
 
 func (c *eventsCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
 	methods := map[string]Value{
-		"publish": DeclareNonMutating(NewBuiltin(c.inner.PublishMethodName(), c.callPublish)),
+		"publish": DeclareNonMutating(DeclareNonRetaining(NewBuiltin(c.inner.PublishMethodName(), c.callPublish))),
 	}
 	return map[string]Value{c.inner.Name: NewObject(methods)}, nil
 }

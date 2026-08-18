@@ -138,10 +138,16 @@ type Execution struct {
 	envStack                  []*Env
 	validatedCapabilityArgs   []string
 	capabilityReturnProof     capabilityReturnProof
-	isolationForwards         map[uintptr]isolationForward
-	addressedBrackets         int
-	memoryEst                 memoryEstimator
-	reservedScratchBytes      int
+	// capabilityBoundRoots are the values capability adapters bound into
+	// this call. Before a result crosses to the host, everything reachable
+	// from them is marked shared (sweepCapabilityRoots): host state is live
+	// for the duration of the Call, and anything a factory installed there
+	// must clone rather than transfer on the way out (#1210).
+	capabilityBoundRoots []Value
+	isolationForwards    map[uintptr]isolationForward
+	addressedBrackets    int
+	memoryEst            memoryEstimator
+	reservedScratchBytes int
 
 	// stringScanCharge caches chargeEqualityScanBytes as a bound function for
 	// the equality byte charge (see stringScanChargeFunc), so metered

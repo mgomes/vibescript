@@ -1929,7 +1929,10 @@ func implicitBlockParamArity(params []string) int {
 // the invoking builtin declared itself non-retaining. Native builtins
 // drive blocks through the internal paths and pay none of this.
 func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
-	if exec.builtinFrameHostCrossing {
+	// Fail closed: with no builtin frame on the stack this is being driven
+	// from outside any dispatch -- a stashed Execution, a goroutine -- and
+	// that caller is host code by definition.
+	if exec.builtinFrameHostCrossing || exec.builtinDepth == 0 {
 		var detachedArgs []Value
 		for i, arg := range args {
 			if !isCollection(arg) {
@@ -1951,8 +1954,12 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 		if err != nil || !isCollection(result) {
 			return result, err
 		}
-		// The host's copy, like a Call result's: uncharged, and callables
-		// inside it detach from engine state the same way.
+		// The host's copy, like a Call result's -- but unlike a Call result
+		// a script loop can drive this clone once per iteration, so the walk
+		// is charged before the copy is built.
+		if err := exec.preflightDeepClone(result); err != nil {
+			return NewNil(), err
+		}
 		return cloneValueForHost(result), nil
 	}
 	return exec.callBlockValue(block, args, Position{})

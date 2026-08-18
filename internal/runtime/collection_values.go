@@ -95,21 +95,16 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 	}
 	var err error
 	if !builtin.declaredNonMutating() {
-		// The receiver isolates only when its root wrapper is shared -- a
-		// script binding also names it -- and stays live otherwise: it is
-		// the host's own capability object, and mutating it in place is the
-		// sanctioned factory pattern (publish a method by writing the
-		// receiver), which must keep working call after call. Installed
-		// wrappers are caught at the boundary instead (see
-		// markInstalledCollections). Arguments are script data and isolate
-		// whenever any durable slot names them, so a host write can never
-		// land in script-observable state (#1210).
-		if isCollection(receiver) && !receiver.Unpublished() && !receiver.SoleRef() {
-			receiver, err = exec.detachHostCrossingValue(receiver)
-			if err != nil {
-				return NewNil(), nil, nil, err
-			}
-		}
+		// The receiver always crosses live: it is the host's own capability
+		// object, its in-place mutation is the sanctioned factory pattern
+		// (publish a method or value by writing the receiver), and that
+		// state stays live for the duration of the Call -- like an engine
+		// builtin namespace. Independence is enforced where it matters, at
+		// the Call boundary: the capability-roots sweep marks everything
+		// host-reachable before the result crosses, so nothing installed in
+		// host state transfers out live (#1210). Arguments are script data
+		// and isolate whenever any durable slot names them, so a host write
+		// can never land in script-observable state.
 		if len(args) > 0 {
 			args = slices.Clone(args)
 			for i, arg := range args {
@@ -151,62 +146,44 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 	return receiver, args, kwargs, nil
 }
 
-// collectCollectionIdentities records the wrapper identity of every
-// collection reachable from val. The dispatch snapshots a host-driven
-// builtin's receiver with it before the call, so the post-call walk can
-// mark only what the call installed.
-func collectCollectionIdentities(val Value, into map[uintptr]struct{}) {
-	if !isCollection(val) {
+// sweepCapabilityRoots marks everything reachable from this call's
+// capability-bound values as shared. It runs once, just before a result
+// crosses to the host: capability state is live host state while the Call
+// runs, so a wrapper a factory installed there -- through any receiver,
+// stashed or dispatched -- must copy on a later script write and clone
+// rather than transfer at the boundary.
+func (exec *Execution) sweepCapabilityRoots() {
+	if len(exec.capabilityBoundRoots) == 0 {
 		return
 	}
-	id := collectionIdentity(val)
-	if id != 0 {
-		if _, ok := into[id]; ok {
-			return
-		}
-		into[id] = struct{}{}
-	}
-	switch val.Kind() {
-	case KindArray:
-		for _, elem := range val.Array() {
-			collectCollectionIdentities(elem, into)
-		}
-	case KindHash, KindObject:
-		val.RangeHashEntries(func(_ string, item Value) {
-			collectCollectionIdentities(item, into)
-		})
+	seen := make(map[uintptr]struct{})
+	for _, root := range exec.capabilityBoundRoots {
+		// The result is about to cross; charging the walk here could turn a
+		// completed call into a quota error, and the graphs are bounded by
+		// what Bind built plus what the call installed.
+		markSharedGraphUncharged(root, seen)
 	}
 }
 
-// markInstalledCollections marks every collection reachable from the
-// receiver that was not there before the call: a factory installed it, so
-// it is a host-held handle that must copy on the next script write and
-// clone rather than transfer at the Call boundary. The receiver itself and
-// anything it already held stay unmarked, which is what keeps the next
-// call's root-shared check from copying the capability object out from
-// under later installs.
-func (exec *Execution) markInstalledCollections(val Value, before map[uintptr]struct{}, seen map[uintptr]struct{}) {
+func markSharedGraphUncharged(val Value, seen map[uintptr]struct{}) {
 	if !isCollection(val) {
 		return
 	}
-	id := collectionIdentity(val)
-	if id != 0 {
+	if id := collectionIdentity(val); id != 0 {
 		if _, ok := seen[id]; ok {
 			return
 		}
 		seen[id] = struct{}{}
-		if _, existed := before[id]; !existed {
-			val.MarkSharedRef()
-		}
 	}
+	val.MarkSharedRef()
 	switch val.Kind() {
 	case KindArray:
 		for _, elem := range val.Array() {
-			exec.markInstalledCollections(elem, before, seen)
+			markSharedGraphUncharged(elem, seen)
 		}
 	case KindHash, KindObject:
 		val.RangeHashEntries(func(_ string, item Value) {
-			exec.markInstalledCollections(item, before, seen)
+			markSharedGraphUncharged(item, seen)
 		})
 	}
 }
