@@ -790,6 +790,17 @@ func TestFillSelfEmptyWindowDoesNotCloneTheReceiver(t *testing.T) {
 	}
 }
 
+// skipNoCopyPinUnderAlwaysCopyOracle skips a test that pins clear/replace not
+// copying the contents they discard. The always-copy oracle copies every
+// addressed path by design, so the divergence is expected rather than the
+// missed-publish signal the oracle exists to catch.
+func skipNoCopyPinUnderAlwaysCopyOracle(t *testing.T) {
+	t.Helper()
+	if alwaysCopyCollections {
+		t.Skip("no-copy pin: the always-copy oracle copies every addressed path by design")
+	}
+}
+
 func TestSharedClearDoesNotCopyDiscardedContents(t *testing.T) {
 	t.Parallel()
 
@@ -878,6 +889,7 @@ end
 
 func TestSharedHashClearDoesNotCopyDiscardedContents(t *testing.T) {
 	t.Parallel()
+	skipNoCopyPinUnderAlwaysCopyOracle(t)
 
 	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 400 << 10, StepQuota: Unlimited}, `
     def run()
@@ -922,6 +934,7 @@ func TestFillEmptyWindowDoesNotCopyASharedReceiver(t *testing.T) {
 
 func TestHashReplaceSelfDoesNotCopyASharedReceiver(t *testing.T) {
 	t.Parallel()
+	skipNoCopyPinUnderAlwaysCopyOracle(t)
 
 	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 400 << 10, StepQuota: Unlimited}, `
     def run()
