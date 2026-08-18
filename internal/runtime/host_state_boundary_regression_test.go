@@ -211,6 +211,11 @@ end`)
 // would detach it as script data -- losing the host's install.
 func TestHostStateBoundaryRegressionSharedSeenDoesNotShadowRootRecording(t *testing.T) {
 	t.Parallel()
+	// The host-state rule keys on wrapper identity, and this shape depends
+	// on a script write landing in the host object in place before any
+	// marking; the always-copy oracle rebinds a copy on every write, so the
+	// premise cannot hold there.
+	skipNoCopyPin(t)
 
 	svc := NewObject(map[string]Value{
 		"stamp": MarkHostBuiltin(NewBuiltin("svc.stamp", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
