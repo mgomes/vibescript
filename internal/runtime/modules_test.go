@@ -498,42 +498,6 @@ end`)
 	}
 }
 
-func TestRequireDetectsCircularExecutionForExportedModuleFunction(t *testing.T) {
-	t.Parallel()
-
-	moduleRoot := tempModuleTree(t,
-		moduleFile{path: "a.vibe", content: `def call_b(seed)
-  mod = require("b")
-  mod.call_a(seed)
-end
-`},
-		moduleFile{path: "b.vibe", content: `def call_a(seed)
-  require("a")
-  seed
-end
-`},
-	)
-	engine := mustNewEngineWithModuleRoot(t, moduleRoot)
-	script := compileScriptWithEngine(t, engine, `def export_entry()
-  mod = require("a")
-  mod.call_b
-end
-
-def run(entry)
-  entry(1)
-end`)
-
-	entry, err := script.Call(context.Background(), "export_entry", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("export_entry error = %v", err)
-	}
-	if entry.Kind() != KindFunction {
-		t.Fatalf("export_entry = %#v, want function", entry)
-	}
-
-	requireCallErrorContains(t, script, "run", []Value{entry}, CallOptions{}, "require: circular dependency detected: a -> b -> a")
-}
-
 func TestClearModuleCacheForcesModuleReload(t *testing.T) {
 	t.Parallel()
 	root := tempModuleTree(t, moduleFile{

@@ -46,7 +46,6 @@ const (
 	ParamKeyword
 	ParamRest
 	ParamKeywordRest
-	ParamBlock
 )
 
 // Param represents a function or block parameter.

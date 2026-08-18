@@ -456,7 +456,7 @@ const (
 	prefixParserWhileExpression
 	prefixParserUntilExpression
 	prefixParserRegexLiteral
-	prefixParserLambdaLiteral
+	prefixParserRemovedLambdaLiteral
 )
 
 func prefixParserKind(tt ast.TokenType) prefixParseKind {
@@ -518,7 +518,7 @@ func prefixParserKind(tt ast.TokenType) prefixParseKind {
 	case ast.TokenRegex:
 		return prefixParserRegexLiteral
 	case ast.TokenThinArrow:
-		return prefixParserLambdaLiteral
+		return prefixParserRemovedLambdaLiteral
 	default:
 		return prefixParserNone
 	}
@@ -582,8 +582,8 @@ func (p *parser) parsePrefix(kind prefixParseKind) ast.Expression {
 		return p.parseUntilExpression()
 	case prefixParserRegexLiteral:
 		return p.parseRegexLiteral()
-	case prefixParserLambdaLiteral:
-		return p.parseLambdaLiteral()
+	case prefixParserRemovedLambdaLiteral:
+		return p.parseRemovedLambdaLiteral()
 	default:
 		return nil
 	}
@@ -2307,100 +2307,17 @@ func (p *parser) parseBlockParameters() ([]ast.Param, bool) {
 	return params, true
 }
 
-// parseLambdaLiteral parses a stabby lambda: `->(a, b) { ... }`,
-// `-> { ... }`, or the do/end body form. Parameters are optional and use the
-// block-parameter grammar (identifiers with optional type annotations and
-// destructuring targets), so `->` lambdas support exactly the parameter
-// shapes blocks do. A lambda with no parameter list infers implicit
-// parameters (`it`, `_1`..`_9`) the same way a block literal does.
-func (p *parser) parseLambdaLiteral() ast.Expression {
-	pos := p.curToken.Pos
-	params := []ast.Param{}
-	hasExplicitParams := false
-	if p.peekToken.Type == ast.TokenLParen {
-		hasExplicitParams = true
-		p.nextToken()
-		var ok bool
-		params, ok = p.parseLambdaParameters()
-		if !ok {
-			return nil
-		}
-	}
-
-	var stopToken ast.TokenType
-	var stopName string
-	switch p.peekToken.Type {
-	case ast.TokenLBrace:
-		stopToken, stopName = ast.TokenRBrace, "}"
-	case ast.TokenDo:
-		stopToken, stopName = ast.TokenEnd, "end"
-	default:
-		p.errorExpected(p.peekToken, "lambda body opened with { or do")
-		return nil
-	}
-	p.nextToken()
-	p.nextToken()
-
-	inferImplicitIt := !p.isDeclaredLocal("it")
-	p.pushLocalScope(params, false)
-	if !hasExplicitParams {
-		p.declareImplicitBlockParamCandidates()
-	}
-	body := p.parseBlock(stopToken)
-	p.popLocalScope()
-	if p.curToken.Type != stopToken {
-		p.errorExpected(p.curToken, stopName)
-	}
-
-	implicitParams := []string(nil)
-	if !hasExplicitParams {
-		implicitParams = inferImplicitBlockParams(body, inferImplicitIt)
-	}
-
-	return &ast.BlockLiteral{
-		Params:         params,
-		ImplicitParams: implicitParams,
-		Body:           body,
-		Lambda:         true,
-		Position:       pos,
-	}
-}
-
-// parseLambdaParameters parses the parenthesized parameter list of a stabby
-// lambda. The current token is the opening parenthesis; on success the
-// current token is the closing parenthesis.
-func (p *parser) parseLambdaParameters() ([]ast.Param, bool) {
-	params := []ast.Param{}
-	p.nextToken()
-	if p.curToken.Type == ast.TokenRParen {
-		return params, true
-	}
-
-	param, ok := p.parseBlockParameter()
-	if !ok {
-		return nil, false
-	}
-	params = append(params, param)
-
-	for p.peekToken.Type == ast.TokenComma {
-		p.nextToken()
-		p.nextToken()
-		if p.curToken.Type == ast.TokenRParen {
-			p.addParseError(p.curToken.Pos, "trailing comma in lambda parameter list")
-			return nil, false
-		}
-		param, ok := p.parseBlockParameter()
-		if !ok {
-			return nil, false
-		}
-		params = append(params, param)
-	}
-
-	if !p.expectPeek(ast.TokenRParen) {
-		return nil, false
-	}
-
-	return params, true
+// parseRemovedLambdaLiteral reports the removal of the stabby lambda literal.
+// `->` remains the return-type annotation on a `def` signature line; in
+// expression position it used to open a callable value, which ADR-006 removed
+// because executable code that escapes its call is what makes lifetime,
+// capability, and memory accounting unpredictable. The diagnostic names both
+// replacements because the right one depends on why the author reached for a
+// lambda: a reusable transformation is a named function, and a one-off
+// transformation passed to an enumerator is a block.
+func (p *parser) parseRemovedLambdaLiteral() ast.Expression {
+	p.addParseError(p.curToken.Pos, "lambda literals are not supported; executable code is not a value. Define a named function and call it, or attach a block to the call that runs it, as in `people.map { |person| person.name }`")
+	return nil
 }
 
 func (p *parser) parseBlockParameter() (ast.Param, bool) {
@@ -2526,21 +2443,18 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 
 	p.nextToken()
 	p.lineLimitedStopSuppression++
-	p.parseCallArgument(&args, &kwargs, &expr.BlockArg)
+	p.parseCallArgument(&args, &kwargs)
 
 	for p.peekToken.Type == ast.TokenComma {
 		p.nextToken()
 		if p.peekToken.Type == ast.TokenRParen {
 			break
 		}
-		if expr.BlockArg != nil {
-			p.addParseError(p.peekToken.Pos, "block argument must be the last argument")
-		}
 		p.nextToken()
 		if len(kwargs) > 0 && !argumentMayFollowKeywords(p.curToken, p.peekToken) {
 			p.addParseError(p.curToken.Pos, "positional arguments cannot follow keyword arguments")
 		}
-		p.parseCallArgument(&args, &kwargs, &expr.BlockArg)
+		p.parseCallArgument(&args, &kwargs)
 	}
 	p.lineLimitedStopSuppression--
 
@@ -2560,9 +2474,6 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 		expr.KeywordOptionsHash = true
 	}
 	if p.canAttachPeekBlock() {
-		if expr.BlockArg != nil {
-			p.addParseError(p.peekToken.Pos, "cannot pass both a block argument and a literal block")
-		}
 		p.nextToken()
 		expr.Block = p.parseBlockLiteral()
 	}
@@ -2597,7 +2508,7 @@ func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expre
 	keywordOptionsHash := false
 
 	p.nextToken()
-	p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash, &expr.BlockArg)
+	p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash)
 
 	// TokenLBracket is excluded from isParenlessArgumentStart because a
 	// bracket after the callee is spacing-sensitive (indexing vs argument),
@@ -2609,15 +2520,12 @@ func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expre
 		(isParenlessArgumentStart(p.peekPeek.Type) || isLabelNameToken(p.peekPeek) ||
 			p.peekPeek.Type == ast.TokenAsterisk || p.peekPeek.Type == ast.TokenPower ||
 			p.peekPeek.Type == ast.TokenLBracket) {
-		if expr.BlockArg != nil {
-			p.addParseError(p.peekPeek.Pos, "block argument must be the last argument")
-		}
 		p.nextToken()
 		p.nextToken()
 		if keywordOptionsHash && !argumentMayFollowKeywords(p.curToken, p.peekToken) {
 			p.addParseError(p.curToken.Pos, "positional arguments cannot follow bare keyword arguments in parenless calls")
 		}
-		p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash, &expr.BlockArg)
+		p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash)
 	}
 
 	expr.Args = args
@@ -2640,9 +2548,6 @@ func (p *parser) callWithBlock(callee ast.Expression, block *ast.BlockLiteral) a
 	} else {
 		call = &ast.CallExpr{Callee: callee, Position: callee.Pos(), Safe: isSafeMemberCallee(callee)}
 	}
-	if call.BlockArg != nil && block != nil {
-		p.addParseError(block.Pos(), "cannot pass both a block argument and a literal block")
-	}
 	call.Block = block
 	return call
 }
@@ -2657,7 +2562,7 @@ func (p *parser) canAttachPeekBlock() bool {
 	return p.peekToken.Type == ast.TokenLBrace && p.peekToken.Pos.Line == p.curToken.Pos.Line
 }
 
-func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, blockArg *ast.Expression) {
+func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg) {
 	switch p.curToken.Type {
 	case ast.TokenAsterisk:
 		pos := p.curToken.Pos
@@ -2677,7 +2582,7 @@ func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.Keyword
 	}
 
 	if p.curToken.Type == ast.TokenAmpersand {
-		p.parseBlockPassArgument(blockArg, false)
+		p.parseRemovedBlockPassArgument(false)
 		return
 	}
 
@@ -2757,7 +2662,7 @@ func (p *parser) speculativeArgumentTypeLiteral() ast.Expression {
 	return &ast.TypeLiteral{Type: ty, Fallback: fallback, Position: pos}
 }
 
-func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, keywordOptionsHash *bool, blockArg *ast.Expression) {
+func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, keywordOptionsHash *bool) {
 	if p.curToken.Type == ast.TokenPercent {
 		expr := p.parsePercentArrayLiteralArgument()
 		if expr != nil {
@@ -2794,7 +2699,7 @@ func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]as
 	}
 
 	if p.curToken.Type == ast.TokenAmpersand {
-		p.parseBlockPassArgument(blockArg, true)
+		p.parseRemovedBlockPassArgument(true)
 		return
 	}
 
@@ -2840,26 +2745,21 @@ func (p *parser) parenlessKeywordArgumentCanUseShorthand() bool {
 	return p.peekToken.Pos.Line != p.curToken.Pos.Line
 }
 
-// parseBlockPassArgument parses a Ruby-style ampersand block argument in call
-// position: `&blk` forwards a callable as the call's block and `&:name` is
-// the symbol-to-proc shorthand. The current token is the ampersand.
-func (p *parser) parseBlockPassArgument(blockArg *ast.Expression, parenless bool) {
+// parseRemovedBlockPassArgument reports the removal of the ampersand block
+// argument. `f(&blk)` forwarded a captured block, `f(&fn)` a function value,
+// and `f(&:name)` a symbol-to-proc, all of which turn a call's block into a
+// value that outlives the call it was written on. ADR-006 removed them. The
+// operand is still consumed so the rest of the argument list keeps parsing and
+// the author sees one diagnostic rather than a cascade.
+func (p *parser) parseRemovedBlockPassArgument(parenless bool) {
 	ampPos := p.curToken.Pos
 	p.nextToken()
-	var value ast.Expression
 	if parenless {
-		value = p.parseParenlessArgumentExpression()
+		p.parseParenlessArgumentExpression()
 	} else {
-		value = p.parseExpression(lowestPrec)
+		p.parseExpression(lowestPrec)
 	}
-	if value == nil {
-		return
-	}
-	if *blockArg != nil {
-		p.addParseError(ampPos, "duplicate block argument")
-		return
-	}
-	*blockArg = value
+	p.addParseError(ampPos, "block arguments are not supported; a block is not a value. Write the block at the call that runs it, as in `words.map { |word| word.upcase }`")
 }
 
 // isLabelNameToken reports whether a token may appear immediately before a

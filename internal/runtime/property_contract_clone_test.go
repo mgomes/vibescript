@@ -156,64 +156,6 @@ func TestHostClonedPropertyContractDoesNotScaleWithMethodCount(t *testing.T) {
 	t.Logf("host clone allocated %d bytes for one ivar-param method and %d for 128", one, many)
 }
 
-// TestOrdinaryClassCrossesTheHostBoundaryIntact pins that sharing the contract
-// leaves a normal class alone: a default-profile call still returns methods
-// whose ivar params carry the contract, and the contract still shapes the
-// values behind them, keeping a bare zero-arity callable un-invoked.
-func TestOrdinaryClassCrossesTheHostBoundaryIntact(t *testing.T) {
-	t.Parallel()
-
-	script := compileScriptDefault(t, `
-def five
-  5
-end
-
-class Holder
-  property cb: function
-  property label: string
-
-  def initialize(@cb = five, @label = "held")
-  end
-
-  def invoke
-    @cb.call
-  end
-end
-
-def summary
-  holder = Holder.new
-  [holder.invoke, holder.label]
-end
-
-def build
-  Holder.new
-end
-`)
-
-	got := callScript(t, context.Background(), script, "summary", nil, CallOptions{}).Array()
-	want := []Value{NewInt(5), NewString("held")}
-	if len(got) != len(want) {
-		t.Fatalf("summary returned %d values, want %d", len(got), len(want))
-	}
-	for i, w := range want {
-		if !got[i].Equal(w) {
-			t.Fatalf("summary[%d] = %v, want %v", i, got[i], w)
-		}
-	}
-
-	inst := valueInstance(callScript(t, context.Background(), script, "build", nil, CallOptions{}))
-	if inst == nil {
-		t.Fatal("build did not return an instance")
-	}
-	if label, ok := inst.Ivars["label"]; !ok || !label.Equal(NewString("held")) {
-		t.Fatalf("cloned instance @label = %v, want \"held\"", label)
-	}
-	contract := inst.Class.Methods["initialize"].Params[0].PropertyType
-	if contract == nil || contract.Kind != TypeFunction {
-		t.Fatalf("cloned initialize's @cb param property contract = %v, want the function type", contract)
-	}
-}
-
 // widePropertyCloneSource builds one class holding a wide property type and
 // many methods whose `@x` parameters resolve to it. A property contract is
 // resolved once and shared by every parameter that names it, so the whole

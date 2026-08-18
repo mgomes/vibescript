@@ -130,7 +130,7 @@ func TestMemberContractRuntimeParity(t *testing.T) {
 // calling the returned value). Callable members probe a valid minimum-arity
 // call, the bare read, arity outside the contract on both sides, keyword
 // and literal-block handling in whichever direction the contract declares,
-// and forwarded-block rejection where the contract rejects blocks.
+// rejection where the contract rejects blocks.
 func contractParityProbes(contract memberContract, receiver parityReceiver, args []string) []parityProbe {
 	recv := receiver.literal
 	if receiver.paramType != "" {
@@ -157,8 +157,9 @@ func contractParityProbes(contract memberContract, receiver parityReceiver, args
 	bare := parityProbe{label: "bare-read", body: "r = " + member + "\n  r"}
 	switch {
 	case !contract.call.autoInvoke:
-		// Without auto-invoke a bare read yields the bound builtin itself.
-		bare.wantKind, bare.checkKind = KindBuiltin, true
+		// Without auto-invoke a bare read used to yield the bound builtin;
+		// callable values are removed, so the read itself is the error.
+		bare.wantWarn, bare.wantError = true, true
 	case contract.call.minArgs > 0:
 		// Auto-invoking without the required arguments must fail on both
 		// sides.
@@ -188,13 +189,6 @@ func contractParityProbes(contract memberContract, receiver parityReceiver, args
 		label: "block", body: call(valid...) + " { 1 }",
 		wantWarn: contract.call.rejectBlock, wantError: contract.call.rejectBlock, needsClass: needsClass,
 	})
-	if contract.call.rejectBlock {
-		probes = append(probes, parityProbe{
-			label:    "forwarded-block",
-			body:     "fn = lambda { 1 }\n  " + call(append(slices.Clone(valid), "&fn")...),
-			wantWarn: true, wantError: true, needsClass: needsClass,
-		})
-	}
 	return probes
 }
 

@@ -272,82 +272,32 @@ func hashMemberAssignmentKey(obj Value, property string) Value {
 	return NewSymbol(property)
 }
 
-// functionMemberNames lists the members exposed on script function
-// values. Keep it in sync with functionMember; it feeds "did you mean"
-// suggestions and editor completion.
-var functionMemberNames = []string{"call"}
-
-var blockMemberNames = []string{"call", "lambda?"}
-
-const (
-	functionCallBuiltinName = "function.call"
-	blockCallBuiltinName    = "block.call"
-)
-
-// functionMember resolves member access on a script function value. Only
-// `call` is supported: it returns a builtin that invokes the underlying
-// function with the supplied args, kwargs, and block, mirroring direct
-// `fn(...)` invocation (including its nil receiver) for Ruby-style
-// `fn.call(...)` parity.
+// functionMember rejects member access on a script function value. A function
+// is not a value in this language (ADR-006), so `fn.call` no longer exists;
+// the only way to run a function is to name it at the call.
 func (exec *Execution) functionMember(obj Value, property string, pos Position) (Value, error) {
-	if property != "call" {
-		return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, functionMemberNames))
+	name := "function"
+	if fn := valueFunction(obj); fn != nil && fn.Name != "" {
+		name = fn.Name
 	}
-	return newFunctionCallAlias(obj, pos), nil
+	return NewNil(), exec.errorAt(pos, "a function has no member %s; call %s(...) directly", property, name)
 }
 
-func newFunctionCallAlias(obj Value, pos Position) Value {
-	fn := valueFunction(obj)
-	caller := NewCapturingBuiltin(functionCallBuiltinName, func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-		return exec.invokeCallable(obj, NewNil(), args, kwargs, block, pos)
-	}, obj)
-	callerBuiltin := valueBuiltin(caller)
-	callerBuiltin.AutoInvoke = true
-	callerBuiltin.OptionsHashTarget = fn
-	callerBuiltin.DirectCallAlias = true
-	callerBuiltin.DirectCallAliasPos = pos
-	return caller
+// blockMember rejects member access on a block. A block is call-attached
+// syntax, not a value: it runs where it is written and is invoked with
+// `yield`.
+func (exec *Execution) blockMember(_ Value, property string, pos Position) (Value, error) {
+	return NewNil(), exec.errorAt(pos, "a block has no member %s; run the block with yield", property)
 }
 
-func (exec *Execution) blockMember(obj Value, property string, pos Position) (Value, error) {
-	switch property {
-	case "call":
-		return newBlockCallAlias(obj, pos), nil
-	case "lambda?":
-		blk := valueBlock(obj)
-		return NewBool(blk != nil && blk.lambda), nil
-	default:
-		return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, blockMemberNames))
-	}
-}
-
-// builtinCallableMember resolves member access on a raw builtin value — a
-// bound method reference captured under a callable type contract. Only `call`
-// is supported, mirroring Ruby's Method#call and the function/block aliases,
-// so f.call and f.call(...) route through the same invocation as f(...).
+// builtinCallableMember rejects member access on a builtin. Capability and
+// library methods may be called but not detached as values.
 func (exec *Execution) builtinCallableMember(obj Value, property string, pos Position) (Value, error) {
-	if property != "call" {
-		return NewNil(), exec.errorAt(pos, "unsupported member access on builtin")
+	name := "method"
+	if builtin := valueBuiltin(obj); builtin != nil && builtin.Name != "" {
+		name = builtin.Name
 	}
-	caller := NewCapturingBuiltin("method.call", func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-		return exec.invokeCallable(obj, NewNil(), args, kwargs, block, pos)
-	}, obj)
-	callerBuiltin := valueBuiltin(caller)
-	callerBuiltin.AutoInvoke = true
-	callerBuiltin.DirectCallAlias = true
-	callerBuiltin.DirectCallAliasPos = pos
-	return caller, nil
-}
-
-func newBlockCallAlias(obj Value, pos Position) Value {
-	caller := NewCapturingBuiltin(blockCallBuiltinName, func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-		return exec.invokeCallable(obj, NewNil(), args, kwargs, block, pos)
-	}, obj)
-	callerBuiltin := valueBuiltin(caller)
-	callerBuiltin.AutoInvoke = true
-	callerBuiltin.DirectCallAlias = true
-	callerBuiltin.DirectCallAliasPos = pos
-	return caller
+	return NewNil(), exec.errorAt(pos, "a method has no member %s; call %s(...) directly", property, name)
 }
 
 func (exec *Execution) classMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
@@ -640,8 +590,6 @@ func ownMemberNames() map[string][]string {
 		"duration": durationMemberNames,
 		"time":     timeMemberNames,
 		"range":    rangeMemberNames,
-		"function": functionMemberNames,
-		"block":    blockMemberNames,
 		"nil":      nilMemberNames,
 		"bool":     boolMemberNames,
 		"regex":    regexMemberNames,

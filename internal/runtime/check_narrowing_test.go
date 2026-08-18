@@ -577,21 +577,9 @@ end
 `,
 		},
 		{
-			name: "untyped hash can hold a callable nil? override",
+			name: "untyped hash nil? stays conservative",
 			source: `
 def f(value: hash?)
-  if value.nil?
-    y = -value
-  end
-end
-`,
-		},
-		{
-			// A `?`-suffixed bare label now marks an optional field, so a
-			// field literally named nil? takes the string-key spelling.
-			name: "shape can declare a callable nil? override",
-			source: `
-def f(value: { "nil?": function }?)
   if value.nil?
     y = -value
   end

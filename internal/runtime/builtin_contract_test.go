@@ -15,7 +15,7 @@ import (
 func TestBuiltinStructSizeIsPinned(t *testing.T) {
 	t.Parallel()
 
-	const want = 144
+	const want = 120
 	if got := unsafe.Sizeof(Builtin{}); got != uintptr(want) {
 		t.Errorf("unsafe.Sizeof(Builtin{}) = %d, want %d; this feeds estimatedBuiltinBytes, "+
 			"so changing it reprices every reachable builtin and moves memory golden "+

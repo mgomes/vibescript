@@ -31,26 +31,6 @@ func TestTimeEqlPredicate(t *testing.T) {
 	}
 }
 
-// TestTimeEqlStoredBuiltinPredicate confirms the stored-member-call path (where
-// the bound builtin is invoked separately from the receiver) follows the same
-// predicate contract as the direct call path.
-func TestTimeEqlStoredBuiltinPredicate(t *testing.T) {
-	t.Parallel()
-	script := compileScript(t, `
-    def run()
-      probe = Time.utc(2024, 1, 1).eql?
-      [probe(Time.utc(2024, 1, 1)), probe(Time.utc(2024, 1, 2)), probe(1), probe("2024")]
-    end
-    `)
-	result := callFunc(t, script, "run", nil)
-	compareArrays(t, result, []Value{
-		NewBool(true),
-		NewBool(false),
-		NewBool(false),
-		NewBool(false),
-	})
-}
-
 // TestTimeEqlArityError verifies that supplying the wrong number of arguments to
 // Time#eql? is still an argument-count error rather than a predicate result.
 func TestTimeEqlArityError(t *testing.T) {
@@ -98,25 +78,6 @@ func TestDurationEqlPredicate(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestDurationEqlStoredBuiltinPredicate confirms the stored-member-call path for
-// Duration#eql? follows the same predicate contract as the direct call path.
-func TestDurationEqlStoredBuiltinPredicate(t *testing.T) {
-	t.Parallel()
-	script := compileScript(t, `
-    def run()
-      probe = 1.hour.eql?
-      [probe(1.hour), probe(2.hours), probe(1), probe("1h")]
-    end
-    `)
-	result := callFunc(t, script, "run", nil)
-	compareArrays(t, result, []Value{
-		NewBool(true),
-		NewBool(false),
-		NewBool(false),
-		NewBool(false),
-	})
 }
 
 // TestDurationEqlArityError verifies that supplying the wrong number of

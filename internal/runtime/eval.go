@@ -219,7 +219,10 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	case *CallExpr:
 		return exec.evalCallExpr(e, env)
 	case *BlockLiteral:
-		return exec.evalBlockLiteral(e, env)
+		// A block only ever appears in a call's block position, where
+		// evalCallBlock evaluates it. Reaching it as a standalone expression
+		// would make it a value, which the language does not have.
+		return NewNil(), exec.errorAt(e.Pos(), "a block cannot be used as a value; write it on the call that runs it")
 	case *YieldExpr:
 		return exec.evalYield(e, env)
 	case *ForStmt:
@@ -1644,7 +1647,6 @@ func (exec *Execution) matchIfExpressionBranch(expr *IfExpr, env *Env) (Expressi
 func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, error) {
 	blockValue := newBlock(block.Params, block.ImplicitParams, block.Body, env)
 	blk := valueBlock(blockValue)
-	blk.lambda = block.Lambda
 	blk.homeReturnToken = exec.currentBlockHomeToken()
 	if ctx := exec.currentModuleContext(); ctx != nil && ctx.script != nil {
 		blk.owner = ctx.script
@@ -1873,12 +1875,6 @@ func blockPositionalArity(blk *Block) int {
 	if blk == nil {
 		return 0
 	}
-	// A forwarding block reports arity 1 so hash iterators hand it each
-	// entry as a single [key, value] pair, matching Ruby, where a
-	// symbol-to-proc or forwarded method receives the collapsed pair.
-	if isInvocable(blk.forward) {
-		return 1
-	}
 	if len(blk.Params) == 0 {
 		return implicitBlockParamArity(blk.ImplicitParams)
 	}
@@ -2033,6 +2029,13 @@ func (exec *Execution) callBlockValue(block Value, args []Value, pos Position) (
 }
 
 func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge *blockBindCharge, pos Position, chargedRoots ...Value) (Value, error) {
+	// A block belongs to the call it was written on. Invoking it later would
+	// run script code against a frame that has already unwound -- the shape
+	// ADR-006 exists to remove -- so the violation is a hard error naming the
+	// rule rather than a documented promise the runtime cannot check.
+	if blk.isRetired() {
+		return NewNil(), exec.errorAt(pos, "block invoked after the call it was given to returned; a block may only run while that call is on the stack")
+	}
 	// Pay for the bind charge's construction walk before running the callback it
 	// was built for. The walk is recorded where it happens rather than charged
 	// there, because that site cannot return an error, and settling it in each
@@ -2057,17 +2060,6 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 		savedSections := exec.accumMeteredSections
 		exec.accumMeteredSections = 0
 		defer func() { exec.accumMeteredSections = savedSections }()
-	}
-	if isInvocable(blk.forward) {
-		if err := charge.begin(args, chargedRoots...); err != nil {
-			return NewNil(), err
-		}
-		return exec.invokeCallable(blk.forward, NewNil(), args, nil, NewNil(), pos)
-	}
-	if blk.lambda {
-		if err := exec.checkLambdaArity(blk, len(args), pos); err != nil {
-			return NewNil(), err
-		}
 	}
 	exec.pushModuleContext(moduleContext{
 		key:    blk.moduleKey,
@@ -2096,12 +2088,7 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 			exec.releaseLoopScratch(delta)
 		}()
 	}
-	// A lambda binds its arguments strictly, like a method: it never
-	// auto-splats a single array argument across multiple parameters.
-	bindArgs := args
-	if !blk.lambda {
-		bindArgs = rubyBlockBindArgs(blk.Params, args)
-	}
+	bindArgs := rubyBlockBindArgs(blk.Params, args)
 	for i, param := range blk.Params {
 		var val Value
 		if i < len(bindArgs) {
@@ -2145,34 +2132,13 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 	}
 	// The block's lexical home scopes any literal created while the body runs:
 	// a nested block returns from the same method this block does, even when
-	// yield executes the body inside a callee frame. A lambda instead opens
-	// its own invocation scope, like a method call: a literal created in the
-	// lambda body homes to this lambda invocation, so a return from such a
-	// nested block ends the lambda call rather than the enclosing method.
-	var lambdaToken uint64
-	if blk.lambda {
-		lambdaToken = exec.pushReturnToken()
-	} else {
-		exec.pushBlockHomeToken(blk.homeReturnToken)
-	}
+	// yield executes the body inside a callee frame.
+	exec.pushBlockHomeToken(blk.homeReturnToken)
 	exec.blockDepth++
-	if blk.lambda {
-		exec.lambdaDepth++
-	}
 	val, returned, err := exec.evalLocalScopeStatements(blk.Body, blockEnv)
-	if blk.lambda {
-		exec.lambdaDepth--
-	}
 	exec.blockDepth--
-	if blk.lambda {
-		exec.popReturnToken()
-	} else {
-		exec.popBlockHomeToken()
-	}
+	exec.popBlockHomeToken()
 	val, returned, err = consumeFunctionReturnSignal(val, returned, err)
-	if blk.lambda {
-		return exec.finishLambdaCall(blockEnv, val, returned, err, lambdaToken, pos)
-	}
 	if err != nil {
 		if errors.Is(err, errRescueRetry) {
 			return NewNil(), exec.localJumpErrorAt(pos, "retry cannot cross call boundary")
@@ -2196,58 +2162,6 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 		}
 	}
 	return blockEnv.settleArrayAppendResult(val), nil
-}
-
-// finishLambdaCall converts the outcome of a lambda body into the lambda's
-// return value, mirroring Ruby's lambda semantics where return, break, and
-// next are all local to the lambda. A non-local return signal targeted at
-// this lambda invocation (a return from a block nested in the lambda body)
-// lands here as well; a signal for an outer invocation keeps propagating
-// untouched, preserving non-local-return transparency.
-func (exec *Execution) finishLambdaCall(blockEnv *Env, val Value, returned bool, err error, token uint64, pos Position) (Value, error) {
-	if err != nil {
-		if sig := matchNonLocalReturn(err, token); sig != nil {
-			return sig.value, nil
-		}
-		if errors.Is(err, errLoopBreak) {
-			if breakVal, ok := loopBreakValue(err); ok {
-				return breakVal, nil
-			}
-			return NewNil(), nil
-		}
-		if errors.Is(err, errLoopNext) {
-			if nextVal, ok := loopNextValue(err); ok {
-				return nextVal, nil
-			}
-			return NewNil(), nil
-		}
-		if errors.Is(err, errRescueRetry) {
-			return NewNil(), exec.localJumpErrorAt(pos, "retry cannot cross call boundary")
-		}
-		return NewNil(), err
-	}
-	_ = returned // an explicit return in a lambda body is a local return
-	return blockEnv.settleArrayAppendResult(val), nil
-}
-
-// checkLambdaArity enforces the strict positional arity of a lambda call.
-// Lambda parameters come from the block-parameter grammar, which has no
-// defaults or rest parameters, so the expected count is exact. A lambda with
-// no explicit parameter list takes its arity from its inferred implicit
-// parameters (`it`, `_1`..`_9`).
-func (exec *Execution) checkLambdaArity(blk *Block, argCount int, pos Position) error {
-	expected := len(blk.Params)
-	if len(blk.Params) == 0 {
-		expected = implicitBlockParamArity(blk.ImplicitParams)
-	}
-	if argCount == expected {
-		return nil
-	}
-	noun := "arguments"
-	if expected == 1 {
-		noun = "argument"
-	}
-	return exec.argumentErrorAt(pos, "lambda expects %d %s, got %d", expected, noun, argCount)
 }
 
 // blockBodyPos anchors a block-level diagnostic to the block's first
@@ -2275,7 +2189,7 @@ func rubyBlockPositionalBindCount(params []Param) int {
 		switch param.Kind {
 		case ParamNormal, ParamRest:
 			positional++
-		case ParamKeyword, ParamKeywordRest, ParamBlock:
+		case ParamKeyword, ParamKeywordRest:
 			continue
 		}
 	}
@@ -2400,9 +2314,6 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 			if expressionCapturesCurrentEnv(kw.Value) {
 				return true
 			}
-		}
-		if e.BlockArg != nil && expressionCapturesCurrentEnv(e.BlockArg) {
-			return true
 		}
 		return false
 	case *TypeLiteral:
@@ -4595,7 +4506,7 @@ func expressionContainsBypassableIdentifierCall(expr Expression, name string) bo
 }
 
 func callUsesBypassableIdentifierResolution(call *CallExpr) bool {
-	return call.Parenthesized || len(call.Args) > 0 || len(call.KwArgs) > 0 || call.Block != nil || call.BlockArg != nil
+	return call.Parenthesized || len(call.Args) > 0 || len(call.KwArgs) > 0 || call.Block != nil
 }
 
 func stringPartsContainBypassableIdentifierCall(parts []StringPart, name string) bool {
@@ -5082,13 +4993,11 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 	case *UntilStmt:
 		return exec.evalUntilStatement(s, env)
 	case *BreakStmt:
-		// A lambda body admits break like a loop does: the lambda call is the
-		// boundary the break terminates (finishLambdaCall converts it into the
-		// lambda's return value). A break that instead crosses a call boundary
-		// still reports "break cannot cross call boundary" there.
 		// A block body admits break: it terminates the call the block was
-		// passed to, which absorbBlockBreak turns into that call's value.
-		if exec.loopDepth == 0 && exec.lambdaDepth == 0 && exec.blockDepth == 0 {
+		// passed to, which absorbBlockBreak turns into that call's value. A
+		// break that instead crosses a call boundary still reports "break
+		// cannot cross call boundary" there.
+		if exec.loopDepth == 0 && exec.blockDepth == 0 {
 			return NewNil(), false, exec.errorAt(s.Pos(), "%s", breakOutsideLoopMessage())
 		}
 		if s.Value != nil {

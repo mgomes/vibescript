@@ -1548,7 +1548,6 @@ func localNames(statements []ast.Statement) []string {
 			for _, arg := range e.KwArgs {
 				walkExpr(arg.Value)
 			}
-			walkExpr(e.BlockArg)
 		case *ast.SplatArg:
 			walkExpr(e.Value)
 		case *ast.MemberExpr:

@@ -153,6 +153,7 @@ func NewEngine(cfg Config) (*Engine, error) {
 	}
 
 	registerCoreBuiltins(engine)
+	registerRemovedCallableFences(engine)
 	registerDataBuiltins(engine)
 	registerHashBuiltins(engine)
 	registerMathBuiltins(engine)
@@ -358,6 +359,36 @@ func (e *Engine) builtinCallSpec(name string) (staticCallSpec, bool) {
 	return *builtin.checkSpec, true
 }
 
+// builtinValueReadFails reports a registered builtin ("loop") or builtin
+// namespace member ("Regexp.union") that is callable but neither auto-invokes
+// on a bare read nor publishes a static contract. Calls to such a builtin
+// stay unchecked, but a bare read of it always fails at runtime: a callable
+// is not a value (ADR-006), so the checker can report the read itself.
+func (e *Engine) builtinValueReadFails(name string) bool {
+	if e == nil {
+		return false
+	}
+	e.builtinsMu.RLock()
+	defer e.builtinsMu.RUnlock()
+
+	root, member, qualified := strings.Cut(name, ".")
+	val, ok := e.builtins[root]
+	if !ok {
+		return false
+	}
+	if qualified {
+		if val.Kind() != KindObject {
+			return false
+		}
+		val, ok = val.HashEntryMap()[member]
+		if !ok {
+			return false
+		}
+	}
+	builtin := valueBuiltin(val)
+	return builtin != nil && !builtin.AutoInvoke && builtin.checkSpec == nil
+}
+
 // Builtin contract type fragments shared by the registration tables below.
 // Every type here mirrors a kind check in the builtin's implementation; a
 // contract that overclaims turns valid scripts into checker false positives.
@@ -372,9 +403,7 @@ func registerCoreBuiltins(engine *Engine) {
 	for _, builtin := range []builtinDefinition{
 		{name: "assert", fn: builtinAssert, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: -1, resultType: checkTypeNil}},
 		{name: "format", fn: builtinFormat, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: -1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString}, resultType: checkTypeString}},
-		{name: "lambda", fn: builtinLambda, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, usesBlock: true, resultType: checkTypeFunction}},
 		{name: "loop", fn: builtinLoop},
-		{name: "proc", fn: builtinProc, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, usesBlock: true, resultType: checkTypeFunction}},
 		{name: "money", fn: builtinMoney, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: 1, paramTypes: []*TypeExpr{checkTypeString}, resultType: checkTypeMoney}},
 		{name: "money_cents", fn: builtinMoneyCents, checkSpec: &staticCallSpec{minArgs: 2, maxArgs: 2, paramTypes: []*TypeExpr{checkTypeNumber, checkTypeString}, resultType: checkTypeMoney}},
 		{name: "p", fn: builtinP},
@@ -393,6 +422,34 @@ func registerCoreBuiltins(engine *Engine) {
 	} {
 		engine.registerDefaultBuiltin(builtin)
 	}
+}
+
+// registerRemovedCallableFences keeps the removed callable constructors --
+// proc, lambda, and Proc.new -- resolvable so a script that reaches for one
+// gets the teaching error the parser gives the -> literal instead of
+// "undefined variable lambda". Each fence auto-invokes so a bare read fails
+// the same way a call does, and its spec carries the same message for the
+// checker.
+func registerRemovedCallableFences(engine *Engine) {
+	for _, name := range []string{"proc", "lambda"} {
+		engine.registerDefaultBuiltin(builtinDefinition{
+			name:       name,
+			fn:         builtinRemovedCallable(name),
+			autoInvoke: true,
+			checkSpec:  &staticCallSpec{minArgs: 0, maxArgs: -1, removedMessage: removedCallableMessage(name)},
+		})
+	}
+	// Proc itself is a fence too, not a namespace object: an object would
+	// read as a value (`x = Proc`), which is exactly what the removal
+	// forbids. Auto-invocation makes the bare read, the member form
+	// (Proc.new resolves the receiver first), and any call all land on the
+	// same teaching error.
+	engine.registerDefaultBuiltin(builtinDefinition{
+		name:       "Proc",
+		fn:         builtinRemovedCallable("Proc.new"),
+		autoInvoke: true,
+		checkSpec:  &staticCallSpec{minArgs: 0, maxArgs: -1, removedMessage: removedCallableMessage("Proc.new")},
+	})
 }
 
 // Builtins returns a copy of the registered builtin map.
@@ -496,8 +553,6 @@ func cloneBuiltinValue(val Value) Value {
 		clonedBuiltin.SignatureParams = builtin.SignatureParams
 		clonedBuiltin.OptionsHashTarget = builtin.OptionsHashTarget
 		clonedBuiltin.ReturnTypeTarget = builtin.ReturnTypeTarget
-		clonedBuiltin.DirectCallAlias = builtin.DirectCallAlias
-		clonedBuiltin.DirectCallAliasPos = builtin.DirectCallAliasPos
 		clonedBuiltin.CapturedValues = builtin.CapturedValues
 		clonedBuiltin.Capability = builtin.Capability
 		clonedBuiltin.hostDriven = builtin.hostDriven
@@ -613,9 +668,6 @@ func registerDataBuiltins(engine *Engine) {
 		"parse":     newCheckedBuiltin("JSON.parse", builtinJSONParse, staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString}}),
 		"parse_as":  newCheckedBuiltin("JSON.parse_as", builtinJSONParseAs, staticCallSpec{minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true}),
 		"stringify": newCheckedBuiltin("JSON.stringify", builtinJSONStringify, staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, resultType: checkTypeString}),
-	})
-	engine.builtins["Proc"] = NewObject(map[string]Value{
-		"new": newCheckedAutoBuiltin("Proc.new", builtinProc, staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, usesBlock: true, resultType: checkTypeFunction}),
 	})
 	engine.builtins["Regex"] = NewObject(map[string]Value{
 		"match":       newCheckedBuiltin("Regex.match", builtinRegexMatch, staticCallSpec{minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString, checkTypeString}, resultType: builtinTypeNullableString}),

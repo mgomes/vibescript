@@ -20,8 +20,6 @@ const (
 	// ParamKeywordRest is a double-splat parameter (def f(**opts)) that
 	// collects the remaining keyword arguments into a hash.
 	ParamKeywordRest = runtime.ParamKeywordRest
-	// ParamBlock is an explicit block parameter (def f(&blk)).
-	ParamBlock = runtime.ParamBlock
 )
 
 // CallOptions configures globals, capabilities, and other settings for a script invocation.

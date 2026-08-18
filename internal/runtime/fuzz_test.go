@@ -1247,11 +1247,6 @@ func validateFuzzExpression(context string, expr Expression) error {
 				return err
 			}
 		}
-		if e.BlockArg != nil {
-			if err := validateFuzzExpression(context+".block_arg", e.BlockArg); err != nil {
-				return err
-			}
-		}
 		return validateFuzzBlockLiteral(context+".block", e.Block)
 	case *MemberExpr:
 		if e.Property == "" {

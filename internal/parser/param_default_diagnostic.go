@@ -5,7 +5,7 @@ import (
 )
 
 // ordinaryParamOrderMessage explains an ordinary parameter that follows a
-// rest, keyword, keyword rest, or block capture parameter.
+// rest, keyword, or keyword rest parameter.
 //
 // One spelling reaches here that is not an ordering mistake at all. `name:`
 // followed by a bare identifier parses as a type annotation, which makes the
@@ -21,7 +21,7 @@ import (
 // the caller can hand both to addParseError, which builds the message only if
 // the error budget still has room for it.
 func ordinaryParamOrderMessage(param ast.Param, earlier []ast.Param) (string, []any) {
-	const orderMessage = "ordinary parameters must precede rest, keyword, keyword rest, and block capture parameters"
+	const orderMessage = "ordinary parameters must precede rest, keyword, and keyword rest parameters"
 	name, ok := bareIdentifierTypeName(param.Type)
 	if !ok || !namesEarlierParam(name, earlier) {
 		return orderMessage, nil

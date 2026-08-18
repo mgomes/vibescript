@@ -47,7 +47,15 @@ type markdownSnippetPolicy struct {
 	Reason string
 }
 
-var markdownSnippetPolicies []markdownSnippetPolicy
+var markdownSnippetPolicies = []markdownSnippetPolicy{
+	{
+		Path:   "docs/adr/006-slim-language-for-predictable-sandboxing.md",
+		Line:   102,
+		Hash:   "8d38d227c4e0",
+		Mode:   markdownSnippetKnownFailure,
+		Reason: "the ADR's Resulting Language Shape fence deliberately shows the removed stabby lambda beside a valid block, annotated `# compile error`; it documents the removal rather than demonstrating working code",
+	},
+}
 
 func TestMarkdownVibeSnippetsAreCovered(t *testing.T) {
 	t.Parallel()

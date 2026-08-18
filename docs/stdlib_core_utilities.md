@@ -505,9 +505,8 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   and other values by equality. The optional block transforms each match.
 - `grep_v(pattern) { |item| } -> array` – elements that do not match `pattern`,
   with the same matching rules and optional transform block as `grep`.
-- `find(ifnone = nil) { |item| } -> value | nil` – first element matching the
-  block; when no element matches and `ifnone` is a callable, returns
-  `ifnone.call`.
+- `find { |item| } -> value | nil` – first element matching the block, or
+  `nil` when none does; write the miss handling after the call.
 - `find_index(value) -> int | nil` / `find_index { |item| } -> int | nil` –
   index of the first element equal to `value`, or the first index whose block is
   truthy. Alias for `index`; pass a value or a block, never both.

@@ -70,49 +70,6 @@ func TestFunctionCaptureParametersValidateProducedValues(t *testing.T) {
 	}, "argument opts expected hash<string, int>")
 }
 
-func TestFunctionBlockCaptureParameter(t *testing.T) {
-	t.Parallel()
-	script := compileScript(t, `
-    def block_missing(&block)
-      block == nil
-    end
-
-    def block_present(&block: any)
-      block != nil
-    end
-
-    def run_missing
-      block_missing()
-    end
-
-    def run_present
-      block_present do
-        1
-      end
-    end
-
-    def yield_through(&block)
-      yield 4
-    end
-
-    def run_yield
-      yield_through do |value|
-        value + 1
-      end
-    end
-    `)
-
-	if got := callFunc(t, script, "run_missing", nil); !got.Equal(NewBool(true)) {
-		t.Fatalf("run_missing() = %#v, want true", got)
-	}
-	if got := callFunc(t, script, "run_present", nil); !got.Equal(NewBool(true)) {
-		t.Fatalf("run_present() = %#v, want true", got)
-	}
-	if got := callFunc(t, script, "run_yield", nil); !got.Equal(NewInt(5)) {
-		t.Fatalf("run_yield() = %#v, want 5", got)
-	}
-}
-
 func TestParenlessYieldMultipleArguments(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

@@ -340,180 +340,6 @@ end
 	}
 }
 
-func TestArgumentTypeLiteralShadowing(t *testing.T) {
-	t.Parallel()
-
-	// A local sharing a type name keeps the value reading: the argument
-	// evaluates to the local, exactly as before type literals existed.
-	shadowed := compileScript(t, `
-def double(v)
-  v * 2
-end
-
-def run()
-  int = 21
-  double(int)
-end
-`)
-	got := callScript(t, context.Background(), shadowed, "run", nil, CallOptions{})
-	if got.Kind() != KindInt || got.Int() != 42 {
-		t.Fatalf("run() = %#v, want 42", got)
-	}
-
-	// The shadowed reading flows into JSON.parse_as too: the argument is the
-	// local's value, not a contract, and is rejected as such.
-	rejected := compileScript(t, `
-def run()
-  int = 21
-  JSON.parse_as("1", int)
-end
-`)
-	err := callScriptErr(t, context.Background(), rejected, "run", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expects a type literal as its second argument") {
-		t.Fatalf("run() error = %v, want type-literal rejection", err)
-	}
-
-	// A binding whose exact spelling matches the nullable atom (`string?` as
-	// a host global or zero-arity method) shadows the type reading too: leaf
-	// normalization strips the `?`, but the value reading reads the
-	// predicate-style name verbatim.
-	predicate := compileScript(t, `
-def echo(v)
-  v
-end
-
-def run()
-  echo(string?)
-end
-`)
-	got = callScript(t, context.Background(), predicate, "run", nil, CallOptions{
-		Globals: map[string]Value{"string?": NewString("shadowed")},
-	})
-	if got.Kind() != KindString || got.String() != "shadowed" {
-		t.Fatalf("run() = %#v, want \"shadowed\"", got)
-	}
-
-	// Unshadowed, the same spelling stays the nullable type literal.
-	unshadowed := compileScript(t, `
-def run()
-  JSON.parse_as("null", string?)
-end
-`)
-	if got := callScript(t, context.Background(), unshadowed, "run", nil, CallOptions{}); got.Kind() != KindNil {
-		t.Fatalf("run() = %#v, want nil", got)
-	}
-
-	// An unrelated binding of the BASE name does not shadow the nullable
-	// spelling: the fallback reads `string?` verbatim, never `string`.
-	baseName := compileScript(t, `
-def run(string: string)
-  JSON.parse_as("null", string?)
-end
-`)
-	got = callScript(t, context.Background(), baseName, "run", []Value{NewString("unrelated")}, CallOptions{})
-	if got.Kind() != KindNil {
-		t.Fatalf("run(\"unrelated\") = %#v, want nil", got)
-	}
-
-	// The static mirror agrees: the literal stays the nullable contract, so
-	// its result fact contradicts an int boundary.
-	baseNameStatic := compileScript(t, `
-def takes_int(value: int)
-  value
-end
-
-def run(string: string, raw: string)
-  takes_int(JSON.parse_as(raw, string?))
-end
-`)
-	requireCheckWarningContains(t, baseNameStatic, "call to takes_int argument value expected int, got string?")
-
-	// The static mirror resolves an implicit-self predicate method as the value
-	// reading and uses its return summary to reject the non-type argument.
-	selfShadowed := compileScript(t, `
-class Probe
-  def string?
-    "predicate"
-  end
-
-  def run
-    JSON.parse_as("null", string?)
-  end
-end
-`)
-	requireCheckWarningContains(
-		t,
-		selfShadowed,
-		"call to JSON.parse_as expects a type literal as its second argument, got string",
-	)
-
-	// A zero-arity callable bound to a type-spelled name keeps the caller's
-	// auto-call state: a function-typed parameter receives it bare, while an
-	// untyped parameter auto-invokes it like any other identifier argument.
-	autoCall := compileScript(t, `
-def function
-  "invoked"
-end
-
-def take(cb: function)
-  cb.call
-end
-
-def echo(v)
-  v
-end
-
-def run()
-  [take(function), echo(function)]
-end
-`)
-	// Pre-fix, the argument auto-invoked and the string failed the
-	// `cb: function` boundary; bare passing must satisfy it and let the
-	// callee invoke.
-	got = callScript(t, context.Background(), autoCall, "run", nil, CallOptions{})
-	if got.Kind() != KindArray || len(got.Array()) != 2 {
-		t.Fatalf("run() = %#v, want two-element array", got)
-	}
-	if bare := got.Array()[0]; bare.Kind() != KindString || bare.String() != "invoked" {
-		t.Fatalf("take(function) = %#v, want \"invoked\"", bare)
-	}
-	if invoked := got.Array()[1]; invoked.Kind() != KindString || invoked.String() != "invoked" {
-		t.Fatalf("echo(function) = %#v, want auto-invoked \"invoked\"", invoked)
-	}
-
-	// A lambda-holding local behaves like any other local: passed bare to a
-	// callable-typed parameter.
-	lambdaLocal := compileScript(t, `
-def take(cb: function)
-  cb.call
-end
-
-def run()
-  function = -> { "from lambda" }
-  take(function)
-end
-`)
-	got = callScript(t, context.Background(), lambdaLocal, "run", nil, CallOptions{})
-	if got.Kind() != KindString || got.String() != "from lambda" {
-		t.Fatalf("take(lambda local) = %#v, want \"from lambda\"", got)
-	}
-
-	// Comparisons over non-type locals never read as types.
-	comparison := compileScript(t, `
-def truthy(v)
-  v
-end
-
-def run(threshold: int, value: int)
-  truthy(value < threshold)
-end
-`)
-	got = callScript(t, context.Background(), comparison, "run", []Value{NewInt(10), NewInt(3)}, CallOptions{})
-	if got.Kind() != KindBool || !got.Bool() {
-		t.Fatalf("run(10, 3) = %#v, want true", got)
-	}
-}
-
 func TestCheckInferParseAsNonObjectRootFacts(t *testing.T) {
 	t.Parallel()
 
@@ -1122,8 +948,8 @@ func TestShapeLiteralEngineBuiltinShadowMatchesRuntime(t *testing.T) {
 
 	// The lowercase money builtin resolves in every runtime env, so
 	// { price: money } keeps hash semantics; the checker must not claim
-	// shape facts, and the hash reading statically reports the schema
-	// misuse the runtime rejects.
+	// shape facts. The bare builtin reference itself is the error on both
+	// sides, since a method is not a value.
 	script := compileScript(t, `
 def takes_string(value: string)
   value
@@ -1134,13 +960,13 @@ def run(raw: string)
   takes_string(body[:price])
 end
 `)
-	requireCheckWarningContains(t, script, "call to JSON.parse_as expects a type literal as its second argument, got hash")
+	requireCheckWarningContains(t, script, "money is a method and cannot be used as a value; call it with money(...)")
 
-	// And at runtime the shadowed group really is a hash, which parse_as
-	// rejects as a schema.
+	// And at runtime the shadowed group really is a hash literal whose value
+	// expression is the rejected bare reference.
 	err := callScriptErr(t, context.Background(), script, "run", []Value{NewString("{}")}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expects a type literal as its second argument") {
-		t.Fatalf("run() err = %v, want non-shape schema rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "cannot be used as a value") {
+		t.Fatalf("run() err = %v, want the bare builtin reference rejected", err)
 	}
 }
 

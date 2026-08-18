@@ -153,14 +153,8 @@ type CallExpr struct {
 	// (`receiver&.method(...)`). When set and the receiver evaluates to nil,
 	// the runtime short-circuits the call to nil instead of dispatching. It is
 	// meaningful only when Callee is a *MemberExpr whose Safe flag is also set.
-	Safe  bool
-	Block *BlockLiteral
-	// BlockArg holds a Ruby-style ampersand block argument (`f(&blk)`,
-	// `f(&:name)`): the expression after `&`, evaluated at call time and
-	// converted into the call's block. It is mutually exclusive with Block —
-	// the parser rejects a call that supplies both — and must be the last
-	// argument.
-	BlockArg Expression
+	Safe     bool
+	Block    *BlockLiteral
 	Position Position
 }
 
@@ -390,17 +384,14 @@ type CaseExpr struct {
 func (e *CaseExpr) exprNode()     {}
 func (e *CaseExpr) Pos() Position { return e.Position }
 
-// BlockLiteral represents an inline block (closure) expression.
+// BlockLiteral represents an inline block attached to a call. A block is
+// syntax, not a value: it only ever appears in the block position of a call
+// and runs synchronously for the duration of that call (ADR-006).
 type BlockLiteral struct {
 	Params         []Param
 	ImplicitParams []string
 	Body           []Statement
-	// Lambda marks a stabby lambda literal (`->(x) { ... }`). A lambda is a
-	// first-class expression that evaluates to a callable value with strict
-	// arity and method-like (local) return/break semantics, unlike a plain
-	// block literal, which only ever appears attached to a call.
-	Lambda   bool
-	Position Position
+	Position       Position
 }
 
 func (b *BlockLiteral) exprNode()     {}

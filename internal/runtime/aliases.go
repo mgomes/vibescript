@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -97,7 +98,6 @@ const (
 	ParamKeyword     = ast.ParamKeyword
 	ParamRest        = ast.ParamRest
 	ParamKeywordRest = ast.ParamKeywordRest
-	ParamBlock       = ast.ParamBlock
 )
 
 const (
@@ -723,7 +723,6 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		clone.ImplicitParams = cloneStringSlice(block.ImplicitParams)
 		clone.Body = cloneStatements(block.Body)
 		clone.Env = cloneEnvForHost(block.Env, state)
-		clone.forward = cloneValueForHostWithState(block.forward, state)
 		return value.NewValue(KindBlock, &clone)
 	case KindBuiltin:
 		return cloneBuiltinForHost(val, state)
@@ -996,16 +995,6 @@ type Builtin struct {
 	// annotation is not the constructor's contract: reusing that field made
 	// `C.new { break 7 }` fail against `def initialize() -> nil`.
 	ReturnTypeTarget *ScriptFunction
-	// DirectCallAlias marks a builtin that invokes a function value directly,
-	// such as the `call` member exposed on function values. Direct-call aliases
-	// follow plain function-call semantics, so they collapse a parenthesized
-	// keyword options hash just like `fn(...)`. Method and constructor wrappers
-	// leave this false to keep parenthesized keyword binding strict.
-	DirectCallAlias bool
-	// DirectCallAliasPos is the source position attached to the member access
-	// that created a direct-call alias. Rebinding an escaped alias rebuilds its
-	// closure around the live callable and preserves this position for diagnostics.
-	DirectCallAliasPos Position
 	// CapturedValues holds runtime values the builtin's Fn closes over and keeps
 	// alive for as long as the builtin is reachable. The memory estimator charges
 	// their payloads so a stored bound builtin (for example `probe = big.eql?`,
@@ -1114,19 +1103,37 @@ type Block struct {
 	// (Ruby non-local return). Zero for host-built or top-level blocks, whose
 	// returns report LocalJumpError.
 	homeReturnToken uint64
-	// lambda marks a lambda-semantics callable (`lambda { }` or `->() { }`).
-	// A lambda enforces strict positional arity, never auto-splats a single
-	// array argument, and treats return/break/next in its body as local: they
-	// end the lambda call with a value instead of unwinding the enclosing
-	// method (Ruby's lambda vs proc distinction).
-	lambda bool
-	// forward holds the callable a non-block value converted through an
-	// ampersand block argument (`f(&fn)`, `f(&:name)`). When set, calling the
-	// block dispatches to this callable instead of binding Params and
-	// evaluating Body, so forwarded functions, bound methods, and
-	// symbol-to-proc builtins travel the block plumbing (yield, iterators,
-	// block_given?) unchanged. Zero for ordinary blocks.
-	forward Value
+	// retired records that the call this block was attached to has returned.
+	// A block is syntax scoped to that one call (ADR-006): it may not be
+	// stored, returned, or invoked afterwards. The flag is a shared pointer,
+	// not a field value, so every shallow copy a boundary cloner mints keeps
+	// pointing at the one lifetime -- retiring the original retires every
+	// clone -- and it is atomic because a host may read it from a goroutine
+	// the dispatching one races (CallBlock's fail-closed callers). A host
+	// that retained the block gets a hard error at the late invocation
+	// instead of running a body whose captured frame is gone.
+	retired *atomic.Bool
+}
+
+// retire marks the block dead because the call it was attached to has
+// returned. It is safe on a nil block so callers need no guard.
+func (b *Block) retire() {
+	if b != nil && b.retired != nil {
+		b.retired.Store(true)
+	}
+}
+
+// isRetired reports whether the block's receiving call has returned. A block
+// without a lifetime slot (host-built) never retires.
+func (b *Block) isRetired() bool {
+	return b != nil && b.retired != nil && b.retired.Load()
+}
+
+// retireCallBlock invalidates the block a call was given, once that call has
+// returned. Every block literal reaches its callee through one of the call
+// evaluators, so retiring there covers every way a block can be supplied.
+func retireCallBlock(block Value) {
+	valueBlock(block).retire()
 }
 
 // NewBlock returns a block (closure) Value.
@@ -1136,7 +1143,7 @@ func NewBlock(params []Param, body []Statement, env *Env) Value {
 
 func newBlock(params []Param, implicitParams []string, body []Statement, env *Env) Value {
 	revokeBlockRegionNeutrality(env)
-	return value.NewValue(KindBlock, &Block{Params: params, ImplicitParams: implicitParams, Body: body, Env: env})
+	return value.NewValue(KindBlock, &Block{Params: params, ImplicitParams: implicitParams, Body: body, Env: env, retired: new(atomic.Bool)})
 }
 
 // revokeBlockRegionNeutrality strips epoch neutrality from a scope a closure

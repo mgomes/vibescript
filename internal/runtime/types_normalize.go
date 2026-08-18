@@ -119,7 +119,7 @@ func normalizeValueForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 		}
 		return normalizeNamedForType(val, ty, ctx)
 	case TypeUnknown:
-		return NewNil(), fmt.Errorf("unknown type %s", ty.Name)
+		return NewNil(), unknownTypeError(ty.Name)
 	}
 
 	return NewNil(), &typeMismatchError{
@@ -567,7 +567,7 @@ func normalizeNamedForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 		}
 		return normalizeClassInstanceForDef(val, ty, match.class)
 	}
-	return NewNil(), fmt.Errorf("unknown type %s", ty.Name)
+	return NewNil(), unknownTypeError(ty.Name)
 }
 
 func normalizeEnumValueForDef(val Value, ty *TypeExpr, enumDef *EnumDef) (Value, error) {
@@ -604,11 +604,22 @@ func normalizeClassInstanceForDef(val Value, ty *TypeExpr, classDef *ClassDef) (
 	}
 }
 
+// unknownTypeError spells the unknown-type diagnostic for a named annotation.
+// The function type died with first-class callables (ADR-006), so its
+// spelling gets a teaching error naming the replacement instead of reading as
+// a typo.
+func unknownTypeError(name string) error {
+	if strings.EqualFold(strings.TrimSuffix(name, "?"), "function") {
+		return errors.New("the function type was removed with first-class callables; executable code is not a value. Accept a block attached to the call instead")
+	}
+	return fmt.Errorf("unknown type %s", name)
+}
+
 func ensureNamedTypeExists(ty *TypeExpr, ctx typeContext) error {
 	if _, ok, err := lookupNamedTypeForType(ty, ctx); err != nil || ok {
 		return err
 	}
-	return fmt.Errorf("unknown type %s", ty.Name)
+	return unknownTypeError(ty.Name)
 }
 
 type namedTypeMatch struct {
@@ -632,7 +643,7 @@ func lookupNamedTypeExact(ty *TypeExpr, ctx typeContext) (namedTypeMatch, bool, 
 		return namedTypeMatch{}, false, fmt.Errorf("unknown type")
 	}
 	if ty.Kind != TypeEnum {
-		return namedTypeMatch{}, false, fmt.Errorf("unknown type %s", ty.Name)
+		return namedTypeMatch{}, false, unknownTypeError(ty.Name)
 	}
 	if qualifier, enumName, qualified := strings.Cut(ty.Name, "."); qualified {
 		// A qualified name (Module.Enum) resolves through the module namespace
@@ -651,7 +662,7 @@ func lookupNamedTypeExact(ty *TypeExpr, ctx typeContext) (namedTypeMatch, bool, 
 		if ok {
 			return namedTypeMatch{enum: enumDef}, true, nil
 		}
-		return namedTypeMatch{}, false, fmt.Errorf("unknown type %s", ty.Name)
+		return namedTypeMatch{}, false, unknownTypeError(ty.Name)
 	}
 	match, ok := lookupNamedTypeInEnvExact(ctx.env, ty.Name)
 	if ok {
@@ -672,7 +683,7 @@ func lookupNamedTypeFold(ty *TypeExpr, ctx typeContext) (namedTypeMatch, bool, e
 		return namedTypeMatch{}, false, fmt.Errorf("unknown type")
 	}
 	if ty.Kind != TypeEnum {
-		return namedTypeMatch{}, false, fmt.Errorf("unknown type %s", ty.Name)
+		return namedTypeMatch{}, false, unknownTypeError(ty.Name)
 	}
 	match, ok, err := lookupNamedTypeInEnvFold(ctx.env, ty.Name)
 	if err != nil || ok {
@@ -694,7 +705,7 @@ func validateTypeExprResolved(ty *TypeExpr, ctx typeContext) error {
 
 	switch ty.Kind {
 	case TypeUnknown:
-		return fmt.Errorf("unknown type %s", ty.Name)
+		return unknownTypeError(ty.Name)
 	case TypeEnum:
 		return ensureNamedTypeExists(ty, ctx)
 	}
@@ -896,7 +907,7 @@ func lookupClassTypeExact(ty *TypeExpr, ctx typeContext) (*ClassDef, bool, error
 		return nil, false, fmt.Errorf("unknown type")
 	}
 	if ty.Kind != TypeEnum {
-		return nil, false, fmt.Errorf("unknown type %s", ty.Name)
+		return nil, false, unknownTypeError(ty.Name)
 	}
 	classDef, ok := lookupClassInEnvExact(ctx.env, ty.Name)
 	if ok {

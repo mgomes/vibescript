@@ -140,30 +140,14 @@ value = loop do
 end
 ```
 
-## Procs and Lambdas
+## Removed Callable Constructors
 
-### `proc { |args| ... } -> proc` / `Proc.new { |args| ... } -> proc`
+### `proc { |args| ... }` / `Proc` / `lambda { |args| ... }`
 
-Captures the block as a first-class proc value invoked with `.call`. A proc
-keeps block semantics: missing arguments pad to `nil`, extra arguments are
-dropped, and `return` in the body returns from the method whose body created
-the proc. See [Blocks](blocks.md#procs-and-lambdas) for the full semantics.
-
-```vibe
-doubler = proc { |x| x * 2 }
-doubler.call(21)  # 42
-```
-
-### `lambda { |args| ... } -> lambda`
-
-Captures the block as a lambda, which behaves like an anonymous method: arity
-is strict, and `return`, `break`, and `next` in the body are local to the
-lambda call. The stabby form `->(args) { ... }` builds the same value.
-
-```vibe
-add = lambda { |a, b| a + b }
-add.call(2, 3)  # 5
-```
+Removed, including `Proc.new`. Executable code is not a value: each of these
+names now fails with an error naming the replacement. Define a named function and call it, or attach a
+block to the call that runs it, as in `people.map { |person| person.name }`.
+See [Blocks](blocks.md) for the supported block forms.
 
 ## Formatting
 

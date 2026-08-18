@@ -1363,7 +1363,6 @@ func (p *parser) parseParamsWithOptions(options paramParseOptions) []ast.Param {
 	seenRest := false
 	seenKeyword := false
 	seenKeywordRest := false
-	seenBlock := false
 	for {
 		param, paramPos, ok := p.parseParam(options)
 		if !ok {
@@ -1371,7 +1370,7 @@ func (p *parser) parseParamsWithOptions(options paramParseOptions) []ast.Param {
 		}
 		switch param.Kind {
 		case ast.ParamNormal:
-			if seenRest || seenKeyword || seenKeywordRest || seenBlock {
+			if seenRest || seenKeyword || seenKeywordRest {
 				format, args := ordinaryParamOrderMessage(param, params)
 				p.addParseError(paramPos, format, args...)
 				return params
@@ -1381,14 +1380,14 @@ func (p *parser) parseParamsWithOptions(options paramParseOptions) []ast.Param {
 				p.addParseError(paramPos, "duplicate rest parameter")
 				return params
 			}
-			if seenKeyword || seenKeywordRest || seenBlock {
-				p.addParseError(paramPos, "rest parameter must precede keyword, keyword rest, and block capture parameters")
+			if seenKeyword || seenKeywordRest {
+				p.addParseError(paramPos, "rest parameter must precede keyword and keyword rest parameters")
 				return params
 			}
 			seenRest = true
 		case ast.ParamKeyword:
-			if seenKeywordRest || seenBlock {
-				p.addParseError(paramPos, "keyword parameters must precede keyword rest and block capture parameters")
+			if seenKeywordRest {
+				p.addParseError(paramPos, "keyword parameters must precede keyword rest parameters")
 				return params
 			}
 			seenKeyword = true
@@ -1397,17 +1396,7 @@ func (p *parser) parseParamsWithOptions(options paramParseOptions) []ast.Param {
 				p.addParseError(paramPos, "duplicate keyword rest parameter")
 				return params
 			}
-			if seenBlock {
-				p.addParseError(paramPos, "keyword rest parameter must precede block capture parameter")
-				return params
-			}
 			seenKeywordRest = true
-		case ast.ParamBlock:
-			if seenBlock {
-				p.addParseError(paramPos, "duplicate block capture parameter")
-				return params
-			}
-			seenBlock = true
 		}
 
 		params = append(params, param)
@@ -1417,10 +1406,6 @@ func (p *parser) parseParamsWithOptions(options paramParseOptions) []ast.Param {
 		p.declareParamLocal(param)
 		if p.peekToken.Type != ast.TokenComma {
 			break
-		}
-		if param.Kind == ast.ParamBlock {
-			p.addParseError(p.peekToken.Pos, "block capture parameter must be last")
-			return params
 		}
 		p.nextToken()
 		p.nextToken()
@@ -1442,8 +1427,11 @@ func (p *parser) parseParam(options paramParseOptions) (ast.Param, ast.Position,
 		kind = ast.ParamKeywordRest
 		p.nextToken()
 	case ast.TokenAmpersand:
-		kind = ast.ParamBlock
-		p.nextToken()
+		// A block capture parameter turned the caller's block into a value the
+		// callee could store, return, or forward. ADR-006 removed it; `yield`
+		// runs the caller's block where it was supplied.
+		p.addParseError(p.curToken.Pos, "block capture parameters are not supported; a block is not a value. Run the caller's block with `yield`, and ask `block_given?` when it is optional")
+		return ast.Param{}, ast.Position{}, false
 	}
 
 	if p.curToken.Type != ast.TokenIdent && (kind != ast.ParamNormal || p.curToken.Type != ast.TokenIvar) {
@@ -1998,8 +1986,6 @@ func parameterNameExpectation(kind ast.ParamKind) string {
 		return "rest parameter name"
 	case ast.ParamKeywordRest:
 		return "keyword rest parameter name"
-	case ast.ParamBlock:
-		return "block capture parameter name"
 	default:
 		return "parameter name"
 	}

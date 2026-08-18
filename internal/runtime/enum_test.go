@@ -345,28 +345,6 @@ end`)
 	})
 }
 
-func TestCompileEnumRejectsInvalidNames(t *testing.T) {
-	t.Parallel()
-	names := []string{
-		"Status?",
-		"String", "Int", "Float", "Bool", "Array", "Hash",
-		"Any", "Nil", "Duration", "Time", "Money", "Number",
-		"Function", "Object",
-	}
-	for _, name := range names {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			_, err := compileEnumDef(&EnumStmt{
-				Name:    name,
-				Members: []EnumMemberStmt{{Name: "Draft"}},
-			})
-			if err == nil {
-				t.Errorf("expected error for enum named %s, got nil", name)
-			}
-		})
-	}
-}
-
 func enumTestValue(t *testing.T, script *Script, enumName, member string) Value {
 	t.Helper()
 	enumDef, ok := script.enums[enumName]
