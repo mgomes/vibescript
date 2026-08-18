@@ -256,7 +256,10 @@ func (exec *Execution) writeClearedCollection(receiver Value) (Value, error) {
 	if !isCollection(receiver) {
 		return receiver, nil
 	}
-	if receiver.Unpublished() || (receiver.SoleRef() && exec.addressed.valid && exec.addressed.leaf == collectionIdentity(receiver)) {
+	// A sole nested leaf can still be visible through a shared ancestor
+	// (`a = [[1]]; b = a; a[0].clear`), so in-place clearing needs an
+	// ancestor-free root; replaceMutableLeaf isolates shared ancestors.
+	if receiver.Unpublished() || (receiver.SoleRef() && exec.addressed.valid && exec.addressed.leaf == collectionIdentity(receiver) && len(exec.addressed.path) == 0) {
 		clearCollectionInPlace(receiver)
 		return receiver, nil
 	}

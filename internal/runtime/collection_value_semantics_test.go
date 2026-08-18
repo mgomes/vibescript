@@ -844,6 +844,24 @@ end
 	}
 }
 
+func TestNestedClearIsolatesASharedAncestor(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ name, body, want string }{
+		{"array leaf", "a = [[1]]\n  b = a\n  a[0].clear\n  a.inspect + \" \" + b.inspect", "[[]] [[1]]"},
+		{"hash leaf", "a = {x: {y: 1}}\n  b = a\n  a[:x].clear\n  a.inspect + \" \" + b.inspect", "{x: {}} {x: {y: 1}}"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  "+tc.body+"\nend\n")
+			if got := callFunc(t, script, "run", nil).String(); got != tc.want {
+				t.Fatalf("nested clear with sibling = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEmptyFilterDoesNotOverwriteAReboundNestedSlot(t *testing.T) {
 	t.Parallel()
 
