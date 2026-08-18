@@ -789,7 +789,12 @@ end`)
 	}
 }
 
-func TestCapabilityContractsBindAfterArgumentMutation(t *testing.T) {
+// Inverted deliberately for #1210 (host boundary hands out independent
+// values): a host builtin can no longer publish behavior by mutating an
+// argument. The argument crosses the boundary as an independent value, so
+// the install lands in the host's copy and the script's hash is unchanged --
+// there is nothing for a contract to bind and nothing to invoke.
+func TestCapabilityCannotInstallABuiltinThroughAnArgument(t *testing.T) {
 	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   target = {}
@@ -805,11 +810,11 @@ end`)
 		},
 	})
 	if err == nil {
-		t.Fatalf("expected argument-mutation contract validation error")
+		t.Fatalf("expected the install to be invisible to the script")
 	}
-	requireErrorContains(t, err, "cap.call expects int")
+	requireErrorContains(t, err, "unknown hash method call")
 	if invocations != 0 {
-		t.Fatalf("argument mutation capability should not execute when contract fails")
+		t.Fatalf("a builtin installed into a host-side copy executed %d times, want never", invocations)
 	}
 }
 

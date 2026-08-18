@@ -1359,6 +1359,10 @@ end
 		}
 	})
 
+	// Inverted deliberately for #1210: an argument named by a script slot
+	// crosses the boundary as an independent value even when its graph is
+	// exclusively held, so the host's write is invisible; the sanctioned
+	// channel for a host mutation is the return value.
 	t.Run("exclusive nested", func(t *testing.T) {
 		t.Parallel()
 		script := compileScriptWithEngine(t, engine, `def run()
@@ -1367,8 +1371,8 @@ end
   a[:child].inspect
 end
 `)
-		if got := callFunc(t, script, "run", nil).String(); got != "{x: 9}" {
-			t.Fatalf("host_mutate_nested(a) exclusive child = %s, want {x: 9}", got)
+		if got := callFunc(t, script, "run", nil).String(); got != "{x: 1}" {
+			t.Fatalf("host_mutate_nested(a) exclusive child = %s, want {x: 1}", got)
 		}
 	})
 }

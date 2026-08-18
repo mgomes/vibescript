@@ -95,9 +95,20 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 	}
 	var err error
 	if !builtin.declaredNonMutating() {
-		receiver, err = exec.isolateHostCollection(receiver)
-		if err != nil {
-			return NewNil(), nil, nil, err
+		// A receiver that is host state -- the capability object an adapter
+		// bound, or anything a factory installed into it -- crosses live:
+		// its in-place mutation is the sanctioned publication channel, and
+		// everything it holds is marked shared the moment a mutating host
+		// dispatch ends (markHostWritableState), so nothing there transfers
+		// out of the Call live (#1210). Any other receiver is script data:
+		// it detaches when shared, exactly as an argument would, so a host
+		// write cannot reach a sibling binding.
+		if !exec.receiverIsHostState(receiver) && isCollection(receiver) &&
+			!receiver.Unpublished() && !receiver.SoleRef() {
+			receiver, err = exec.detachHostCrossingValue(receiver)
+			if err != nil {
+				return NewNil(), nil, nil, err
+			}
 		}
 		if len(args) > 0 {
 			args = slices.Clone(args)
@@ -119,30 +130,306 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 		}
 	}
 	if !builtin.declaredNonRetaining() {
-		// Publish the wrappers the host will actually see, after isolation,
-		// so a later script write copies instead of mutating a retained
-		// handle. Publishing first would mark a sole argument shared and
+		// Mark everything the host will actually see, after isolation: the
+		// host may retain any reachable wrapper, not just a root, and the
+		// interpreter cannot see how many handles exist on the other side.
+		// A marked wrapper makes a later script write copy and keeps the
+		// Call boundary from transferring it out live. Marking first would
 		// force a copy the host then mutates invisibly.
-		publishCollection(receiver)
+		seen := make(map[uintptr]struct{})
+		// The receiver graph too: a retaining builtin may stash a receiver
+		// sub-wrapper even when it declared non-mutation, and an unmarked
+		// sole wrapper would transfer out of the Call live -- a script can
+		// grow a host-state graph by assigning into it, so no walk can be
+		// skipped. The walks stay cheap because only a wrapper's first
+		// recording is charged; re-walks of stable host state are map hits.
+		receiverRecord := exec.hostStateIdentities
+		if !exec.receiverIsHostState(receiver) {
+			receiverRecord = nil
+		}
+		if err := exec.markSharedGraphRecording(receiver, seen, receiverRecord); err != nil {
+			return NewNil(), nil, nil, err
+		}
 		for _, arg := range args {
-			publishCollection(arg)
+			if err := exec.markSharedGraph(arg, seen); err != nil {
+				return NewNil(), nil, nil, err
+			}
 		}
 		for _, arg := range kwargs {
-			publishCollection(arg)
+			if err := exec.markSharedGraph(arg, seen); err != nil {
+				return NewNil(), nil, nil, err
+			}
 		}
 	}
 	return receiver, args, kwargs, nil
 }
 
+// recordHostStateRoot registers a value the host can see and write for the
+// duration of this call -- a capability adapter's bound object. Its graph's
+// identities feed the receiver-liveness rule: dispatching on host state
+// keeps the factory channel live, while dispatching a host builtin on plain
+// script data does not hand that data to the host raw.
+func (exec *Execution) recordHostStateRoot(val Value) {
+	if !isCollection(val) {
+		return
+	}
+	exec.capabilityBoundRoots = append(exec.capabilityBoundRoots, val)
+	if exec.hostStateIdentities == nil {
+		exec.hostStateIdentities = make(map[uintptr]struct{})
+	}
+	collectHostStateIdentities(val, exec.hostStateIdentities)
+}
+
+func collectHostStateIdentities(val Value, into map[uintptr]struct{}) {
+	if !isCollection(val) {
+		return
+	}
+	id := collectionIdentity(val)
+	if id != 0 {
+		if _, ok := into[id]; ok {
+			return
+		}
+		into[id] = struct{}{}
+	}
+	switch val.Kind() {
+	case KindArray:
+		for _, elem := range val.Array() {
+			collectHostStateIdentities(elem, into)
+		}
+	case KindHash, KindObject:
+		val.RangeHashEntries(func(_ string, item Value) {
+			collectHostStateIdentities(item, into)
+		})
+	}
+}
+
+// graphContainsBuiltin reports whether any builtin is reachable from val.
+// A composite global carrying one is a host-visible object, not plain data.
+func graphContainsBuiltin(val Value) bool {
+	return graphContainsBuiltinSeen(val, nil)
+}
+
+func graphContainsBuiltinSeen(val Value, seen map[uintptr]struct{}) bool {
+	if val.Kind() == KindBuiltin {
+		return true
+	}
+	if !isCollection(val) {
+		return false
+	}
+	if id := collectionIdentity(val); id != 0 {
+		if _, ok := seen[id]; ok {
+			return false
+		}
+		if seen == nil {
+			seen = make(map[uintptr]struct{})
+		}
+		seen[id] = struct{}{}
+	}
+	switch val.Kind() {
+	case KindArray:
+		for _, elem := range val.Array() {
+			if graphContainsBuiltinSeen(elem, seen) {
+				return true
+			}
+		}
+	case KindHash, KindObject:
+		found := false
+		val.RangeHashEntries(func(_ string, item Value) {
+			if found {
+				return
+			}
+			found = graphContainsBuiltinSeen(item, seen)
+		})
+		return found
+	}
+	return false
+}
+
+// receiverIsHostState reports whether the dispatched receiver is part of the
+// state a host adapter bound into this call. Membership is by wrapper
+// identity, refreshed after every mutating host dispatch, so the rule is
+// stable under script aliasing: `c = cross` names the same host object and
+// keeps the factory channel live.
+func (exec *Execution) receiverIsHostState(receiver Value) bool {
+	if len(exec.hostStateIdentities) == 0 || !isCollection(receiver) {
+		return false
+	}
+	_, ok := exec.hostStateIdentities[collectionIdentity(receiver)]
+	return ok
+}
+
+// markHostWritableState runs immediately after a mutating-capable host
+// dispatch, success or error: everything the host could have written -- the
+// dispatched receiver's graph and the host-visible roots -- is marked
+// shared, and the host-state identity set is refreshed so wrappers a
+// factory installed join the liveness rule. Immediate marking is what
+// closes the mid-call windows: a later script write copies, a later
+// dispatch isolates, and a wrapper removed from host state before the call
+// returns was already marked when it was installed.
+func (exec *Execution) markHostWritableState(receiver Value) error {
+	// The identity set grows only from host state: the roots' graphs, plus
+	// the receiver's own when it already is host state (a factory installed
+	// into it). A plain script-data receiver is marked -- the host saw it --
+	// but must not join the liveness rule, or its next dispatch would cross
+	// live despite a sibling binding. One shared seen map keeps every
+	// wrapper's walk to a single charged visit; the recorder attributes
+	// exactly what each walk reaches first.
+	seen := make(map[uintptr]struct{})
+	// Roots first: a wrapper reachable from both a plain-data receiver and
+	// host state must be recorded as host state, and the shared seen map
+	// would otherwise let the receiver walk shadow the roots walk.
+	for _, root := range exec.capabilityBoundRoots {
+		if err := exec.markSharedGraphRecording(root, seen, exec.hostStateIdentities); err != nil {
+			return err
+		}
+	}
+	receiverRecord := exec.hostStateIdentities
+	if !exec.receiverIsHostState(receiver) {
+		receiverRecord = nil
+	}
+	return exec.markSharedGraphRecording(receiver, seen, receiverRecord)
+}
+
+// markSharedGraph forces every collection reachable from val to the shared
+// state. The host boundary uses it where Go code gets live sight of script
+// wrappers: the interpreter cannot see how many handles the other side
+// keeps, so each must copy on the next script write and clone rather than
+// transfer at the Call boundary.
+func (exec *Execution) markSharedGraph(val Value, seen map[uintptr]struct{}) error {
+	return exec.markSharedGraphRecording(val, seen, nil)
+}
+
+// markSharedGraphRecording is markSharedGraph with an optional recorder: each
+// wrapper visited for the first time also joins record, which is how the
+// host-state identity set grows from exactly the graphs that are host state.
+func (exec *Execution) markSharedGraphRecording(val Value, seen, record map[uintptr]struct{}) error {
+	if !isCollection(val) {
+		return nil
+	}
+	charge := true
+	if id := collectionIdentity(val); id != 0 {
+		if _, ok := seen[id]; ok {
+			// A duplicate edge to an already-visited wrapper is still work;
+			// charging it at the discounted rate keeps fan-in shapes -- one
+			// array holding thousands of references to one wrapper -- from
+			// buying uncharged traversals.
+			exec.hostStateRevisits++
+			if exec.hostStateRevisits%64 == 0 {
+				return exec.chargeScanSteps(1)
+			}
+			return nil
+		}
+		seen[id] = struct{}{}
+		if record != nil {
+			if _, recorded := record[id]; recorded {
+				// Already host state from an earlier walk: re-marking is
+				// cheap, so a loop of dispatches over stable host state pays
+				// a heavily discounted rate rather than the full walk --
+				// enough that CPU stays coupled to the step quota, since a
+				// hostile script can otherwise grow the graph once and drive
+				// unlimited free re-walks. Descend anyway: a script write
+				// can hang a new wrapper under a recorded one.
+				charge = false
+				exec.hostStateRevisits++
+				if exec.hostStateRevisits%64 == 0 {
+					if err := exec.chargeScanSteps(1); err != nil {
+						return err
+					}
+				}
+			} else {
+				record[id] = struct{}{}
+			}
+		}
+	}
+	if charge {
+		if err := exec.chargeScanSteps(1); err != nil {
+			return err
+		}
+	}
+	val.MarkSharedRef()
+	switch val.Kind() {
+	case KindArray:
+		for _, elem := range val.Array() {
+			if !isCollection(elem) {
+				// Scalar leaves are loop work too; the same discounted rate
+				// keeps a huge scalar array from being a free re-walk.
+				exec.hostStateRevisits++
+				if exec.hostStateRevisits%64 == 0 {
+					if err := exec.chargeScanSteps(1); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+			if err := exec.markSharedGraphRecording(elem, seen, record); err != nil {
+				return err
+			}
+		}
+	case KindHash, KindObject:
+		var walkErr error
+		val.RangeHashEntries(func(_ string, item Value) {
+			if walkErr != nil {
+				return
+			}
+			if !isCollection(item) {
+				exec.hostStateRevisits++
+				if exec.hostStateRevisits%64 == 0 {
+					walkErr = exec.chargeScanSteps(1)
+				}
+				return
+			}
+			walkErr = exec.markSharedGraphRecording(item, seen, record)
+		})
+		return walkErr
+	}
+	return nil
+}
+
+// detachHostBuiltinResult makes a host builtin's collection return independent
+// of the host, so a backing map or slice the Go body still holds cannot write
+// into script state after the call. A first-party capability return the
+// dispatcher's proof covers was already validated and cloned by its adapter
+// and crosses as it is; a builtin that declared itself non-retaining is
+// trusted the same way and never reaches here.
+func (exec *Execution) detachHostBuiltinResult(builtin *Builtin, result Value) (Value, error) {
+	if !isCollection(result) {
+		return result, nil
+	}
+	if exec.capabilityReturnProof.covers(builtin.Name, result) {
+		return result, nil
+	}
+	return exec.detachHostCrossingValue(result)
+}
+
+// detachHostCrossingValue makes a host-supplied value independent of the Go
+// state that built it before it enters script state: a yielded block
+// argument, like a host builtin's return, may wrap a map or slice the host
+// still holds. The copy is charged; it is script state now.
+func (exec *Execution) detachHostCrossingValue(val Value) (Value, error) {
+	if !isCollection(val) {
+		return val, nil
+	}
+	if err := exec.preflightDeepClone(val); err != nil {
+		return NewNil(), err
+	}
+	detached := deepCloneValueForContainment(val)
+	if err := exec.checkMemoryValue(detached); err != nil {
+		return NewNil(), err
+	}
+	return detached, nil
+}
+
 // isolateHostCollection returns a wrapper the host may write through. Host
 // contracts treat mutation as a write to any reachable container, so a
 // shallow copy of the root is not enough: `child = {x: 1}; a = {child: child}`
-// leaves `a` exclusive while `child` is still shared, and a host HashSet
-// through `args[0].Hash()["child"]` would otherwise change the sibling.
+// leaves `a` unpublished while `child` is still named by a local, and a host
+// HashSet through `args[0].Hash()["child"]` would otherwise change what the
+// script observes.
 //
-// An exclusive graph is already only reachable from this call and is left
-// in place. Any shared wrapper in the graph deep-copies the whole argument
-// so the host cannot reach a wrapper a sibling binding still names.
+// An unpublished graph is reachable from nothing but this call and is left
+// in place: a host write to it is invisible to the script by construction.
+// A published wrapper in the graph deep-copies the whole value, so a host
+// write can never land in script-observable state (#1210).
 func (exec *Execution) isolateHostCollection(val Value) (Value, error) {
 	if !isCollection(val) {
 		return val, nil
@@ -162,8 +449,8 @@ func (exec *Execution) isolateHostCollection(val Value) (Value, error) {
 }
 
 // hostCollectionNeedsIsolation reports whether val or any collection it
-// reaches is named from more than one durable slot. A cycle is a single
-// visit, not a reason to copy.
+// reaches is named from a durable slot at all. A cycle is a single visit,
+// not a reason to copy.
 func (exec *Execution) hostCollectionNeedsIsolation(val Value, seen map[uintptr]struct{}) (bool, error) {
 	if !isCollection(val) {
 		return false, nil
@@ -177,7 +464,7 @@ func (exec *Execution) hostCollectionNeedsIsolation(val Value, seen map[uintptr]
 	if err := exec.chargeScanSteps(1); err != nil {
 		return false, err
 	}
-	if !val.Unpublished() && !val.SoleRef() {
+	if !val.Unpublished() {
 		return true, nil
 	}
 	switch val.Kind() {

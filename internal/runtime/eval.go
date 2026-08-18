@@ -1922,7 +1922,64 @@ func implicitBlockParamArity(params []string) int {
 // CallBlock invokes a block value with the provided arguments.
 // This is the public entry point for capability adapters that need to
 // call user-supplied blocks (e.g. db.each, db.tx).
+//
+// It is a host boundary: the arguments come from Go code that may retain
+// their backing, and the return value is script state the host must not
+// hold live, so both directions cross as independent values (#1210) unless
+// the invoking builtin declared itself non-retaining. Native builtins
+// drive blocks through the internal paths and pay none of this.
 func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
+	// Fail closed: with no builtin frame on the stack this is being driven
+	// from outside any dispatch -- a stashed Execution, a goroutine -- and
+	// that caller is host code by definition.
+	if exec.builtinFrameHostCrossing || exec.builtinDepth == 0 {
+		// Anything the host installed into its receiver or a host-visible
+		// root before this yield must be shared before the block can read
+		// it, or a block-side write lands in the host's retained backing.
+		// Stable host state re-walks as uncharged map hits, so yield-heavy
+		// loops pay quota only for what actually changed.
+		if err := exec.markHostWritableState(exec.builtinFrameReceiver); err != nil {
+			return NewNil(), err
+		}
+		var detachedArgs []Value
+		for i, arg := range args {
+			if !isCollection(arg) {
+				continue
+			}
+			detached, err := exec.detachHostCrossingValue(arg)
+			if err != nil {
+				return NewNil(), err
+			}
+			if detachedArgs == nil {
+				detachedArgs = append([]Value(nil), args...)
+			}
+			detachedArgs[i] = detached
+		}
+		if detachedArgs != nil {
+			args = detachedArgs
+		}
+		result, err := exec.callBlockValue(block, args, Position{})
+		if err != nil || !isCollection(result) {
+			return result, err
+		}
+		// Unlike a Call result, the call is not ending here: a sole
+		// published wrapper still has a live script owner, so only a graph
+		// no slot names at all -- a temporary the block built -- transfers
+		// whole. Anything published or callable-bearing is the host's copy,
+		// charged first, since a script loop can drive this clone once per
+		// iteration.
+		needsIsolation, isoErr := exec.hostCollectionNeedsIsolation(result, make(map[uintptr]struct{}))
+		if isoErr != nil {
+			return NewNil(), isoErr
+		}
+		if !needsIsolation && !valueNeedsHostClone(result) {
+			return result, nil
+		}
+		if err := exec.preflightDeepClone(result); err != nil {
+			return NewNil(), err
+		}
+		return cloneValueForHost(result), nil
+	}
 	return exec.callBlockValue(block, args, Position{})
 }
 

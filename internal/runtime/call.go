@@ -189,7 +189,10 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if !block.IsNil() {
 			return NewNil(), exec.errorAt(pos, "block.call does not accept a block")
 		}
-		result, err := exec.CallBlock(callee, args)
+		// Script-to-script invocation: the host boundary in CallBlock is for
+		// Go callers only, so direct invocation of a block-valued binding
+		// takes the internal path.
+		result, err := exec.callBlockValue(callee, args, pos)
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
 				return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
@@ -326,6 +329,22 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			var prepErr error
 			receiver, args, kwargs, prepErr = exec.prepareHostDrivenCollections(builtin, receiver, args, kwargs)
 			if prepErr != nil {
+				// Unwind everything dispatch set up above this point: a
+				// rescued prep error must not leak the yield frame, the
+				// depth counters, the metered-section suspension, the
+				// return-proof slot, or the validated-args entry.
+				exec.popCapabilityYieldFrame(yieldFrame)
+				exec.builtinDepth--
+				if !declaredPure {
+					exec.undeclaredBuiltinDepth--
+				}
+				exec.accumMeteredSections = savedSections
+				if savedReturnProof.recorded {
+					exec.capabilityReturnProof = savedReturnProof
+				}
+				if popValidatedArgs != nil {
+					popValidatedArgs()
+				}
 				return NewNil(), prepErr
 			}
 		}
@@ -335,6 +354,8 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// long as the body runs, and nothing the estimator walks reaches them.
 		prevReceiver, prevArgs, prevKwargs := exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs
 		prevReserved := exec.builtinFrameRootsReserved
+		prevHostCrossing := exec.builtinFrameHostCrossing
+		exec.builtinFrameHostCrossing = builtin.hostDriven && !builtin.declaredNonRetaining()
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = receiver, args, kwargs
 		// A new frame holds new values, so it reserves its own.
 		exec.builtinFrameRootsReserved = false
@@ -345,11 +366,22 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		contractCheck := exec.beginContractVerification(builtin)
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		if err == nil && builtin.hostDriven && !builtin.declaredNonRetaining() {
-			publishCollection(result)
+			result, err = exec.detachHostBuiltinResult(builtin, result)
+		}
+		if builtin.hostDriven && !builtin.declaredNonMutating() {
+			// Mark what the host could have written -- the receiver and the
+			// host-visible roots -- immediately, success or error: an
+			// installed wrapper must be shared before any later read, write,
+			// dispatch, or removal can observe it unmarked. The walk is
+			// charged; a markErr outranks nothing the call already returned.
+			if markErr := exec.markHostWritableState(receiver); markErr != nil && err == nil {
+				result, err = NewNil(), markErr
+			}
 		}
 		contractCheck.check(exec, builtin)
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = prevReceiver, prevArgs, prevKwargs
 		exec.builtinFrameRootsReserved = prevReserved
+		exec.builtinFrameHostCrossing = prevHostCrossing
 		// Dropping the claims moves any array a shrink narrowed off the storage
 		// it gave up, which is the first point that storage can be released.
 		// That copy is charged, so it can fail; a failure the call itself did
@@ -808,6 +840,9 @@ type callFunctionRebinder struct {
 	pendingGlobalSources []Value
 	globalsScanned       bool
 	globalsDataFast      bool
+	// exec, when set, receives host-state root registrations for lazily
+	// materialized builtin-bearing globals; the eager path records at bind.
+	exec *Execution
 }
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
@@ -1167,7 +1202,14 @@ func (r *callFunctionRebinder) rebindGlobalValue(val Value) Value {
 	if r.globalsDataFast && r.inboundValueUnseen(val) {
 		return copyInboundDataValue(val)
 	}
-	return r.rebindValue(val)
+	rebound := r.rebindValue(val)
+	if r.exec != nil && graphContainsBuiltin(rebound) {
+		// A builtin-bearing global is host-visible state like a capability
+		// object (#1210); it joins the host-state roots the moment it
+		// materializes. The data-fast path above cannot carry a builtin.
+		r.exec.recordHostStateRoot(rebound)
+	}
+	return rebound
 }
 
 func (r *callFunctionRebinder) scanPendingGlobalSources() bool {
@@ -1410,6 +1452,7 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 			}
 			rebound := rebinder.rebindValue(val)
 			root.Define(name, rebound)
+			exec.recordHostStateRoot(rebound)
 			if len(scope.contracts) > 0 {
 				scope.roots = append(scope.roots, rebound)
 			}
@@ -3614,7 +3657,16 @@ func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebind
 	}
 
 	for name, val := range globals {
-		root.Define(name, rebinder.rebindValue(val))
+		rebound := rebinder.rebindValue(val)
+		root.Define(name, rebound)
+		if graphContainsBuiltin(rebound) {
+			// A global carrying host builtins is host-visible state like a
+			// capability object: dispatching on it keeps its factory channel
+			// live, and post-dispatch marking covers what a builtin installs
+			// into it (#1210). The lazy path records the same at
+			// materialization.
+			exec.recordHostStateRoot(rebound)
+		}
 	}
 
 	return nil

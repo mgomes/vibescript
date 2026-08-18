@@ -138,10 +138,22 @@ type Execution struct {
 	envStack                  []*Env
 	validatedCapabilityArgs   []string
 	capabilityReturnProof     capabilityReturnProof
-	isolationForwards         map[uintptr]isolationForward
-	addressedBrackets         int
-	memoryEst                 memoryEstimator
-	reservedScratchBytes      int
+	// capabilityBoundRoots are the values capability adapters bound into
+	// this call, and hostStateIdentities the wrapper identities reachable
+	// from them (refreshed after every mutating host dispatch). Together
+	// they drive the receiver-liveness rule and the immediate post-dispatch
+	// marking that keeps host-installed wrappers from crossing out of the
+	// Call live (#1210).
+	capabilityBoundRoots []Value
+	hostStateIdentities  map[uintptr]struct{}
+	// hostStateRevisits counts uncharged re-walk visits of recorded host
+	// state; every 64th is charged one scan step so total walk CPU stays
+	// coupled to the step quota.
+	hostStateRevisits    uint64
+	isolationForwards    map[uintptr]isolationForward
+	addressedBrackets    int
+	memoryEst            memoryEstimator
+	reservedScratchBytes int
 
 	// stringScanCharge caches chargeEqualityScanBytes as a bound function for
 	// the equality byte charge (see stringScanChargeFunc), so metered
@@ -225,6 +237,11 @@ type Execution struct {
 	builtinFrameReceiver Value
 	builtinFrameArgs     []Value
 	builtinFrameKwargs   map[string]Value
+	// builtinFrameHostCrossing records that the innermost builtin frame is a
+	// host-driven builtin that did not declare itself non-retaining, so a
+	// CallBlock under it is a host boundary: yielded arguments and the
+	// block's return value must cross as independent values (#1210).
+	builtinFrameHostCrossing bool
 	// builtinFrameRootsReserved records that a CallBlock under this frame has
 	// already folded those values into the reserved scratch. A block that enters
 	// a script function which yields reaches CallBlock again under the same

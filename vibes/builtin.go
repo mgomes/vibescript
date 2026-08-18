@@ -53,16 +53,20 @@ func DeclareNonMutating(v value.Value) value.Value {
 // DeclareNonRetaining records a builtin's promise that no invocation of it
 // stores, anywhere that outlives the invocation, a reference to any Value it
 // receives (receiver, arguments, keyword arguments, block) or returns, or to
-// any container reachable from one, and returns it. Package-level variables,
+// any container reachable from one -- and, symmetrically, that no value it
+// returns or yields shares storage the host already holds (a wrapper built
+// over a package-level map or an adapter field is a retained reference even
+// though the invocation itself stored nothing). It returns the value. Package-level variables,
 // fields on the adapter, closure captures, channels, caches and anything handed
 // to another goroutine all count as outliving the invocation. So does keeping a
 // container reached through an argument rather than the argument itself.
 //
-// Nothing in the runtime consults this promise yet: today it is recorded and
-// no more, so declaring it changes no behavior and buys no speed. It is
-// published now so the declaration exists before the change that reads it,
-// which scopes the memory estimator's walk memo to the owning execution and
-// will use it to keep that scoping across a host call (#1199).
+// The boundary consults this promise (#1210): a declaring builtin's inputs
+// skip the retention marking, its return skips the detach copy, and blocks
+// it drives through Execution.CallBlock exchange values without boundary
+// copies -- which is exactly why an untrue declaration is a live aliasing
+// channel, not just an accounting error. A later change will also use it to
+// scope the memory estimator's walk memo across a host call (#1199).
 //
 // It is stated as a safety promise rather than a hint because of what it will
 // mean once consulted: an execution calling a builtin that makes it keeps

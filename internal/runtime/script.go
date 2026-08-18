@@ -52,6 +52,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	rebinder.inboundDataFast = scanInboundCallValues(args, opts.Keywords)
 
 	exec := newExecutionForCall(s, ctx, root, opts)
+	rebinder.exec = exec
 	defer exec.releaseBaseWalkCache()
 
 	// Refuse before any host code runs. A call builds its root env and clones
@@ -166,6 +167,7 @@ func (s *Script) callWithLazyGlobals(ctx context.Context, name string, args []Va
 	rebinder.inboundDataFast = scanInboundCallValues(args, opts.Keywords)
 
 	exec := newExecutionForCall(s, ctx, root, opts)
+	rebinder.exec = exec
 	defer exec.releaseBaseWalkCache()
 
 	// Refuse before any host code runs; see Call for why.

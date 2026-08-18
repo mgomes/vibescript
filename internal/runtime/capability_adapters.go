@@ -51,10 +51,16 @@ func MustNewJobQueueCapability(name string, impl JobQueue) CapabilityAdapter {
 func (c *jobQueueCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
 	name := c.inner.Name
 	methods := map[string]Value{
-		"enqueue": NewBuiltin(name+".enqueue", c.callEnqueue),
+		// The first-party adapters clone everything both ways -- what they
+		// keep, what they return, what they yield -- and never write a
+		// script wrapper, so each declares non-mutation and non-retention:
+		// dispatch then skips the isolation copy, the return detach, and
+		// the CallBlock boundary copies, leaving the adapter's own clone as
+		// the only one.
+		"enqueue": DeclareNonMutating(DeclareNonRetaining(NewBuiltin(name+".enqueue", c.callEnqueue))),
 	}
 	if c.inner.HasRetry() {
-		methods["retry"] = NewBuiltin(name+".retry", c.callRetry)
+		methods["retry"] = DeclareNonMutating(DeclareNonRetaining(NewBuiltin(name+".retry", c.callRetry)))
 	}
 	return map[string]Value{name: NewObject(methods)}, nil
 }
@@ -285,11 +291,11 @@ func (a *dbCapabilityAdapter) Bind(_ CapabilityBinding) (map[string]Value, error
 	name := a.cap.Name()
 	contracts := a.cap.Contracts()
 	methods := map[string]Value{
-		"find":   NewBuiltin(name+".find", a.wrapCall(name+".find", a.cap.CallFind, contracts[name+".find"].CallValidated)),
-		"query":  NewBuiltin(name+".query", a.wrapCall(name+".query", a.cap.CallQuery, contracts[name+".query"].CallValidated)),
-		"update": NewBuiltin(name+".update", a.wrapCall(name+".update", a.cap.CallUpdate, contracts[name+".update"].CallValidated)),
-		"sum":    NewBuiltin(name+".sum", a.wrapCall(name+".sum", a.cap.CallSum, contracts[name+".sum"].CallValidated)),
-		"each":   NewBuiltin(name+".each", a.wrapCall(name+".each", a.cap.CallEach, contracts[name+".each"].CallValidated)),
+		"find":   DeclareNonMutating(DeclareNonRetaining(NewBuiltin(name+".find", a.wrapCall(name+".find", a.cap.CallFind, contracts[name+".find"].CallValidated)))),
+		"query":  DeclareNonMutating(DeclareNonRetaining(NewBuiltin(name+".query", a.wrapCall(name+".query", a.cap.CallQuery, contracts[name+".query"].CallValidated)))),
+		"update": DeclareNonMutating(DeclareNonRetaining(NewBuiltin(name+".update", a.wrapCall(name+".update", a.cap.CallUpdate, contracts[name+".update"].CallValidated)))),
+		"sum":    DeclareNonMutating(DeclareNonRetaining(NewBuiltin(name+".sum", a.wrapCall(name+".sum", a.cap.CallSum, contracts[name+".sum"].CallValidated)))),
+		"each":   DeclareNonMutating(DeclareNonRetaining(NewBuiltin(name+".each", a.wrapCall(name+".each", a.cap.CallEach, contracts[name+".each"].CallValidated)))),
 	}
 	return map[string]Value{name: NewObject(methods)}, nil
 }
@@ -302,10 +308,19 @@ func (a *dbCapabilityAdapter) CapabilityContracts() map[string]CapabilityMethodC
 
 func (a *dbCapabilityAdapter) wrapCall(method string, fn, validatedFn func(db.ExecutionContext, []Value, map[string]Value, Value) (Value, error)) BuiltinFunc {
 	return func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		call := fn
 		if validatedFn != nil && exec.capabilityArgsValidated(method) {
-			return validatedFn(exec, args, kwargs, block)
+			call = validatedFn
 		}
-		return fn(exec, args, kwargs, block)
+		result, err := call(exec, args, kwargs, block)
+		if err != nil {
+			return result, err
+		}
+		// Every db call ends in CloneMethodResult, so the value returned here
+		// is already validated and isolated from host state; the proof lets
+		// the dispatcher skip detaching it a second time.
+		exec.markValidatedCapabilityReturn(method, result)
+		return result, nil
 	}
 }
 
@@ -354,7 +369,7 @@ func (c *eventsCapability) CapabilityContracts() map[string]CapabilityMethodCont
 
 func (c *eventsCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
 	methods := map[string]Value{
-		"publish": NewBuiltin(c.inner.PublishMethodName(), c.callPublish),
+		"publish": DeclareNonMutating(DeclareNonRetaining(NewBuiltin(c.inner.PublishMethodName(), c.callPublish))),
 	}
 	return map[string]Value{c.inner.Name: NewObject(methods)}, nil
 }

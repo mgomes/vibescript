@@ -238,6 +238,23 @@ In host code, handle script call errors the same way as other runtime failures
 and log adapter-specific method names from the error text (for example
 `db.update attributes must be data-only`).
 
+### Value Independence at the Boundary
+
+Every collection crossing between adapter Go code and script state is
+independent: arguments arrive isolated from script slots, and returns --
+including values exchanged through `Execution.CallBlock` -- are detached from
+any backing the adapter retains. The one deliberate exception is the
+capability object itself: it is the host's live state for the duration of a
+`Script.Call`, writing into it is the sanctioned factory channel, and script
+reads of it see the host's current truth mid-call. Everything reachable from
+it is made independent when the Call returns, so nothing host-held ever
+crosses out live. Do not defensively deep-clone a return before handing it
+back; the boundary already copies it, and a pre-clone just pays twice. An adapter that keeps no reference to anything it receives,
+returns, or yields can declare `vibes.DeclareNonRetaining` on its builtins to
+skip the boundary copies entirely, and one that never writes a script
+container can declare `vibes.DeclareNonMutating` to skip argument isolation;
+both are safety promises, so declare only what is true.
+
 ### Handling Dynamic Types
 
 Every call returns a `value.Value`. Inspect the `Kind()` before consuming it:
