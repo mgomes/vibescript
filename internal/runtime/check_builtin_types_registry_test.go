@@ -100,7 +100,7 @@ func TestCoreBuiltinTypedContractsStayGradual(t *testing.T) {
 		{name: "rand accepts int bound", source: "def run()\n  rand(6)\nend\n"},
 		{name: "rand accepts range bound", source: "def run()\n  rand(1..10)\nend\n"},
 		{name: "rand result satisfies number boundary", source: "def takes_number(value: number)\n  value\nend\n\ndef run()\n  takes_number(rand(6))\nend\n"},
-		{name: "srand accepts nothing", source: "def run()\n  srand\nend\n"},
+		{name: "srand accepts nothing", source: "def run()\n  srand()\nend\n"},
 		{name: "srand accepts int seed", source: "def run()\n  srand(7)\nend\n"},
 		{name: "money_cents accepts float cents", source: "def run()\n  money_cents(100.0, \"usd\")\nend\n"},
 		{name: "money_cents accepts int cents", source: "def run()\n  money_cents(100, \"usd\")\nend\n"},

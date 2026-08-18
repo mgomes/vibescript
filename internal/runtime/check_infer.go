@@ -385,16 +385,6 @@ func (c *scriptChecker) bindLocalClassValues(name string, classNames []string) {
 	}
 }
 
-func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, bool) {
-	fact, ok := c.localValueFactFor(name)
-	if !ok || len(fact.callables) != 1 || len(fact.classNames) > 0 || len(fact.staticVals) > 0 ||
-		len(fact.instanceOrigins) > 0 ||
-		fact.keywordSplatFails {
-		return nil, false
-	}
-	return fact.callables[0], true
-}
-
 func (c *scriptChecker) localCallableValuesFor(name string) ([]*ScriptFunction, bool) {
 	fact, ok := c.localValueFactFor(name)
 	return fact.callables, ok && len(fact.callables) > 0 && len(fact.classNames) == 0 &&

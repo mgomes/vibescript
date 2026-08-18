@@ -153,6 +153,7 @@ func NewEngine(cfg Config) (*Engine, error) {
 	}
 
 	registerCoreBuiltins(engine)
+	registerRemovedCallableFences(engine)
 	registerDataBuiltins(engine)
 	registerHashBuiltins(engine)
 	registerMathBuiltins(engine)
@@ -358,6 +359,36 @@ func (e *Engine) builtinCallSpec(name string) (staticCallSpec, bool) {
 	return *builtin.checkSpec, true
 }
 
+// builtinValueReadFails reports a registered builtin ("loop") or builtin
+// namespace member ("Regexp.union") that is callable but neither auto-invokes
+// on a bare read nor publishes a static contract. Calls to such a builtin
+// stay unchecked, but a bare read of it always fails at runtime: a callable
+// is not a value (ADR-006), so the checker can report the read itself.
+func (e *Engine) builtinValueReadFails(name string) bool {
+	if e == nil {
+		return false
+	}
+	e.builtinsMu.RLock()
+	defer e.builtinsMu.RUnlock()
+
+	root, member, qualified := strings.Cut(name, ".")
+	val, ok := e.builtins[root]
+	if !ok {
+		return false
+	}
+	if qualified {
+		if val.Kind() != KindObject {
+			return false
+		}
+		val, ok = val.HashEntryMap()[member]
+		if !ok {
+			return false
+		}
+	}
+	builtin := valueBuiltin(val)
+	return builtin != nil && !builtin.AutoInvoke && builtin.checkSpec == nil
+}
+
 // Builtin contract type fragments shared by the registration tables below.
 // Every type here mirrors a kind check in the builtin's implementation; a
 // contract that overclaims turns valid scripts into checker false positives.
@@ -391,6 +422,30 @@ func registerCoreBuiltins(engine *Engine) {
 	} {
 		engine.registerDefaultBuiltin(builtin)
 	}
+}
+
+// registerRemovedCallableFences keeps the removed callable constructors --
+// proc, lambda, and Proc.new -- resolvable so a script that reaches for one
+// gets the teaching error the parser gives the -> literal instead of
+// "undefined variable lambda". Each fence auto-invokes so a bare read fails
+// the same way a call does, and its spec carries the same message for the
+// checker.
+func registerRemovedCallableFences(engine *Engine) {
+	for _, name := range []string{"proc", "lambda"} {
+		engine.registerDefaultBuiltin(builtinDefinition{
+			name:       name,
+			fn:         builtinRemovedCallable(name),
+			autoInvoke: true,
+			checkSpec:  &staticCallSpec{minArgs: 0, maxArgs: -1, removedMessage: removedCallableMessage(name)},
+		})
+	}
+	engine.builtins["Proc"] = NewObject(map[string]Value{
+		"new": newCheckedAutoBuiltin(
+			"Proc.new",
+			builtinRemovedCallable("Proc.new"),
+			staticCallSpec{minArgs: 0, maxArgs: -1, removedMessage: removedCallableMessage("Proc.new")},
+		),
+	})
 }
 
 // Builtins returns a copy of the registered builtin map.

@@ -140,6 +140,15 @@ value = loop do
 end
 ```
 
+## Removed Callable Constructors
+
+### `proc { |args| ... }` / `Proc.new { |args| ... }` / `lambda { |args| ... }`
+
+Removed. Executable code is not a value: each of these names now fails with an
+error naming the replacement. Define a named function and call it, or attach a
+block to the call that runs it, as in `people.map { |person| person.name }`.
+See [Blocks](blocks.md) for the supported block forms.
+
 ## Formatting
 
 ### `format(pattern, *values) -> string` / `sprintf(pattern, *values) -> string`

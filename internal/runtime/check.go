@@ -314,8 +314,6 @@ type checkDynamicCallCandidates struct {
 	instancesMayNil  bool
 	classValues      []string
 	classValuesExact bool
-	callables        []*ScriptFunction
-	callablesExact   bool
 }
 
 type checkAssignmentReceiverCapture struct {
@@ -4673,6 +4671,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 	case *Identifier:
 		c.checkIdentifierResolved(function, typed)
 		if autoCall {
+			if !c.checkRemovedCallableIdentifierRead(function, typed) {
+				return false
+			}
 			c.enqueueReachableIdentifierCall(typed)
 			c.applyAutoInvokedIdentifierNamespaceMutations(typed)
 			if !c.pureCallArgument(typed) {
@@ -8233,6 +8234,19 @@ func (c *scriptChecker) checkMemberAutoCall(
 	}
 	target, ok := c.resolveMemberCallable(member)
 	if !ok {
+		if c.removedBuiltinMemberValueRead(member) {
+			// The member has no contract to resolve a call through, but the
+			// bare read is still decidable: the runtime rejects any callable
+			// in value position, so the read itself is the error.
+			c.addOrderIndependent(
+				function,
+				member.Pos(),
+				"%s is a method and cannot be used as a value; call it with %s(...)",
+				member.Property,
+				member.Property,
+			)
+			return staticCallable{}, false, false, false
+		}
 		call := &CallExpr{Callee: member, Position: member.Pos()}
 		candidates := c.captureDynamicCallCandidates(call)
 		resolution := c.exactMemberCallTargets(member.Property, call, candidates)
@@ -8320,16 +8334,30 @@ func (c *scriptChecker) checkMemberAutoCall(
 				c.scriptFunctionCallMayComplete(call, target)
 			return target, true, true, completed
 		}
-		return target, true, false, true
+		// A bare read of a member function that needs arguments used to yield
+		// a function value; those are removed, so the read itself is the error.
+		c.addOrderIndependent(
+			function,
+			member.Pos(),
+			"%s is a function and cannot be used as a value; call it with %s(...)",
+			member.Property,
+			member.Property,
+		)
+		return target, true, false, false
 	}
 	if target.spec.autoInvoke {
 		c.checkBuiltinCallShape(function, view, target.name, target.spec)
 		mayEnter := builtinCallShapeMayEnter(view, target.spec)
 		return target, true, true, mayEnter && c.builtinCallMayComplete(target.spec)
 	}
-	if target.spec.minArgs > 0 {
-		// A bare read of a member that needs arguments used to yield a
-		// callable value; those are removed, so the read itself is the error.
+	if target.spec.removedMessage != "" {
+		c.addOrderIndependent(function, member.Pos(), "%s", target.spec.removedMessage)
+		return target, true, false, false
+	}
+	if !target.constructor {
+		// A bare read of a callable member that does not auto-invoke used to
+		// yield a bound-method value; those are removed, so the read itself is
+		// the error regardless of the member's arity.
 		c.addOrderIndependent(
 			function,
 			member.Pos(),
@@ -8340,6 +8368,31 @@ func (c *scriptChecker) checkMemberAutoCall(
 		return target, true, false, false
 	}
 	return target, true, false, true
+}
+
+// removedBuiltinMemberValueRead recognizes a bare read of a fixed builtin
+// namespace member that is callable but has no auto-invoking bare form and no
+// static contract to resolve through (Regexp.union). A call to it stays
+// dynamic, but the read itself is decidable: the runtime rejects any callable
+// in value position (autoInvokeIfNeeded). The guard chain mirrors
+// resolveMemberCallable: any shadowing binding, mutation, or host override
+// dispatches elsewhere and stays gradual.
+func (c *scriptChecker) removedBuiltinMemberValueRead(member *MemberExpr) bool {
+	ident, ok := member.Object.(*Identifier)
+	if !ok || c.script == nil || c.script.engine == nil {
+		return false
+	}
+	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) ||
+		c.typeRootHasBinding(ident.Name) || c.hostBuiltinOverrides(ident.Name) {
+		return false
+	}
+	if _, scriptClass := c.staticClassArgument(ident); scriptClass {
+		return false
+	}
+	if c.namespaceMemberMutated(ident.Name, member.Property) {
+		return false
+	}
+	return c.script.engine.builtinValueReadFails(ident.Name + "." + member.Property)
 }
 
 // checkBlockResult distinguishes an unknown value from a block proven not to
@@ -10636,6 +10689,11 @@ type staticCallSpec struct {
 	// resultType is the builtin's invariant result type; nil keeps the
 	// result unknown for argument-dependent or unmodeled builtins.
 	resultType *TypeExpr
+	// removedMessage marks a removed-name fence (proc, lambda, Proc.new): a
+	// registration kept only so the reference teaches its replacement instead
+	// of reading as an undefined variable. Any use -- call or bare read --
+	// reports this message and can never enter or complete.
+	removedMessage string
 }
 
 func (c *scriptChecker) checkCallResolved(
@@ -10795,19 +10853,12 @@ func (c *scriptChecker) captureDynamicCallCandidates(call *CallExpr) checkDynami
 	instances, instancesExact := c.instanceClassExpressionNames(member.Object)
 	instancesMayNil := instancesExact && !c.instanceExpressionNeverNil(member.Object)
 	classes, classesExact := c.dispatchClassValueExpressionNames(member.Object)
-	var callables []*ScriptFunction
-	callablesExact := false
-	if member.Property == "call" && typeExprMayIncludeCallable(c.inferExpressionType(member.Object)) {
-		callables, callablesExact = c.callableExpressionFunctions(member.Object)
-	}
 	return checkDynamicCallCandidates{
 		instanceClasses:  instances,
 		instancesExact:   instancesExact,
 		instancesMayNil:  instancesMayNil,
 		classValues:      classes,
 		classValuesExact: classesExact,
-		callables:        callables,
-		callablesExact:   callablesExact,
 	}
 }
 
@@ -11063,21 +11114,6 @@ func (c *scriptChecker) exactDynamicCallTargets(
 	}
 	if member.Property == "send" || member.Property == "public_send" {
 		return c.exactForwardedCallTargets(call, member.Property == "send", dynamicCandidates, 0)
-	}
-	if member.Property == "call" && dynamicCandidates.callablesExact {
-		targets := make([]checkDynamicCallTarget, 0, len(dynamicCandidates.callables))
-		for _, fn := range dynamicCandidates.callables {
-			targets = appendDynamicCallTarget(targets, call, staticCallable{
-				name:       fn.Name + ".call",
-				fn:         fn,
-				resolution: calleeDirect,
-			}, true)
-		}
-		return finalizeDynamicCallResolution(checkDynamicCallResolution{
-			targets:         targets,
-			exact:           true,
-			diagnoseTargets: true,
-		})
 	}
 	return c.exactMemberCallTargets(member.Property, call, dynamicCandidates)
 }
@@ -13937,14 +13973,6 @@ func checkRootFunction(root *Env, name string) (*ScriptFunction, bool) {
 	return fn, fn != nil
 }
 
-func (c *scriptChecker) typeRootFunctionValue(name string) (*ScriptFunction, bool) {
-	fn, ok := c.typeRootFunction(name)
-	if !ok || len(fn.Params) == 0 {
-		return nil, false
-	}
-	return fn, true
-}
-
 func (c *scriptChecker) typeRootHasBinding(name string) bool {
 	for _, root := range []*Env{c.runtimeTypeRoot, c.typeRoot} {
 		if root != nil && root.hasOwnBinding(name) {
@@ -14069,15 +14097,6 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		return target, true
 	}
 	if ident, ok := member.Object.(*Identifier); ok {
-		if member.Property == "call" {
-			if fn, ok := c.localCallableValueFor(ident.Name); ok {
-				return staticCallable{
-					name:       fn.Name + ".call",
-					fn:         fn,
-					resolution: calleeDirect,
-				}, true
-			}
-		}
 		if classDef, ok := c.staticClassArgument(ident); ok {
 			if member.Property == "new" && !classDef.IsModule {
 				if initFn, exists := classDef.Methods["initialize"]; exists {
@@ -14113,11 +14132,6 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		}
 		if c.hostGlobalShadows(ident.Name) && c.optionGlobalsOverride {
 			return c.hostGlobalMemberCallable(ident.Name, member.Property)
-		}
-		if member.Property == "call" {
-			if fn, ok := c.typeRootFunctionValue(ident.Name); ok {
-				return staticCallable{name: ident.Name + ".call", fn: fn, resolution: calleeDirect}, true
-			}
 		}
 		if fn, ok := c.typeRootObjectFunction(ident.Name, member.Property); ok {
 			return staticCallable{name: ident.Name + "." + member.Property, fn: fn, resolution: calleeMemberValue}, true
@@ -14354,6 +14368,72 @@ func (c *scriptChecker) defaultBuiltinCallSpec(name string) (staticCallSpec, boo
 		return staticCallSpec{}, false
 	}
 	return c.script.engine.builtinCallSpec(name)
+}
+
+// checkRemovedCallableIdentifierRead rejects a bare identifier read that can
+// only resolve to executable code with no auto-invoking bare form: a script
+// function that needs arguments, or a builtin that does not auto-invoke. Such
+// a read used to yield a callable value; those are removed (ADR-006), so the
+// runtime refuses the read (autoInvokeIfNeeded) and the checker mirrors the
+// refusal instead of modeling the value the read can no longer produce. It
+// reports false when the read provably fails, so nothing after it is treated
+// as reachable. The guard chain mirrors autoInvokedIdentifierResultFact: any
+// shadowing binding or host override dispatches elsewhere and stays gradual.
+func (c *scriptChecker) checkRemovedCallableIdentifierRead(function string, ident *Identifier) bool {
+	name := ident.Name
+	if c.identifierShadowed(name) || c.hostGlobalShadows(name) {
+		return true
+	}
+	warnFunctionValue := func() bool {
+		c.addOrderIndependent(
+			function,
+			ident.Pos(),
+			"%s is a function and cannot be used as a value; call it with %s(...)",
+			name,
+			name,
+		)
+		return false
+	}
+	if fn, ok := c.script.functions[name]; ok {
+		if len(fn.Params) == 0 {
+			return true
+		}
+		return warnFunctionValue()
+	}
+	if fn, ok := c.typeRootFunction(name); ok {
+		if len(fn.Params) == 0 {
+			return true
+		}
+		return warnFunctionValue()
+	}
+	if c.typeRootHasBinding(name) || c.hostBuiltinOverrides(name) {
+		return true
+	}
+	warnMethodValue := func() bool {
+		c.addOrderIndependent(
+			function,
+			ident.Pos(),
+			"%s is a method and cannot be used as a value; call it with %s(...)",
+			name,
+			name,
+		)
+		return false
+	}
+	spec, ok := c.defaultBuiltinCallSpec(name)
+	if !ok {
+		if c.script != nil && c.script.engine != nil && c.script.engine.builtinValueReadFails(name) {
+			return warnMethodValue()
+		}
+		return true
+	}
+	if spec.removedMessage != "" {
+		c.addOrderIndependent(function, ident.Pos(), "%s", spec.removedMessage)
+		return false
+	}
+	if spec.autoInvoke {
+		return true
+	}
+	return warnMethodValue()
 }
 
 // autoInvokedIdentifierResultFact reports the result type of a bare identifier
@@ -14599,6 +14679,12 @@ func keywordSet(names ...string) map[string]struct{} {
 }
 
 func (c *scriptChecker) checkBuiltinCallShape(function string, call staticCallView, name string, spec staticCallSpec) {
+	if spec.removedMessage != "" {
+		// A removed-name fence can never be called; the teaching message
+		// replaces shape diagnostics that would imply a fixable call.
+		c.addOrderIndependent(function, call.pos, "%s", spec.removedMessage)
+		return
+	}
 	if len(call.args) < spec.minArgs {
 		c.add(function, call.pos, "call to %s has too few arguments: got %d, want at least %d", name, len(call.args), spec.minArgs)
 	}
@@ -14621,6 +14707,9 @@ func (c *scriptChecker) checkBuiltinCallShape(function string, call staticCallVi
 }
 
 func builtinCallShapeMayEnter(call staticCallView, spec staticCallSpec) bool {
+	if spec.removedMessage != "" {
+		return false
+	}
 	if len(call.args) < spec.minArgs || spec.maxArgs >= 0 && len(call.args) > spec.maxArgs {
 		return false
 	}
@@ -14641,6 +14730,9 @@ func builtinCallShapeMayEnter(call staticCallView, spec staticCallSpec) bool {
 }
 
 func (c *scriptChecker) builtinCallMayEnter(call staticCallView, spec staticCallSpec) bool {
+	if spec.removedMessage != "" {
+		return false
+	}
 	if len(call.args) < spec.minArgs || spec.maxArgs >= 0 && len(call.args) > spec.maxArgs {
 		return false
 	}
@@ -18614,11 +18706,7 @@ func (s *namespaceMutationScan) expressionWithAuto(expr Expression, autoCall boo
 		})
 		return completed
 	case *MemberExpr:
-		objectAutoCall := true
-		if typed.Property == "call" && typeExprMayIncludeCallable(s.checker.inferExpressionType(typed.Object)) {
-			objectAutoCall = false
-		}
-		if !s.expressionWithAuto(typed.Object, objectAutoCall) {
+		if !s.expressionWithAuto(typed.Object, true) {
 			return false
 		}
 		s.checker.captureAssignmentReceiver(typed)
@@ -18784,9 +18872,6 @@ func (s *namespaceMutationScan) callResolvedCallee(
 	resolved bool,
 	dynamicResolution checkDynamicCallResolution,
 ) {
-	if s.callableParamCall(call) {
-		return
-	}
 	if s.explicitSelfCall(call) {
 		return
 	}
@@ -18849,29 +18934,6 @@ func (s *namespaceMutationScan) explicitSelfCall(call *CallExpr) bool {
 	return true
 }
 
-func (s *namespaceMutationScan) callableParamCall(call *CallExpr) bool {
-	if call == nil {
-		return false
-	}
-	member, ok := call.Callee.(*MemberExpr)
-	if !ok || member.Property != "call" {
-		return false
-	}
-	ident, ok := member.Object.(*Identifier)
-	if !ok {
-		return false
-	}
-	if _, bound := s.callableParams[ident.Name]; bound {
-		s.functionReferenceWithCall(ident.Name, call)
-		return true
-	}
-	if _, bound := s.callableLambdas[ident.Name]; bound {
-		s.functionReferenceWithCall(ident.Name, call)
-		return true
-	}
-	return false
-}
-
 func (s *namespaceMutationScan) resolvedCallBlockMayRun(
 	call *CallExpr,
 	target staticCallable,
@@ -18913,11 +18975,7 @@ func (s *namespaceMutationScan) callCalleeExpression(call *CallExpr) bool {
 	case *Identifier:
 		return true
 	case *MemberExpr:
-		objectAutoCall := true
-		if callee.Property == "call" && typeExprMayIncludeCallable(s.checker.inferExpressionType(callee.Object)) {
-			objectAutoCall = false
-		}
-		return s.expressionWithAuto(callee.Object, objectAutoCall)
+		return s.expressionWithAuto(callee.Object, true)
 	default:
 		return s.expressionWithAuto(callee, false)
 	}
@@ -18925,9 +18983,6 @@ func (s *namespaceMutationScan) callCalleeExpression(call *CallExpr) bool {
 
 func (s *namespaceMutationScan) callCallee(call *CallExpr) {
 	if call == nil {
-		return
-	}
-	if s.callableParamCall(call) {
 		return
 	}
 	if s.explicitSelfCall(call) {
@@ -18955,10 +19010,6 @@ func (s *namespaceMutationScan) callCallee(call *CallExpr) {
 		if ident, ok := callee.Object.(*Identifier); ok && ident.Name == "self" {
 			s.selfCallReference(callee.Property, call)
 			return
-		}
-		if callee.Property == "call" &&
-			typeExprMayIncludeCallable(s.checker.inferExpressionType(callee.Object)) {
-			s.invokedUnknownCallable = true
 		}
 		s.memberReference(callee)
 	}

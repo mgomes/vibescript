@@ -425,11 +425,17 @@ end`,
 			t.Parallel()
 			engine := moduleTestEngine(t)
 			script := compileScriptWithEngine(t, engine, tc.source)
-			requireNoCheckWarnings(t, script)
 			// The bare member access is not auto-invoked as a call with missing
-			// arguments; the runtime rejects the value use instead.
-			requireCallErrorContains(t, script, "run", nil, CallOptions{},
-				"double is a function and cannot be used as a value")
+			// arguments; both the runtime and the checker reject the value use
+			// itself.
+			want := "double is a function and cannot be used as a value"
+			requireCheckWarningContains(t, script, want)
+			for _, warning := range script.CheckWarnings() {
+				if strings.Contains(warning.Message, "missing argument") {
+					t.Fatalf("CheckWarnings() = %q, want no auto-invoked missing-argument warning", warning.Message)
+				}
+			}
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, want)
 		})
 	}
 }
@@ -5108,7 +5114,7 @@ func TestCheckInferenceDoesNotBindConditionalRequireExports(t *testing.T) {
 	engine := moduleTestEngine(t)
 	script := compileScriptWithEngine(t, engine, `
 def run(flag)
-  value = flag ? require("helper").double : nil
+  value = flag ? require("helper") : nil
   double(1, 2)
   value
 end

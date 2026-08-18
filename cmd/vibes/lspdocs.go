@@ -785,7 +785,7 @@ var (
 )
 
 var namespaceIntroFallbacks = map[string]string{
-	"Proc":   "Constructs callable proc values: `Proc.new { |args| ... }` is equivalent to the `proc` builtin.",
+	"Proc":   "Removed callable constructor: `Proc.new` fails with a teaching error, since executable code is not a value. Define a named function or attach a block instead.",
 	"Regexp": "Ruby-style regular expression helpers for building and inspecting regex values.",
 }
 

@@ -410,6 +410,23 @@ func builtinFormat(exec *Execution, receiver Value, args []Value, kwargs map[str
 	return formatStringBuiltin(exec, "format", receiver, args, kwargs, block)
 }
 
+// removedCallableMessage spells the teaching error for a name that used to
+// construct a callable value (ADR-006 item 4). It matches the parser's fence
+// for the -> literal so every spelling of the removal teaches the same
+// replacement.
+func removedCallableMessage(name string) string {
+	return name + " was removed; executable code is not a value. Define a named function and call it, or attach a block to the call that runs it"
+}
+
+// builtinRemovedCallable backs the removed callable constructors (proc,
+// lambda, Proc.new). The fence exists so the reference errors with the
+// removal's teaching message rather than "undefined variable".
+func builtinRemovedCallable(name string) BuiltinFunc {
+	return func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+		return NewNil(), errors.New(removedCallableMessage(name))
+	}
+}
+
 func builtinLoop(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) > 0 {
 		return NewNil(), fmt.Errorf("loop does not take arguments")

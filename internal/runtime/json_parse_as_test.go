@@ -948,9 +948,8 @@ func TestShapeLiteralEngineBuiltinShadowMatchesRuntime(t *testing.T) {
 
 	// The lowercase money builtin resolves in every runtime env, so
 	// { price: money } keeps hash semantics; the checker must not claim
-	// shape facts, and the hash reading statically reports the schema
-	// misuse. At runtime the bare builtin reference itself is the error,
-	// since a method is not a value.
+	// shape facts. The bare builtin reference itself is the error on both
+	// sides, since a method is not a value.
 	script := compileScript(t, `
 def takes_string(value: string)
   value
@@ -961,10 +960,10 @@ def run(raw: string)
   takes_string(body[:price])
 end
 `)
-	requireCheckWarningContains(t, script, "call to JSON.parse_as expects a type literal as its second argument, got hash")
+	requireCheckWarningContains(t, script, "money is a method and cannot be used as a value; call it with money(...)")
 
-	// And at runtime the shadowed group really is a hash, which parse_as
-	// rejects as a schema.
+	// And at runtime the shadowed group really is a hash literal whose value
+	// expression is the rejected bare reference.
 	err := callScriptErr(t, context.Background(), script, "run", []Value{NewString("{}")}, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "cannot be used as a value") {
 		t.Fatalf("run() err = %v, want the bare builtin reference rejected", err)

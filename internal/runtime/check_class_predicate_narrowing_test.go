@@ -1514,9 +1514,12 @@ end
 
 class Holder
   def self.check(flag: bool, u: User | Order)
-    callback = flag ? first : second
     begin
-      callback.call(later: "bad")
+      if flag
+        first(later: "bad")
+      else
+        second(later: "bad")
+      end
     rescue TypeError
       unless u.is_a?(User)
         takes_user(u)
@@ -1532,8 +1535,8 @@ end
 	warnings := script.CheckWarningsForFunction("run")
 	got := strings.Join(checkWarningMessages(warnings), "\n")
 	for _, want := range []string{
-		"call to first.call argument later expected int, got string",
-		"call to second.call argument later expected int, got string",
+		"call to first argument later expected int, got string",
+		"call to second argument later expected int, got string",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, want)

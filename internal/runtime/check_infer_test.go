@@ -2196,8 +2196,9 @@ def run(v)
 end
 `))
 
-	// A callable is truthy even when it has no ordinary TypeExpr, so ||=
-	// preserves its exact target rather than widening to the unreachable RHS.
+	// A bare read of a parameterful function is no longer a value (ADR-006),
+	// so the compound chain after it is never modeled: the read itself is the
+	// error.
 	callable := compileScript(t, `
 def first(value: int)
   value
@@ -2213,7 +2214,7 @@ def run
   callback.call("bad")
 end
 `)
-	requireCheckWarningContains(t, callable, "call to first.call argument value expected int, got string")
+	requireCheckWarningContains(t, callable, "first is a function and cannot be used as a value; call it with first(...)")
 }
 
 func TestCheckInferHostKeywordsSeedKeywordRestParams(t *testing.T) {
