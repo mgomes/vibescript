@@ -239,6 +239,14 @@ func newUniversalSendBuiltin(name string, allowPrivate bool) Value {
 		if err := exec.checkCallMemoryRootsWithCallee(member, receiver, callArgs, kwargs, block); err != nil {
 			return NewNil(), err
 		}
+		if !isCollectionMutator(method) && method != "send" && method != "public_send" {
+			// send recorded the receiver path in case it dispatched to a
+			// mutator. A non-mutating target must not inherit that path,
+			// or an enclosing mutator's write could land on the wrong slot.
+			// Nested send/public_send keeps the path so a.send(:send, :push, 2)
+			// can still rebind the original receiver.
+			exec.withdrawAddressed()
+		}
 		return exec.invokeCallable(member, receiver, callArgs, kwargs, block, Position{})
 	})
 }
@@ -394,6 +402,17 @@ func meteredEqlCompare(exec *Execution, left, right Value) (bool, error) {
 // operands of the same kind and the same length are charged.
 func identicalCompare(exec *Execution, left, right Value) (bool, error) {
 	if exec != nil && left.Kind() == right.Kind() {
+		switch left.Kind() {
+		case KindArray, KindHash, KindObject:
+			// Collections compare by contents, so the walk must consume the
+			// same step and scratch budget == uses.
+			ctx := exec.meteredEquality()
+			eq := ctx.Equal(left, right)
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			return eq, nil
+		}
 		switch {
 		case stringLikeOperand(left) && len(left.String()) == len(right.String()):
 			if err := exec.chargeStringScan(len(left.String())); err != nil {
@@ -479,6 +498,9 @@ func setBoundReceiver(builtin *Builtin, cell *boundReceiver, receiver Value) {
 	if len(builtin.CapturedValues) > 0 {
 		builtin.CapturedValues[0] = receiver
 	}
+	// The replacement is the handle the cloned builtin now retains, so it
+	// must be published the same way the original capture was.
+	publishCollection(receiver)
 	if builtin.BoundReceiver != nil && builtin.BoundReceiver.retarget != nil {
 		builtin.BoundReceiver.retarget(builtin, receiver)
 	}

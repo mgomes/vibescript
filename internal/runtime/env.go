@@ -288,7 +288,9 @@ func (e *Env) getBoundValue(name string, lastMutable *Env) (Value, bool) {
 		val := e.inline[idx].value
 		if lazy, ok := lazyValue(val); ok {
 			value.BumpMutationEpoch()
+			previous := val
 			val = lazy.materialize()
+			publishBindingReplacement(previous, val)
 			e.inline[idx].value = val
 			e.dropArrayAppendBuffer(name)
 		}
@@ -297,7 +299,9 @@ func (e *Env) getBoundValue(name string, lastMutable *Env) (Value, bool) {
 	if val, ok := e.values[name]; ok {
 		if lazy, ok := lazyValue(val); ok {
 			value.BumpMutationEpoch()
+			previous := val
 			val = lazy.materialize()
+			publishBindingReplacement(previous, val)
 			e.values[name] = val
 			e.dropArrayAppendBuffer(name)
 		}
@@ -328,7 +332,9 @@ func (e *Env) getSkipping(name string, skip map[*Env]struct{}) (Value, bool) {
 			val := scope.inline[idx].value
 			if lazy, ok := lazyValue(val); ok {
 				value.BumpMutationEpoch()
+				previous := val
 				val = lazy.materialize()
+				publishBindingReplacement(previous, val)
 				scope.inline[idx].value = val
 				scope.dropArrayAppendBuffer(name)
 			}
@@ -337,7 +343,9 @@ func (e *Env) getSkipping(name string, skip map[*Env]struct{}) (Value, bool) {
 		if val, ok := scope.values[name]; ok {
 			if lazy, ok := lazyValue(val); ok {
 				value.BumpMutationEpoch()
+				previous := val
 				val = lazy.materialize()
+				publishBindingReplacement(previous, val)
 				scope.values[name] = val
 				scope.dropArrayAppendBuffer(name)
 			}
@@ -424,6 +432,7 @@ func (e *Env) growStatics(n int) {
 // DefineStatic binds a variable whose deep size is fixed at definition
 // time, keeping it out of the per-check estimation walk.
 func (e *Env) DefineStatic(name string, val Value) {
+	publishBindingReplacement(e.statics[name], val)
 	e.bumpEpochUnlessNeutral()
 	e.deleteDynamic(name)
 	if e.statics == nil {
@@ -552,11 +561,11 @@ func (e *Env) arrayAppendBuffer(name string) ([]Value, bool) {
 
 // clearArrayAppendBuffer settles the hidden concat accumulator for name when
 // its wrapper escapes through a variable read. Settling only unregisters the
-// buffer -- the binding keeps the exact wrapper the reader received, so both
-// handles stay the same Ruby object and later in-place mutations remain
-// visible through every alias. Once unregistered, the next `x = x + [...]`
-// takes the copy path into a fresh buffer, so nothing ever appends into the
-// escaped wrapper's backing again.
+// buffer, so the binding keeps the exact wrapper the reader received. Once
+// unregistered, the next `x = x + [...]` takes the copy path into a fresh
+// buffer, so nothing ever appends into the escaped wrapper's backing again --
+// which is what keeps the reuse invisible now that the escaped value and the
+// binding are two values.
 func (e *Env) clearArrayAppendBuffer(name string) {
 	if scope, ok := e.lookupBindingScope(name); ok {
 		scope.dropArrayAppendBuffer(name)
@@ -745,11 +754,13 @@ func (e *Env) getOwn(name string) (Value, bool) {
 
 func (e *Env) setExistingDynamic(name string, val Value) bool {
 	if idx, ok := e.inlineIndex(name); ok {
+		publishBindingReplacement(e.inline[idx].value, val)
 		e.bumpEpochUnlessScalarRebind(e.inline[idx].value, val)
 		e.inline[idx].value = val
 		return true
 	}
 	if old, ok := e.values[name]; ok {
+		publishBindingReplacement(old, val)
 		e.bumpEpochUnlessScalarRebind(old, val)
 		e.values[name] = val
 		return true
@@ -790,6 +801,7 @@ func (e *Env) setDynamic(name string, val Value) {
 	if e.setExistingDynamic(name, val) {
 		return
 	}
+	publishCollection(val)
 	e.bumpEpochUnlessNeutral()
 	if e.values != nil {
 		e.values[name] = val
@@ -894,6 +906,7 @@ func (e *Env) materializeStatic(name string, val Value) Value {
 	}
 	value.BumpMutationEpoch()
 	materialized := lazy.materialize()
+	publishBindingReplacement(val, materialized)
 	e.statics[name] = materialized
 	return materialized
 }

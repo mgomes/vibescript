@@ -208,6 +208,9 @@ end`,
 }
 
 func TestMemoryQuotaAllowsExecution(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	script := compileScriptWithConfig(t, Config{

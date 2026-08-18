@@ -17,11 +17,10 @@ import (
 var arrayMemberNames = []string{
 	"size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "flat_map", "collect_concat", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 	"take_while", "drop_while", "grep", "grep_v", "slice_when", "chunk_while",
-	"push", "append", "prepend", "unshift", "pop", "shift", "delete", "insert", "clear", "delete_if", "keep_if", "uniq", "uniq!", "first", "last", "sum", "compact", "compact!", "flatten", "fill", "chunk", "window", "join", "reverse", "reverse!", "to_h",
+	"push", "append", "prepend", "unshift", "pop", "shift", "delete", "insert", "clear", "delete_if", "keep_if", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "to_h",
 	"take", "drop", "zip", "transpose", "union", "difference",
 	"sample", "shuffle", "rotate", "product", "combination", "permutation", "repeated_combination", "repeated_permutation",
-	"sort", "sort!", "sort_by", "partition", "group_by", "group_by_stable", "tally",
-	"map!", "select!", "reject!",
+	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
 	"min", "max", "minmax", "min_by", "max_by",
 	"inspect", "to_s", "string",
 }
@@ -56,8 +55,8 @@ func arrayMemberBuiltin(property string) (Value, error) {
 	case "size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "flat_map", "collect_concat", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 		"take_while", "drop_while", "grep", "grep_v", "slice_when", "chunk_while":
 		return arrayMemberQuery(property)
-	case "push", "append", "prepend", "unshift", "pop", "shift", "delete", "insert", "clear", "delete_if", "keep_if", "uniq", "uniq!", "first", "last", "sum", "compact", "compact!", "flatten", "fill", "chunk", "window", "join", "reverse", "reverse!", "to_h", "take", "drop", "zip", "transpose", "union", "difference",
-		"sample", "shuffle", "rotate", "product", "combination", "permutation", "repeated_combination", "repeated_permutation", "sort!", "map!", "select!", "reject!":
+	case "push", "append", "prepend", "unshift", "pop", "shift", "delete", "insert", "clear", "delete_if", "keep_if", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "to_h", "take", "drop", "zip", "transpose", "union", "difference",
+		"sample", "shuffle", "rotate", "product", "combination", "permutation", "repeated_combination", "repeated_permutation":
 		return arrayMemberTransforms(property)
 	case "sort", "sort_by", "partition", "group_by", "group_by_stable", "tally":
 		return arrayMemberGrouping(property)
@@ -1195,7 +1194,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				blockArg[0] = item
-				val, err := runner.call(blockArg[:])
+				val, err := runner.callRetained(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -1211,7 +1210,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 			}
-			return NewArray(result), nil
+			return adoptArray(result), nil
 		}), nil
 	case "map_with_index":
 		return NewAutoBuiltin("array.map_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1258,7 +1257,7 @@ func arrayMemberQuery(property string) (Value, error) {
 				}
 				blockArgs[0] = item
 				blockArgs[1] = NewInt(int64(i))
-				val, err := runner.call(blockArgs[:])
+				val, err := runner.callRetained(blockArgs[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -1267,7 +1266,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 			}
-			return NewArray(out), nil
+			return adoptArray(out), nil
 		}), nil
 	case "flat_map", "collect_concat":
 		return NewAutoBuiltin("array.flat_map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1310,7 +1309,8 @@ func arrayMemberQuery(property string) (Value, error) {
 				}
 				// Ruby flattens exactly one level: an array result contributes
 				// its elements, anything else contributes itself, and a nested
-				// array inside the result is left alone.
+				// array inside the result is left alone. The block wrapper is
+				// not retained: NewArray publishes each appended slot once.
 				if val.Kind() != KindArray {
 					out = append(out, val)
 					if err := acc.addConservative(val, cap(out)); err != nil {
@@ -1387,7 +1387,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				blockArg[0] = item
-				val, err := runner.call(blockArg[:])
+				val, err := runner.callRetained(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -1401,7 +1401,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					}
 				}
 			}
-			return NewArray(out), nil
+			return adoptArray(out), nil
 		}), nil
 	case "select":
 		return NewAutoBuiltin("array.select", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -2529,7 +2529,7 @@ func arrayReduce(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		// against the snapshotted call roots, so a no-seed accumulator that is the
 		// receiver's first element deduplicates against the receiver and is charged
 		// only its structural slots -- never a second copy of the receiver's data.
-		next, err := runner.callWithChargedRoots(blockArgs[:], acc)
+		next, err := runner.callRetainedWithChargedRoots(blockArgs[:], acc)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -2654,7 +2654,9 @@ func reduceOperationName(v Value) (string, bool) {
 // operation form to the runtime helpers that implement them. Ruby exposes these
 // as methods on its numeric and collection types; Vibescript implements them as
 // operators, so the symbol shorthand routes through the same helpers the `+`,
-// `-`, `*`, `/`, `%`, and `**` operators use.
+// `-`, `*`, `/`, `%`, and `**` operators use. `<<` is handled in
+// reduceSendOperation so it can isolate through shovelArray without an
+// initialization cycle.
 var reduceArithmeticOps = map[string]func(exec *Execution, left, right Value) (Value, error){
 	"+":  func(_ *Execution, l, r Value) (Value, error) { return addValues(l, r) },
 	"-":  subtractValues,
@@ -2662,7 +2664,6 @@ var reduceArithmeticOps = map[string]func(exec *Execution, left, right Value) (V
 	"/":  func(_ *Execution, l, r Value) (Value, error) { return divideValues(l, r) },
 	"%":  func(_ *Execution, l, r Value) (Value, error) { return moduloValues(l, r) },
 	"**": func(_ *Execution, l, r Value) (Value, error) { return powerValues(l, r) },
-	"<<": func(_ *Execution, l, r Value) (Value, error) { return shovelValues(l, r) },
 	"&":  intersectValues,
 }
 
@@ -2674,6 +2675,9 @@ var reduceArithmeticOps = map[string]func(exec *Execution, left, right Value) (V
 // accumulator that happens to be the current self cannot reach private methods,
 // matching public_send's privacy guarantee.
 func (exec *Execution) reduceSendOperation(accumulator Value, operation string, item Value) (Value, error) {
+	if operation == "<<" {
+		return exec.shovelArray(accumulator, item)
+	}
 	if op, ok := reduceArithmeticOps[operation]; ok {
 		if accumulator.Kind() == KindInt && item.Kind() == KindInt {
 			// Mirror the operator guards: big operands charge scaled steps and
@@ -2739,11 +2743,14 @@ func arrayMemberGrep(property string) (Value, error) {
 				continue
 			}
 			if runner == nil {
+				// adoptArray will not publish; each kept element is a new
+				// handle on the same wrapper the receiver still names.
+				publishCollection(item)
 				out = append(out, item)
 				continue
 			}
 			blockArg[0] = item
-			transformed, err := runner.call(blockArg[:])
+			transformed, err := runner.callRetained(blockArg[:])
 			if err != nil {
 				return NewNil(), err
 			}
@@ -2756,16 +2763,16 @@ func arrayMemberGrep(property string) (Value, error) {
 			copy(trimmed, out)
 			out = trimmed
 		}
-		return NewArray(out), nil
+		return adoptArray(out), nil
 	}), nil
 }
 
-func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (Value, bool, error) {
+func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (Value, error) {
 	if len(args) > 0 {
-		return NewNil(), false, fmt.Errorf("%s does not take arguments", method)
+		return NewNil(), fmt.Errorf("%s does not take arguments", method)
 	}
 	if len(kwargs) > 0 {
-		return NewNil(), false, fmt.Errorf("%s does not take keyword arguments", method)
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments", method)
 	}
 	arr := receiver.Array()
 	if valueBlock(block) == nil {
@@ -2781,87 +2788,85 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		// block form below steps per element instead, which lets a block that
 		// raises stop paying for the elements it never reached.
 		if err := exec.chargeScanSteps(len(arr)); err != nil {
-			return NewNil(), false, err
+			return NewNil(), err
 		}
 		// Deduplication canonicalizes every element as a set key; charge big
 		// elements' words before the build.
 		if err := exec.chargeValueElementKeySteps(arr); err != nil {
-			return NewNil(), false, err
+			return NewNil(), err
 		}
 		unique, err := uniqueValuesMetered(arr, exec.checkContext, exec.chargeScanSteps, exec)
 		if err != nil {
-			return NewNil(), false, err
+			return NewNil(), err
 		}
-		return NewArray(unique), len(unique) != len(arr), nil
+		return NewArray(unique), nil
 	}
 	runner, err := newBlockCallRunner(exec, block, method, receiver, nil, kwargs)
 	if err != nil {
-		return NewNil(), false, err
+		return NewNil(), err
 	}
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	keyScratchReserved := 0
 	initialCap := boundedSetCap(len(arr))
 	if err := acc.reserveSlots(initialCap); err != nil {
-		return NewNil(), false, err
+		return NewNil(), err
 	}
 	out := make([]Value, 0, initialCap)
 	var seen valueSet
 	seen.bindMetering(exec)
 	var blockArg [1]Value
-	changed := false
 	for _, item := range arr {
 		if err := exec.step(); err != nil {
-			return NewNil(), false, err
+			return NewNil(), err
 		}
 		blockArg[0] = item
 		key, err := runner.call(blockArg[:])
 		if err != nil {
-			return NewNil(), false, err
+			return NewNil(), err
 		}
 		// A scalar key is hashed into the set's Go map in full — twice on a
 		// miss — so its payload is charged first, like every other
 		// key-canonicalization site.
 		if err := exec.chargeScalarSetKeySteps(key); err != nil {
-			return NewNil(), false, err
+			return NewNil(), err
 		}
 		// A composite key is matched by scanning every distinct composite key
 		// already seen, so charge that scan; a per-element step alone would let
 		// n distinct composite keys cost n(n-1)/2 unmetered comparisons.
 		seenKey, probes := seen.containsCounted(key)
 		if err := seen.chargeErr(); err != nil {
-			return NewNil(), false, err
+			return NewNil(), err
 		}
 		if err := exec.chargeScanSteps(probes); err != nil {
-			return NewNil(), false, err
+			return NewNil(), err
 		}
 		if seenKey {
-			changed = true
 			continue
 		}
 		projectedKeyScratch := valueSetScratchBytesForNext(seen, key, len(arr))
 		if projectedKeyScratch > keyScratchReserved {
 			if err := acc.reserveScratch(projectedKeyScratch - keyScratchReserved); err != nil {
-				return NewNil(), false, err
+				return NewNil(), err
 			}
 			keyScratchReserved = projectedKeyScratch
 		}
 		if err := acc.addToReservedBacking(key); err != nil {
-			return NewNil(), false, err
+			return NewNil(), err
 		}
 		// add rescans the composites to find its insertion point.
 		_, addProbes := seen.addCounted(key, len(arr))
 		if err := seen.chargeErr(); err != nil {
-			return NewNil(), false, err
+			return NewNil(), err
 		}
 		if err := exec.chargeScanSteps(addProbes); err != nil {
-			return NewNil(), false, err
+			return NewNil(), err
 		}
 		out = append(out, item)
 		if err := acc.add(item, cap(out)); err != nil {
-			return NewNil(), false, err
+			return NewNil(), err
 		}
 	}
-	return NewArray(out), changed, nil
+	return NewArray(out), nil
 }
 
 func valueSetScratchBytesForNext(seen valueSet, next Value, hint int) int {
@@ -2913,39 +2918,36 @@ func valueSetScratchBytesForCounts(scalarCount, compositeCap int) int {
 	return total
 }
 
-func arrayCompact(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (Value, bool, error) {
+func arrayCompact(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (Value, error) {
 	if len(args) > 0 {
-		return NewNil(), false, fmt.Errorf("%s does not take arguments", method)
+		return NewNil(), fmt.Errorf("%s does not take arguments", method)
 	}
 	if len(kwargs) > 0 {
-		return NewNil(), false, fmt.Errorf("%s does not take keyword arguments", method)
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments", method)
 	}
 	if valueBlock(block) != nil {
-		return NewNil(), false, fmt.Errorf("%s does not accept a block", method)
+		return NewNil(), fmt.Errorf("%s does not accept a block", method)
 	}
 	arr := receiver.Array()
 	scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
 	if err != nil {
-		return NewNil(), false, err
+		return NewNil(), err
 	}
 	defer scratch.release()
 	if err := scratch.reserve(arraySlotBackingBytes(len(arr))); err != nil {
-		return NewNil(), false, err
+		return NewNil(), err
 	}
 	out := make([]Value, 0, len(arr))
-	changed := false
 	for _, item := range arr {
 		if item.Kind() != KindNil {
 			out = append(out, item)
-			continue
 		}
-		changed = true
 	}
 	out = trimValueSliceIfScratchFits(out, &scratch)
-	return NewArray(out), changed, nil
+	return NewArray(out), nil
 }
 
-func arrayFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string, keepTruthy, bang bool) (Value, error) {
+func arrayFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string, keepTruthy bool) (Value, error) {
 	if len(args) > 0 {
 		return NewNil(), fmt.Errorf("%s does not take arguments", method)
 	}
@@ -2963,7 +2965,6 @@ func arrayFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs ma
 		return NewNil(), err
 	}
 	out := make([]Value, 0, initialCap)
-	changed := false
 	var blockArg [1]Value
 	for _, item := range arr {
 		if err := exec.step(); err != nil {
@@ -2980,19 +2981,19 @@ func arrayFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs ma
 			if err := acc.add(item, cap(out)); err != nil {
 				return NewNil(), err
 			}
-			continue
 		}
-		changed = true
-	}
-	if bang && !changed {
-		return NewNil(), nil
 	}
 	// The kept elements are swapped into the receiver only after the block has
 	// visited every (snapshot) element, so the block never observes a
-	// half-filtered receiver. delete_if/keep_if always return the mutated
-	// receiver; the bang forms return nil above when nothing was removed.
-	setArrayElems(receiver, out)
-	return receiver, nil
+	// half-filtered receiver, and delete_if/keep_if return the updated
+	// receiver. Writability is checked here rather than before the loop: the
+	// block is script code and can bind the receiver somewhere new while it
+	// runs. A predicate that keeps every element changes nothing, so isolation
+	// would copy a shared receiver for a no-op.
+	if len(out) == len(arr) {
+		return receiver, nil
+	}
+	return exec.writeArrayElems(receiver, out)
 }
 
 type arrayChunkControl int
@@ -3388,6 +3389,16 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	if err != nil {
 		return NewNil(), err
 	}
+	// An empty window inside the current length changes nothing, so do not
+	// rebuild or isolate a shared receiver for a semantic no-op. Detach the
+	// fill value only after this check: a.fill(a, 0, 0) must not deep-clone a.
+	if span.begin == span.end && span.finalLength == len(arr) {
+		return receiver, nil
+	}
+	args, err = exec.detachStoredCollections(args)
+	if err != nil {
+		return NewNil(), err
+	}
 
 	// Reject an oversized result up front so a window far past the receiver
 	// cannot reserve a huge backing array before the per-element checks below
@@ -3452,12 +3463,16 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 			var val Value
 			if runner != nil {
 				blockArg[0] = NewInt(int64(i))
-				val, err = runner.call(blockArg[:])
+				val, err = runner.callRetained(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
 			} else {
 				val = args[0]
+				// The same wrapper is installed in every window slot, so
+				// count it once per slot. Publishing only once leaves a
+				// multi-slot fill looking sole.
+				publishCollection(val)
 			}
 			if err := appendValue(val, runner != nil); err != nil {
 				return NewNil(), err
@@ -3481,9 +3496,9 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 
 	// Swap the filled elements into the receiver only after the (optional)
 	// block has produced every element, so the block never observes a
-	// half-filled receiver. Returns the receiver, matching Ruby's Array#fill.
-	setArrayElems(receiver, out)
-	return receiver, nil
+	// half-filled receiver. Writability is checked at the write because that
+	// block can bind the receiver somewhere new while it runs.
+	return exec.writeArrayElems(receiver, out)
 }
 
 // arrayFillResolveSpan parses the window selectors shared by both fill forms and
@@ -3633,8 +3648,8 @@ func arrayMemberTransforms(property string) (Value, error) {
 	switch property {
 	case "push", "append":
 		// Ruby exposes Array#append as an alias for Array#push, appending the
-		// arguments (in order) to the end of the receiver in place and
-		// returning the receiver; every alias of the array observes the growth.
+		// arguments (in order) to the end of the receiver and returning it. What
+		// grows is the binding the receiver names; see collection_values.go.
 		name := "array." + property
 		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(kwargs) > 0 {
@@ -3643,10 +3658,19 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if len(args) == 0 {
 				return receiver, nil
 			}
-			if err := arrayReserveInPlaceGrowth(exec, receiver, args, kwargs, block, len(args)); err != nil {
+			added, err := exec.detachStoredCollections(args)
+			if err != nil {
 				return NewNil(), err
 			}
-			setArrayElems(receiver, append(receiver.Array(), args...))
+			receiver, err = exec.writableCollection(receiver)
+			if err != nil {
+				return NewNil(), err
+			}
+			if err := arrayReserveInPlaceGrowth(exec, receiver, added, kwargs, block, len(added)); err != nil {
+				return NewNil(), err
+			}
+			publishCollectionElems(added)
+			setArrayElems(receiver, append(receiver.Array(), added...))
 			return receiver, nil
 		}), nil
 	case "prepend", "unshift":
@@ -3661,6 +3685,15 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if len(args) == 0 {
 				return receiver, nil
 			}
+			args, err := exec.detachStoredCollections(args)
+			if err != nil {
+				return NewNil(), err
+			}
+			receiver, err = exec.writableCollection(receiver)
+			if err != nil {
+				return NewNil(), err
+			}
+			publishCollectionElems(args)
 			base := receiver.Array()
 			newLen := saturatingAdd(len(args), len(base))
 			if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(newLen); err != nil {
@@ -3700,18 +3733,24 @@ func arrayMemberTransforms(property string) (Value, error) {
 				if len(arr) == 0 {
 					return NewNil(), nil
 				}
+			} else if count == 0 {
+				// pop(0), and pop(n) on an empty receiver, remove nothing.
+				// Isolation waits until a write, so a shared receiver is not
+				// copied for a call that changes nothing.
+				return NewArray([]Value{}), nil
+			}
+			var err error
+			receiver, err = exec.writableCollection(receiver)
+			if err != nil {
+				return NewNil(), err
+			}
+			arr = receiver.Array()
+			if len(args) == 0 {
 				popped := arr[len(arr)-1]
 				if err := shrinkArray(exec, receiver, arr, 0, len(arr)-1, args, kwargs, block, 0); err != nil {
 					return NewNil(), err
 				}
 				return popped, nil
-			}
-			// pop(0), and pop(n) on an empty receiver, remove nothing. Falling
-			// through would still take the shrink path, which inside an
-			// iterator copies the whole receiver and bills its elements for a
-			// call that changes nothing.
-			if count == 0 {
-				return NewArray([]Value{}), nil
 			}
 			// pop(n) copies the removed tail out so the returned array does not
 			// share backing storage with the receiver.
@@ -3746,33 +3785,17 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if valueBlock(block) != nil {
 				return NewNil(), fmt.Errorf("array.clear does not accept a block")
 			}
-			setArrayElems(receiver, []Value{})
-			return receiver, nil
+			return exec.writeArrayElems(receiver, []Value{})
 		}), nil
 	case "delete_if", "keep_if":
 		name := "array." + property
 		keepTruthy := property == "keep_if"
 		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return arrayFilterByBlock(exec, receiver, args, kwargs, block, name, keepTruthy, false)
+			return arrayFilterByBlock(exec, receiver, args, kwargs, block, name, keepTruthy)
 		}), nil
 	case "uniq":
 		return NewAutoBuiltin("array.uniq", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			result, _, err := arrayUniq(exec, receiver, args, kwargs, block, "array.uniq")
-			return result, err
-		}), nil
-	case "uniq!":
-		// Ruby's Array#uniq! deduplicates the receiver in place, returning the
-		// receiver when duplicates were removed and nil when nothing changed.
-		return NewAutoBuiltin("array.uniq!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			result, changed, err := arrayUniq(exec, receiver, args, kwargs, block, "array.uniq!")
-			if err != nil {
-				return NewNil(), err
-			}
-			if !changed {
-				return NewNil(), nil
-			}
-			setArrayElems(receiver, result.Array())
-			return receiver, nil
+			return arrayUniq(exec, receiver, args, kwargs, block, "array.uniq")
 		}), nil
 	case "union":
 		return NewAutoBuiltin("array.union", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -3913,22 +3936,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 		return NewAutoBuiltin("array.sum", arraySum), nil
 	case "compact":
 		return NewAutoBuiltin("array.compact", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			result, _, err := arrayCompact(exec, receiver, args, kwargs, block, "array.compact")
-			return result, err
-		}), nil
-	case "compact!":
-		// Ruby's Array#compact! removes nil elements from the receiver in
-		// place, returning the receiver when any were removed and nil otherwise.
-		return NewAutoBuiltin("array.compact!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			result, changed, err := arrayCompact(exec, receiver, args, kwargs, block, "array.compact!")
-			if err != nil {
-				return NewNil(), err
-			}
-			if !changed {
-				return NewNil(), nil
-			}
-			setArrayElems(receiver, result.Array())
-			return receiver, nil
+			return arrayCompact(exec, receiver, args, kwargs, block, "array.compact")
 		}), nil
 	case "flatten":
 		return NewAutoBuiltin("array.flatten", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -4072,28 +4080,6 @@ func arrayMemberTransforms(property string) (Value, error) {
 		return NewAutoBuiltin("array.reverse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return arrayReverseCopy(exec, receiver, args, kwargs, block, "array.reverse")
 		}), nil
-	case "reverse!":
-		// Ruby's Array#reverse! reverses the receiver's elements in place (no
-		// new backing is allocated) and always returns the receiver.
-		return NewAutoBuiltin("array.reverse!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("array.reverse! does not take arguments")
-			}
-			if len(kwargs) > 0 {
-				return NewNil(), fmt.Errorf("array.reverse! does not take keyword arguments")
-			}
-			if valueBlock(block) != nil {
-				return NewNil(), fmt.Errorf("array.reverse! does not accept a block")
-			}
-			arr := receiver.Array()
-			for i, j := 0, len(arr)-1; i < j; i, j = i+1, j-1 {
-				if err := exec.step(); err != nil {
-					return NewNil(), err
-				}
-				arr[i], arr[j] = arr[j], arr[i]
-			}
-			return receiver, nil
-		}), nil
 	case "take":
 		return NewAutoBuiltin("array.take", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 1 {
@@ -4230,18 +4216,6 @@ func arrayMemberTransforms(property string) (Value, error) {
 			}
 			return NewArray(columns), nil
 		}), nil
-	case "sort!":
-		return NewAutoBuiltin("array.sort!", arraySortBang), nil
-	case "map!":
-		return NewAutoBuiltin("array.map!", arrayMapBang), nil
-	case "select!":
-		return NewAutoBuiltin("array.select!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return arrayFilterByBlock(exec, receiver, args, kwargs, block, "array.select!", true, true)
-		}), nil
-	case "reject!":
-		return NewAutoBuiltin("array.reject!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return arrayFilterByBlock(exec, receiver, args, kwargs, block, "array.reject!", false, true)
-		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
@@ -4274,17 +4248,23 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 		if len(arr) == 0 {
 			return NewNil(), nil
 		}
+	} else if count == 0 {
+		// shift(0), and shift(n) on an empty receiver, remove nothing.
+		// Isolation waits until a write, so a shared receiver is not
+		// copied for a call that changes nothing.
+		return NewArray([]Value{}), nil
+	}
+	receiver, err := exec.writableCollection(receiver)
+	if err != nil {
+		return NewNil(), err
+	}
+	arr = receiver.Array()
+	if len(args) == 0 {
 		shifted := arr[0]
 		if err := shrinkArray(exec, receiver, arr, 1, len(arr), args, kwargs, block, 0); err != nil {
 			return NewNil(), err
 		}
 		return shifted, nil
-	}
-	// shift(0), and shift(n) on an empty receiver, remove nothing. Falling
-	// through would still take the shrink path, which inside an iterator copies
-	// the whole receiver and bills its elements for a call that changes nothing.
-	if count == 0 {
-		return NewArray([]Value{}), nil
 	}
 	// shift(n) copies the removed head out so the returned array does not share
 	// backing storage with the receiver.
@@ -4343,6 +4323,11 @@ func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		}
 	}
 	if found {
+		var err error
+		receiver, err = exec.writableCollection(receiver)
+		if err != nil {
+			return NewNil(), err
+		}
 		setArrayElems(receiver, out)
 		return matched, nil
 	}
@@ -4384,13 +4369,14 @@ func arrayInsert(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		return NewNil(), fmt.Errorf("array.insert index must be integer")
 	}
 	values := args[1:]
-	arr := receiver.Array()
 	if len(values) == 0 {
 		return receiver, nil
 	}
-	// Resolve the insertion point. A negative index inserts after the element it
-	// names, so it normalizes to (index + len + 1); Ruby rejects a negative index
-	// whose magnitude exceeds the length.
+	// Resolve the insertion point against the receiver as it stands, before
+	// isolation copies a shared array. A negative index inserts after the
+	// element it names, so it normalizes to (index + len + 1); Ruby rejects
+	// a negative index whose magnitude exceeds the length.
+	arr := receiver.Array()
 	at := index
 	if at < 0 {
 		at += len(arr) + 1
@@ -4398,6 +4384,16 @@ func arrayInsert(exec *Execution, receiver Value, args []Value, kwargs map[strin
 			return NewNil(), fmt.Errorf("array.insert index %d out of range", index)
 		}
 	}
+	values, err = exec.detachStoredCollections(values)
+	if err != nil {
+		return NewNil(), err
+	}
+	receiver, err = exec.writableCollection(receiver)
+	if err != nil {
+		return NewNil(), err
+	}
+	publishCollectionElems(values)
+	arr = receiver.Array()
 	// A non-negative index past the end pads the gap with nil, growing the array
 	// so the inserted values land exactly at the requested position.
 	pad := 0
@@ -5133,110 +5129,4 @@ func arrayFlattenBounded(exec *Execution, receiver Value, args []Value, kwargs m
 		},
 	}
 	return flattenValuesInto(out, arr, depth, state)
-}
-
-func arraySortBang(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-	if len(args) > 0 {
-		return NewNil(), fmt.Errorf("array.sort! does not take arguments")
-	}
-	if len(kwargs) > 0 {
-		return NewNil(), fmt.Errorf("array.sort! does not take keyword arguments")
-	}
-	arr := receiver.Array()
-	if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlots(len(arr)); err != nil {
-		return NewNil(), err
-	}
-	out := make([]Value, len(arr))
-	copy(out, arr)
-	var runner *blockCallRunner
-	if valueBlock(block) != nil {
-		var err error
-		runner, err = newBlockCallRunner(exec, block, "array.sort!", receiver, nil, kwargs)
-		if err != nil {
-			return NewNil(), err
-		}
-	}
-	var comparatorArgs [2]Value
-	// One state for the whole pass, so the memo and its reservation
-	// are taken once rather than per comparison.
-	cmpState := newArrayCompareState(exec, receiver)
-	defer cmpState.release()
-	var sortErr error
-	slices.SortStableFunc(out, func(a, b Value) int {
-		if sortErr != nil {
-			return 0
-		}
-		if err := exec.step(); err != nil {
-			sortErr = err
-			return 0
-		}
-		if runner != nil {
-			comparatorArgs[0] = a
-			comparatorArgs[1] = b
-			cmpValue, err := runner.call(comparatorArgs[:])
-			if err != nil {
-				sortErr = err
-				return 0
-			}
-			order, err := sortComparisonResult(cmpValue)
-			if err != nil {
-				sortErr = fmt.Errorf("array.sort! block must return numeric comparator")
-				return 0
-			}
-			return order
-		}
-		order, err := arraySortCompareValuesWith(cmpState, a, b)
-		if err != nil {
-			sortErr = sortComparisonError(err, "array.sort! values are not comparable")
-			return 0
-		}
-		return order
-	})
-	if sortErr != nil {
-		return NewNil(), sortErr
-	}
-	// Sorting works on a copy so a comparator block never observes a
-	// half-sorted receiver; the sorted elements are swapped in afterwards and
-	// the receiver is returned, matching Ruby's Array#sort!.
-	setArrayElems(receiver, out)
-	return receiver, nil
-}
-
-func arrayMapBang(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-	if len(args) > 0 {
-		return NewNil(), fmt.Errorf("array.map! does not take arguments")
-	}
-	if len(kwargs) > 0 {
-		return NewNil(), fmt.Errorf("array.map! does not take keyword arguments")
-	}
-	runner, err := newBlockCallRunner(exec, block, "array.map!", receiver, nil, kwargs)
-	if err != nil {
-		return NewNil(), err
-	}
-	arr := receiver.Array()
-	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
-	if err := acc.reserveSlots(len(arr)); err != nil {
-		return NewNil(), err
-	}
-	out := make([]Value, 0, len(arr))
-	var blockArg [1]Value
-	for _, item := range arr {
-		if err := exec.step(); err != nil {
-			return NewNil(), err
-		}
-		blockArg[0] = item
-		val, err := runner.call(blockArg[:])
-		if err != nil {
-			return NewNil(), err
-		}
-		out = append(out, val)
-		if err := acc.addConservative(val, cap(out)); err != nil {
-			return NewNil(), err
-		}
-	}
-	// The mapped elements are swapped into the receiver only after the block
-	// has visited every (snapshot) element, so the block never observes a
-	// half-mapped receiver. Returns the receiver, matching Ruby's Array#map!.
-	setArrayElems(receiver, out)
-	return receiver, nil
 }

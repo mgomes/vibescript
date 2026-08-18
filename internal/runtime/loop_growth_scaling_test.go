@@ -27,6 +27,9 @@ func loopMemoStringArray(n int) Value {
 // append (the shovel commits its delta into the memo instead of invalidating
 // it), doubling the iterations must roughly double the estimator's visits.
 func TestGrowthLoopsKeepBaseWalkMemo(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	const small, large = 400, 800
 	sources := []struct {
 		name string

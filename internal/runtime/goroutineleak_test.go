@@ -14,6 +14,7 @@ import (
 func TestMain(m *testing.M) {
 	maybeEnableEnvRecycleVerify()
 	maybeEnableEstimatorVerify()
+	maybeEnableCollectionCopyVerify()
 	maybeEnableBuiltinContractVerify()
 	code := m.Run()
 	if code == 0 {

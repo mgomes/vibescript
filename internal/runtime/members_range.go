@@ -261,7 +261,7 @@ func rangeMemberMap() Value {
 		var blockArg [1]Value
 		err = exec.rangeForEach(receiver.Range(), func(value int64) (bool, error) {
 			blockArg[0] = NewInt(value)
-			val, err := runner.call(blockArg[:])
+			val, err := runner.callRetained(blockArg[:])
 			if err != nil {
 				return false, err
 			}
@@ -274,7 +274,7 @@ func rangeMemberMap() Value {
 		if err != nil {
 			return NewNil(), err
 		}
-		return NewArray(out), nil
+		return adoptArray(out), nil
 	})
 }
 
@@ -392,7 +392,7 @@ func rangeMemberReduce() Value {
 			}
 			blockArgs[0] = acc
 			blockArgs[1] = element
-			next, err := runner.call(blockArgs[:])
+			next, err := runner.callRetained(blockArgs[:])
 			if err != nil {
 				return false, err
 			}

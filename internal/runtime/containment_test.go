@@ -133,7 +133,12 @@ end`)
 	}
 }
 
-func TestValueStringHandlesCycles(t *testing.T) {
+// TestValueStringOnSelfReferentialHash replaces the cycle case. A hash can no
+// longer contain itself (ADR-006 item 2): `h[:self] = h` stores the value h had,
+// so rendering it terminates on an ordinary finite graph and needs no cycle
+// marker. The subprocess still runs it, because what the case really guards is
+// that rendering a self-referential source cannot run away.
+func TestValueStringOnSelfReferentialHash(t *testing.T) {
 	if os.Getenv("VIBES_CONTAINMENT_SUBPROCESS") == "string-cycle" {
 		script := compileScriptDefault(t, `def run
   h = {}
@@ -143,15 +148,15 @@ end`)
 
 		_, err := script.Call(context.Background(), "run", nil, CallOptions{})
 		if err == nil {
-			t.Fatalf("expected cyclic assertion to fail")
+			t.Fatalf("expected the assertion to fail")
 		}
-		if !strings.Contains(err.Error(), "<cycle>") {
-			t.Fatalf("cyclic assertion error = %q, want cycle marker", err.Error())
+		if !strings.Contains(err.Error(), "{self: {}}") {
+			t.Fatalf("assertion error = %q, want the snapshot the store made", err.Error())
 		}
 		return
 	}
 
-	runContainmentSubprocess(t, "string-cycle", "TestValueStringHandlesCycles")
+	runContainmentSubprocess(t, "string-cycle", "TestValueStringOnSelfReferentialHash")
 }
 
 func TestArrayFlattenRejectsCycles(t *testing.T) {

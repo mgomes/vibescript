@@ -57,10 +57,18 @@ end
 // measureScenarioReceiverBytes builds the scenario's receiver under an ample
 // quota and returns its estimated footprint, so the tests size their quotas from
 // the real accounting rather than hand-derived constants.
+// registerPureProbe installs a host builtin that neither mutates nor retains
+// its arguments. Isolation would otherwise deep-copy an accumulator that still
+// names tails from the iterated hash, doubling the live peak these tests size
+// their quotas against.
+func registerPureProbe(engine *Engine, name string, fn BuiltinFunc) {
+	engine.registerHostBuiltin(name, DeclareNonRetaining(DeclareNonMutating(NewBuiltin(name, fn))))
+}
+
 func measureScenarioReceiverBytes(t *testing.T, source string) int {
 	t.Helper()
 	engine := MustNewEngine(Config{MemoryQuotaBytes: 1 << 30, StepQuota: 5_000_000})
-	engine.RegisterBuiltin("probe_entry", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+	registerPureProbe(engine, "probe_entry", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
 		return NewNil(), nil
 	})
 	script, err := engine.Compile(source)
@@ -94,7 +102,7 @@ func TestEphemeralReceiverCombinedPeakTripsQuota(t *testing.T) {
 	quota := receiverBytes + receiverBytes/2
 	engine := MustNewEngine(Config{MemoryQuotaBytes: quota, StepQuota: 5_000_000})
 	entries := 0
-	engine.RegisterBuiltin("probe_entry", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+	registerPureProbe(engine, "probe_entry", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
 		entries++
 		return NewNil(), nil
 	})
@@ -133,7 +141,7 @@ func TestEphemeralReceiverCombinedPeakWithinQuotaPasses(t *testing.T) {
 	quota := 3 * receiverBytes
 	engine := MustNewEngine(Config{MemoryQuotaBytes: quota, StepQuota: 5_000_000})
 	peakBodyView := 0
-	engine.RegisterBuiltin("probe_entry", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+	registerPureProbe(engine, "probe_entry", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
 		if view := exec.estimateMemoryUsage(); view > peakBodyView {
 			peakBodyView = view
 		}
@@ -186,7 +194,7 @@ end
 `
 	quota := 2*receiverBytes + receiverBytes/2
 	engine := MustNewEngine(Config{MemoryQuotaBytes: quota, StepQuota: 5_000_000})
-	engine.RegisterBuiltin("probe_entry", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+	registerPureProbe(engine, "probe_entry", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
 		return NewNil(), nil
 	})
 	script, err := engine.Compile(source)

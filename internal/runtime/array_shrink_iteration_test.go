@@ -221,6 +221,9 @@ end`, n, driver)
 // be just as correct and would make this drain quadratic, so the step cost of
 // the copies is what the measurement is really watching.
 func TestShrinkDuringIterationStaysLinear(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	drivers := map[string]string{
@@ -302,6 +305,9 @@ end`)
 // bills its elements: a no-op over 800 elements cost 700 steps more than the
 // same no-op over 100.
 func TestZeroCountShrinkDoesNoWork(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	for _, expr := range []string{"a.pop(0)", "a.shift(0)"} {
@@ -422,16 +428,19 @@ func (arrayArgDriver) Bind(CapabilityBinding) (map[string]Value, error) {
 		_, err := exec.CallBlock(block, []Value{NewArray(elems[:1])})
 		return NewNil(), err
 	}
+	pure := func(name string, fn BuiltinFunc) Value {
+		return DeclareNonRetaining(DeclareNonMutating(NewBuiltin(name, fn)))
+	}
 	return map[string]Value{
 		"driver": NewObject(map[string]Value{
-			"walk_spare":       NewBuiltin("driver.walk_spare", walkSpare),
-			"walk_aliased":     NewBuiltin("driver.walk_aliased", walkAliased),
-			"walk_aliased_big": NewBuiltin("driver.walk_aliased_big", walkAliasedBig),
-			"walk":             NewBuiltin("driver.walk", walk),
-			"walk_kw":          NewBuiltin("driver.walk_kw", walk),
-			"walk_in":          NewBuiltin("driver.walk_in", walkNested),
-			"walk_inner":       NewBuiltin("driver.walk_inner", walkNested),
-			"walk_returned":    NewBuiltin("driver.walk_returned", walkReturned),
+			"walk_spare":       pure("driver.walk_spare", walkSpare),
+			"walk_aliased":     pure("driver.walk_aliased", walkAliased),
+			"walk_aliased_big": pure("driver.walk_aliased_big", walkAliasedBig),
+			"walk":             pure("driver.walk", walk),
+			"walk_kw":          pure("driver.walk_kw", walk),
+			"walk_in":          pure("driver.walk_in", walkNested),
+			"walk_inner":       pure("driver.walk_inner", walkNested),
+			"walk_returned":    pure("driver.walk_returned", walkReturned),
 		}),
 	}, nil
 }
@@ -627,6 +636,9 @@ end`)
 // first copy allocates is exempt from the claim, so the rest of the drain zeroes
 // in place.
 func TestShrinkUnderWildcardClaimStaysLinear(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	// pop and shift both have to be measured. shift moves the start of the
@@ -775,6 +787,9 @@ func TestRetainedHeaderRecordIsBounded(t *testing.T) {
 // payloads and cost one element, which is the finding this file exists for
 // arrived at from the other end.
 func TestRetainedBackingIsChargedByCapacity(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	// The hidden payloads are about 6 MiB and the second generation about 4;
@@ -811,6 +826,9 @@ end`)
 // array itself accounts for. A quota that turns away a program which fits is a
 // defect in the same way as one that admits a program which does not.
 func TestRetainedBackingChargesOnlyWhatIsHidden(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	const n = 10000
@@ -892,6 +910,9 @@ func TestRetainedRecordNeverLowersTheQuota(t *testing.T) {
 // twice: the pair needed 773,625 bytes where the second shrink alone needs
 // 517,729, so a shrink that removes one element cost a quarter of a megabyte.
 func TestNestedClaimsChargeOneAllocationOnce(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	const n = 4000

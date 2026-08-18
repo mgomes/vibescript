@@ -140,6 +140,25 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	case *MemberExpr:
 		var obj Value
 		var err error
+		if isCollectionMutator(e.Property) {
+			// A parenless mutator (`a.pop`, `a.shift`) is auto-invoked from
+			// here rather than through a call expression, so it records the
+			// path that owns its receiver the same way, or the write would
+			// land on a copy the script never sees again.
+			defer exec.restore(exec.savedAddressedScope())
+			var addressed bool
+			obj, addressed, err = exec.addressMutableReceiver(e.Object, env)
+			if !addressed {
+				// See evalMemberCallExpr: an ordinary evaluation must not
+				// inherit the enclosing permission.
+				exec.withdrawAddressed()
+				obj, err = exec.evalExpressionWithAuto(e.Object, env, memberReceiverAutoInvokes(e.Object, e.Property, env))
+			}
+			if err != nil {
+				return NewNil(), err
+			}
+			return exec.finishMemberExpr(e, obj, env, autoCall)
+		}
 		if _, objIsMember := e.Object.(*MemberExpr); e.Property == "call" && objIsMember {
 			// Resolve a member-of-member receiver exactly like the
 			// parenthesized call form so c.cb.call (no parens) sees the stored
@@ -153,20 +172,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		if err != nil {
 			return NewNil(), err
 		}
-		if e.Safe && obj.Kind() == KindNil {
-			return NewNil(), nil
-		}
-		if err := exec.checkMemoryValue(obj); err != nil {
-			return NewNil(), err
-		}
-		member, err := exec.getPublicMember(obj, e.Property, e.Pos())
-		if err != nil {
-			return NewNil(), err
-		}
-		if autoCall {
-			return exec.autoInvokeIfNeeded(e, member, obj)
-		}
-		return member, nil
+		return exec.finishMemberExpr(e, obj, env, autoCall)
 	case *ScopeExpr:
 		obj, err := exec.evalExpressionWithAuto(e.Object, env, true)
 		if err != nil {
@@ -1049,8 +1055,47 @@ func (exec *Execution) indexSelectorToInt(e *IndexExpr, idx Value, i int) (int, 
 	}
 }
 
+// finishMemberExpr resolves the member of an already-evaluated receiver, which
+// is the tail both the ordinary member path and the addressable-receiver path a
+// parenless mutator takes share.
+func (exec *Execution) finishMemberExpr(e *MemberExpr, obj Value, env *Env, autoCall bool) (Value, error) {
+	if e.Safe && obj.Kind() == KindNil {
+		return NewNil(), nil
+	}
+	if err := exec.checkMemoryValue(obj); err != nil {
+		return NewNil(), err
+	}
+	member, err := exec.getPublicMember(obj, e.Property, e.Pos())
+	if err != nil {
+		return NewNil(), err
+	}
+	if autoCall {
+		return exec.autoInvokeIfNeeded(e, member, obj)
+	}
+	return member, nil
+}
+
 func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error) {
-	left, err := exec.evalExpression(expr.Left, env)
+	var (
+		left Value
+		err  error
+	)
+	if expr.Operator == tokenShovel {
+		// The shovel writes through its left operand, so it records the path
+		// that owns that operand the way a mutating member call does. Isolation
+		// waits until the append, after the right operand has run.
+		defer exec.restore(exec.savedAddressedScope())
+		var addressed bool
+		left, addressed, err = exec.addressMutableReceiver(expr.Left, env)
+		if !addressed {
+			// See evalMemberCallExpr: an ordinary evaluation must not
+			// inherit the enclosing permission.
+			exec.withdrawAddressed()
+			left, err = exec.evalExpression(expr.Left, env)
+		}
+	} else {
+		left, err = exec.evalExpression(expr.Left, env)
+	}
 	if err != nil {
 		return NewNil(), err
 	}
@@ -1312,20 +1357,7 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		// epoch bump, keeping loop-grown arrays linear under the quota
 		// (#1129); when it is not eligible, charge the backing reallocation
 		// up front and take the ordinary epoch-bumping path.
-		if left.Kind() == KindArray {
-			handled, appendErr := exec.appendArrayCharged(left, right)
-			if appendErr != nil {
-				return NewNil(), exec.wrapError(appendErr, pos)
-			}
-			if handled {
-				result = left
-				break
-			}
-			if err := arrayReserveInPlaceGrowth(exec, left, []Value{right}, nil, NewNil(), 1); err != nil {
-				return NewNil(), exec.wrapError(err, pos)
-			}
-		}
-		result, err = shovelValues(left, right)
+		result, err = exec.shovelArray(left, right)
 	case tokenAmpersand:
 		result, err = intersectValues(exec, left, right)
 	case tokenEQ:
@@ -1795,6 +1827,29 @@ func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots .
 	if err := runner.exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
+	return val, nil
+}
+
+// callRetained invokes the block and publishes the result: the caller is
+// about to store it in a durable slot. Callers that discard the result
+// (each, predicates) use call so an ignored collection is not marked shared.
+func (runner *blockCallRunner) callRetained(args []Value) (Value, error) {
+	val, err := runner.call(args)
+	if err != nil {
+		return val, err
+	}
+	publishCollection(val)
+	return val, nil
+}
+
+// callRetainedWithChargedRoots is callWithChargedRoots plus publication of
+// a result the caller will retain.
+func (runner *blockCallRunner) callRetainedWithChargedRoots(args []Value, chargedRoots ...Value) (Value, error) {
+	val, err := runner.callWithChargedRoots(args, chargedRoots...)
+	if err != nil {
+		return val, err
+	}
+	publishCollection(val)
 	return val, nil
 }
 
@@ -2534,6 +2589,7 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 	}
 
 	bumpMutationEpoch()
+	publishBindingReplacement(vars[property], value)
 	vars[property] = value
 	return nil
 }
@@ -2543,6 +2599,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 	case *Identifier:
 		if self, ok := classConstantAssignmentSelf(t.Name, env); ok && !env.hasCallLocalBinding(t.Name) {
 			bumpMutationEpoch()
+			publishBindingReplacement(valueClass(self).ClassVars[t.Name], value)
 			valueClass(self).ClassVars[t.Name] = value
 			return nil
 		}
@@ -2553,12 +2610,24 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 			return exec.assign(target, value, env)
 		})
 	case *MemberExpr:
-		obj, err := exec.evalExpression(t.Object, env)
+		defer exec.restore(exec.savedAddressedScope())
+		obj, resolution, err := exec.resolveMutableReceiver(t.Object, env)
+		if resolution == targetUnresolved && err == nil {
+			obj, err = exec.evalExpression(t.Object, env)
+		}
 		if err != nil {
 			return err
 		}
 		if err := exec.checkMemoryValue(obj); err != nil {
 			return err
+		}
+		if resolution == targetTemporary {
+			// The receiver is a temporary the path walk evaluated; the write
+			// must reach nothing a durable slot still names.
+			obj, err = exec.detachTemporaryWriteReceiver(obj)
+			if err != nil {
+				return err
+			}
 		}
 		return exec.assignToEvaluatedMember(t, obj, value)
 	case *IvarExpr:
@@ -2572,6 +2641,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 			return err
 		}
 		bumpMutationEpoch()
+		publishBindingReplacement(inst.Ivars[t.Name], normalized)
 		inst.Ivars[t.Name] = normalized
 		return nil
 	case *ClassVarExpr:
@@ -2582,19 +2652,32 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		switch self.Kind() {
 		case KindInstance:
 			bumpMutationEpoch()
+			publishBindingReplacement(valueInstance(self).Class.ClassVars[t.Name], value)
 			valueInstance(self).Class.ClassVars[t.Name] = value
 			return nil
 		case KindClass:
 			bumpMutationEpoch()
+			publishBindingReplacement(valueClass(self).ClassVars[t.Name], value)
 			valueClass(self).ClassVars[t.Name] = value
 			return nil
 		default:
 			return exec.errorAt(target.Pos(), "no class context for class var")
 		}
 	case *IndexExpr:
-		obj, err := exec.evalExpression(t.Object, env)
+		defer exec.restore(exec.savedAddressedScope())
+		// The index selectors are expressions, so evaluating them runs script
+		// code between resolving the receiver and writing through it: `b[f(b)]
+		// = 9` can bind b somewhere new while choosing where to write. The
+		// write isolates again for that reason.
+		obj, path, resolution, err := exec.resolveMutableTarget(t.Object, env)
 		if err != nil {
 			return err
+		}
+		if resolution == targetUnresolved {
+			obj, err = exec.evalExpression(t.Object, env)
+			if err != nil {
+				return err
+			}
 		}
 		if err := exec.checkMemoryValue(obj); err != nil {
 			return err
@@ -2603,7 +2686,20 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err != nil {
 			return err
 		}
-		return exec.assignToEvaluatedIndex(t, obj, indices, value)
+		if resolution != targetAddressed {
+			if resolution == targetTemporary {
+				// The receiver is a temporary the path walk evaluated; the
+				// write must reach nothing a durable slot still names.
+				obj, err = exec.detachTemporaryWriteReceiver(obj)
+				if err != nil {
+					return err
+				}
+			}
+			return exec.assignToEvaluatedIndex(t, obj, indices, value)
+		}
+		return exec.writeThroughMutablePath(path, env, func(leaf Value) error {
+			return exec.assignToEvaluatedIndex(t, leaf, indices, value)
+		})
 	default:
 		return exec.errorAt(target.Pos(), "invalid assignment target")
 	}
@@ -2660,7 +2756,11 @@ func (exec *Execution) assignToEvaluatedMember(target *MemberExpr, obj, value Va
 		if obj.Kind() == KindHash {
 			key = hashMemberAssignmentKey(obj, target.Property)
 		}
-		return hashSet(obj, key, value)
+		stored, err := exec.detachStoredCollection(value)
+		if err != nil {
+			return err
+		}
+		return hashSet(obj, key, stored)
 	case KindInstance, KindClass:
 		return exec.assignToMember(obj, target.Property, value, target.Pos())
 	default:
@@ -2691,8 +2791,13 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		if pos < 0 || pos >= len(arr) {
 			return exec.errorAt(target.IndexPos(0), "array index out of bounds")
 		}
+		stored, err := exec.detachStoredCollection(value)
+		if err != nil {
+			return err
+		}
+		publishBindingReplacement(arr[pos], stored)
 		bumpMutationEpoch()
-		arr[pos] = value
+		arr[pos] = stored
 		return nil
 	case KindHash, KindObject:
 		if len(indices) != 1 {
@@ -2710,6 +2815,10 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		// and skips the epoch bump, keeping hash-filling loops linear under
 		// the quota (#1129); replacements and every other ineligible write
 		// take the ordinary bumping path.
+		value, err := exec.detachStoredCollection(value)
+		if err != nil {
+			return err
+		}
 		if handled, storeErr := exec.hashStoreCharged(obj, indices[0], value); handled {
 			if storeErr != nil {
 				return exec.wrapError(storeErr, target.IndexPos(0))
@@ -3004,10 +3113,9 @@ func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Va
 
 	// Only `values = values + [...]` uses the accumulator fast path: `+` is a
 	// genuinely non-mutating operator, so reusing the receiver's hidden backing
-	// buffer across iterations is invisible. push and << mutate the receiver in
-	// place nowadays (matching Ruby), so they need no reassignment fast path —
-	// the mutation itself already amortizes growth and must stay visible
-	// through every alias, which the hidden-buffer path would break.
+	// buffer across iterations is invisible. push and << update the binding
+	// they name, so they need no reassignment fast path -- the update itself
+	// already amortizes growth.
 	value, ok := stmt.Value.(*BinaryExpr)
 	if !ok || value.Operator != tokenPlus {
 		return NewNil(), false, nil
@@ -4687,9 +4795,19 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 		}
 		return compoundAssignmentTarget{current: current, assign: assign}, nil
 	case *MemberExpr:
-		obj, err := exec.evalExpressionWithAuto(t.Object, env, true)
+		// A compound assignment writes through its receiver just as a plain one
+		// does, so it resolves that receiver as an addressable path too.
+		// Without this, `h.k += 1` wrote through whatever wrapper the read
+		// found and every other binding of h saw it.
+		obj, path, resolution, err := exec.resolveMutableTarget(t.Object, env)
 		if err != nil {
 			return compoundAssignmentTarget{}, err
+		}
+		if resolution == targetUnresolved {
+			obj, err = exec.evalExpressionWithAuto(t.Object, env, true)
+			if err != nil {
+				return compoundAssignmentTarget{}, err
+			}
 		}
 		if err := exec.checkMemoryValue(obj); err != nil {
 			return compoundAssignmentTarget{}, err
@@ -4703,7 +4821,22 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 			return compoundAssignmentTarget{}, err
 		}
 		assign := func(value Value) error {
-			return exec.assignToEvaluatedMember(t, obj, value)
+			if resolution != targetAddressed {
+				target := obj
+				if resolution == targetTemporary {
+					// The receiver is a temporary the path walk evaluated;
+					// the write must reach nothing a durable slot still names.
+					detached, err := exec.detachTemporaryWriteReceiver(obj)
+					if err != nil {
+						return err
+					}
+					target = detached
+				}
+				return exec.assignToEvaluatedMember(t, target, value)
+			}
+			return exec.writeThroughMutablePath(path, env, func(leaf Value) error {
+				return exec.assignToEvaluatedMember(t, leaf, value)
+			})
 		}
 		return compoundAssignmentTarget{
 			current:     current,
@@ -4711,9 +4844,15 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 			expectation: memberSetterValueExpectation(obj, t.Property),
 		}, nil
 	case *IndexExpr:
-		obj, err := exec.evalExpressionWithAuto(t.Object, env, true)
+		obj, path, resolution, err := exec.resolveMutableTarget(t.Object, env)
 		if err != nil {
 			return compoundAssignmentTarget{}, err
+		}
+		if resolution == targetUnresolved {
+			obj, err = exec.evalExpressionWithAuto(t.Object, env, true)
+			if err != nil {
+				return compoundAssignmentTarget{}, err
+			}
 		}
 		if err := exec.checkMemoryValue(obj); err != nil {
 			return compoundAssignmentTarget{}, err
@@ -4727,7 +4866,22 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 			return compoundAssignmentTarget{}, err
 		}
 		assign := func(value Value) error {
-			return exec.assignToEvaluatedIndex(t, obj, indices, value)
+			if resolution != targetAddressed {
+				target := obj
+				if resolution == targetTemporary {
+					// The receiver is a temporary the path walk evaluated;
+					// the write must reach nothing a durable slot still names.
+					detached, err := exec.detachTemporaryWriteReceiver(obj)
+					if err != nil {
+						return err
+					}
+					target = detached
+				}
+				return exec.assignToEvaluatedIndex(t, target, indices, value)
+			}
+			return exec.writeThroughMutablePath(path, env, func(leaf Value) error {
+				return exec.assignToEvaluatedIndex(t, leaf, indices, value)
+			})
 		}
 		return compoundAssignmentTarget{current: current, assign: assign}, nil
 	case *IvarExpr, *ClassVarExpr:

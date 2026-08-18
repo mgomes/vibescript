@@ -184,7 +184,7 @@ expensive part, not the freeze walk:
 - Today isolation holds **by construction**: both directions copy, so no
   mutator can be wrong. Sharing frozen wrappers converts that into
   isolation **by enforcement**: every script-side in-place mutator
-  (`push`, `[]=`, `delete`, `clear`, `map!`, ...) must check the frozen
+  (`push`, `[]=`, `delete`, `clear`, `delete_if`, ...) must check the frozen
   bit and raise a `FrozenError` (Ruby precedent), and every Tier 2
   host-side primitive must refuse frozen wrappers too, or a host mutation
   concurrent with a running call reintroduces the process-fatal race

@@ -391,20 +391,17 @@ var memoQuotaThresholdScripts = func() map[string]string {
 		"array_shift":        build(fmt.Sprintf("  a = [%q, %q]\n  a.shift", payloadA, payloadB)),
 		"array_insert":       build(fmt.Sprintf("  a = [1]\n  a.insert(0, %q)", payloadA)),
 		"array_fill":         build(fmt.Sprintf("  a = [1, 2, 3]\n  a.fill(%q)", payloadA)),
-		"array_sort_bang":    build(fmt.Sprintf("  a = [%q, %q]\n  a.sort!", payloadB, payloadA)),
 		"array_clear":        build(fmt.Sprintf("  a = [%q]\n  a.clear", payloadA)),
 		"array_plus_append":  build(fmt.Sprintf("  a = [1]\n  a = a + [%q]", payloadA)),
 		"array_unshift":      build(fmt.Sprintf("  a = [1]\n  a.unshift(%q)", payloadA)),
-		"array_map_bang":     build(fmt.Sprintf("  a = [1, 2, 3]\n  a.map! { |v| %q }", payloadA)),
 		"array_index_assign": build(fmt.Sprintf("  a = [1, 2, 3]\n  a[1] = %q", payloadA)),
 		"hash_index_assign":  build(fmt.Sprintf("  h = {a: 1}\n  h[:b] = %q", payloadA)),
 		"hash_store":         build(fmt.Sprintf("  h = {a: 1}\n  h.store(:b, %q)", payloadA)),
 		"hash_delete":        build(fmt.Sprintf("  h = {a: %q, b: %q}\n  h.delete(:a)", payloadA, payloadB)),
-		"hash_merge_bang":    build(fmt.Sprintf("  h = {a: 1}\n  h.merge!({b: %q})", payloadA)),
 		"hash_clear":         build(fmt.Sprintf("  h = {a: %q}\n  h.clear", payloadA)),
 		"hash_delete_if":     build(fmt.Sprintf("  h = {a: %q, b: %q}\n  h.delete_if { |k, v| k == :a }", payloadA, payloadB)),
-		"nested_alias_mutation": build(fmt.Sprintf(
-			"  outer = {rows: [[1, 2], [3, 4]]}\n  inner = outer[:rows][0]\n  inner.push(%q)", payloadA)),
+		"nested_path_mutation": build(fmt.Sprintf(
+			"  outer = {rows: [[1, 2], [3, 4]]}\n  outer[:rows][0].push(%q)", payloadA)),
 		"self_referential_mutation": build(fmt.Sprintf("  a = []\n  a.push(a)\n  a.push(%q)", payloadA)),
 		"typed_hash_rows": build(fmt.Sprintf(
 			"  rows = []\n  i = 0\n  while i < 8\n    rows.push({id: i, name: \"row\" + i.to_s, tags: [\"a\", \"b\"]})\n    i = i + 1\n  end\n  rows[3][:blob] = %q", payloadA)),

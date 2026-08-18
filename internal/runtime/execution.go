@@ -105,6 +105,13 @@ type Execution struct {
 	// the latched exhaustion, deep-copied before any adapter can hold its
 	// pointer; the dispatch rebuild uses only this copy for diagnostics.
 	exhaustedWrapped *RuntimeError
+	// addressed records the receiver the current in-place write reached through
+	// the path that owns it, together with that path (see collection_values.go).
+	// It vouches for exactly one call and is restored when that call returns, so
+	// a later expression reaching the same wrapper another way cannot inherit
+	// the permission, and the write can isolate again through the path when
+	// script code has published the receiver since the permission was granted.
+	addressed        addressedScope
 	callStack        []callFrame
 	root             *Env
 	modules          map[string]Value
@@ -131,6 +138,8 @@ type Execution struct {
 	envStack                  []*Env
 	validatedCapabilityArgs   []string
 	capabilityReturnProof     capabilityReturnProof
+	isolationForwards         map[uintptr]isolationForward
+	addressedBrackets         int
 	memoryEst                 memoryEstimator
 	reservedScratchBytes      int
 

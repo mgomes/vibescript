@@ -130,7 +130,10 @@ func (p *jsonValueParser) parseArray() (Value, error) {
 			return NewNil(), err
 		}
 		values = append(values, value)
-		if err := p.checkMaterialized(NewArray(values)); err != nil {
+		// The finished array is constructed below; this wrapper exists only
+		// so the memory check can see the prefix. Publishing here would
+		// share a child that only the final element slot will own.
+		if err := p.checkMaterialized(adoptArray(values)); err != nil {
 			return NewNil(), err
 		}
 

@@ -147,11 +147,10 @@ place and returns it.
 
 ## Mutating methods
 
-Arrays are mutable objects with reference semantics, exactly as in Ruby: two
-variables bound to the same array observe each other's mutations, `dup` /
-`clone` detach a deep copy, and `equal?` reports object identity (two empty
-literals are distinct objects). The Ruby-named mutators modify the receiver in
-place:
+Arrays are values (ADR-006 item 2): two variables bound to the same array each
+hold their own, so neither observes the other's updates, and `equal?` reports
+content equality because there is no identity left to report. The Ruby-named
+mutators update the receiver they name:
 
 - `push`/`append`, `prepend`/`unshift`, `<<`, `insert`, `fill`, and `clear`
   mutate and return the receiver.
@@ -160,26 +159,31 @@ place:
 - `delete_if { |item| }` removes every element the block accepts and returns
   the receiver; `keep_if { |item| }` keeps only accepted elements. Both always
   return the receiver.
-- `map!`, `sort!` (with the same optional comparator block as `sort`), and
-  `reverse!` transform the receiver in place and always return it.
-- `select!` / `reject!` mirror `keep_if` / `delete_if` but return `nil` when
-  nothing was removed; `uniq!` and `compact!` likewise return the receiver when
-  they removed something and `nil` when the array was already unique or
-  `nil`-free.
-
-Their non-bang counterparts (`map`, `sort`, `reverse`, `select`, `reject`,
-`uniq`, `compact`, `+`, `first(n)`, slices, and so on) still return new arrays
-and never touch the receiver, matching Ruby.
+"Updates the receiver" means it updates the local, instance variable, or nested
+path the call names. An array is a value: binding, passing, or returning one
+produces another value, and an update through one binding is never visible
+through another.
 
 ```vibe
 values = [3, 1, 2, 2]
 other = values
-values.sort!            # [1, 2, 2, 3] (values itself)
-values.uniq!            # [1, 2, 3]
-values.uniq!            # nil (nothing changed)
 values.delete_if { |v| v == 2 }
-other                   # [1, 3] — aliases observe every mutation
+
+values                  # [3, 1]
+other                   # [3, 1, 2, 2] — bound before the update, unchanged by it
 ```
+
+A receiver that names no such path is a temporary: the update is returned but
+reaches nothing else. `cart.items.push(x)` reads the items out through an
+accessor and pushes onto that value, leaving the cart's own items alone; inside
+the class, `@items.push(x)` names the instance variable and updates it.
+
+The non-mutating transforms (`map`, `sort`, `reverse`, `select`, `reject`,
+`uniq`, `compact`, `+`, `first(n)`, slices, and so on) return new arrays and
+never touch the receiver. The bang-named forms that only duplicated them --
+`map!`, `sort!`, `reverse!`, `select!`, `reject!`, `uniq!`, `compact!` -- were
+removed before 1.0; reassign the non-bang result (`values = values.sort`), or
+use `keep_if` / `delete_if` where `select!` / `reject!` updated in place.
 
 Iteration helpers walk the elements captured when iteration began: a block
 that pushes to or clears the receiver mid-`each` changes the receiver, but the

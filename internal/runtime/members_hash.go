@@ -12,7 +12,7 @@ import (
 // listed name resolves.
 var hashMemberNames = []string{
 	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "to_a",
-	"merge", "update", "merge!", "replace", "store", "delete", "clear", "delete_if", "keep_if", "slice", "except", "flatten", "select", "reject", "map", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
+	"merge", "replace", "store", "delete", "clear", "delete_if", "keep_if", "slice", "except", "flatten", "select", "reject", "map", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
 	"inspect",
 }
 
@@ -55,7 +55,7 @@ func hashMemberBuiltin(property string) (Value, error) {
 	switch property {
 	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "to_a":
 		return hashMemberQuery(property)
-	case "merge", "update", "merge!", "replace", "store", "delete", "clear", "delete_if", "keep_if", "slice", "except", "flatten", "select", "reject", "map", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
+	case "merge", "replace", "store", "delete", "clear", "delete_if", "keep_if", "slice", "except", "flatten", "select", "reject", "map", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
 	case "inspect":
 		return newInspectBuiltin("hash"), nil
@@ -607,6 +607,9 @@ func hashMemberQuery(property string) (Value, error) {
 					out[i] = value
 					produced = out[:i+1]
 					exec.addRetainedOutput(value)
+					// adoptArray will not publish; each output slot is a
+					// new handle, including a repeated requested key.
+					publishCollection(value)
 					continue
 				}
 				if !hasBlock {
@@ -631,7 +634,7 @@ func hashMemberQuery(property string) (Value, error) {
 				// window sized to it. Weighing that window against a baseline the
 				// key is missing from let an ephemeral array key's copy be
 				// allocated before anything accounted for the key itself.
-				blockValue, err := runner.callWithChargedRoots(blockArg[:], arg)
+				blockValue, err := runner.callRetainedWithChargedRoots(blockArg[:], arg)
 				if err != nil {
 					return NewNil(), err
 				}
@@ -639,7 +642,7 @@ func hashMemberQuery(property string) (Value, error) {
 				produced = out[:i+1]
 				exec.addRetainedOutput(blockValue)
 			}
-			return NewArray(out), nil
+			return adoptArray(out), nil
 		}), nil
 	case "dig":
 		return NewAutoBuiltin("hash.dig", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1041,87 +1044,20 @@ func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 			dropped = append(dropped, entry.Key)
 		}
 	}
+	// Writability is checked here rather than before the loop: the block is
+	// script code and can bind the receiver somewhere new while it runs. A
+	// predicate that drops nothing changes nothing, so isolation would copy
+	// a shared receiver for a no-op.
+	if len(dropped) == 0 {
+		return receiver, nil
+	}
+	receiver, err = exec.writableCollection(receiver)
+	if err != nil {
+		return NewNil(), err
+	}
 	for _, key := range dropped {
 		if _, _, err := hashDeleteKey(receiver, key); err != nil {
 			return NewNil(), err
-		}
-	}
-	return receiver, nil
-}
-
-// hashMergeInPlace implements Ruby's Hash#merge! / Hash#update: it folds each
-// argument's entries into the receiver in place, resolving key conflicts
-// through the optional block (invoked with key, old value, new value), and
-// returns the receiver. Argument entries land in insertion order (bare host
-// maps contribute in sorted key order), so new keys append to the receiver's
-// recorded order exactly as index assignment would.
-func hashMergeInPlace(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, name string) (Value, error) {
-	if len(kwargs) > 0 {
-		return NewNil(), fmt.Errorf("hash.%s does not accept keyword arguments", name)
-	}
-	for i, arg := range args {
-		if arg.Kind() != KindHash && arg.Kind() != KindObject {
-			return NewNil(), fmt.Errorf("hash.%s argument %d must be a hash", name, i+1)
-		}
-	}
-	if len(args) == 0 {
-		return receiver, nil
-	}
-	added := 0
-	maxArgLen := 0
-	for _, arg := range args {
-		argLen := arg.HashLen()
-		added = saturatingAdd(added, argLen)
-		if argLen > maxArgLen {
-			maxArgLen = argLen
-		}
-	}
-	// Charge the worst-case growth (every argument entry landing in a fresh
-	// receiver slot) plus the entry scratch the snapshot walk may allocate,
-	// before the receiver grows.
-	if err := exec.checkProjectedHashTransformBytes(added, sortedHashEntryBufferBytes(maxArgLen), receiver, args, kwargs, block); err != nil {
-		return NewNil(), err
-	}
-	var runner *blockCallRunner
-	if valueBlock(block) != nil {
-		r, err := newBlockCallRunner(exec, block, "hash."+name, receiver, args, kwargs)
-		if err != nil {
-			return NewNil(), err
-		}
-		runner = r
-	}
-	var entryBuf [smallHashKeyBufferSize]HashEntry
-	var blockArgs [3]Value
-	for _, arg := range args {
-		// The snapshot buffer also makes h.merge!(h) safe: the walk reads the
-		// copied entries while the writes land in the receiver.
-		for _, entry := range arg.HashEntriesInto(entryBuf[:]) {
-			if err := exec.step(); err != nil {
-				return NewNil(), err
-			}
-			if err := exec.chargeValueKeySteps(entry.Key); err != nil {
-				return NewNil(), err
-			}
-			val := entry.Value
-			if runner != nil {
-				oldValue, conflict, err := hashGet(receiver, entry.Key)
-				if err != nil {
-					return NewNil(), err
-				}
-				if conflict {
-					blockArgs[0] = entry.Key
-					blockArgs[1] = oldValue
-					blockArgs[2] = val
-					merged, err := runner.call(blockArgs[:])
-					if err != nil {
-						return NewNil(), err
-					}
-					val = merged
-				}
-			}
-			if err := hashSet(receiver, entry.Key, val); err != nil {
-				return NewNil(), err
-			}
 		}
 	}
 	return receiver, nil
@@ -1282,15 +1218,6 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			return out, nil
 		}), nil
-	case "update", "merge!":
-		// Ruby's Hash#update / Hash#merge! fold the argument hashes into the
-		// receiver in place (resolving conflicts through the optional block)
-		// and return the receiver. AutoBuiltin so a parenless `hash.merge!`
-		// invokes with zero arguments and is a no-op returning the receiver.
-		name := property
-		return NewAutoBuiltin("hash."+name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return hashMergeInPlace(exec, receiver, args, kwargs, block, name)
-		}), nil
 	case "replace":
 		return NewBuiltin("hash.replace", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			// Reject keyword arguments rather than silently dropping them; the
@@ -1300,6 +1227,11 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			if len(args) != 1 || (args[0].Kind() != KindHash && args[0].Kind() != KindObject) {
 				return NewNil(), fmt.Errorf("hash.replace expects a single hash argument")
+			}
+			// Replacing a hash with itself changes nothing; skip the detach,
+			// isolation, and rebuild that would otherwise copy a shared receiver.
+			if collectionIdentity(receiver) == collectionIdentity(args[0]) {
+				return receiver, nil
 			}
 			// Ruby's Hash#replace discards the receiver's contents and adopts the
 			// argument's entries (and default) in place, returning the receiver.
@@ -1317,9 +1249,18 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			// Snapshot the replacement's entries before clearing so h.replace(h)
 			// is a harmless no-op rather than wiping the entries it is about to
-			// copy.
+			// copy. Detach first: a.replace(a.x) or a.x.replace(a) must store
+			// the value the ancestor had, not a window onto the receiver.
+			source, err := exec.detachStoredCollection(args[0])
+			if err != nil {
+				return NewNil(), err
+			}
 			var entryBuf [smallHashKeyBufferSize]HashEntry
-			entries := args[0].HashEntriesInto(entryBuf[:])
+			entries := source.HashEntriesInto(entryBuf[:])
+			receiver, err = exec.writableCollection(receiver)
+			if err != nil {
+				return NewNil(), err
+			}
 			hashClearEntries(receiver)
 			// Pre-size the entry map and order backing to the adopted entry
 			// count so the rebuilt receiver holds exactly the slots the
@@ -1389,10 +1330,18 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err := exec.checkProjectedHashBytes(1, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
-			if err := hashSet(receiver, args[0], args[1]); err != nil {
+			stored, err := exec.detachStoredCollection(args[1])
+			if err != nil {
+				return NewNil(), err
+			}
+			receiver, err = exec.writableCollection(receiver)
+			if err != nil {
+				return NewNil(), err
+			}
+			if err := hashSet(receiver, args[0], stored); err != nil {
 				return NewNil(), fmt.Errorf("hash.store key is an unsupported hash key: %w", err)
 			}
-			return args[1], nil
+			return stored, nil
 		}), nil
 	case "delete":
 		return NewBuiltin("hash.delete", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1411,6 +1360,20 @@ func hashMemberTransforms(property string) (Value, error) {
 			// Ruby's Hash#delete removes the entry from the receiver in place
 			// and returns the removed value. The removal keeps the surviving
 			// entries in their recorded insertion order and allocates nothing.
+			// Isolation waits until a removal will occur, so a miss on a
+			// shared receiver does not copy.
+			if _, existed, err := hashGet(receiver, args[0]); err != nil {
+				return NewNil(), fmt.Errorf("hash.delete key is an unsupported hash key: %w", err)
+			} else if !existed {
+				if valueBlock(block) != nil {
+					return exec.CallBlock(block, []Value{args[0]})
+				}
+				return NewNil(), nil
+			}
+			receiver, err := exec.writableCollection(receiver)
+			if err != nil {
+				return NewNil(), err
+			}
 			removed, existed, err := hashDeleteKey(receiver, args[0])
 			if err != nil {
 				return NewNil(), fmt.Errorf("hash.delete key is an unsupported hash key: %w", err)
@@ -1437,9 +1400,8 @@ func hashMemberTransforms(property string) (Value, error) {
 			if valueBlock(block) != nil {
 				return NewNil(), fmt.Errorf("hash.clear does not accept a block")
 			}
-			// Ruby's Hash#clear empties the receiver in place and returns it.
-			hashClearEntries(receiver)
-			return receiver, nil
+			// Ruby's Hash#clear empties the receiver and returns it.
+			return exec.writeHashClear(receiver)
 		}), nil
 	case "delete_if", "keep_if":
 		name := "hash." + property
@@ -1714,11 +1676,11 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					blockArg[0] = pair
-					val, err = runner.call(blockArg[:])
+					val, err = runner.callRetained(blockArg[:])
 				} else {
 					blockArgs[0] = entry.Key
 					blockArgs[1] = entry.Value
-					val, err = runner.call(blockArgs[:])
+					val, err = runner.callRetained(blockArgs[:])
 				}
 				if err != nil {
 					return NewNil(), err
@@ -1732,7 +1694,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				retained.reserve(acc.accumulatedBytes(cap(out)))
 			}
-			return NewArray(out), nil
+			return adoptArray(out), nil
 		}), nil
 	case "map_with_index":
 		return NewAutoBuiltin("hash.map_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1782,7 +1744,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				blockArgs[0] = pair
 				blockArgs[1] = NewInt(int64(i))
-				val, err := runner.call(blockArgs[:])
+				val, err := runner.callRetained(blockArgs[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -1795,7 +1757,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				retained.reserve(acc.accumulatedBytes(cap(out)))
 			}
-			return NewArray(out), nil
+			return adoptArray(out), nil
 		}), nil
 	case "transform_keys":
 		return NewAutoBuiltin("hash.transform_keys", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1963,7 +1925,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				blockArg[0] = ordered[i].Value
-				nextValue, err := runner.call(blockArg[:])
+				nextValue, err := runner.callRetained(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -1982,7 +1944,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 					return NewNil(), err
 				}
-				if err := hashSet(out, entry.Key, entry.Value); err != nil {
+				if err := out.HashSetOwned(entry.Key, entry.Value); err != nil {
 					return NewNil(), err
 				}
 			}

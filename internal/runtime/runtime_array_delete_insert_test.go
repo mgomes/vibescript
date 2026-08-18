@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -89,10 +90,10 @@ func TestArrayDelete(t *testing.T) {
 	}
 }
 
-func TestArrayDeleteMutatesReceiver(t *testing.T) {
+func TestArrayDeleteUpdatesItsRoot(t *testing.T) {
 	t.Parallel()
-	// delete removes the matches from the receiver itself, so an alias bound
-	// before the call observes the pruned contents, matching Ruby.
+	// delete updates the local it addresses, and a binding taken before the
+	// call keeps the value it was given.
 	script := compileScript(t, `
     def delete_mutates_source(values, target)
       other = values
@@ -104,7 +105,7 @@ func TestArrayDeleteMutatesReceiver(t *testing.T) {
 	result := callFunc(t, script, "delete_mutates_source",
 		[]Value{NewArray([]Value{NewInt(1), NewInt(2), NewInt(2)}), NewInt(2)}).Hash()
 	compareArrays(t, result["source"], []Value{NewInt(1)})
-	compareArrays(t, result["other"], []Value{NewInt(1)})
+	compareArrays(t, result["other"], []Value{NewInt(1), NewInt(2), NewInt(2)})
 	if diff := valueDiff(NewInt(2), result["removed"]); diff != "" {
 		t.Fatalf("removed mismatch (-want +got):\n%s", diff)
 	}
@@ -145,10 +146,10 @@ func TestArrayDeleteReturnsStoredElement(t *testing.T) {
 	compareArrays(t, nested["search"], []Value{NewInt(1), NewInt(2)})
 
 	lastMatch := callFunc(t, script, "delete_returns_last_match", nil).Hash()
-	// Ruby returns the last deleted element, so mutating the result touches the
-	// last equal element rather than the first.
+	// The removed element is returned as a value, so writing through it reaches
+	// neither of the locals the temporary array was built from.
 	compareArrays(t, lastMatch["first"], []Value{NewString("x")})
-	compareArrays(t, lastMatch["last"], []Value{NewString("mutated")})
+	compareArrays(t, lastMatch["last"], []Value{NewString("x")})
 }
 
 func TestArrayDeleteMissTripsMemoryQuota(t *testing.T) {
@@ -540,6 +541,32 @@ func TestArrayInsertErrors(t *testing.T) {
 		"array.insert index -4 out of range")
 	requireCallErrorContains(t, script, "keyword", base, CallOptions{},
 		"array.insert does not take keyword arguments")
+}
+
+func TestInsertRejectsOutOfRangeBeforeIsolating(t *testing.T) {
+	t.Parallel()
+	skipNoCopyPin(t)
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 240 << 10, StepQuota: Unlimited}, `
+    def run()
+      a = []
+      i = 0
+      while i < 2000
+        a << "xxxxxxxxxxxxxxxx"
+        i += 1
+      end
+      b = a
+      a.insert(-1000000, 1)
+    end
+    `)
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatal("a.insert(-1000000, 1) must error")
+	}
+	requireErrorContains(t, err, "array.insert index -1000000 out of range")
+	if strings.Contains(err.Error(), "quota") {
+		t.Fatalf("out-of-range insert reported as quota: %v", err)
+	}
 }
 
 // TestArrayInsertMemoryQuota confirms a nil-padded growth far past the end trips

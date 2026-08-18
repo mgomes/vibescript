@@ -21,6 +21,7 @@ import (
 func TestMain(m *testing.M) {
 	maybeEnableEnvRecycleVerify()
 	maybeEnableEstimatorVerify()
+	maybeEnableCollectionCopyVerify()
 	maybeEnableBuiltinContractVerify()
 	os.Exit(m.Run())
 }

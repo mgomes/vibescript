@@ -68,6 +68,12 @@ func (exec *Execution) newSymbolToProcBlock(name string, pos Position) Value {
 // stored hash entry) is returned as the member access `receiver.name` would
 // return it, but only when no extra arguments were supplied.
 func (exec *Execution) sendSymbolProcMember(receiver Value, name string, rest []Value, pos Position) (Value, error) {
+	if name == "<<" {
+		if len(rest) != 1 {
+			return NewNil(), fmt.Errorf("&:%s expects exactly one argument, got %d", name, len(rest))
+		}
+		return exec.shovelArray(receiver, rest[0])
+	}
 	if op, ok := reduceArithmeticOps[name]; ok {
 		if len(rest) != 1 {
 			return NewNil(), fmt.Errorf("&:%s expects exactly one argument, got %d", name, len(rest))

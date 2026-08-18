@@ -302,6 +302,12 @@ func NewString(s string) Value { return value.NewString(s) }
 // NewArray returns an array Value.
 func NewArray(a []Value) Value { return value.NewArray(a) }
 
+// adoptArray wraps a without publishing. The caller already published every
+// collection it stored in a.
+func adoptArray(a []Value) Value { return value.AdoptArray(a) }
+
+func adoptHash(h map[string]Value) Value { return value.AdoptHash(h) }
+
 // NewHash returns a hash (map) Value.
 func NewHash(h map[string]Value) Value { return value.NewHash(h) }
 
@@ -328,7 +334,8 @@ func arrayIdentity(v Value) uintptr { return value.ArrayIdentity(v) }
 
 // setArrayElems replaces an array's element slice in place through its shared
 // wrapper. It is the primitive behind the Ruby-style in-place mutators (push,
-// pop, clear, map!, ...): every Value aliasing the array observes the change.
+// pop, clear, delete_if, ...) after the write has proved the wrapper exclusively
+// held; see collection_values.go.
 func setArrayElems(v Value, elems []Value) { v.SetArrayElems(elems) }
 
 // setArrayWindow narrows an array onto a window of the allocation its elements
@@ -665,6 +672,7 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		for i, item := range items {
 			clonedItems[i] = cloneValueForHostWithState(item, state)
 		}
+		publishCollectionElems(clonedItems)
 		return cloned
 	case KindHash:
 		return cloneHostHashValue(val, state)
@@ -692,7 +700,9 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		cloned := NewInstance(&Instance{Class: clonedClass, Ivars: clonedIvars})
 		state.instances[inst] = cloned
 		for name, ivar := range inst.Ivars {
-			clonedIvars[name] = cloneValueForHostWithState(ivar, state)
+			cloned := cloneValueForHostWithState(ivar, state)
+			publishCollection(cloned)
+			clonedIvars[name] = cloned
 		}
 		return cloned
 	case KindEnum:
@@ -812,7 +822,9 @@ func cloneClassForHostWithState(classDef *ClassDef, state hostValueCloneState) *
 	}
 	state.classes[classDef] = classClone
 	for name, val := range classDef.ClassVars {
-		classClone.ClassVars[name] = cloneValueForHostWithState(val, state)
+		cloned := cloneValueForHostWithState(val, state)
+		publishCollection(cloned)
+		classClone.ClassVars[name] = cloned
 	}
 	for methodName, method := range classDef.Methods {
 		classClone.Methods[methodName] = cloneFunctionForHostWithState(method, state)
@@ -1083,10 +1095,6 @@ func (b *Builtin) declaredNonMutating() bool { return b != nil && b.nonMutating 
 // the second can mutate it in a way attributed to that execution alone. A
 // builtin that mutates without retaining is harmless to the retention side and
 // fatal to the dispatch side.
-//
-// No caller reads this yet. It is the half of the contract that the execution-
-// scoped walk memo needs (#1199), and it is recorded here so that change has a
-// declaration to consume rather than having to introduce one and use it at once.
 func (b *Builtin) declaredNonRetaining() bool { return b != nil && b.nonRetaining }
 
 // BuiltinFunc is the Go function signature for built-in Vibescript functions.
@@ -1259,9 +1267,9 @@ func DeclareNonMutating(v Value) Value {
 // keeping a container reached through an argument counts as keeping the
 // argument.
 //
-// Nothing consults this promise yet: it is recorded and no more, so declaring
-// it changes no behavior today. It is published ahead of the change that reads
-// it (#1199), so hosts are not asked to adopt an API mid-flight.
+// Host-driven dispatch consults this promise: a builtin that has not made it
+// has its collection inputs and result published, so a later script write
+// copies instead of mutating a wrapper the host retained.
 //
 // It is stated as a safety promise rather than a hint because of what it will
 // mean once consulted: an execution calling a builtin that makes it keeps
@@ -1285,6 +1293,12 @@ func DeclareNonRetaining(v Value) Value {
 func NewCapturingBuiltin(name string, fn BuiltinFunc, captured ...Value) Value {
 	val := newBuiltin(name, fn, false)
 	valueBuiltin(val).CapturedValues = captured
+	// A captured collection is a durable handle. Leaving it unpublished lets
+	// the sole-ref write path mutate a wrapper the builtin still names —
+	// `a = [1]; p = a.eql?; a.push(2)` would then change what p compares.
+	for _, item := range captured {
+		publishCollection(item)
+	}
 	return val
 }
 

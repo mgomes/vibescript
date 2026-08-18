@@ -17,16 +17,16 @@ favors compact signatures and one-line descriptions.
 - `{ |item| }` marks a method that takes a block, written
   `do |item| ... end` in Vibescript.
 - `a | b` in a return type means the method returns either type.
-- Collection methods with Ruby mutator names mutate their receiver in place,
-  matching Ruby: the array splicers (`push`/`append`, `prepend`/`unshift`,
-  `<<`, `insert`, `fill`, `clear`), the removers (`pop`, `shift`, `delete`,
-  `delete_if`/`keep_if`), the array bang forms (`map!`, `sort!`, `reverse!`,
-  `select!`, `reject!`, `uniq!`, `compact!`), and the hash mutators
-  (`update`/`merge!`, `store`, `delete`, `clear`, `delete_if`/`keep_if`,
-  `replace`). Every alias of the collection observes the mutation, exactly as
-  with index assignment (`arr[0] = x`, `hash[:k] = v`). Non-mutator names
-  (`map`, `select`, `sort`, `merge`, `+`, ...) return a new value and leave
-  the receiver untouched, as in Ruby.
+- Collection methods with Ruby mutator names update their receiver: the array
+  splicers (`push`/`append`, `prepend`/`unshift`, `<<`, `insert`, `fill`,
+  `clear`), the removers (`pop`, `shift`, `delete`, `delete_if`/`keep_if`), and
+  the hash mutators (`store`, `delete`, `clear`, `delete_if`/`keep_if`,
+  `replace`). What they update is the local, instance variable, or nested path
+  the call names, exactly as index assignment does (`arr[0] = x`,
+  `hash[:k] = v`). Arrays and hashes are values, so no other binding sees the
+  update, and a receiver that names no such path is a temporary whose update is
+  returned and reaches nothing else. Non-mutator names (`map`, `select`, `sort`,
+  `merge`, `+`, ...) return a new value and leave the receiver untouched.
 - Strings are immutable values: string bang variants (`strip!`, `gsub!`, ...)
   return the transformed string — or `nil` when nothing changed — rather than
   rewriting the receiver in place.
@@ -584,16 +584,9 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   after that element (`insert(-1, x)` appends); an index past the end pads with
   `nil`; a negative index past the start raises. Inserting no values returns
   the receiver unchanged.
-- `clear -> array` – removes every element from the receiver in place and
-  returns it.
+- `clear -> array` – removes every element from the receiver and returns it.
 - `delete_if { |item| } -> array` / `keep_if { |item| } -> array` – prune the
-  receiver in place against the block (drop accepted / keep accepted) and
-  return it. `select!` and `reject!` are the bang twins that return `nil` when
-  nothing was removed.
-- `map! { |item| } -> array`, `sort! -> array` (optional comparator block),
-  `reverse! -> array` – transform the receiver in place and return it.
-- `uniq! -> array | nil` / `compact! -> array | nil` – dedupe / drop `nil`s in
-  place, returning the receiver when something was removed and `nil` otherwise.
+  receiver against the block (drop accepted / keep accepted) and return it.
 - `first -> value | nil` / `first(n) -> array` – leading element(s).
 - `last -> value | nil` / `last(n) -> array` – trailing element(s).
 - `uniq -> array` – distinct values, keeping first occurrences.
@@ -734,13 +727,9 @@ methods.
   keys present in both hashes the block resolves the conflict and its result is
   stored, folding through each argument in turn. Keys present on only one side are
   copied without invoking the block, and the conflict key is the stored string.
-- `update(*others) -> hash` / `merge!(*others) -> hash` – Ruby's in-place
-  merge: fold the argument hashes into the receiver itself and return it. Both
-  accept the same optional conflict block as `merge`; with no arguments they
-  are no-ops returning the receiver.
 - `replace(other) -> hash` – discards the receiver's entries and adopts
-  `other`'s entries in place, returning the receiver. Hashes have no
-  per-hash default metadata.
+  `other`'s, updating the receiver the call names and returning it. Hashes
+  have no per-hash default metadata.
 - `flatten(depth = 1) -> array` – flat array built from the `[key, value]` pairs,
   flattened to `depth`. The default depth produces `[key, value, ...]`; array
   values stay nested unless a deeper `depth` is given. A `depth` of `0` keeps the

@@ -125,79 +125,6 @@ func TestArrayMutatorReturnContracts(t *testing.T) {
 			wantSame:   true,
 		},
 		{
-			name:       "select! returns self when changed",
-			expr:       "values = [1, 2, 3]\n  ret = values.select! { |v| v > 1 }",
-			wantRet:    NewArray([]Value{NewInt(2), NewInt(3)}),
-			wantValues: []Value{NewInt(2), NewInt(3)},
-			wantSame:   true,
-		},
-		{
-			name:       "select! returns nil when unchanged",
-			expr:       "values = [2, 3]\n  ret = values.select! { |v| v > 1 }",
-			wantRet:    NewNil(),
-			wantValues: []Value{NewInt(2), NewInt(3)},
-		},
-		{
-			name:       "reject! returns self when changed",
-			expr:       "values = [1, 2, 3]\n  ret = values.reject! { |v| v == 2 }",
-			wantRet:    NewArray([]Value{NewInt(1), NewInt(3)}),
-			wantValues: []Value{NewInt(1), NewInt(3)},
-			wantSame:   true,
-		},
-		{
-			name:       "reject! returns nil when unchanged",
-			expr:       "values = [1, 3]\n  ret = values.reject! { |v| v == 2 }",
-			wantRet:    NewNil(),
-			wantValues: []Value{NewInt(1), NewInt(3)},
-		},
-		{
-			name:       "uniq! returns self when deduped",
-			expr:       "values = [1, 2, 2]\n  ret = values.uniq!",
-			wantRet:    NewArray([]Value{NewInt(1), NewInt(2)}),
-			wantValues: []Value{NewInt(1), NewInt(2)},
-			wantSame:   true,
-		},
-		{
-			name:       "uniq! returns nil when already unique",
-			expr:       "values = [1, 2]\n  ret = values.uniq!",
-			wantRet:    NewNil(),
-			wantValues: []Value{NewInt(1), NewInt(2)},
-		},
-		{
-			name:       "compact! returns self when nils removed",
-			expr:       "values = [1, nil, 2]\n  ret = values.compact!",
-			wantRet:    NewArray([]Value{NewInt(1), NewInt(2)}),
-			wantValues: []Value{NewInt(1), NewInt(2)},
-			wantSame:   true,
-		},
-		{
-			name:       "compact! returns nil when no nils",
-			expr:       "values = [1, 2]\n  ret = values.compact!",
-			wantRet:    NewNil(),
-			wantValues: []Value{NewInt(1), NewInt(2)},
-		},
-		{
-			name:       "reverse! always returns self",
-			expr:       "values = [1, 2, 3]\n  ret = values.reverse!",
-			wantRet:    NewArray([]Value{NewInt(3), NewInt(2), NewInt(1)}),
-			wantValues: []Value{NewInt(3), NewInt(2), NewInt(1)},
-			wantSame:   true,
-		},
-		{
-			name:       "sort! always returns self",
-			expr:       "values = [3, 1, 2]\n  ret = values.sort!",
-			wantRet:    NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)}),
-			wantValues: []Value{NewInt(1), NewInt(2), NewInt(3)},
-			wantSame:   true,
-		},
-		{
-			name:       "map! always returns self",
-			expr:       "values = [1, 2]\n  ret = values.map! { |v| v * 10 }",
-			wantRet:    NewArray([]Value{NewInt(10), NewInt(20)}),
-			wantValues: []Value{NewInt(10), NewInt(20)},
-			wantSame:   true,
-		},
-		{
 			name:       "shovel returns self",
 			expr:       "values = [1]\n  ret = values << 2",
 			wantRet:    NewArray([]Value{NewInt(1), NewInt(2)}),
@@ -223,10 +150,12 @@ func TestArrayMutatorReturnContracts(t *testing.T) {
 	}
 }
 
-// TestArrayMutatorAliasVisibility pins Ruby's reference semantics: two
-// variables bound to the same array both observe every in-place mutation,
-// including mutations reached through hash values and nested arrays.
-func TestArrayMutatorAliasVisibility(t *testing.T) {
+// TestArrayMutatorIndependence is the deliberate inversion of the alias
+// visibility this suite used to pin. Arrays are values (ADR-006 item 2): a
+// second binding, a hash entry, and a second element slot are each another
+// logical value, so a write through one of them cannot be seen through any
+// other. Every case below asserted the opposite before the change.
+func TestArrayMutatorIndependence(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
     def direct_alias()
@@ -234,7 +163,6 @@ func TestArrayMutatorAliasVisibility(t *testing.T) {
       b = a
       a.push(4)
       a.shift
-      a.map! { |v| v * 10 }
       b
     end
 
@@ -252,22 +180,36 @@ func TestArrayMutatorAliasVisibility(t *testing.T) {
       outer[0].push(2)
       outer[1]
     end
+
+    def addressed_path()
+      outer = [[1]]
+      outer[0].push(2)
+      outer[0]
+    end
     `)
 
+	// b keeps the value a had when it was bound, not the one a went on to have.
 	compareArrays(t, callFunc(t, script, "direct_alias", nil),
-		[]Value{NewInt(20), NewInt(30), NewInt(40)})
+		[]Value{NewInt(1), NewInt(2), NewInt(3)})
 
+	// The hash entry and the local are two values from the moment the literal
+	// stored one into the other, so each sees only its own write.
 	hashAlias := callFunc(t, script, "hash_value_alias", nil).Hash()
-	compareArrays(t, hashAlias["via_hash"], []Value{NewInt(1), NewInt(2), NewInt(3)})
-	compareArrays(t, hashAlias["direct"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, hashAlias["via_hash"], []Value{NewInt(1), NewInt(3)})
+	compareArrays(t, hashAlias["direct"], []Value{NewInt(1), NewInt(2)})
 
-	compareArrays(t, callFunc(t, script, "nested_alias", nil),
+	// Two element slots holding one value are still two values.
+	compareArrays(t, callFunc(t, script, "nested_alias", nil), []Value{NewInt(1)})
+
+	// The write does reach the path it addresses: outer[0] is an addressable
+	// root, so pushing through it updates the element the source names.
+	compareArrays(t, callFunc(t, script, "addressed_path", nil),
 		[]Value{NewInt(1), NewInt(2)})
 }
 
-// TestArrayConcatAccumulatorPreservesIdentity pins that the `x = x + [...]`
-// accumulator fast path never forks array identity: reading the variable
-// settles the hidden buffer but keeps the same wrapper, so an alias taken
+// TestArrayConcatAccumulatorKeepsBindingsIndependent pins that the
+// `x = x + [...]` accumulator fast path, which reuses a hidden backing buffer
+// across iterations, never lets that reuse show: a binding taken
 // after a concat-reassignment observes every later in-place mutation, exactly
 // like an alias of a literal-built array. Expectations verified against Ruby
 // 3.4 (`a = a + [x]` rebinds to a new object; aliases of the pre-rebind object
@@ -333,21 +275,22 @@ func TestArrayConcatAccumulatorPreservesIdentity(t *testing.T) {
 
 	direct := callFunc(t, script, "direct_alias", nil).Hash()
 	compareArrays(t, direct["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
-	compareArrays(t, direct["b"], []Value{NewInt(1), NewInt(2), NewInt(3)})
-	if !direct["same"].Bool() {
-		t.Fatal("alias of a concat-built array must be the same object")
+	compareArrays(t, direct["b"], []Value{NewInt(1), NewInt(2)})
+	if direct["same"].Bool() {
+		t.Fatal("a binding taken from a concat-built array must not track it")
 	}
 
 	hashAlias := callFunc(t, script, "hash_value_alias", nil).Hash()
 	compareArrays(t, hashAlias["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
-	compareArrays(t, hashAlias["via_hash"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, hashAlias["via_hash"], []Value{NewInt(1), NewInt(2)})
 
 	element := callFunc(t, script, "element_alias", nil).Hash()
 	compareArrays(t, element["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
-	compareArrays(t, element["via_element"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, element["via_element"], []Value{NewInt(1), NewInt(2)})
 
-	// Ruby: b aliases the [1] object; the later a = a + [2] rebinds a to a
-	// fresh object, so b keeps [1] while a accumulates [1, 2, 3].
+	// b keeps [1] while a accumulates: the same answer as before, now for the
+	// reason that holds for every binding rather than only for the rebinding
+	// concat form.
 	interleaved := callFunc(t, script, "interleaved", nil).Hash()
 	compareArrays(t, interleaved["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
 	compareArrays(t, interleaved["b"], []Value{NewInt(1)})
@@ -363,7 +306,7 @@ func TestArrayConcatAccumulatorPreservesIdentity(t *testing.T) {
 	compareArrays(t, loop["b"], []Value{NewInt(1), NewInt(2)})
 }
 
-// TestArrayConcatBuiltArraysMutateLikeLiterals pins that an array grown via
+// TestArrayConcatBuiltArraysPassLikeLiterals pins that an array grown via
 // the concat fast path is indistinguishable from a push-built or literal one
 // when passed to a function that mutates its argument (Ruby reference
 // semantics: the callee mutates the caller's object).
@@ -395,20 +338,20 @@ func TestArrayConcatBuiltArraysMutateLikeLiterals(t *testing.T) {
     end
     `)
 
-	want := []Value{NewInt(1), NewInt(2), NewInt(100)}
+	// However the array was built, passing it to a function makes another
+	// value, so the callee's push is invisible to the caller.
+	want := []Value{NewInt(1), NewInt(2)}
 	for _, fn := range []string{"via_concat", "via_push", "via_literal"} {
 		compareArrays(t, callFunc(t, script, fn, nil), want)
 	}
 }
 
-// TestArrayConcatAccumulatorEscapeSettles pins the two non-read escape routes
-// of a live accumulator. A block whose last statement is the concat
-// reassignment hands the accumulator itself out as the block value (Ruby: the
-// assignment's value is the new object bound to the variable), and a method
-// whose implicit return is the reassignment hands it to the caller. The
-// escaping value and the variable must stay one object, and later concats
-// through the variable must never share backing with the escaped value.
-func TestArrayConcatAccumulatorEscapeSettles(t *testing.T) {
+// TestArrayConcatAccumulatorEscapeIsAValue pins the escape route of a live
+// accumulator: a block whose last statement is the concat reassignment hands
+// the accumulator out as the block value. That value is counted as it enters
+// the map's output, so it is what the accumulator held then and later concats
+// through the variable cannot reach it.
+func TestArrayConcatAccumulatorEscapeIsAValue(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
     def block_result_identity()
@@ -420,10 +363,10 @@ func TestArrayConcatAccumulatorEscapeSettles(t *testing.T) {
     `)
 
 	block := callFunc(t, script, "block_result_identity", nil).Hash()
-	if !block["last_same"].Bool() {
-		t.Fatal("last block result must be the accumulator object itself")
+	if block["last_same"].Bool() {
+		t.Fatal("a block result must not track the accumulator it was produced from")
 	}
-	compareArrays(t, block["last"], []Value{NewInt(0), NewInt(1), NewInt(2), NewInt(99)})
+	compareArrays(t, block["last"], []Value{NewInt(0), NewInt(1), NewInt(2)})
 	compareArrays(t, block["first"], []Value{NewInt(0), NewInt(1)})
 }
 
@@ -575,6 +518,9 @@ func TestArrayMutatorHostIsolation(t *testing.T) {
 // charge the quota before allocating, so an unbounded accumulation loop is
 // rejected with a limit error rather than allocating past the cap.
 func TestArrayInPlaceGrowthTripsMemoryQuota(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	cases := []struct {
@@ -665,20 +611,6 @@ func TestHashMutatorReturnContracts(t *testing.T) {
 		wantSame bool
 	}{
 		{
-			name:     "merge! returns self",
-			expr:     "h = { a: 1 }\n  ret = h.merge!({ b: 2 })",
-			wantRet:  NewHash(map[string]Value{"a": NewInt(1), "b": NewInt(2)}),
-			wantHash: map[string]Value{"a": NewInt(1), "b": NewInt(2)},
-			wantSame: true,
-		},
-		{
-			name:     "update resolves conflicts through the block",
-			expr:     "h = { a: 1 }\n  ret = h.update({ a: 2 }) { |k, old, new| old + new }",
-			wantRet:  NewHash(map[string]Value{"a": NewInt(3)}),
-			wantHash: map[string]Value{"a": NewInt(3)},
-			wantSame: true,
-		},
-		{
 			name:     "delete returns the removed value",
 			expr:     "h = { a: 1, b: 2 }\n  ret = h.delete(:a)",
 			wantRet:  NewInt(1),
@@ -749,34 +681,45 @@ func TestHashMutatorReturnContracts(t *testing.T) {
 	}
 }
 
-// TestHashMutatorAliasVisibility pins Ruby's reference semantics for hashes:
-// two variables bound to the same hash both observe every in-place mutation.
-func TestHashMutatorAliasVisibility(t *testing.T) {
+// TestHashMutatorIndependence is the hash-side inversion of the alias
+// visibility this suite used to pin: a second binding and a nested entry are
+// each another value, and a write through one is invisible to the others.
+func TestHashMutatorIndependence(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
-    def alias_sees_mutations()
-      h = { a: 1 }
-      g = h
-      h.merge!({ b: 2 })
-      h.store(:c, 3)
-      h.delete(:a)
-      g
+    def direct_alias()
+      a = { x: 1 }
+      b = a
+      a["y"] = 2
+      a.delete("x")
+      b
     end
 
-    def nested_value_alias()
-      h = { list: [1] }
-      g = { view: h }
-      h.merge!({ extra: true })
-      g[:view]
+    def nested_alias()
+      inner = { n: 1 }
+      outer = { a: inner, b: inner }
+      outer["a"]["n"] = 9
+      outer["b"]
+    end
+
+    def addressed_path()
+      outer = { a: { n: 1 } }
+      outer["a"]["n"] = 9
+      outer["a"]
     end
     `)
 
-	got := callFunc(t, script, "alias_sees_mutations", nil)
-	compareHash(t, got.Hash(), map[string]Value{"b": NewInt(2), "c": NewInt(3)})
-
-	nested := callFunc(t, script, "nested_value_alias", nil)
-	if size := nested.HashLen(); size != 2 {
-		t.Fatalf("nested alias sees %d entries, want 2", size)
+	direct := callFunc(t, script, "direct_alias", nil)
+	if got := direct.Inspect(); got != `{x: 1}` {
+		t.Fatalf("aliased binding = %s, want {x: 1}", got)
+	}
+	nested := callFunc(t, script, "nested_alias", nil)
+	if got := nested.Inspect(); got != `{n: 1}` {
+		t.Fatalf("sibling entry = %s, want {n: 1}", got)
+	}
+	addressed := callFunc(t, script, "addressed_path", nil)
+	if got := addressed.Inspect(); got != `{n: 9}` {
+		t.Fatalf("addressed entry = %s, want {n: 9}", got)
 	}
 }
 
@@ -786,9 +729,10 @@ func TestHashMutatorAliasVisibility(t *testing.T) {
 func TestHashMutatorsPreserveInsertionOrder(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
-    def merge_bang_order()
+    def store_order()
       h = { c: 3, a: 1 }
-      h.merge!({ b: 2, a: 9 })
+      h["b"] = 2
+      h["a"] = 9
       h.keys
     end
 
@@ -828,7 +772,7 @@ func TestHashMutatorsPreserveInsertionOrder(t *testing.T) {
 		return out
 	}
 
-	compareArrays(t, callFunc(t, script, "merge_bang_order", nil), sym("c", "a", "b"))
+	compareArrays(t, callFunc(t, script, "store_order", nil), sym("c", "a", "b"))
 	compareArrays(t, callFunc(t, script, "delete_then_insert_order", nil), sym("c", "b", "d"))
 	compareArrays(t, callFunc(t, script, "delete_if_order", nil), sym("d", "c", "b"))
 	compareArrays(t, callFunc(t, script, "replace_adopts_argument_order", nil), sym("z", "b"))
@@ -882,7 +826,7 @@ func TestHashMutatorHostIsolation(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
     def mutate_arg(h)
-      h.merge!({ added: true })
+      h["added"] = true
       h.delete("a")
       h.size
     end
@@ -897,21 +841,19 @@ func TestHashMutatorHostIsolation(t *testing.T) {
 		t.Fatalf("host map has %d entries after the call, want 2 (no leak)", len(original))
 	}
 	if _, leaked := original["added"]; leaked {
-		t.Fatal("script-side merge! leaked into the host's original map")
+		t.Fatal("script-side store leaked into the host's original map")
 	}
 }
 
-// TestHashMergeBangGrowthTripsMemoryQuota pins that in-place hash growth
-// charges the quota before the receiver grows: an unbounded merge! loop is
-// rejected with a limit error, while a generous quota admits the same program.
-func TestHashMergeBangGrowthTripsMemoryQuota(t *testing.T) {
+// TestHashGrowthTripsMemoryQuota pins that in-place hash growth charges the
+// quota before the receiver grows: an unbounded fill loop is rejected with a
+// limit error, while a generous quota admits the same program.
+func TestHashGrowthTripsMemoryQuota(t *testing.T) {
 	t.Parallel()
 	source := `def run()
   h = {}
   for i in 1..200
-    entry = {}
-    entry["key#{i}"] = "abcdefghij"
-    h.merge!(entry)
+    h["key#{i}"] = "abcdefghij"
   end
   h.size
 end`

@@ -4271,132 +4271,6 @@ func TestHashLookupsRejectDetachedElementsOfAnArrayKey(t *testing.T) {
 	}
 }
 
-// A retained result does not stay the size it was when it was produced. The
-// first callback returns an empty array, so it costs almost nothing; the second
-// pushes 400KB into that array and then clears the box holding it, so the
-// payload is both larger than it was and reachable only through the output; the
-// third allocates 700KB. A total captured when the result was produced misses
-// the growth, so only re-deriving the output at each check rejects this.
-func TestHashLookupsRechargeResultsThatGrowAfterBeingProduced(t *testing.T) {
-	t.Parallel()
-
-	body := `
-        if k == :a
-          box[0]
-        elsif k == :b
-          box[0].push("x" * 400000)
-          box.clear
-          1
-        else
-          ("t" * 700000).length
-        end`
-
-	sources := map[string]string{
-		"fetch_values block": `
-    def run()
-      box = [[]]
-      h = { }
-      h.fetch_values(:a, :b, :c) { |k|` + body + `
-      }
-    end
-    `,
-	}
-
-	for name, src := range sources {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
-			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-				t.Fatalf("a result that grew after being produced exceeded the quota but was accepted")
-			}
-		})
-	}
-}
-
-// The growth, the detachment, and the allocation can all happen inside one
-// callback, leaving no moment between callbacks at which a measurement could be
-// refreshed. The second callback grows the array the first returned, clears the
-// box that held it, and then allocates 700KB: any scheme that prices the output
-// before entering a callback is already stale by the time this allocates, so
-// only a root the estimator walks at the allocation's own check rejects it.
-func TestHashLookupsRejectGrowthAndDetachWithinOneCallback(t *testing.T) {
-	t.Parallel()
-
-	body := `
-        if k == :a
-          box[0]
-        else
-          box[0].push("x" * 400000)
-          box.clear
-          ("t" * 700000).length
-        end`
-
-	sources := map[string]string{
-		"fetch_values block": `
-    def run()
-      box = [[]]
-      h = { }
-      h.fetch_values(:a, :b) { |k|` + body + `
-      }
-    end
-    `,
-	}
-
-	for name, src := range sources {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
-			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-				t.Fatalf("a result grown and detached inside the callback that allocates against it was accepted")
-			}
-		})
-	}
-}
-
-// The output has to be followed down as well as up. The first callback returns
-// a 400KB array, the second empties it, and the third allocates 700KB: by then
-// the retained result holds almost nothing, so a charge still pinned at the
-// original size would wrongly reject the call.
-func TestHashLookupsDoNotChargeAResultThatShrank(t *testing.T) {
-	t.Parallel()
-
-	body := `
-        if k == :a
-          a
-        elsif k == :b
-          a.clear
-          1
-        else
-          ("t" * 700000).length
-        end`
-
-	sources := map[string]string{
-		"fetch_values block": `
-    def run()
-      a = ["x" * 400000]
-      h = { }
-      h.fetch_values(:a, :b, :c) { |k|` + body + `
-      }
-    end
-    `,
-	}
-
-	for name, src := range sources {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 1024 * 1024}, src)
-			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
-				t.Fatalf("a lookup whose retained result had shrunk was rejected: %v", err)
-			}
-		})
-	}
-}
-
-// A key argument lives only in the builtin's Go-local slice, which the walk
-// inside a callback cannot reach either. A result that aliases one is therefore
-// held by nothing the estimator sees except the output itself: the first
-// callback returns its own 400KB key, and the second allocates 700KB against a
-// 1MB quota with the two coexisting.
 func TestHashLookupsChargeAResultAliasingAnEphemeralKey(t *testing.T) {
 	t.Parallel()
 
@@ -5056,4 +4930,33 @@ func maxArgEntries(args []Value) int {
 		}
 	}
 	return maxArg
+}
+
+// TestHashLookupsReturnTheResultThatWasProduced replaces the three cases that
+// followed a retained lookup result up and down as a callback grew or emptied
+// it through an alias. A produced result is a value (ADR-006 item 2): a later
+// callback writing through the binding it came from grows that binding and
+// leaves the produced result alone, so there is no longer a result whose size
+// changes after the charge for it was taken.
+func TestHashLookupsReturnTheResultThatWasProduced(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+    def run()
+      box = [[]]
+      out = { }.fetch_values(:a, :b) { |k|
+        if k == :a
+          box[0]
+        else
+          box[0].push("grown")
+          box[0].size
+        end
+      }
+      [out[0].size, out[1]]
+    end
+    `)
+
+	// The first result is the empty array box[0] held when it was produced; the
+	// second callback's push reaches box[0] and reports the grown size.
+	compareArrays(t, callFunc(t, script, "run", nil), []Value{NewInt(0), NewInt(1)})
 }

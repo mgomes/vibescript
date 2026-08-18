@@ -93,11 +93,11 @@ func TestArrayShovelMutatesReceiver(t *testing.T) {
 	}
 }
 
-// TestArrayShovelSharesAliases pins Ruby's reference semantics around <<: two
-// variables bound to the same array both observe an in-place append, and the
-// reassignment accumulator idiom (`out = out << x`) still works because <<
-// returns the receiver.
-func TestArrayShovelSharesAliases(t *testing.T) {
+// TestArrayShovelKeepsBindingsIndependent inverts the aliasing << used to
+// share. The accumulator idiom still works -- << updates the addressable root
+// it names and returns it -- but a second binding taken along the way keeps the
+// value it was given.
+func TestArrayShovelKeepsBindingsIndependent(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `
@@ -130,24 +130,23 @@ func TestArrayShovelSharesAliases(t *testing.T) {
 	compareArrays(t, callFunc(t, script, "accumulate", []Value{NewInt(5)}),
 		[]Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4), NewInt(5)})
 
-	// b aliases the same array object, so it sees the append, and a sees b's
-	// element write: one object, two names, exactly as Ruby behaves.
+	// b was bound before the append, so it holds what a held then; a keeps its
+	// own append and never sees b's element write.
 	aliased := callFunc(t, script, "alias_visibility", nil).Hash()
-	compareArrays(t, aliased["a"], []Value{NewInt(9), NewInt(2)})
-	compareArrays(t, aliased["b"], []Value{NewInt(9), NewInt(2)})
+	compareArrays(t, aliased["a"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, aliased["b"], []Value{NewInt(9)})
 
-	// Every << appends to the one shared object, so both names end bound to
-	// the fully accumulated array.
 	repeated := callFunc(t, script, "repeated_alias", nil).Hash()
-	compareArrays(t, repeated["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
-	compareArrays(t, repeated["b"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, repeated["a"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, repeated["b"], []Value{NewInt(1), NewInt(3)})
 }
 
-// TestArrayShovelBlockResultsAliasReceiver pins the flip side of Ruby's
-// reference semantics: a block returning `out << v` returns the receiver
-// itself, so a map collecting those results holds aliases of one object and a
-// later element write is visible through every one of them.
-func TestArrayShovelBlockResultsAliasReceiver(t *testing.T) {
+// TestArrayShovelBlockResultsAreIndependent inverts the aliasing a block
+// returning `out << v` used to produce. Each result is counted as it enters the
+// map's output, so it is the value it was when it was produced and a later
+// element write through a binding taken from the output reaches only that
+// binding.
+func TestArrayShovelBlockResultsAreIndependent(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `
@@ -166,8 +165,8 @@ func TestArrayShovelBlockResultsAliasReceiver(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("block_results length = %d, want 2", len(results))
 	}
-	compareArrays(t, results[0], []Value{NewInt(9), NewInt(2)})
-	compareArrays(t, results[1], []Value{NewInt(9), NewInt(2)})
+	compareArrays(t, results[0], []Value{NewInt(1)})
+	compareArrays(t, results[1], []Value{NewInt(1), NewInt(2)})
 }
 
 func TestArrayIntersectionOperator(t *testing.T) {

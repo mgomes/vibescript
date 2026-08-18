@@ -1582,24 +1582,6 @@ end
 `,
 		},
 		{
-			name: "explicit raise retains type poison from an unknown mutation",
-			source: `
-def mutate(values: array<int | string>, callback)
-  values.map! { callback.call() }
-  raise "stop"
-end
-
-def takes_string(value: string)
-  value
-end
-
-def run(callback)
-  values = [1]
-  mutate(values, callback) rescue takes_string(values[0])
-end
-`,
-		},
-		{
 			name: "explicit raise retains static poison from a possible mutation",
 			source: `
 def mutate(flag: bool, values: array<int | string>)

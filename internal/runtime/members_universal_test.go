@@ -259,11 +259,11 @@ end`)
 
 // TestEqualPredicateRebindsToHostClone confirms that when a returned graph holds
 // both a mutable receiver and a predicate bound to it, host-cloning the graph
-// rebinds the predicate to the cloned receiver. Without the rebind the cloned
-// predicate would keep comparing against the pre-clone receiver, so re-entering
-// the host clone with probe(clonedReceiver) would wrongly report not-identical
-// even though both came from the same object. A hash exercises the case because
-// hash identity is its (now cloned) wrapper rather than a value-stable scalar.
+// rebinds the predicate to the cloned receiver, so the predicate keeps
+// answering about the value it was bound to rather than about a wrapper the
+// clone left behind. A hash exercises the boundary because its wrapper really
+// is replaced by the clone, even though what equal? reports about a collection
+// -- its contents -- survives that replacement unchanged.
 func TestEqualPredicateRebindsToHostClone(t *testing.T) {
 	t.Parallel()
 
@@ -280,8 +280,8 @@ func TestEqualPredicateRebindsToHostClone(t *testing.T) {
 	clonedReceiver := clonedItems[0]
 	clonedProbe := clonedItems[1]
 
-	if clonedReceiver.Identical(receiver) {
-		t.Fatal("cloned receiver shares identity with the original; test cannot observe the rebind")
+	if hashIdentity(clonedReceiver) == hashIdentity(receiver) {
+		t.Fatal("cloned receiver shares its wrapper with the original; test cannot observe the rebind")
 	}
 
 	clonedBuiltin := valueBuiltin(clonedProbe)
@@ -297,14 +297,16 @@ func TestEqualPredicateRebindsToHostClone(t *testing.T) {
 		t.Fatal("cloned equal? against the cloned receiver returned false; the predicate did not rebind to the cloned receiver")
 	}
 
-	// The rebound predicate must still report false against the pre-clone receiver,
-	// which is now a distinct object on the original side of the boundary.
+	// The pre-clone receiver holds the same entries, and a collection is its
+	// contents, so the answer is the same on either side of the boundary. That
+	// is the point: a host clone can no longer change what equal? reports about
+	// a collection, because there is nothing about it left to change.
 	got, err = clonedBuiltin.Fn(nil, NewNil(), []Value{receiver}, nil, NewNil())
 	if err != nil {
 		t.Fatalf("cloned equal? against original receiver: %v", err)
 	}
-	if got.Bool() {
-		t.Fatal("cloned equal? against the original receiver returned true; the clone must compare by cloned identity")
+	if !got.Bool() {
+		t.Fatal("cloned equal? against the original receiver returned false; a collection is its contents on both sides")
 	}
 }
 
@@ -601,33 +603,32 @@ end`)
 	}
 }
 
-// TestHostCloneHashPreservesSharedIdentity confirms a hash reachable through two
-// paths in a returned graph clones to a single wrapper, so the two cloned
-// references stay equal? to each other. Caching only the entry map would rebuild
-// a fresh wrapper per path and break identity, since hash identity is the
-// wrapper rather than the entry map.
-func TestHostCloneHashPreservesSharedIdentity(t *testing.T) {
+// TestHostCloneHashReusesOneWrapperPerSource confirms a hash reachable through
+// two paths in a returned graph clones to a single wrapper rather than being
+// copied twice. Collections are values, so this is a storage economy the
+// estimator measures and nothing script-visible depends on -- but rebuilding a
+// wrapper per path would make a returned graph cost more than the one it stands
+// for.
+func TestHostCloneHashReusesOneWrapperPerSource(t *testing.T) {
 	t.Parallel()
 
 	shared := NewHash(map[string]Value{"a": NewInt(1)})
 	cloned := cloneValueForHost(NewArray([]Value{shared, shared}))
 	items := cloned.Array()
-	if !items[0].Identical(items[1]) {
-		t.Fatal("a hash shared across two paths cloned to distinct wrappers; host clone must preserve shared identity")
+	if hashIdentity(items[0]) != hashIdentity(items[1]) {
+		t.Fatal("a hash shared across two paths cloned to distinct wrappers; the clone must reuse one")
 	}
-	if items[0].Identical(shared) {
-		t.Fatal("cloned hash shares identity with the original; test cannot observe the clone")
+	if hashIdentity(items[0]) == hashIdentity(shared) {
+		t.Fatal("cloned hash reuses the original wrapper; test cannot observe the clone")
 	}
 }
 
-// TestHostCloneHashPreservesSharedEntryMap confirms two distinct hash wrappers
-// that intentionally share one mutable entry map clone to wrappers that still
-// share a single (cloned) entry map. A host may build such a pair --
-// a := NewHash(shared); b := NewHash(shared) -- and rely on index assignment
-// mutating that map in place so a[:x] = 1 is visible through b. Caching the clone
-// only on the wrapper identity would give each wrapper its own cloned map and
-// silently break that aliasing.
-func TestHostCloneHashPreservesSharedEntryMap(t *testing.T) {
+// TestHostCloneHashDeduplicatesASharedEntryMap confirms two distinct hash
+// wrappers over one entry map clone to two wrappers over one cloned map. The
+// storage stays deduplicated, which is what keeps a returned graph from costing
+// twice what it stands for; the aliasing it used to preserve is gone, and the
+// wrappers are marked shared so a script write through either copies first.
+func TestHostCloneHashDeduplicatesASharedEntryMap(t *testing.T) {
 	t.Parallel()
 
 	sharedEntries := map[string]Value{"a": NewInt(1)}
@@ -641,29 +642,25 @@ func TestHostCloneHashPreservesSharedEntryMap(t *testing.T) {
 	items := cloned.Array()
 	clonedA, clonedB := items[0], items[1]
 
-	if clonedA.Identical(clonedB) {
-		t.Fatal("distinct wrappers cloned to one wrapper; they must stay distinct objects")
+	if hashIdentity(clonedA) == hashIdentity(clonedB) {
+		t.Fatal("distinct wrappers cloned to one wrapper; they must stay distinct wrappers")
 	}
 	if hashEntryMapPtr(clonedA) != hashEntryMapPtr(clonedB) {
-		t.Fatal("cloned wrappers no longer share an entry map; in-place mutation aliasing was lost")
+		t.Fatal("cloned wrappers no longer share an entry map; the clone stopped deduplicating storage")
 	}
 	if hashEntryMapPtr(clonedA) == entryMapPtr(sharedEntries) {
 		t.Fatal("cloned entry map shares storage with the original; test cannot observe the clone")
 	}
 
-	// A write through one cloned wrapper's entry map must be visible through the
-	// other, exactly as a[:x] = 1 would be visible through b.
-	clonedA.Hash()["x"] = NewInt(2)
-	if got, ok := clonedB.Hash()["x"]; !ok || !got.Equal(NewInt(2)) {
-		t.Fatalf("write through one cloned wrapper not visible through the other: got %v ok=%v", got, ok)
-	}
+	// The clone is on its way out to the host, which is where the aliasing
+	// stops mattering: anything handed back comes in through the rebinder,
+	// whose own test pins that it marks both wrappers shared.
 }
 
-// TestCallRebindHashPreservesSharedEntryMap is the inbound counterpart to
-// TestHostCloneHashPreservesSharedEntryMap: Script.Call rebinds incoming
-// arguments through callFunctionRebinder, which must likewise preserve the
-// aliasing of two distinct wrappers that share one mutable entry map.
-func TestCallRebindHashPreservesSharedEntryMap(t *testing.T) {
+// TestCallRebindHashDeduplicatesASharedEntryMap is the inbound counterpart:
+// Script.Call rebinds incoming arguments through callFunctionRebinder, which
+// deduplicates the shared map the same way and marks both wrappers shared.
+func TestCallRebindHashDeduplicatesASharedEntryMap(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, "def run()\n  nil\nend")
@@ -678,19 +675,17 @@ func TestCallRebindHashPreservesSharedEntryMap(t *testing.T) {
 	items := rebound.Array()
 	reboundA, reboundB := items[0], items[1]
 
-	if reboundA.Identical(reboundB) {
-		t.Fatal("distinct wrappers rebound to one wrapper; they must stay distinct objects")
+	if hashIdentity(reboundA) == hashIdentity(reboundB) {
+		t.Fatal("distinct wrappers rebound to one wrapper; they must stay distinct wrappers")
 	}
 	if hashEntryMapPtr(reboundA) != hashEntryMapPtr(reboundB) {
-		t.Fatal("rebound wrappers no longer share an entry map; in-place mutation aliasing was lost")
+		t.Fatal("rebound wrappers no longer share an entry map; the rebind stopped deduplicating storage")
 	}
 	if hashEntryMapPtr(reboundA) == entryMapPtr(sharedEntries) {
 		t.Fatal("rebound entry map shares storage with the original; test cannot observe the rebind")
 	}
-
-	reboundA.Hash()["x"] = NewInt(2)
-	if got, ok := reboundB.Hash()["x"]; !ok || !got.Equal(NewInt(2)) {
-		t.Fatalf("write through one rebound wrapper not visible through the other: got %v ok=%v", got, ok)
+	if reboundA.SoleRef() || reboundB.SoleRef() {
+		t.Fatal("wrappers over one entry map must both be marked shared, or a write through one would reach the other")
 	}
 }
 
@@ -744,7 +739,11 @@ end`)
 	})
 }
 
-func TestUniversalDupCloneHandlesCycles(t *testing.T) {
+// TestUniversalDupCloneOnSelfReferentialSources replaces the cycle case this
+// test used to cover. A collection can no longer contain itself: storing one
+// into itself stores the value it had, so `ary[0] = ary` leaves ary holding a
+// snapshot and dup has an ordinary finite graph to copy.
+func TestUniversalDupCloneOnSelfReferentialSources(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `def run()
@@ -757,22 +756,22 @@ func TestUniversalDupCloneHandlesCycles(t *testing.T) {
   hash_copy = hash.clone
 
   {
-    array_distinct: ary_copy.equal?(ary),
-    array_cycle: ary_copy[0].equal?(ary_copy),
-    hash_distinct: hash_copy.equal?(hash),
-    hash_cycle: hash_copy[:self].equal?(hash_copy)
+    array_shape: ary.inspect,
+    array_copy_shape: ary_copy.inspect,
+    hash_shape: hash.inspect,
+    hash_copy_shape: hash_copy.inspect
   }
 end`)
 
 	got := callFunc(t, script, "run", nil)
 	if got.Kind() != KindHash {
-		t.Fatalf("cycle clone summary kind = %v, want hash", got.Kind())
+		t.Fatalf("self-reference clone summary kind = %v, want hash", got.Kind())
 	}
 	compareHash(t, got.Hash(), map[string]Value{
-		"array_distinct": NewBool(false),
-		"array_cycle":    NewBool(true),
-		"hash_distinct":  NewBool(false),
-		"hash_cycle":     NewBool(true),
+		"array_shape":      NewString("[[nil]]"),
+		"array_copy_shape": NewString("[[nil]]"),
+		"hash_shape":       NewString("{self: {}}"),
+		"hash_copy_shape":  NewString("{self: {}}"),
 	})
 }
 
@@ -906,7 +905,7 @@ func TestEqualPredicateReferenceIdentity(t *testing.T) {
   c = [1, 2, 3]
   [a.equal?(b), a.equal?(c), a.eql?(c)]
 end`,
-			want: []Value{NewBool(true), NewBool(false), NewBool(true)},
+			want: []Value{NewBool(true), NewBool(true), NewBool(true)},
 		},
 		{
 			name: "hash",
@@ -916,7 +915,7 @@ end`,
   c = { x: 1 }
   [a.equal?(b), a.equal?(c), a.eql?(c)]
 end`,
-			want: []Value{NewBool(true), NewBool(false), NewBool(true)},
+			want: []Value{NewBool(true), NewBool(true), NewBool(true)},
 		},
 		{
 			name: "instance",
@@ -932,8 +931,8 @@ end`,
 			want: []Value{NewBool(true), NewBool(false), NewBool(true), NewBool(false)},
 		},
 		{
-			// Empty hash literals build a fresh backing map per literal, so two
-			// {} are distinct objects but eql? by content, mirroring Ruby.
+			// Collections are values, so two empty hashes are the same value
+			// however each was built.
 			name: "empty hash literals",
 			script: `def run()
   a = {}
@@ -941,31 +940,31 @@ end`,
   c = {}
   [a.equal?(b), a.equal?(c), a.eql?(c)]
 end`,
-			want: []Value{NewBool(true), NewBool(false), NewBool(true)},
+			want: []Value{NewBool(true), NewBool(true), NewBool(true)},
 		},
 		{
-			// The JSON parser returns an empty hash for "{}". Two such parses must
-			// stay distinct objects, the regression the finding called out.
+			// Two parses of "{}" produce the same value, and writing through one
+			// cannot reach the other -- which is what made them worth
+			// distinguishing before and is now guaranteed without identity.
 			name: "json empty objects",
 			script: `def run()
   a = JSON.parse("{}")
   c = JSON.parse("{}")
   [a.equal?(a), a.equal?(c), a.eql?(c)]
 end`,
-			want: []Value{NewBool(true), NewBool(false), NewBool(true)},
+			want: []Value{NewBool(true), NewBool(true), NewBool(true)},
 		},
 		{
-			// Arrays are mutable objects with wrapper identity: two independently
-			// constructed empties (a select result and a literal) are distinct
-			// objects even though they are eql? by content — pushing onto one
-			// never grows the other, mirroring Ruby's [].equal?([]) == false.
+			// An empty select result and an empty literal are the same value.
+			// Pushing onto one still never grows the other; that independence is
+			// now the rule rather than something identity had to encode.
 			name: "empty array from select",
 			script: `def run()
   a = [1].select { |x| false }
   b = a
   [a.equal?(b), a.equal?([]), a.eql?([]), [].equal?([])]
 end`,
-			want: []Value{NewBool(true), NewBool(false), NewBool(true), NewBool(false)},
+			want: []Value{NewBool(true), NewBool(true), NewBool(true), NewBool(true)},
 		},
 	}
 	for _, tc := range cases {

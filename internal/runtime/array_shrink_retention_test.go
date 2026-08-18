@@ -334,6 +334,9 @@ end`)
 //
 // Not parallel: it forces process-wide GC.
 func TestDrainedArrayReleasesItsSlotBacking(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	cases := []struct {
 		name      string
 		body      string
@@ -455,6 +458,13 @@ func TestDrainedArrayReleasesItsSlotBacking(t *testing.T) {
 				backing = weak.Make(&elems[0])
 				return NewNil(), nil
 			})
+			// keep is a measurement probe, not a logical second binding.
+			// Declaring the contract keeps drain in-place so the weak
+			// pointer still names the storage being measured.
+			if b := valueBuiltin(engine.builtins["keep"]); b != nil {
+				b.nonRetaining = true
+				b.nonMutating = true
+			}
 
 			script, err := engine.Compile(fmt.Sprintf(`def run(n)
   a = []
@@ -526,6 +536,9 @@ const drainedArrayProbeSize = 2048
 //
 // Not parallel: it measures process-wide heap.
 func TestPartialDrainDoesNotAccrueUnchargedSlots(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	const (
 		rounds = 64
 		n      = 4096
@@ -599,6 +612,9 @@ end`)
 // charges one per element it moves, so doubling the array must roughly double
 // them rather than quadruple them.
 func TestDrainStaysLinear(t *testing.T) {
+	if skipUnderCollectionCopyVerify() {
+		t.Skip("measures what a write costs, which the always-copy oracle changes by design")
+	}
 	t.Parallel()
 
 	drainSteps := func(t *testing.T, n int) int {

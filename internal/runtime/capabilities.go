@@ -115,6 +115,8 @@ func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 		for i, elem := range arr {
 			cloned[i] = deepCloneValueWithState(elem, state)
 		}
+		// NewArray published the zero-filled slice, not these later inserts.
+		publishCollectionElems(cloned)
 		return clonedValue
 	case KindHash:
 		id := hashIdentity(val)
@@ -147,6 +149,12 @@ func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 		state.rememberObject(state.objectCacheID(id, val), clonedValue)
 		for k, v := range obj {
 			cloned[k] = deepCloneValueWithState(v, state)
+		}
+		// NewObject published the empty map, not these later inserts.
+		// Two attributes naming one child must share that child, not leave
+		// it fresh so a write through one name also changes the other.
+		for _, item := range cloned {
+			publishCollection(item)
 		}
 		return clonedValue
 	default:
@@ -430,6 +438,9 @@ func (s *capabilityDataCloneScanner) cloneArray(val Value) (Value, error) {
 		}
 		clonedValues[i] = clonedItem
 	}
+	// NewArray published the zero-filled slice, not these later inserts.
+	// A repeated child ([child, child]) must be shared, not left fresh.
+	publishCollectionElems(clonedValues)
 	if id != 0 {
 		delete(s.visitingArrays, id)
 	}
@@ -495,6 +506,10 @@ func (s *capabilityDataCloneScanner) cloneObject(val Value) (Value, error) {
 			return NewNil(), err
 		}
 		clonedEntries[key] = clonedItem
+	}
+	// retagClonedObject published the empty map, not these later inserts.
+	for _, item := range clonedEntries {
+		publishCollection(item)
 	}
 	if ptr != 0 {
 		delete(s.visitingMaps, ptr)

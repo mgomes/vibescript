@@ -3119,10 +3119,10 @@ func TestMemberDocsMatchRuntimeMembers(t *testing.T) {
 			t.Errorf("memberDocMarkdown(%q) = %q, want the in-place bang note", name, md)
 		}
 	}
-	// sort! has a real stdlib entry, which wins over the fallback.
-	if md := memberDocMarkdown("sort!"); !strings.Contains(md, "transform the receiver in place") {
-		t.Errorf("memberDocMarkdown(sort!) = %q, want its real stdlib entry", md)
-	}
+	// sort! used to stand here as the one bang with a table entry of its own,
+	// which won over the fallback. The array bang forms are gone (ADR-006 item
+	// 2) and every remaining bang is a string form documented as a group, so
+	// there is no longer a bang whose table entry could shadow the fallback.
 	if md := memberDocMarkdown("sub!"); !strings.Contains(md, "never matched") {
 		t.Errorf("memberDocMarkdown(sub!) = %q, want the match-keyed note", md)
 	}

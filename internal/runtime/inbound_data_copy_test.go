@@ -15,9 +15,8 @@ func TestInboundDataFastPathIsolatesHostArguments(t *testing.T) {
 	script := compileScriptDefault(t, `def mutate(rows, config)
   rows << { id: 99 }
   rows[0][:name] = "changed"
-  rows.map! { |row| row }
   config[:limits].store("max", 10)
-  config.merge!({ extra: true })
+  config["extra"] = true
   [rows.size, config.size]
 end`)
 
@@ -43,7 +42,7 @@ end`)
 		t.Fatalf("script store leaked into host limits map: %v", limits)
 	}
 	if _, ok := config["extra"]; ok {
-		t.Fatalf("script merge! leaked into host config map: %v", config)
+		t.Fatalf("script store leaked into host config map: %v", config)
 	}
 }
 
@@ -55,7 +54,7 @@ func TestInboundDataFastPathIsolatesHostGlobals(t *testing.T) {
 	script := compileScriptDefault(t, `def mutate()
   settings[:flags] << "added"
   size = settings[:flags].size
-  settings.merge!({ touched: true })
+  settings["touched"] = true
   size
 end`)
 
@@ -69,7 +68,7 @@ end`)
 	}
 
 	if got := len(settings); got != 1 {
-		t.Fatalf("host settings map has %d entries after script merge!, want 1", got)
+		t.Fatalf("host settings map has %d entries after script store, want 1", got)
 	}
 	arr, ok := settings["flags"]
 	if !ok || len(arr.Array()) != 1 {
@@ -77,42 +76,42 @@ end`)
 	}
 }
 
-// TestInboundAliasedArgumentsShareOneClone pins that a repeated composite in
-// the argument list disables the fast path and keeps the rebinder's alias
-// semantics: both arguments rebind to one shared clone, so an in-place
-// mutation through one stays visible through the other — while the host
-// original stays untouched.
-func TestInboundAliasedArgumentsShareOneClone(t *testing.T) {
+// TestInboundAliasedArgumentsStayIndependent is the inversion of the alias
+// sharing this boundary used to preserve. A host may pass one composite twice,
+// and the rebinder still deduplicates it to a single clone so the copy stays a
+// copy -- but collections are values (ADR-006 item 2), so that shared storage
+// must not be observable: a write through one parameter copies first and leaves
+// the other holding what it was given.
+func TestInboundAliasedArgumentsStayIndependent(t *testing.T) {
 	t.Parallel()
 
 	script := compileScriptDefault(t, `def mutate(a, b)
   a << 4
-  [a.equal?(b), b.size]
+  [a == b, b.size]
 end`)
 
 	shared := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
 	result := callScript(t, context.Background(), script, "mutate",
 		[]Value{shared, shared}, CallOptions{})
 	got := result.Array()
-	if len(got) != 2 || !got[0].Equal(NewBool(true)) || !got[1].Equal(NewInt(4)) {
-		t.Fatalf("mutate returned %v, want [true, 4]", result)
+	if len(got) != 2 || !got[0].Equal(NewBool(false)) || !got[1].Equal(NewInt(3)) {
+		t.Fatalf("mutate returned %v, want [false, 3]", result)
 	}
 	if len(shared.Array()) != 3 {
 		t.Fatalf("host array length = %d after script push, want 3", len(shared.Array()))
 	}
 }
 
-// TestInboundGlobalAliasingArgumentSharesClone pins the cross-set alias case:
-// a lazily bound global whose source is the same composite as an argument
-// must materialize to the argument's clone, exactly as the eager rebinder
-// deduplicated it. This exercises the registering fast copy plus the deferred
-// global scan.
-func TestInboundGlobalAliasingArgumentSharesClone(t *testing.T) {
+// TestInboundGlobalAliasingArgumentStaysIndependent is the cross-set form: a
+// lazily bound global whose source is the same composite as an argument still
+// materializes to the argument's clone, and a write through the argument is
+// still invisible to the global.
+func TestInboundGlobalAliasingArgumentStaysIndependent(t *testing.T) {
 	t.Parallel()
 
 	script := compileScriptDefault(t, `def mutate(items)
   items << "from_arg"
-  [shared.equal?(items), shared.size]
+  [shared == items, shared.size]
 end`)
 
 	shared := NewArray([]Value{NewString("seed")})
@@ -120,19 +119,19 @@ end`)
 		[]Value{shared},
 		CallOptions{Globals: map[string]Value{"shared": shared}})
 	got := result.Array()
-	if len(got) != 2 || !got[0].Equal(NewBool(true)) || !got[1].Equal(NewInt(2)) {
-		t.Fatalf("mutate returned %v, want [true, 2]", result)
+	if len(got) != 2 || !got[0].Equal(NewBool(false)) || !got[1].Equal(NewInt(1)) {
+		t.Fatalf("mutate returned %v, want [false, 1]", result)
 	}
 	if len(shared.Array()) != 1 {
 		t.Fatalf("host array length = %d after script push, want 1", len(shared.Array()))
 	}
 }
 
-// TestInboundSharedEntryMapAliasingPreserved pins that two distinct host hash
-// wrappers sharing one mutable entry map still rebind onto one cloned entry
-// map (the rebinder's seenHashEntries contract): the scan detects the shared
-// map as a repeat and routes the call through the slow path.
-func TestInboundSharedEntryMapAliasingPreserved(t *testing.T) {
+// TestInboundSharedEntryMapStaysIndependent pins the entry-map case: two host
+// hash wrappers sharing one mutable map still rebind onto one cloned map, and
+// both are marked shared the moment the second appears, so a write through
+// either copies rather than reaching the other.
+func TestInboundSharedEntryMapStaysIndependent(t *testing.T) {
 	t.Parallel()
 
 	script := compileScriptDefault(t, `def mutate(a, b)
@@ -145,8 +144,8 @@ end`)
 	b := NewHash(entries)
 	result := callScript(t, context.Background(), script, "mutate",
 		[]Value{a, b}, CallOptions{})
-	if !result.Equal(NewInt(1)) {
-		t.Fatalf("write through one wrapper = %v through the other, want 1", result)
+	if !result.IsNil() {
+		t.Fatalf("write through one wrapper = %v through the other, want nil", result)
 	}
 	if len(entries) != 0 {
 		t.Fatalf("host entry map gained %d entries from script write, want 0", len(entries))

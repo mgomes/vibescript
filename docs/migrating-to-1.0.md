@@ -8,97 +8,89 @@ one place: what changed, why, what breaks, and how to fix it.
 The full list of 1.0 changes (including the many non-breaking additions) lives
 in the [CHANGELOG](../CHANGELOG.md).
 
-## 1. Arrays and hashes are mutable, with Ruby reference semantics
+## 1. Arrays and hashes are values
 
-**What changed.** The Ruby-named collection mutators now mutate their receiver
-in place instead of returning a modified copy. Arrays and hashes behave as
-mutable objects with reference semantics: two variables bound to the same
-collection observe each other's mutations.
+**What changed.** Binding, passing, or returning a collection produces another
+logical value. Updating one binding or path can never be seen through a sibling,
+and a mutating operation updates the local, instance variable, or nested path its
+receiver names by rebinding that root.
+
+```vibe
+first = [1, 2]
+second = first
+first[0] = 9
+
+first  # [9, 2]
+second # [1, 2]
+```
 
 - Array `push`/`append`, `prepend`/`unshift`, `<<`, `insert`, `fill`, `clear`,
-  and `delete_if`/`keep_if` mutate and return the receiver.
-- `pop`, `shift`, and `delete` mutate and return the removed value(s) — not the
-  former `{ array:, popped: }`-style result hashes.
-- `map!`, `sort!`, and `reverse!` transform in place and return the receiver;
-  `select!`, `reject!`, `uniq!`, and `compact!` return `nil` when nothing
-  changed.
-- Hash `update`/`merge!` fold into the receiver, `store` is true index
-  assignment returning the stored value, `delete` returns the removed value,
-  `clear` empties in place, `delete_if`/`keep_if` prune in place, and `replace`
-  adopts the argument's entries and default.
+  and `delete_if`/`keep_if` update the receiver they name and return it.
+- `pop`, `shift`, and `delete` update the receiver and return the removed
+  value(s).
+- Hash `store` is index assignment returning the stored value, `delete` returns
+  the removed value, `clear` empties, `delete_if`/`keep_if` prune, and `replace`
+  adopts the argument's entries — each updating the receiver it names.
+- `==` is still content equality, and `equal?` now answers the same question:
+  collections carry no identity, so there is nothing else for it to report.
+- The bang variants that only duplicated a non-bang transformation are gone:
+  `map!`, `sort!`, `reverse!`, `uniq!`, `compact!`, `select!`, `reject!`, and
+  hash `merge!` with its alias `update`.
 
-The non-mutating helpers (`map`, `select`, `merge`, `sort`, `+`, ...) are
-unchanged, and strings remain immutable values (the string bang helpers keep
-their value-or-`nil` contract).
+A receiver that names no addressable path is a temporary: the update is returned
+but reaches nothing else. `cart.items.push(x)` reads the items out through an
+accessor and pushes onto that value; inside the class, `@items.push(x)` names the
+instance variable and updates it.
 
-**Why.** Ruby code and Ruby intuition expect `list.pop` to hand back the popped
-element and `a << x` to grow `a` for every holder of `a`. The old
-copy-returning model made ported Ruby snippets silently wrong.
+Strings are unchanged — they were already immutable values, and the string bang
+helpers keep their value-or-`nil` contract.
 
-**What breaks.**
+**Why.** Ruby-style shared collection identity makes the sandbox's memory
+boundary a graph question rather than a value question: aliases must observe
+mutation, so the runtime has to track identity and mutation epochs, deduplicate
+shared backings, detect cycles, and give every new mutator the right invalidation
+behavior. Value semantics makes ownership tree-shaped outside classes. See
+[ADR-006](adr/006-slim-language-for-predictable-sandboxing.md).
 
-Code written against the old result-hash shape:
-
-```
-values = [1, 2, 3]
-result = values.pop
-result[:array]    # old: [1, 2]
-result[:popped]   # old: 3
-```
-
-And code that relied on mutators leaving the receiver untouched:
+**What breaks.** Code that passed a collection somewhere to have it changed:
 
 ```
-base = [1, 2]
-extended = base.push(3)   # old: base stayed [1, 2]
+def add_tax(items)
+  items.push(tax_line)   # old: the caller's array grew
+end
+
+rows.each { |row| row.push(0) }   # old: every row grew
 ```
 
-**Fix.** Read the removed value directly and let the receiver mutate:
+**Fix.** Return the updated collection and bind it, or build a new one:
 
 ```vibe
-values = [1, 2, 3]
-popped = values.pop    # => 3
-values                 # => [1, 2]
+def add_tax(items)
+  items.push(tax_line)
+  items
+end
+items = add_tax(items)
 
-removed = { a: 1 }.delete(:a)   # => 1
+rows = rows.map { |row| row + [0] }
 ```
 
-Aliases now see each other's writes; use `dup`/`clone` to detach a copy when
-you need the old snapshot behavior:
+For the removed bang variants, reassign the non-bang result, or use the
+non-bang mutator with the same effect:
 
 ```vibe
-base = [1, 2]
-extended = base.dup.push(3)   # base stays [1, 2]
-shared = base
-shared << 9                   # base is now [1, 2, 9]
+values = values.sort        # was values.sort!
+values = values.uniq        # was values.uniq!
+values.keep_if { |v| v > 1 }  # was values.select!
+values.delete_if { |v| v > 1 } # was values.reject!
+settings = settings.merge(overrides) # was settings.merge!(overrides)
 ```
 
-Two related caveats:
+## 2. `equal?` is content equality
 
-- Iteration helpers walk the elements captured at loop entry, so structural
-  mutation inside a block never extends or shortens the in-flight loop.
-- Host isolation is unchanged: call arguments and globals are still deep-cloned
-  per call, so in-script mutation never leaks into host originals.
-
-## 2. `equal?` is object identity; empty collections are distinct objects
-
-**What changed.** `equal?` reports object identity, matching Ruby. Every
-independently constructed collection — including every empty array, empty
-hash, and empty object (even `{}` from `JSON.parse("{}")`) — is a distinct
-object. Previously, any two empty arrays were `equal?`.
-
-**What breaks.** Code that used `equal?` as a cheap emptiness or content
-comparison.
-
-**Fix.** Use `==` for content equality and `empty?` for emptiness; reserve
-`equal?` for genuine identity checks:
-
-```vibe
-[].equal?([])   # => false: two distinct objects
-[] == []        # => true: same contents
-a = []
-a.equal?(a)     # => true: same object
-```
+**What changed.** Covered in section 1: `equal?` now answers the same question
+as `==`. Collections have no identity, so `[].equal?([])` is true. The earlier
+interning of empty collections is gone, but it is no longer observable through
+`equal?`.
 
 ## 3. Hashes iterate in insertion order
 
