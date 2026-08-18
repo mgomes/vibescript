@@ -35,9 +35,11 @@ BenchmarkExecutionArrayConcatAccumulation 4200000 2400 150000
 BenchmarkExecutionMethodDispatchLoop 8000000 1000 130000
 BenchmarkBuiltinMemberDispatchLoop 5000000 50 8000
 BenchmarkCallTypedCompositeValidation 14000000 1100 160000
-# Value semantics isolates and publishes each host-returned row, so this
-# loop's alloc floor rose from ~6493 pre-COW to ~7599; the cap pins the
-# new floor as tightly as the workflow loop below pins its own.
+# The host-driven input isolation this branch added (prepareHostDrivenCollections
+# walking and publishing capability inputs per call) lifted this loop's alloc
+# floor from ~6493 to ~7599. The cap pins the new floor as tightly as the
+# workflow loop below pins its own; if that walk gets cheaper (a lazy seen map,
+# read-only capabilities declaring non-mutating), lower it back.
 BenchmarkExecutionCapabilityFindLoop 12000000 7800 700000
 # Ruby-style hash insertion order stores one lookup-key slot per entry, a
 # bounded per-hash cost these two benchmarks reflect in their floors
