@@ -259,7 +259,7 @@ func (exec *Execution) writeClearedCollection(receiver Value) (Value, error) {
 	// A sole nested leaf can still be visible through a shared ancestor
 	// (`a = [[1]]; b = a; a[0].clear`), so in-place clearing needs an
 	// ancestor-free root; replaceMutableLeaf isolates shared ancestors.
-	if receiver.Unpublished() || (receiver.SoleRef() && exec.addressed.valid && exec.addressed.leaf == collectionIdentity(receiver) && len(exec.addressed.path) == 0) {
+	if receiver.Unpublished() || exec.addressedExclusiveRoot(receiver) {
 		clearCollectionInPlace(receiver)
 		return receiver, nil
 	}
@@ -381,10 +381,12 @@ func (exec *Execution) copyCollection(val Value) (Value, error) {
 // receiver that lives in a slot is a temporary, and the write goes to a copy
 // nothing else can see.
 //
-// The always-copy oracle deliberately does not reach here. It forces the path
-// walk to copy, which installs a fresh wrapper at the slot being written; making
-// this copy a second time would leave the write in a wrapper installed nowhere
-// and lose it, which is a bug in the oracle rather than a finding.
+// Under the always-copy oracle the in-place fast path is off
+// (addressedExclusiveRoot goes through exclusivelyHeld), so an addressed
+// receiver re-isolates through its recorded path on every write. Isolation
+// installs the copy at the slot the source names, so the write is never
+// stranded in a wrapper installed nowhere; only a temporary, which owns no
+// slot, falls through to the bare copy.
 func (exec *Execution) writableCollection(val Value) (Value, error) {
 	if !isCollection(val) {
 		return val, nil
@@ -392,10 +394,7 @@ func (exec *Execution) writableCollection(val Value) (Value, error) {
 	if val.Unpublished() {
 		return val, nil
 	}
-	// A sole nested leaf can still be visible through a shared ancestor
-	// (`a = [[1]]; b = a; a[0].push(2)`). Only a root with no ancestors
-	// can skip isolation on SoleRef alone.
-	if val.SoleRef() && exec.addressed.leaf != 0 && exec.addressed.leaf == collectionIdentity(val) && len(exec.addressed.path) == 0 {
+	if exec.addressedExclusiveRoot(val) {
 		return val, nil
 	}
 	// The receiver was resolved as an addressable path, and script code has
@@ -1192,6 +1191,19 @@ func capturedReceiverUnchanged(captured, live Value) bool {
 // collection, which turns the whole scheme back into a copy per write.
 func (exec *Execution) exclusivelyHeld(val Value) bool {
 	return !alwaysCopyCollections && val.SoleRef()
+}
+
+// addressedExclusiveRoot reports whether val is the addressed leaf of an
+// ancestor-free path and exclusively held, so an in-place update is visible
+// only through that path. A sole nested leaf does not qualify: it can still
+// be visible through a shared ancestor (`a = [[1]]; b = a; a[0].push(2)`).
+// It goes through exclusivelyHeld so the always-copy oracle can turn every
+// in-place fast path off at one switch.
+func (exec *Execution) addressedExclusiveRoot(val Value) bool {
+	return exec.exclusivelyHeld(val) &&
+		exec.addressed.valid &&
+		exec.addressed.leaf == collectionIdentity(val) &&
+		len(exec.addressed.path) == 0
 }
 
 // readPathTailAsTemporary finishes a path whose next hop is not collection

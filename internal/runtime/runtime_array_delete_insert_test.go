@@ -545,6 +545,7 @@ func TestArrayInsertErrors(t *testing.T) {
 
 func TestInsertRejectsOutOfRangeBeforeIsolating(t *testing.T) {
 	t.Parallel()
+	skipNoCopyPin(t)
 
 	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 240 << 10, StepQuota: Unlimited}, `
     def run()
