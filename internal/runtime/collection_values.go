@@ -350,6 +350,17 @@ func (exec *Execution) markSharedGraphRecording(val Value, seen, record map[uint
 	switch val.Kind() {
 	case KindArray:
 		for _, elem := range val.Array() {
+			if !isCollection(elem) {
+				// Scalar leaves are loop work too; the same discounted rate
+				// keeps a huge scalar array from being a free re-walk.
+				exec.hostStateRevisits++
+				if exec.hostStateRevisits%64 == 0 {
+					if err := exec.chargeScanSteps(1); err != nil {
+						return err
+					}
+				}
+				continue
+			}
 			if err := exec.markSharedGraphRecording(elem, seen, record); err != nil {
 				return err
 			}
@@ -358,6 +369,13 @@ func (exec *Execution) markSharedGraphRecording(val Value, seen, record map[uint
 		var walkErr error
 		val.RangeHashEntries(func(_ string, item Value) {
 			if walkErr != nil {
+				return
+			}
+			if !isCollection(item) {
+				exec.hostStateRevisits++
+				if exec.hostStateRevisits%64 == 0 {
+					walkErr = exec.chargeScanSteps(1)
+				}
 				return
 			}
 			walkErr = exec.markSharedGraphRecording(item, seen, record)
