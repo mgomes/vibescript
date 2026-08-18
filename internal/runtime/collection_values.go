@@ -1097,11 +1097,18 @@ func (exec *Execution) replaceMutableLeaf(replacement Value) (Value, error) {
 	for i := range path.steps[:len(path.steps)-1] {
 		step := &path.steps[i]
 		child, found, err := exec.readCollectionStep(current, step, env)
-		if err != nil || !found {
+		if err != nil {
 			return NewNil(), err
 		}
+		if !found {
+			// The path vanished under the pending write; nothing to install,
+			// but the mutator still returns the emptied value.
+			replacement.AdoptSoleRef()
+			return replacement, nil
+		}
 		if len(path.captured) > 0 && i+1 >= len(path.captured) {
-			return NewNil(), nil
+			replacement.AdoptSoleRef()
+			return replacement, nil
 		}
 		if i+1 < len(path.captured) && !capturedReceiverUnchanged(path.captured[i+1], child) {
 			replacement.AdoptSoleRef()
@@ -1122,12 +1129,15 @@ func (exec *Execution) replaceMutableLeaf(replacement Value) (Value, error) {
 	}
 	last := &path.steps[len(path.steps)-1]
 	child, found, err := exec.readCollectionStep(current, last, env)
-	if err != nil || !found {
+	if err != nil {
 		return NewNil(), err
 	}
-	if len(path.captured) > 0 && len(path.steps) >= len(path.captured) {
-		// This hop was missing when the path was evaluated.
-		return NewNil(), nil
+	if !found || (len(path.captured) > 0 && len(path.steps) >= len(path.captured)) {
+		// The slot is gone, or this hop was missing when the path was
+		// evaluated; nothing to install, but the mutator still returns the
+		// emptied value.
+		replacement.AdoptSoleRef()
+		return replacement, nil
 	}
 	if len(path.captured) > len(path.steps) && !capturedReceiverUnchanged(path.captured[len(path.steps)], child) {
 		// The leaf slot was rebound. The pending empty write belongs to

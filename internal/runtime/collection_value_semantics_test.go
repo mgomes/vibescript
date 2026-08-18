@@ -903,6 +903,28 @@ end
 	}
 }
 
+// TestNestedClearReturnsTheEmptiedValueWhenThePathVanishes pins the return
+// contract of the clear-shaped mutators: when the mutator's own block
+// invalidates the parent path, nothing is installed, but the mutator still
+// returns the emptied collection rather than nil.
+func TestNestedClearReturnsTheEmptiedValueWhenThePathVanishes(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ name, body, want string }{
+		{"array parent cleared", "a = [[1, 2]]\n  out = a[0].delete_if { |x| a.clear; true }\n  out.inspect + \" \" + a.inspect", "[] []"},
+		{"hash parent slot deleted", "h = {x: {y: 1}}\n  out = h[:x].delete_if { |k, v| h.delete(:x); true }\n  out.inspect + \" \" + h.inspect", "{} {}"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  "+tc.body+"\nend\n")
+			if got := callFunc(t, script, "run", nil).String(); got != tc.want {
+				t.Fatalf("%s = %s, want %s", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNestedClearIsolatesASharedAncestor(t *testing.T) {
 	t.Parallel()
 
