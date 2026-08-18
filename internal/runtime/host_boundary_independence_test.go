@@ -36,6 +36,35 @@ end
 	}
 }
 
+// TestHostBuiltinArgumentIndependentOfHostWrites pins the outbound
+// direction for builtin arguments: a host writing through the live backing
+// of a value it received must not change what the script observes, even
+// when the argument was named by exactly one script slot.
+func TestHostBuiltinArgumentIndependentOfHostWrites(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	engine.RegisterBuiltin("scribble", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		args[0].Hash()["k"] = NewString("scribbled")
+		return NewNil(), nil
+	})
+	script, err := engine.Compile(`def run()
+  h = {k: 1}
+  scribble(h)
+  h.inspect
+end`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "{k: 1}" {
+		t.Fatalf("a host write through a received argument reached script state: %s", got.String())
+	}
+}
+
 // TestHostBuiltinReturnIndependentOfRetainedBacking pins the inbound
 // direction: a host builtin that returns a wrapper over a map it still holds
 // must not keep a live channel into script state -- mutating the retained

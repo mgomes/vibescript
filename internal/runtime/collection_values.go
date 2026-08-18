@@ -95,14 +95,20 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 	}
 	var err error
 	if !builtin.declaredNonMutating() {
-		receiver, err = exec.isolateHostCollection(receiver)
+		// The receiver isolates only when shared: it is the host's own
+		// capability object, and mutating it in place is the sanctioned
+		// factory pattern (publish a method by writing the receiver), which
+		// the post-call publication scan binds contracts to. Arguments are
+		// script data and isolate whenever any durable slot names them, so
+		// a host write can never land in script-observable state (#1210).
+		receiver, err = exec.isolateHostCollection(receiver, true)
 		if err != nil {
 			return NewNil(), nil, nil, err
 		}
 		if len(args) > 0 {
 			args = slices.Clone(args)
 			for i, arg := range args {
-				args[i], err = exec.isolateHostCollection(arg)
+				args[i], err = exec.isolateHostCollection(arg, false)
 				if err != nil {
 					return NewNil(), nil, nil, err
 				}
@@ -111,7 +117,7 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 		if len(kwargs) > 0 {
 			kwargs = maps.Clone(kwargs)
 			for key, arg := range kwargs {
-				kwargs[key], err = exec.isolateHostCollection(arg)
+				kwargs[key], err = exec.isolateHostCollection(arg, false)
 				if err != nil {
 					return NewNil(), nil, nil, err
 				}
@@ -160,17 +166,22 @@ func (exec *Execution) detachHostBuiltinResult(builtin *Builtin, result Value) (
 // isolateHostCollection returns a wrapper the host may write through. Host
 // contracts treat mutation as a write to any reachable container, so a
 // shallow copy of the root is not enough: `child = {x: 1}; a = {child: child}`
-// leaves `a` exclusive while `child` is still shared, and a host HashSet
-// through `args[0].Hash()["child"]` would otherwise change the sibling.
+// leaves `a` unpublished while `child` is still named by a local, and a host
+// HashSet through `args[0].Hash()["child"]` would otherwise change what the
+// script observes.
 //
-// An exclusive graph is already only reachable from this call and is left
-// in place. Any shared wrapper in the graph deep-copies the whole argument
-// so the host cannot reach a wrapper a sibling binding still names.
-func (exec *Execution) isolateHostCollection(val Value) (Value, error) {
+// An unpublished graph is reachable from nothing but this call and is left
+// in place: a host write to it is invisible to the script by construction.
+// A published wrapper in the graph deep-copies the whole value, so a host
+// write can never land in script-observable state (#1210). With sharedOnly,
+// a sole published wrapper is also left live -- the receiver's rule, where
+// in-place factory mutation is sanctioned and only sibling bindings need
+// protecting.
+func (exec *Execution) isolateHostCollection(val Value, sharedOnly bool) (Value, error) {
 	if !isCollection(val) {
 		return val, nil
 	}
-	needed, err := exec.hostCollectionNeedsIsolation(val, make(map[uintptr]struct{}))
+	needed, err := exec.hostCollectionNeedsIsolation(val, sharedOnly, make(map[uintptr]struct{}))
 	if err != nil || !needed {
 		return val, err
 	}
@@ -185,9 +196,9 @@ func (exec *Execution) isolateHostCollection(val Value) (Value, error) {
 }
 
 // hostCollectionNeedsIsolation reports whether val or any collection it
-// reaches is named from more than one durable slot. A cycle is a single
-// visit, not a reason to copy.
-func (exec *Execution) hostCollectionNeedsIsolation(val Value, seen map[uintptr]struct{}) (bool, error) {
+// reaches is named from a durable slot (or, with sharedOnly, from more than
+// one). A cycle is a single visit, not a reason to copy.
+func (exec *Execution) hostCollectionNeedsIsolation(val Value, sharedOnly bool, seen map[uintptr]struct{}) (bool, error) {
 	if !isCollection(val) {
 		return false, nil
 	}
@@ -200,13 +211,13 @@ func (exec *Execution) hostCollectionNeedsIsolation(val Value, seen map[uintptr]
 	if err := exec.chargeScanSteps(1); err != nil {
 		return false, err
 	}
-	if !val.Unpublished() && !val.SoleRef() {
+	if !val.Unpublished() && (!sharedOnly || !val.SoleRef()) {
 		return true, nil
 	}
 	switch val.Kind() {
 	case KindArray:
 		for _, elem := range val.Array() {
-			needed, err := exec.hostCollectionNeedsIsolation(elem, seen)
+			needed, err := exec.hostCollectionNeedsIsolation(elem, sharedOnly, seen)
 			if err != nil || needed {
 				return needed, err
 			}
@@ -218,7 +229,7 @@ func (exec *Execution) hostCollectionNeedsIsolation(val Value, seen map[uintptr]
 			if needed || walkErr != nil {
 				return
 			}
-			needed, walkErr = exec.hostCollectionNeedsIsolation(item, seen)
+			needed, walkErr = exec.hostCollectionNeedsIsolation(item, sharedOnly, seen)
 		})
 		return needed, walkErr
 	}
