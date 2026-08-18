@@ -120,13 +120,15 @@ lint-fix:
 #
 # Known, intentionally-kept hits (identical on darwin, linux, and windows as
 # of the ADR-006 removals): the vibes facade's DeclareNonMutating,
-# DeclareNonRetaining, and NewTypedBuiltin. They exist for embedders -- the
+# DeclareNonRetaining, and NewTypedBuiltin. They are embedder API -- the
 # boundary consults the declarations (#1210) and typed builtins are host
-# API -- while in-repo callers use the runtime-internal forms, which is what
-# an embedding library's public surface looks like to a main-rooted walk. Analysis is valid for one
-# GOOS/GOARCH at a time, so prefix the recipe (GOOS=linux just deadcode) to
-# cover build-tagged files for another platform, and follow up on a single
-# function with `deadcode -whylive=<pkg>.<func> -test ./...`.
+# surface -- while in-repo callers use the runtime-internal forms, so a
+# main-rooted walk cannot see their callers.
+#
+# Analysis is valid for one GOOS/GOARCH at a time, so prefix the recipe
+# (GOOS=linux just deadcode) to cover build-tagged files for another platform,
+# and follow up on a single function with
+# `deadcode -whylive=<pkg>.<func> -test ./...`.
 [doc("Report functions no command and no test can reach")]
 deadcode:
 	deadcode -test ./...
