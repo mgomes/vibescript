@@ -2605,8 +2605,8 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		})
 	case *MemberExpr:
 		defer exec.restore(exec.savedAddressedScope())
-		obj, addressed, err := exec.resolveMutableReceiver(t.Object, env)
-		if !addressed {
+		obj, resolution, err := exec.resolveMutableReceiver(t.Object, env)
+		if resolution == targetUnresolved && err == nil {
 			obj, err = exec.evalExpression(t.Object, env)
 		}
 		if err != nil {
@@ -2614,6 +2614,14 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		}
 		if err := exec.checkMemoryValue(obj); err != nil {
 			return err
+		}
+		if resolution == targetTemporary {
+			// The receiver is a temporary the path walk evaluated; the write
+			// must reach nothing a durable slot still names.
+			obj, err = exec.detachTemporaryWriteReceiver(obj)
+			if err != nil {
+				return err
+			}
 		}
 		return exec.assignToEvaluatedMember(t, obj, value)
 	case *IvarExpr:
@@ -2655,11 +2663,11 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		// code between resolving the receiver and writing through it: `b[f(b)]
 		// = 9` can bind b somewhere new while choosing where to write. The
 		// write isolates again for that reason.
-		obj, path, addressed, err := exec.resolveMutableTarget(t.Object, env)
+		obj, path, resolution, err := exec.resolveMutableTarget(t.Object, env)
 		if err != nil {
 			return err
 		}
-		if !addressed {
+		if resolution == targetUnresolved {
 			obj, err = exec.evalExpression(t.Object, env)
 			if err != nil {
 				return err
@@ -2672,7 +2680,15 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err != nil {
 			return err
 		}
-		if !addressed {
+		if resolution != targetAddressed {
+			if resolution == targetTemporary {
+				// The receiver is a temporary the path walk evaluated; the
+				// write must reach nothing a durable slot still names.
+				obj, err = exec.detachTemporaryWriteReceiver(obj)
+				if err != nil {
+					return err
+				}
+			}
 			return exec.assignToEvaluatedIndex(t, obj, indices, value)
 		}
 		return exec.writeThroughMutablePath(path, env, func(leaf Value) error {
@@ -4777,11 +4793,11 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 		// does, so it resolves that receiver as an addressable path too.
 		// Without this, `h.k += 1` wrote through whatever wrapper the read
 		// found and every other binding of h saw it.
-		obj, path, addressed, err := exec.resolveMutableTarget(t.Object, env)
+		obj, path, resolution, err := exec.resolveMutableTarget(t.Object, env)
 		if err != nil {
 			return compoundAssignmentTarget{}, err
 		}
-		if !addressed {
+		if resolution == targetUnresolved {
 			obj, err = exec.evalExpressionWithAuto(t.Object, env, true)
 			if err != nil {
 				return compoundAssignmentTarget{}, err
@@ -4799,8 +4815,18 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 			return compoundAssignmentTarget{}, err
 		}
 		assign := func(value Value) error {
-			if !addressed {
-				return exec.assignToEvaluatedMember(t, obj, value)
+			if resolution != targetAddressed {
+				target := obj
+				if resolution == targetTemporary {
+					// The receiver is a temporary the path walk evaluated;
+					// the write must reach nothing a durable slot still names.
+					detached, err := exec.detachTemporaryWriteReceiver(obj)
+					if err != nil {
+						return err
+					}
+					target = detached
+				}
+				return exec.assignToEvaluatedMember(t, target, value)
 			}
 			return exec.writeThroughMutablePath(path, env, func(leaf Value) error {
 				return exec.assignToEvaluatedMember(t, leaf, value)
@@ -4812,11 +4838,11 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 			expectation: memberSetterValueExpectation(obj, t.Property),
 		}, nil
 	case *IndexExpr:
-		obj, path, addressed, err := exec.resolveMutableTarget(t.Object, env)
+		obj, path, resolution, err := exec.resolveMutableTarget(t.Object, env)
 		if err != nil {
 			return compoundAssignmentTarget{}, err
 		}
-		if !addressed {
+		if resolution == targetUnresolved {
 			obj, err = exec.evalExpressionWithAuto(t.Object, env, true)
 			if err != nil {
 				return compoundAssignmentTarget{}, err
@@ -4834,8 +4860,18 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 			return compoundAssignmentTarget{}, err
 		}
 		assign := func(value Value) error {
-			if !addressed {
-				return exec.assignToEvaluatedIndex(t, obj, indices, value)
+			if resolution != targetAddressed {
+				target := obj
+				if resolution == targetTemporary {
+					// The receiver is a temporary the path walk evaluated;
+					// the write must reach nothing a durable slot still names.
+					detached, err := exec.detachTemporaryWriteReceiver(obj)
+					if err != nil {
+						return err
+					}
+					target = detached
+				}
+				return exec.assignToEvaluatedIndex(t, target, indices, value)
 			}
 			return exec.writeThroughMutablePath(path, env, func(leaf Value) error {
 				return exec.assignToEvaluatedIndex(t, leaf, indices, value)

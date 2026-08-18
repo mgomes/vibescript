@@ -686,30 +686,46 @@ func (exec *Execution) captureEvaluatedPath(path *mutablePath, env *Env) {
 //
 // Mutators that may not write should call addressMutableReceiver instead, so a
 // no-op or a rejected call does not copy.
-func (exec *Execution) resolveMutableReceiver(expr Expression, env *Env) (Value, bool, error) {
+// targetResolution describes what a receiver or target resolver produced: an
+// addressable path, an already-evaluated temporary (use the value; do not
+// evaluate the expression again, and the write must reach nothing), or
+// nothing at all (ordinary evaluation owns the expression).
+type targetResolution int
+
+const (
+	targetUnresolved targetResolution = iota
+	targetTemporary
+	targetAddressed
+)
+
+func (exec *Execution) resolveMutableReceiver(expr Expression, env *Env) (Value, targetResolution, error) {
 	path, ok := exec.mutablePathFor(expr, env)
 	if !ok {
-		return NewNil(), false, nil
+		return NewNil(), targetUnresolved, nil
 	}
 	leaf, chain, addressable, resolved, err := exec.walkMutablePath(path, env)
 	if err != nil {
-		return NewNil(), true, err
+		return NewNil(), targetTemporary, err
 	}
 	if !resolved {
 		// The walk read nothing the caller can use -- a bare name bound to a
 		// function is invoked where a receiver is expected, so what the slot
 		// holds is not what the expression denotes. Ordinary evaluation owns it.
-		return NewNil(), false, nil
+		return NewNil(), targetUnresolved, nil
 	}
 	// A path that left collection storage -- a member of a class instance, an
 	// index into a string -- read the value the ordinary evaluation would have,
-	// so the caller keeps it, but it names no slot the write may update. Leaving
-	// the permission ungranted is what makes that write land on a copy.
-	if addressable {
-		exec.captureEvaluatedPath(&path, env)
-		exec.addressCollection(leaf, chain, path, env)
+	// so the caller keeps it, but it names no slot the write may update. The
+	// permission is withdrawn outright: the record in force belongs to an
+	// enclosing mutator's receiver, and it must not vouch for a temporary
+	// that happens to be the same wrapper (`a.push(a.itself.push(2))`).
+	if !addressable {
+		exec.restore(addressedScope{})
+		return leaf, targetTemporary, nil
 	}
-	return leaf, true, nil
+	exec.captureEvaluatedPath(&path, env)
+	exec.addressCollection(leaf, chain, path, env)
+	return leaf, targetAddressed, nil
 }
 
 // addressMutableReceiver is resolveMutableReceiver without the isolating pass.
@@ -731,6 +747,10 @@ func (exec *Execution) addressMutableReceiver(expr Expression, env *Env) (Value,
 	if addressable {
 		exec.captureEvaluatedPath(&path, env)
 		exec.addressCollection(leaf, chain, path, env)
+	} else {
+		// The leaf is a temporary; the permission in force belongs to an
+		// enclosing mutator's receiver and must not vouch for it.
+		exec.restore(addressedScope{})
 	}
 	return leaf, true, nil
 }
@@ -762,23 +782,40 @@ func rootAutoInvokes(val Value) bool {
 // on the already-evaluated receiver. The isolating pass rereads an
 // already-resolved path whose keys are cached, so nothing is evaluated or
 // invoked twice.
-func (exec *Execution) resolveMutableTarget(expr Expression, env *Env) (Value, mutablePath, bool, error) {
+func (exec *Execution) resolveMutableTarget(expr Expression, env *Env) (Value, mutablePath, targetResolution, error) {
 	saved := exec.savedAddressedScope()
 	defer exec.restore(saved)
 
 	path, ok := exec.mutablePathFor(expr, env)
 	if !ok {
-		return NewNil(), mutablePath{}, false, nil
+		return NewNil(), mutablePath{}, targetUnresolved, nil
 	}
 	leaf, _, addressable, resolved, err := exec.readAddressablePath(path, env)
-	if err != nil || !resolved {
-		return NewNil(), mutablePath{}, false, err
+	if err != nil {
+		return NewNil(), mutablePath{}, targetTemporary, err
+	}
+	if !resolved {
+		return NewNil(), mutablePath{}, targetUnresolved, nil
 	}
 	if !addressable {
-		return leaf, mutablePath{}, false, nil
+		// The receiver is already evaluated; handing it back keeps its side
+		// effects (`a.pop[0] = x` pops once) instead of evaluating again.
+		return leaf, mutablePath{}, targetTemporary, nil
 	}
 	exec.captureEvaluatedPath(&path, env)
-	return leaf, path, true, nil
+	return leaf, path, targetAddressed, nil
+}
+
+// detachTemporaryWriteReceiver returns the wrapper a write to a temporary may
+// land in. A temporary some durable slot still names -- an accessor handout
+// like `a.last`, a getter's ivar -- is copied first, so the write reaches
+// nothing the script can see again while still validating like a real write;
+// a fresh temporary is written directly, which is equally invisible and free.
+func (exec *Execution) detachTemporaryWriteReceiver(obj Value) (Value, error) {
+	if !isCollection(obj) || obj.Unpublished() {
+		return obj, nil
+	}
+	return exec.copyCollection(obj)
 }
 
 // writeThroughMutablePath isolates the path again and runs write against the
@@ -902,7 +939,7 @@ func (exec *Execution) walkMutablePath(path mutablePath, env *Env) (Value, []uin
 		path.root.rebind(copied)
 		return copied, nil, true, true, nil
 	}
-	leaf, addressable, resolved, err := exec.readMutablePath(path, env)
+	leaf, _, addressable, resolved, err := exec.readAddressablePath(path, env)
 	if err != nil || !resolved {
 		return NewNil(), nil, false, resolved, err
 	}
@@ -913,44 +950,16 @@ func (exec *Execution) walkMutablePath(path mutablePath, env *Env) (Value, []uin
 	return isolated, chain, err == nil, true, err
 }
 
-// readMutablePath is the reading pass. It reports whether every hop addressed
-// collection storage, which is what makes the isolating pass safe to run, and
-// whether it resolved anything at all -- a root that would be invoked rather
-// than read belongs to ordinary evaluation.
-func (exec *Execution) readMutablePath(path mutablePath, env *Env) (Value, bool, bool, error) {
-	current, ok := path.root.get()
-	if !ok || rootAutoInvokes(current) {
-		return NewNil(), false, false, nil
-	}
-	for i := range path.steps {
-		step := &path.steps[i]
-		if !isCollection(current) {
-			tail, err := exec.readPathTailOrdinarily(current, path.steps[i:], env)
-			return tail, false, true, err
-		}
-		child, found, err := exec.readCollectionStep(current, step, env)
-		if err != nil {
-			return NewNil(), false, true, err
-		}
-		if !found {
-			if temp, ok, err := exec.arrayRangeTemporary(current, step, path.steps[i+1:], env); ok {
-				return temp, false, true, err
-			}
-			// A missing collection slot is not nil: `a.dup` and `h.keys`
-			// are ordinary members. Evaluate the rest of the path that
-			// way and treat the result as a temporary.
-			tail, err := exec.readPathTailOrdinarily(current, path.steps[i:], env)
-			return tail, false, true, err
-		}
-		current = child
-	}
-	return current, true, true, nil
-}
-
 // readAddressablePath is the reading pass of walkMutablePath: it resolves the
 // leaf without copying. Mutators and compound writes isolate later, once they
 // know a write will land. The ancestor chain is still recorded so a later
 // detach of an argument that names a container on this path can snapshot it.
+//
+// A hop that is not collection storage ends the addressable path: a member
+// step with no stored entry (`a.dup`, `h.keys`) belongs to ordinary member
+// evaluation, and readPathTailAsTemporary finishes the path that way. A
+// missing indexed slot reads as nil, exactly as evaluating the expression
+// would; its index was already evaluated once and must not run again.
 func (exec *Execution) readAddressablePath(path mutablePath, env *Env) (Value, []uintptr, bool, bool, error) {
 	if len(path.steps) == 0 {
 		current, ok := path.root.get()
@@ -967,7 +976,8 @@ func (exec *Execution) readAddressablePath(path mutablePath, env *Env) (Value, [
 	for i := range path.steps {
 		step := &path.steps[i]
 		if !isCollection(current) {
-			tail, err := exec.readPathTailOrdinarily(current, path.steps[i:], env)
+			prefix := mutablePath{root: path.root, steps: path.steps[:i]}
+			tail, err := exec.readPathTailAsTemporary(current, prefix, chain, path.steps[i:], env)
 			return tail, nil, false, true, err
 		}
 		chain = append(chain, collectionIdentity(current))
@@ -979,11 +989,12 @@ func (exec *Execution) readAddressablePath(path mutablePath, env *Env) (Value, [
 			if temp, ok, err := exec.arrayRangeTemporary(current, step, path.steps[i+1:], env); ok {
 				return temp, nil, false, true, err
 			}
-			// A missing collection slot is not nil: `a.dup` and `h.keys`
-			// are ordinary members. Evaluate the rest of the path that
-			// way and treat the result as a temporary.
-			tail, err := exec.readPathTailOrdinarily(current, path.steps[i:], env)
-			return tail, nil, false, true, err
+			if step.member != nil {
+				prefix := mutablePath{root: path.root, steps: path.steps[:i]}
+				tail, err := exec.readPathTailAsTemporary(current, prefix, chain[:len(chain)-1], path.steps[i:], env)
+				return tail, nil, false, true, err
+			}
+			return NewNil(), chain, true, true, nil
 		}
 		current = child
 	}
@@ -1173,21 +1184,54 @@ func (exec *Execution) exclusivelyHeld(val Value) bool {
 	return !alwaysCopyCollections && val.SoleRef()
 }
 
-// readPathTailOrdinarily finishes a path that has left collection storage,
-// reading each remaining hop exactly as evaluating the expression would. It runs
-// once, in the reading pass, so a getter it invokes runs once.
+// readPathTailAsTemporary finishes a path whose next hop is not collection
+// storage, evaluating the remaining hops exactly as ordinary evaluation
+// would, once. The first hop may itself be a mutator (`a.pop.push(9)` must
+// pop a exactly as `a.pop` alone does), so when the departed prefix is
+// addressable collection storage that hop runs with the prefix addressed.
+// Every later hop dispatches on the previous hop's result -- a temporary no
+// path owns -- so the permission is withdrawn for them; the caller withdraws
+// it again for its own dispatch on the returned value.
+func (exec *Execution) readPathTailAsTemporary(current Value, prefix mutablePath, ancestors []uintptr, steps []mutablePathStep, env *Env) (Value, error) {
+	saved := exec.savedAddressedScope()
+	defer exec.restore(saved)
+	exec.restore(addressedScope{})
+	if len(steps) > 0 && steps[0].member != nil && isCollection(current) {
+		exec.addressCollection(current, ancestors, prefix, env)
+		hopped, err := exec.readTailMemberHop(current, &steps[0])
+		exec.restore(addressedScope{})
+		if err != nil {
+			return NewNil(), err
+		}
+		current, steps = hopped, steps[1:]
+	}
+	return exec.readPathTailOrdinarily(current, steps, env)
+}
+
+// readTailMemberHop reads one member hop the way ordinary evaluation would:
+// resolve the public member and auto-invoke it against the receiver.
+func (exec *Execution) readTailMemberHop(current Value, step *mutablePathStep) (Value, error) {
+	if step.member.Safe && current.Kind() == KindNil {
+		return NewNil(), nil
+	}
+	member, err := exec.getPublicMember(current, step.member.Property, step.member.Pos())
+	if err != nil {
+		return NewNil(), err
+	}
+	return exec.autoInvokeIfNeeded(step.member, member, current)
+}
+
+// readPathTailOrdinarily reads remaining hops on a temporary, each exactly as
+// evaluating the expression would. It runs once, in the reading pass, so a
+// getter it invokes runs once. The caller has already withdrawn the
+// addressability permission, so a mutator hop writes the temporary, never a
+// value an enclosing mutator's record still vouches for.
 func (exec *Execution) readPathTailOrdinarily(current Value, steps []mutablePathStep, env *Env) (Value, error) {
 	for i := range steps {
 		step := &steps[i]
 		if step.member != nil {
-			if step.member.Safe && current.Kind() == KindNil {
-				return NewNil(), nil
-			}
-			member, err := exec.getPublicMember(current, step.member.Property, step.member.Pos())
-			if err != nil {
-				return NewNil(), err
-			}
-			current, err = exec.autoInvokeIfNeeded(step.member, member, current)
+			var err error
+			current, err = exec.readTailMemberHop(current, step)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -1207,7 +1251,8 @@ func (exec *Execution) readPathTailOrdinarily(current Value, steps []mutablePath
 
 // arrayRangeTemporary evaluates a range index as an ordinary slice, then
 // finishes any remaining hops the same way. The slice is a temporary, so the
-// path is no longer addressable.
+// path is no longer addressable and the hops run with the permission
+// withdrawn.
 func (exec *Execution) arrayRangeTemporary(container Value, step *mutablePathStep, tail []mutablePathStep, env *Env) (Value, bool, error) {
 	if container.Kind() != KindArray || !step.indexed || step.index.Kind() != KindRange {
 		return NewNil(), false, nil
@@ -1216,6 +1261,9 @@ func (exec *Execution) arrayRangeTemporary(container Value, step *mutablePathSte
 	if err != nil {
 		return NewNil(), true, err
 	}
+	saved := exec.savedAddressedScope()
+	defer exec.restore(saved)
+	exec.restore(addressedScope{})
 	result, err := exec.readPathTailOrdinarily(sliced, tail, env)
 	return result, true, err
 }

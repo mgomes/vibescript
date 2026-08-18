@@ -855,6 +855,54 @@ end
 	}
 }
 
+// TestMutatorChainThroughAnAccessorTemporary pins the tail semantics after a
+// path leaves collection storage: the first hop runs exactly as evaluating it
+// alone would (`a.pop` pops), and everything after it works a temporary --
+// writes through the chained value reach nothing a durable slot names.
+func TestMutatorChainThroughAnAccessorTemporary(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ name, body, want string }{
+		{"pop chain pops once", "a = [[1], [2]]\n  out = a.pop.push(9)\n  a.inspect + \" \" + out.inspect", "[[1]] [2, 9]"},
+		{"nested mutator in own arguments", "a = [1]\n  a.push(a.itself.push(2))\n  a.inspect", "[1, [1, 2]]"},
+		{"assign through accessor reaches nothing", "a = [[1]]\n  b = a\n  a.last[0] = 9\n  a.inspect + \" \" + b.inspect", "[[1]] [[1]]"},
+		{"compound assign through pop temporary", "a = [[1], [2]]\n  a.pop[0] += 1\n  a.inspect", "[[1]]"},
+		{"assign through dup temporary", "a = [1]\n  a.dup[0] = 9\n  a.inspect", "[1]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  "+tc.body+"\nend\n")
+			if got := callFunc(t, script, "run", nil).String(); got != tc.want {
+				t.Fatalf("%s = %s, want %s", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMissingIndexedSlotStaysNilAndEvaluatesOnce pins that an indexed miss
+// reads as nil exactly as the expression would -- the cached index is not
+// re-evaluated, so a side-effecting selector runs once and cannot address a
+// different slot on a second run.
+func TestMissingIndexedSlotStaysNilAndEvaluatesOnce(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  a = [[0], [1]]
+  c = []
+  out = begin
+    a[8 / c.push(1).size].push(9)
+  rescue
+    "err"
+  end
+  out.to_s + " " + c.size.to_s + " " + a.inspect
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "err 1 [[0], [1]]" {
+		t.Fatalf("missing indexed slot = %s, want err 1 [[0], [1]]", got)
+	}
+}
+
 func TestNestedClearIsolatesASharedAncestor(t *testing.T) {
 	t.Parallel()
 
