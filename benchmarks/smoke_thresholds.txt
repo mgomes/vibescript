@@ -70,7 +70,12 @@ BenchmarkExecutionHashTransformValuesLoop 8000000 120 260000
 # returned quadratic clears it several times over; a tighter per-benchmark cap
 # would only buy flake. The alloc and byte caps are the tight signals, at
 # roughly 1.5x the measured floor.
-BenchmarkExecutionEachRowsPureBody 25000000 3800 880000
+# This driver ends in `values.each`, which returns the rows, and yielding
+# each row to the block published it, so the whole 600-row result graph is
+# shared at the Call boundary and pays the independent-copy contract
+# (#1210) on the way out (~5534 allocs / ~1.25MB measured). The accumulator
+# pair returns a scalar and keeps the copy-free floor.
+BenchmarkExecutionEachRowsPureBody 25000000 6000 1500000
 BenchmarkExecutionMapRowsPureBody 25000000 3800 950000
 BenchmarkExecutionMapRowsScalarAccumulator 25000000 3800 950000
 BenchmarkExecutionHashEachHostBuilt 25000000 1600 230000

@@ -507,87 +507,34 @@ type hostValueCloneState struct {
 	propertyTypes ast.TypeExprMemo
 }
 
-type hostValueScanState struct {
-	arrays map[uintptr]struct{}
-	maps   map[uintptr]struct{}
-}
-
+// valueNeedsHostClone reports whether a Call result must be cloned before it
+// crosses to the host, which is what makes doc.go's independent-copy promise
+// true. Callables always clone: they alias compiled state the engine keeps.
+// A composite clones when any wrapper in its graph is shared -- some other
+// durable slot still names it, so handing it out live would let a host write
+// through Value.Array or Value.Hash into script-reachable state. A graph of
+// sole wrappers has no other owner: its one owner is the call that is ending,
+// so the result transfers out as it is and independence costs no copy.
 func valueNeedsHostClone(val Value) bool {
 	switch val.Kind() {
 	case KindFunction, KindClass, KindInstance, KindEnum, KindEnumValue, KindBlock, KindBuiltin:
 		return true
 	case KindArray, KindHash, KindObject:
-		return compositeValueNeedsHostClone(val)
+		return hostBoundaryNeedsClone(val, hostValueScanState{
+			arrays: make(map[uintptr]struct{}),
+			maps:   make(map[uintptr]struct{}),
+		})
 	default:
 		return false
 	}
 }
 
-func compositeValueNeedsHostClone(val Value) bool {
-	switch val.Kind() {
-	case KindArray:
-		for _, item := range val.Array() {
-			if itemDirectlyNeedsHostClone(item) {
-				return true
-			}
-			if itemCanContainHostClone(item) {
-				return valueNeedsHostCloneWithFreshState(val)
-			}
-		}
-		return false
-	case KindHash, KindObject:
-		if val.HashLen() == 0 {
-			return false
-		}
-		escalate := false
-		if anyHashValue(val, func(item Value) bool {
-			if itemDirectlyNeedsHostClone(item) {
-				return true
-			}
-			if itemCanContainHostClone(item) {
-				escalate = true
-				return true
-			}
-			return false
-		}) {
-			if escalate {
-				return valueNeedsHostCloneWithFreshState(val)
-			}
-			return true
-		}
-		return false
-	default:
-		return valueNeedsHostClone(val)
-	}
+type hostValueScanState struct {
+	arrays map[uintptr]struct{}
+	maps   map[uintptr]struct{}
 }
 
-func valueNeedsHostCloneWithFreshState(val Value) bool {
-	state := hostValueScanState{
-		arrays: make(map[uintptr]struct{}),
-		maps:   make(map[uintptr]struct{}),
-	}
-	return valueNeedsHostCloneWithState(val, state)
-}
-
-func itemDirectlyNeedsHostClone(val Value) bool {
-	switch val.Kind() {
-	case KindFunction, KindClass, KindInstance, KindEnum, KindEnumValue, KindBlock, KindBuiltin:
-		return true
-	default:
-		return false
-	}
-}
-
-func itemCanContainHostClone(val Value) bool {
-	switch val.Kind() {
-	case KindArray, KindHash, KindObject:
-		return true
-	default:
-		return false
-	}
-}
-
-func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
+func hostBoundaryNeedsClone(val Value, state hostValueScanState) bool {
 	switch val.Kind() {
 	case KindFunction, KindClass, KindInstance, KindEnum, KindEnumValue, KindBlock, KindBuiltin:
 		return true
@@ -601,8 +548,11 @@ func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
 			}
 			state.arrays[id] = struct{}{}
 		}
+		if !val.Unpublished() && !val.SoleRef() {
+			return true
+		}
 		for _, item := range val.Array() {
-			if valueNeedsHostCloneWithState(item, state) {
+			if hostBoundaryNeedsClone(item, state) {
 				return true
 			}
 		}
@@ -619,8 +569,11 @@ func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
 			}
 			state.maps[ptr] = struct{}{}
 		}
+		if !val.Unpublished() && !val.SoleRef() {
+			return true
+		}
 		return anyHashValue(val, func(item Value) bool {
-			return valueNeedsHostCloneWithState(item, state)
+			return hostBoundaryNeedsClone(item, state)
 		})
 	default:
 		return false
@@ -891,19 +844,21 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 	// built around it.
 	sharedEntries, sharedSeen := state.hashEntries[entriesPtr]
 	clonedEntries := sharedEntries
-	if !sharedSeen {
-		clonedEntries = make(map[string]Value, val.HashLen())
-	}
 	// A shared map is already filled, so the fill loop below is skipped and the
 	// wrapper needs this source's order handed to it: two wrappers over one map
 	// can iterate differently, and NewHash would derive one order from the
 	// map's contents for both. A fresh map is filled entry by entry below,
-	// which records the same order as it goes.
+	// which records the same order as it goes; it is built with the source's
+	// reserved capacities up front so the clone keeps the exact shape the
+	// builders reserved instead of the append-growth overshoot, and an empty
+	// hash keeps the reservation it crossed the boundary with.
 	var cloned Value
 	if sharedSeen {
 		cloned = newHashWithOrder(clonedEntries, val.HashKeyOrder())
 	} else {
-		cloned = NewHash(clonedEntries)
+		cloned = NewHashWithCapacity(value.HashEntryCapacity(val))
+		cloned.ReserveHashOrder(value.HashOrderCapacity(val))
+		clonedEntries = cloned.HashEntryMap()
 	}
 	// Register the wrapper before cloning entries so a hash that contains itself
 	// dedups against this clone rather than recursing forever or cloning a
@@ -915,6 +870,12 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 		state.hashEntries[entriesPtr] = clonedEntries
 	}
 	if !sharedSeen {
+		// Mirror the source's reserved capacities before filling, so the
+		// clone keeps the exact shape the builders reserved (and tests pin)
+		// instead of the append-growth overshoot, and an empty hash keeps
+		// the reservation it crossed the boundary with.
+		cloned.ReserveHashCapacity(value.HashEntryCapacity(val))
+		cloned.ReserveHashOrder(value.HashOrderCapacity(val))
 		for _, entry := range val.HashEntries() {
 			setClonedHashEntry(cloned, entry.Key, cloneValueForHostWithState(entry.Value, state))
 		}
