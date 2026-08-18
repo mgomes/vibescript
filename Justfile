@@ -116,7 +116,14 @@ lint-fix:
 # The price of -test is that code only a test reaches counts as live. What is
 # still reported is API that neither a command nor a test touches, which is a
 # coverage gap as often as it is dead code, so judge each hit before deleting.
-# The recipe reports and exits 0; it is not a gate. Analysis is valid for one
+# The recipe reports and exits 0; it is not a gate.
+#
+# Known, intentionally-kept hits (identical on darwin, linux, and windows as
+# of the ADR-006 removals): the vibes facade's DeclareNonMutating,
+# DeclareNonRetaining, and NewTypedBuiltin. They exist for embedders -- the
+# boundary consults the declarations (#1210) and typed builtins are host
+# API -- while in-repo callers use the runtime-internal forms, which is what
+# an embedding library's public surface looks like to a main-rooted walk. Analysis is valid for one
 # GOOS/GOARCH at a time, so prefix the recipe (GOOS=linux just deadcode) to
 # cover build-tagged files for another platform, and follow up on a single
 # function with `deadcode -whylive=<pkg>.<func> -test ./...`.
