@@ -491,7 +491,20 @@ type capabilityReturnProof struct {
 // even an equal one rebuilt from unvalidated state — falls back to the
 // contract's ValidateReturn.
 func (p capabilityReturnProof) covers(method string, result Value) bool {
-	return p.recorded && p.method == method && p.result.Identical(result)
+	return p.recorded && p.method == method && capabilityProofMatchesValue(p.result, result)
+}
+
+// capabilityProofMatchesValue reports representation identity for collections
+// and language identity for immutable or runtime-only values.
+func capabilityProofMatchesValue(proven, returned Value) bool {
+	if proven.Kind() != returned.Kind() {
+		return false
+	}
+	if isCollection(proven) {
+		id := collectionIdentity(proven)
+		return id != 0 && id == collectionIdentity(returned)
+	}
+	return proven.Identical(returned)
 }
 
 // markValidatedCapabilityReturn records the internal proof that the currently

@@ -166,6 +166,58 @@ end`)
 	}
 }
 
+// TestCapabilityReturnProofRequiresSameCollectionWrapper pins that collection
+// value equality cannot stand in for the proof's representation identity.
+func TestCapabilityReturnProofRequiresSameCollectionWrapper(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		proven   Value
+		returned Value
+	}{
+		{
+			name:     "array",
+			proven:   NewArray([]Value{NewInt(1)}),
+			returned: NewArray([]Value{NewInt(1)}),
+		},
+		{
+			name:     "empty array",
+			proven:   NewArray(nil),
+			returned: NewArray(nil),
+		},
+		{
+			name:     "hash",
+			proven:   NewHash(map[string]Value{"ok": NewBool(true)}),
+			returned: NewHash(map[string]Value{"ok": NewBool(true)}),
+		},
+		{
+			name:     "object",
+			proven:   NewObject(map[string]Value{"ok": NewBool(true)}),
+			returned: NewObject(map[string]Value{"ok": NewBool(true)}),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			proof := capabilityReturnProof{
+				recorded: true,
+				method:   "proofprobe.call",
+				result:   tc.proven,
+			}
+			if !proof.covers("proofprobe.call", tc.proven) {
+				t.Fatal("proof did not cover its recorded collection wrapper")
+			}
+			if !tc.proven.Equal(tc.returned) {
+				t.Fatal("test values are not content-equal")
+			}
+			if proof.covers("proofprobe.call", tc.returned) {
+				t.Fatal("proof covered a distinct content-equal collection wrapper")
+			}
+		})
+	}
+}
+
 // nestedProofCapability exposes an outer contract-bound builtin that invokes
 // an inner proof-marking builtin through normal dispatch and returns the
 // inner result unchanged. The inner dispatch must consume the proof at its
