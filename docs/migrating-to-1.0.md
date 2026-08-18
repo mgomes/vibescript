@@ -332,9 +332,10 @@ add *args   # => 3
 
 ## 11. The `-> Type` return annotation must sit on the signature line
 
-**What changed.** A `->` opening the line after a `def` signature now parses as
-a stabby lambda literal (new in 1.0), not as the previous line's return
-annotation.
+**What changed.** A `->` opening the line after a `def` signature is no longer
+read as the previous line's return annotation: it is rejected as a lambda
+spelling (lambda literals themselves were removed; see the callables section
+below).
 
 **What breaks.** Signatures that wrapped the annotation onto its own line:
 
@@ -727,3 +728,39 @@ Naming.display_name(person)
 Read a module's constants through the module (`Limits::MAX`), and replace a
 module type contract or `is_a?(SomeModule)` test with the concrete class, a
 union of classes, or a duck-typed check.
+
+## 24. Executable code does not escape: callables were removed
+
+**What changed.** Proc and lambda constructors (`proc`, `lambda`, `Proc.new`),
+stabby-lambda literals (`->(x) { }`), first-class function and bound-method
+values, callable `.call`, block capture and forwarding with `&`, symbol-to-proc
+(`&:name`), and hash default procs were removed. Each spelling is a compile
+error naming the replacement. A block remains legal as syntax attached to a
+call, runs synchronously under `yield`, and is retired when the receiving call
+returns -- invoking it later, however it was retained, raises
+`block invoked after the call it was given to returned`.
+
+**What breaks.** Any code that stored, passed, or returned executable values:
+
+```
+double = ->(n) { n * 2 }
+words.map(&:upcase)
+def forward(&block); call_it(&block); end
+```
+
+**Fix.** Name the behavior as a function and call it where it is needed, or
+write the block at the call that runs it:
+
+```vibe
+def double(n)
+  n * 2
+end
+
+[1, 2, 3].map { |n| double(n) }
+words.map { |word| word.upcase }
+numbers.reduce { |total, n| total + n }
+```
+
+A method that forwarded its caller's block runs it in place with `yield` and
+asks `block_given?` when the block is optional. See
+[Blocks and Enumerables](blocks.md#blocks-do-not-escape).
