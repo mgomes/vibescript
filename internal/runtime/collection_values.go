@@ -933,7 +933,11 @@ func (exec *Execution) readMutablePath(path mutablePath, env *Env) (Value, bool,
 			if temp, ok, err := exec.arrayRangeTemporary(current, step, path.steps[i+1:], env); ok {
 				return temp, false, true, err
 			}
-			return NewNil(), true, true, nil
+			// A missing collection slot is not nil: `a.dup` and `h.keys`
+			// are ordinary members. Evaluate the rest of the path that
+			// way and treat the result as a temporary.
+			tail, err := exec.readPathTailOrdinarily(current, path.steps[i:], env)
+			return tail, false, true, err
 		}
 		current = child
 	}
@@ -972,7 +976,11 @@ func (exec *Execution) readAddressablePath(path mutablePath, env *Env) (Value, [
 			if temp, ok, err := exec.arrayRangeTemporary(current, step, path.steps[i+1:], env); ok {
 				return temp, nil, false, true, err
 			}
-			return NewNil(), chain, true, true, nil
+			// A missing collection slot is not nil: `a.dup` and `h.keys`
+			// are ordinary members. Evaluate the rest of the path that
+			// way and treat the result as a temporary.
+			tail, err := exec.readPathTailOrdinarily(current, path.steps[i:], env)
+			return tail, nil, false, true, err
 		}
 		current = child
 	}

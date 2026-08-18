@@ -811,6 +811,24 @@ func TestSharedClearDoesNotCopyDiscardedContents(t *testing.T) {
 	}
 }
 
+func TestMutatorOnANonStorageMemberWritesATemporary(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ name, body, want string }{
+		{"dup push", "out = a.dup.push(2)\n  a.inspect + \" \" + out.inspect", "[1] [1, 2]"},
+		{"keys clear", "h = {a: 1}\n  out = h.keys.clear\n  h.inspect + \" \" + out.inspect", "{a: 1} []"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  a = [1]\n  "+tc.body+"\nend\n")
+			if got := callFunc(t, script, "run", nil).String(); got != tc.want {
+				t.Fatalf("%s = %s, want %s", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNestedWriteIsolatesASharedAncestor(t *testing.T) {
 	t.Parallel()
 
