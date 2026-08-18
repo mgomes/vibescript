@@ -2033,7 +2033,7 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 	// run script code against a frame that has already unwound -- the shape
 	// ADR-006 exists to remove -- so the violation is a hard error naming the
 	// rule rather than a documented promise the runtime cannot check.
-	if blk.retired {
+	if blk.isRetired() {
 		return NewNil(), exec.errorAt(pos, "block invoked after the call it was given to returned; a block may only run while that call is on the stack")
 	}
 	// Pay for the bind charge's construction walk before running the callback it

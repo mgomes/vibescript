@@ -1555,9 +1555,10 @@ func arrayMemberQuery(property string) (Value, error) {
 		return NewAutoBuiltin("array.find", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			// Ruby's optional ifnone argument was a callable, and executable
 			// code is no longer a value; a miss reads as nil and the caller
-			// writes its own fallback after the call.
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("array.find does not take arguments; a miss returns nil")
+			// writes its own fallback after the call. An explicit nil ifnone
+			// is plain data and keeps its Ruby meaning: no fallback.
+			if len(args) > 1 || (len(args) == 1 && args[0].Kind() != KindNil) {
+				return NewNil(), fmt.Errorf("array.find takes no fallback; a miss returns nil")
 			}
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("array.find does not take keyword arguments")

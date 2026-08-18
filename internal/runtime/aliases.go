@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -1104,21 +1105,28 @@ type Block struct {
 	homeReturnToken uint64
 	// retired records that the call this block was attached to has returned.
 	// A block is syntax scoped to that one call (ADR-006): it may not be
-	// stored, returned, or invoked afterwards. The flag is set on the way out
-	// of the receiving call and read once per invocation, so the ordinary
-	// path -- a block a builtin drives and never keeps -- pays one predictable
-	// branch and no allocation, while a host that retained the block gets a
-	// hard error at the late invocation instead of running a body whose
-	// captured frame is gone.
-	retired bool
+	// stored, returned, or invoked afterwards. The flag is a shared pointer,
+	// not a field value, so every shallow copy a boundary cloner mints keeps
+	// pointing at the one lifetime -- retiring the original retires every
+	// clone -- and it is atomic because a host may read it from a goroutine
+	// the dispatching one races (CallBlock's fail-closed callers). A host
+	// that retained the block gets a hard error at the late invocation
+	// instead of running a body whose captured frame is gone.
+	retired *atomic.Bool
 }
 
 // retire marks the block dead because the call it was attached to has
 // returned. It is safe on a nil block so callers need no guard.
 func (b *Block) retire() {
-	if b != nil {
-		b.retired = true
+	if b != nil && b.retired != nil {
+		b.retired.Store(true)
 	}
+}
+
+// isRetired reports whether the block's receiving call has returned. A block
+// without a lifetime slot (host-built) never retires.
+func (b *Block) isRetired() bool {
+	return b != nil && b.retired != nil && b.retired.Load()
 }
 
 // retireCallBlock invalidates the block a call was given, once that call has
@@ -1135,7 +1143,7 @@ func NewBlock(params []Param, body []Statement, env *Env) Value {
 
 func newBlock(params []Param, implicitParams []string, body []Statement, env *Env) Value {
 	revokeBlockRegionNeutrality(env)
-	return value.NewValue(KindBlock, &Block{Params: params, ImplicitParams: implicitParams, Body: body, Env: env})
+	return value.NewValue(KindBlock, &Block{Params: params, ImplicitParams: implicitParams, Body: body, Env: env, retired: new(atomic.Bool)})
 }
 
 // revokeBlockRegionNeutrality strips epoch neutrality from a scope a closure

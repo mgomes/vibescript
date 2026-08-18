@@ -174,7 +174,6 @@ type scriptChecker struct {
 	blockLocalReturnCollector  *returnSummaryCollector
 	blockLocalBreakCollector   *returnSummaryCollector
 	summaryYieldCollector      *returnSummaryCollector
-	summaryYieldBlock          *BlockLiteral
 	summaryYieldReentryWalks   int
 	walkedNodes                uint64
 	typeExprNodeCounts         map[*TypeExpr]int
@@ -5232,13 +5231,8 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		// receiver the without-invoking test reads, so the call is left unable
 		// to complete rather than able to. Assuming otherwise would make code
 		// that proof would have cut reachable, and diagnose it.
-		if callMayComplete {
-			switch {
-			case blockResult.undecided:
-				callMayComplete = false
-			case arrayFillBlockCall && blockResult.exact && !blockResult.mayComplete:
-				callMayComplete = c.arrayFillCallMayCompleteWithoutInvokingBlock(typed)
-			}
+		if callMayComplete && arrayFillBlockCall && blockResult.exact && !blockResult.mayComplete {
+			callMayComplete = c.arrayFillCallMayCompleteWithoutInvokingBlock(typed)
 		}
 		c.callArgumentFacts = previousFacts
 		c.callArgumentHints = previousHints
@@ -8354,11 +8348,6 @@ type checkBlockResult struct {
 	fact        *TypeExpr
 	exact       bool
 	mayComplete bool
-	// undecided marks a result the checker declined to compute rather than one
-	// a walk decided as unknown. The walk it skipped could have proved the body
-	// never completes, so a caller reading this must stay as conservative about
-	// reaching the code after the call as that proof would have left it (#10).
-	undecided bool
 }
 
 // checkBlockLiteral walks a block or lambda body. localReturns marks blocks
@@ -8391,7 +8380,7 @@ func (c *scriptChecker) checkBlockLiteralWithIvarWidening(
 	}
 	previousSummaryYieldsActive := c.summaryYieldsActive
 	if localReturns {
-		c.summaryYieldsActive = block == c.summaryYieldBlock
+		c.summaryYieldsActive = false
 	}
 	defer func() { c.summaryYieldsActive = previousSummaryYieldsActive }()
 	// The restore models a block that may run zero times, but a namespace
@@ -16776,6 +16765,12 @@ func (s *namespaceMutationScan) functionReferenceWithCall(name string, call *Cal
 			}
 			s.scanFunctionCall(fn, call, staticCallable{name: fn.Name + ".call", fn: fn})
 		}
+		return
+	}
+	// A parameter shadowing the name means this call can never dispatch the
+	// same-named global function; attributing the global's effects here
+	// invented mutations the runtime cannot perform.
+	if _, bound := s.callableLambdas[name]; bound {
 		return
 	}
 	if fn, ok := s.functions[name]; ok {

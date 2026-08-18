@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -104,5 +105,52 @@ end`)
 		t.Fatal("expected the replayed block to fail")
 	} else if !strings.Contains(err.Error(), "block invoked after the call it was given to returned") {
 		t.Fatalf("error = %v, want it to name the retired block", err)
+	}
+}
+
+// A boundary cloner copies the Block struct by value, so the retirement flag
+// must be a shared lifetime, not a forked field: a copy minted while the
+// block is live retires with the original, or a host could keep an
+// un-retired duplicate past the receiving call.
+func TestBlockCloneSharesRetirement(t *testing.T) {
+	t.Parallel()
+
+	var stashedClone Value
+	engine := MustNewEngine(Config{})
+	engine.RegisterBuiltin("keepcopy", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		stashedClone = cloneValueForHost(block)
+		return exec.CallBlock(block, nil)
+	})
+	script, err := engine.Compile(`def run()
+  keepcopy { 1 }
+end`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	execHolder := struct{ exec *Execution }{}
+	engine.RegisterBuiltin("grabexec", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		execHolder.exec = exec
+		return NewNil(), nil
+	})
+	script2, err := engine.Compile(`def run()
+  grabexec()
+  keepcopy { 2 }
+end`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := script2.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("call2: %v", err)
+	}
+	if stashedClone.IsNil() || execHolder.exec == nil {
+		t.Fatal("fixture did not capture a clone and an execution")
+	}
+	if _, err := execHolder.exec.CallBlock(stashedClone, nil); err == nil {
+		t.Fatal("a cloned block outlived its call")
+	} else if !strings.Contains(err.Error(), "block invoked after the call it was given to returned") {
+		t.Fatalf("error = %v, want the retirement error", err)
 	}
 }
