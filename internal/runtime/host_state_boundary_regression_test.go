@@ -162,15 +162,6 @@ end`)
 // receiver is plain script data (any capability being bound makes the set
 // non-nil). A later mutating dispatch on that data then crosses live even
 // though a sibling binding names it, so the host write reaches the sibling.
-type inertCapability struct{}
-
-func (c *inertCapability) Name() string { return "inert" }
-
-func (c *inertCapability) Bind(_ CapabilityBinding) (map[string]Value, error) {
-	return map[string]Value{
-		"inert": NewObject(map[string]Value{}),
-	}, nil
-}
 
 func TestHostStateBoundaryRegressionScriptDataJoinsHostStateIdentities(t *testing.T) {
 	t.Parallel()
