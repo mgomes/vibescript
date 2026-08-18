@@ -62,6 +62,17 @@ func (c *yieldCrossingCapability) Bind(_ CapabilityBinding) (map[string]Value, e
 				receiver.Hash()["data"] = NewHash(c.retained)
 				return NewNil(), nil
 			}),
+			"remove": NewBuiltin("cross.remove", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				delete(receiver.Hash(), "data")
+				return NewNil(), nil
+			}),
+			"observe": NewBuiltin("cross.observe", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				keys := make([]Value, 0, len(c.retained))
+				for key := range c.retained {
+					keys = append(keys, NewString(key))
+				}
+				return NewInt(int64(len(keys))), nil
+			}),
 		}),
 	}, nil
 }
@@ -163,6 +174,129 @@ end`)
 	}
 	if got.String() != "{k: 1} {k: 1}" {
 		t.Fatalf("repeated installs = %s, want {k: 1} {k: 1}", got.String())
+	}
+}
+
+// TestDirectBlockInvocationIsNotAHostBoundary pins that script-to-script
+// invocation of a block-valued binding pays no boundary copy: the closure's
+// captured environment stays live and the result is the script's own value.
+func TestDirectBlockInvocationIsNotAHostBoundary(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  count = { n: 0 }
+  bump = -> { count[:n] = count[:n] + 1 }
+  wrap = -> { { b: bump } }
+  h = wrap()
+  h[:b].call
+  count[:n]
+end`)
+	if got := callFunc(t, script, "run", nil); got.Int() != 1 {
+		t.Fatalf("direct block invocation severed its closure: %v", got.Int())
+	}
+}
+
+// TestInstalledWrapperIsIndependentTheMomentTheDispatchEnds pins the timing
+// of the boundary: a wrapper a factory installed is shared before any later
+// statement runs, so a script write copies instead of reaching the host's
+// map, a later host dispatch isolates it as an argument, and removing it
+// from host state before the Call returns cannot un-mark it.
+func TestInstalledWrapperIsIndependentTheMomentTheDispatchEnds(t *testing.T) {
+	t.Parallel()
+
+	t.Run("script write copies", func(t *testing.T) {
+		t.Parallel()
+		cap := &yieldCrossingCapability{retained: map[string]Value{"role": NewString("guest")}}
+		script := compileScriptDefault(t, `def run()
+  cross.install()
+  s = cross[:data]
+  s[:admin] = true
+  cross.observe()
+end`)
+		got, err := script.Call(context.Background(), "run", nil, callOptionsWithCapabilities(cap))
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		if got.Int() != 1 {
+			t.Fatalf("a script write reached the host map: %d entries, want 1", got.Int())
+		}
+	})
+
+	t.Run("install then remove stays independent", func(t *testing.T) {
+		t.Parallel()
+		cap := &yieldCrossingCapability{retained: map[string]Value{"k": NewInt(1)}}
+		script := compileScriptDefault(t, `def run()
+  cross.install()
+  x = cross[:data]
+  cross.remove()
+  x
+end`)
+		result, err := script.Call(context.Background(), "run", nil, callOptionsWithCapabilities(cap))
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		cap.retained["k"] = NewString("scribbled")
+		if result.String() != "{k: 1}" {
+			t.Fatalf("a removed install transferred live: %s", result.String())
+		}
+	})
+}
+
+// TestSharedScriptReceiverStaysDetachedFromAHostWrite pins the receiver
+// rule's other half: a host builtin dispatched on plain script data that a
+// sibling binding names must not hand that data to the host live.
+func TestSharedScriptReceiverStaysDetachedFromAHostWrite(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	engine.registerHostBuiltin("poke", MarkHostBuiltin(NewBuiltin("poke", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		args[0].Hash()["stamp"] = NewInt(9)
+		return NewNil(), nil
+	})))
+	script, err := engine.Compile(`def run()
+  mine = { f: 1 }
+  other = mine
+  poke(mine)
+  other.keys.size
+end`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.Int() != 1 {
+		t.Fatalf("a host write reached the sibling binding: %d keys, want 1", got.Int())
+	}
+}
+
+// TestGlobalsHostedBuiltinObjectIsHostState pins that a builtin-bearing
+// global object gets capability-object treatment: its factory installs work
+// in place, and what they install cannot transfer out of the Call live.
+func TestGlobalsHostedBuiltinObjectIsHostState(t *testing.T) {
+	t.Parallel()
+
+	retained := []Value{NewInt(1)}
+	svc := NewObject(map[string]Value{
+		"install": MarkHostBuiltin(NewBuiltin("svc.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			receiver.Hash()["stash"] = NewArray(retained)
+			return NewNil(), nil
+		})),
+	})
+	script := compileScriptDefault(t, `def run()
+  svc.install()
+  svc[:stash]
+end`)
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Globals: map[string]Value{"svc": svc},
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	retained[0] = NewInt(999)
+	if result.String() != "[1]" {
+		t.Fatalf("a globals-hosted install transferred live: %s", result.String())
 	}
 }
 

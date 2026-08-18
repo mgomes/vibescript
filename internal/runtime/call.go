@@ -189,7 +189,10 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if !block.IsNil() {
 			return NewNil(), exec.errorAt(pos, "block.call does not accept a block")
 		}
-		result, err := exec.CallBlock(callee, args)
+		// Script-to-script invocation: the host boundary in CallBlock is for
+		// Go callers only, so direct invocation of a block-valued binding
+		// takes the internal path.
+		result, err := exec.callBlockValue(callee, args, pos)
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
 				return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
@@ -364,6 +367,16 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		if err == nil && builtin.hostDriven && !builtin.declaredNonRetaining() {
 			result, err = exec.detachHostBuiltinResult(builtin, result)
+		}
+		if builtin.hostDriven && !builtin.declaredNonMutating() {
+			// Mark what the host could have written -- the receiver and the
+			// host-visible roots -- immediately, success or error: an
+			// installed wrapper must be shared before any later read, write,
+			// dispatch, or removal can observe it unmarked. The walk is
+			// charged; a markErr outranks nothing the call already returned.
+			if markErr := exec.markHostWritableState(receiver); markErr != nil && err == nil {
+				result, err = NewNil(), markErr
+			}
 		}
 		contractCheck.check(exec, builtin)
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = prevReceiver, prevArgs, prevKwargs
@@ -1429,7 +1442,7 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 			}
 			rebound := rebinder.rebindValue(val)
 			root.Define(name, rebound)
-			exec.capabilityBoundRoots = append(exec.capabilityBoundRoots, rebound)
+			exec.recordHostStateRoot(rebound)
 			if len(scope.contracts) > 0 {
 				scope.roots = append(scope.roots, rebound)
 			}
@@ -3634,7 +3647,15 @@ func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebind
 	}
 
 	for name, val := range globals {
-		root.Define(name, rebinder.rebindValue(val))
+		rebound := rebinder.rebindValue(val)
+		root.Define(name, rebound)
+		if graphContainsBuiltin(rebound) {
+			// A global carrying host builtins is host-visible state like a
+			// capability object: dispatching on it keeps its factory channel
+			// live, and post-dispatch marking covers what a builtin installs
+			// into it (#1210).
+			exec.recordHostStateRoot(rebound)
+		}
 	}
 
 	return nil
@@ -3656,7 +3677,13 @@ func bindGlobalsForCallLazy(exec *Execution, root *Env, rebinder *callFunctionRe
 
 	for name, val := range globals {
 		if hostGlobalBindsEagerly(val) {
-			root.Define(name, rebinder.rebindValue(val))
+			rebound := rebinder.rebindValue(val)
+			root.Define(name, rebound)
+			if graphContainsBuiltin(rebound) {
+				// See bindGlobalsForCall: builtin-bearing globals are
+				// host-visible state.
+				exec.recordHostStateRoot(rebound)
+			}
 			continue
 		}
 		root.defineLazy(name, hostGlobalLazyBinding{rebinder: rebinder, value: val})

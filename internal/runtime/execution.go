@@ -139,11 +139,13 @@ type Execution struct {
 	validatedCapabilityArgs   []string
 	capabilityReturnProof     capabilityReturnProof
 	// capabilityBoundRoots are the values capability adapters bound into
-	// this call. Before a result crosses to the host, everything reachable
-	// from them is marked shared (sweepCapabilityRoots): host state is live
-	// for the duration of the Call, and anything a factory installed there
-	// must clone rather than transfer on the way out (#1210).
+	// this call, and hostStateIdentities the wrapper identities reachable
+	// from them (refreshed after every mutating host dispatch). Together
+	// they drive the receiver-liveness rule and the immediate post-dispatch
+	// marking that keeps host-installed wrappers from crossing out of the
+	// Call live (#1210).
 	capabilityBoundRoots []Value
+	hostStateIdentities  map[uintptr]struct{}
 	isolationForwards    map[uintptr]isolationForward
 	addressedBrackets    int
 	memoryEst            memoryEstimator

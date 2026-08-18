@@ -1954,9 +1954,19 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 		if err != nil || !isCollection(result) {
 			return result, err
 		}
-		// The host's copy, like a Call result's -- but unlike a Call result
-		// a script loop can drive this clone once per iteration, so the walk
-		// is charged before the copy is built.
+		// Unlike a Call result, the call is not ending here: a sole
+		// published wrapper still has a live script owner, so only a graph
+		// no slot names at all -- a temporary the block built -- transfers
+		// whole. Anything published or callable-bearing is the host's copy,
+		// charged first, since a script loop can drive this clone once per
+		// iteration.
+		needsIsolation, isoErr := exec.hostCollectionNeedsIsolation(result, make(map[uintptr]struct{}))
+		if isoErr != nil {
+			return NewNil(), isoErr
+		}
+		if !needsIsolation && !valueNeedsHostClone(result) {
+			return result, nil
+		}
 		if err := exec.preflightDeepClone(result); err != nil {
 			return NewNil(), err
 		}

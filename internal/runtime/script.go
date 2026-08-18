@@ -105,7 +105,6 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 			if finishErr != nil {
 				return NewNil(), finishErr
 			}
-			exec.sweepCapabilityRoots()
 			if valueNeedsHostClone(val) {
 				return cloneValueForHost(val), nil
 			}
@@ -122,7 +121,6 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
-	exec.sweepCapabilityRoots()
 	if valueNeedsHostClone(val) {
 		return cloneValueForHost(val), nil
 	}
@@ -210,7 +208,6 @@ func (s *Script) callWithLazyGlobals(ctx context.Context, name string, args []Va
 			if finishErr != nil {
 				return NewNil(), finishErr
 			}
-			exec.sweepCapabilityRoots()
 			if valueNeedsHostClone(val) {
 				return cloneValueForHost(val), nil
 			}
@@ -227,7 +224,6 @@ func (s *Script) callWithLazyGlobals(ctx context.Context, name string, args []Va
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
-	exec.sweepCapabilityRoots()
 	if valueNeedsHostClone(val) {
 		return cloneValueForHost(val), nil
 	}
