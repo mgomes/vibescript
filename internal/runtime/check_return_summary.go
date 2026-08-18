@@ -515,6 +515,13 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 	c.withSuppressedWarnings(func() {
 		runtimeState := c.snapshotRuntimeState()
 		defer c.restoreRuntimeState(runtimeState)
+		// Arm the discarded-mutator check the same way the other two body
+		// walks do: the callee's implicit-return leaves are result
+		// positions here too, and its verdicts must not consult the
+		// interrupted caller's block contexts. Warnings are suppressed on
+		// this walk, but the arming keeps every body-walk entry point
+		// agreeing on what a discard position is.
+		defer c.enterMutatorDiscardFunctionBody(fn)()
 
 		previousScopes := c.scopes
 		previousLocalTypes := c.localTypes

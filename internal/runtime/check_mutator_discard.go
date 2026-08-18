@@ -19,8 +19,10 @@ import "strconv"
 // whenever the receiver may still name a slot:
 //
 //  1. The receiver is provably a temporary: a call result, a literal, a
-//     slice (`xs[0..1]`), or a member hop off a receiver whose type proves
-//     the hop dispatches a builtin rather than reading a stored entry.
+//     slice (`xs[0..1]`), a constant read (mutablePathFor rejects constant
+//     roots, so the write lands on a detached copy), or a member hop off a
+//     receiver whose type proves the hop dispatches a builtin rather than
+//     reading a stored entry.
 //  2. The receiver's root is a parameter of the enclosing block, the block
 //     is attached to a builtin iterator that discards block results (the
 //     each family), and no later statement of the block body reads the
@@ -31,6 +33,14 @@ import "strconv"
 // body's final statement a discard position. Dispatch is untyped, so the
 // classification is by name; a user method sharing one of these names keeps
 // the conventional contract of ignoring block results.
+//
+// The list is deliberately only the iterators that can yield collections.
+// The scalar-yielding ones (times, upto, step, each_char and kin) are
+// absent because a scalar parameter never reaches a collection mutator past
+// the receiver-type gate, so listing them would change nothing. Declaring
+// the fact at builtin registration instead (the DeclareNonMutating
+// precedent) was considered and declined while the check is warning-only:
+// a missing name costs one missed warning, never a false positive.
 func blockResultDiscardingIterator(member string) bool {
 	switch member {
 	case "each", "each_with_index", "each_slice", "each_cons",
@@ -55,8 +65,8 @@ type mutatorDiscardBlock struct {
 // function's implicit return value, so they are not discard positions, and
 // any block contexts belong to the interrupted outer walk, not this one.
 // The returned func restores the outer walk's contexts.
-func (c *scriptChecker) enterMutatorDiscardFunctionBody(body []Statement) func() {
-	c.markResultCarryingStatements(body)
+func (c *scriptChecker) enterMutatorDiscardFunctionBody(fn *ScriptFunction) func() {
+	c.markResultCarryingStatements(fn, fn.Body)
 	saved := c.mutatorDiscardBlocks
 	c.mutatorDiscardBlocks = nil
 	return func() { c.mutatorDiscardBlocks = saved }
@@ -64,12 +74,18 @@ func (c *scriptChecker) enterMutatorDiscardFunctionBody(body []Statement) func()
 
 // markResultCarryingStatements records the statements whose value survives
 // the statement boundary -- the effective final statements of a body whose
-// result the caller can observe. The marking is syntactic and stable across
-// repeated walks of the same body.
-func (c *scriptChecker) markResultCarryingStatements(body []Statement) {
-	if c.resultCarryingStatements == nil {
+// result the caller can observe. The marking is syntactic, so each body
+// (keyed by its owning function or block) is collected once and the result
+// holds for every later walk.
+func (c *scriptChecker) markResultCarryingStatements(key any, body []Statement) {
+	if _, done := c.resultBodiesMarked[key]; done {
+		return
+	}
+	if c.resultBodiesMarked == nil {
+		c.resultBodiesMarked = make(map[any]struct{})
 		c.resultCarryingStatements = make(map[Statement]struct{})
 	}
+	c.resultBodiesMarked[key] = struct{}{}
 	collectImplicitReturnLeaves(body, c.resultCarryingStatements)
 }
 
@@ -81,7 +97,7 @@ func (c *scriptChecker) markResultCarryingStatements(body []Statement) {
 func (c *scriptChecker) enterMutatorDiscardBlock(block *BlockLiteral, callMember string) func() {
 	discards := blockResultDiscardingIterator(callMember)
 	if !discards {
-		c.markResultCarryingStatements(block.Body)
+		c.markResultCarryingStatements(block, block.Body)
 	}
 	c.mutatorDiscardBlocks = append(c.mutatorDiscardBlocks, mutatorDiscardBlock{
 		block:           block,
@@ -117,6 +133,11 @@ func blockParamNames(block *BlockLiteral) map[string]struct{} {
 // returned func emits the warning; the caller invokes it only once the
 // statement's walk proves the call can complete, and it is nil when there
 // is nothing to report.
+//
+// The receiver-type gate (provablyNotCollection) runs only once an arm is
+// otherwise ready to warn: inference is the expensive step, and the common
+// legitimate statement -- a mutator on an addressable local -- never needs
+// it.
 func (c *scriptChecker) mutatorDiscardVerdict(function string, stmt *ExprStmt) func() {
 	if _, carriesResult := c.resultCarryingStatements[stmt]; carriesResult {
 		return nil
@@ -125,15 +146,14 @@ func (c *scriptChecker) mutatorDiscardVerdict(function string, stmt *ExprStmt) f
 	if member == nil || !isCollectionMutator(member.Property) {
 		return nil
 	}
-	// Dispatch is untyped, so a mutator NAME is what classifies the call; a
-	// receiver whose type rules the collection kinds out (a string's
-	// non-mutating delete, a class instance's own method) is not a
-	// collection mutation and stays out of scope.
-	if c.provablyNotCollection(member.Object) {
-		return nil
-	}
-	shape, root := c.mutatorReceiverShape(member.Object)
-	if shape == mutatorReceiverTemporary {
+	temporary, root := c.mutatorReceiverShape(member.Object)
+	if temporary {
+		// Dispatch is untyped, so the mutator NAME is what classified the
+		// call; a receiver whose type rules the collection kinds out (a
+		// string's non-mutating delete) is not a collection mutation.
+		if c.provablyNotCollection(member.Object) {
+			return nil
+		}
 		return func() {
 			c.add(function, member.Pos(),
 				"%s updates a temporary; the update reaches nothing. Assign the result, as in `x = %s.%s%s`",
@@ -184,6 +204,9 @@ func (c *scriptChecker) blockParamMutatorDiscardVerdict(function string, stmt *E
 	if statementsReferenceAnyName(body[index+1:], map[string]struct{}{root: {}}) {
 		return nil
 	}
+	if c.provablyNotCollection(member.Object) {
+		return nil
+	}
 	return func() {
 		c.add(function, member.Pos(),
 			"mutating block parameter %s does not update the collection it was yielded from; build the result with map, or index the original",
@@ -206,49 +229,43 @@ func discardedMemberCall(expr Expression) (*MemberExpr, *CallExpr) {
 	return nil, nil
 }
 
-// mutatorReceiverShapeKind classifies a mutator's receiver expression
-// against the runtime's mutable-path shape (mutablePathFor).
-type mutatorReceiverShapeKind int
-
-const (
-	// mutatorReceiverUnknown covers receivers that may still name a slot --
-	// a member hop that can be a stored-entry read, an index whose selector
-	// kind is unproven. The check stays silent for them.
-	mutatorReceiverUnknown mutatorReceiverShapeKind = iota
-	// mutatorReceiverPath is the provable mutable-path shape: a bare root
-	// with index hops whose selectors are not slices.
-	mutatorReceiverPath
-	// mutatorReceiverTemporary is a receiver that provably names no slot:
-	// the write lands on a value the statement can never hand back.
-	mutatorReceiverTemporary
-)
-
 // mutatorReceiverShape mirrors mutablePathFor syntactically: a local,
 // instance-variable, or class-variable root followed by index and
 // stored-entry hops names a slot; anything else is a temporary. Where the
 // runtime decides a hop at execution time (a member hop reads a stored
-// entry only when one exists; a range selector slices only arrays), the
-// mirror answers temporary only on proof and unknown otherwise. The root
-// name is returned for the block-parameter arm; it is empty when the root
-// is not a bare identifier.
-func (c *scriptChecker) mutatorReceiverShape(expr Expression) (mutatorReceiverShapeKind, string) {
-	shape := mutatorReceiverPath
+// entry only when one exists), the mirror answers temporary only on proof
+// and stays quiet otherwise. The root name feeds the block-parameter arm;
+// it is empty when the root is not a bare identifier.
+func (c *scriptChecker) mutatorReceiverShape(expr Expression) (temporary bool, root string) {
 	for {
 		switch typed := expr.(type) {
 		case *Identifier:
-			return shape, typed.Name
-		case *IvarExpr, *ClassVarExpr:
-			return shape, ""
-		case *IndexExpr:
-			// A multi-selector index is Ruby's start/length slice and a
-			// range selector slices an array: both produce fresh subarrays,
-			// not slots. A hash can store a range key, so a provably
-			// hash-like object keeps the hop addressable.
-			if len(typed.Indices) != 1 {
-				return mutatorReceiverTemporary, ""
+			// An uppercase name that no scope can bind is a constant read.
+			// mutablePathFor rejects constant roots where self is a class,
+			// and elsewhere a constant is no local either, so the write
+			// lands on a detached copy both ways (verified for static and
+			// instance methods alike). Class and namespace references keep
+			// their own member dispatch and stay out of scope.
+			if isConstantIdentifier(typed.Name) && !c.scopeHas(typed.Name) {
+				if c.script.classes[typed.Name] != nil ||
+					c.recordedNamespaceMemberPrefix(typed.Name+".") {
+					return false, ""
+				}
+				return true, ""
 			}
-			if _, isRange := typed.Indices[0].(*RangeExpr); isRange && !c.provablyHashLike(typed.Object) {
-				return mutatorReceiverTemporary, ""
+			return false, typed.Name
+		case *IvarExpr, *ClassVarExpr:
+			return false, ""
+		case *IndexExpr:
+			// A multi-selector index is Ruby's start/length slice, and a
+			// range selector always slices: range hash keys are rejected at
+			// runtime ("hash keys must be strings or symbols"), so no range
+			// hop can name a slot. Both produce fresh subarrays.
+			if len(typed.Indices) != 1 {
+				return true, ""
+			}
+			if _, isRange := typed.Indices[0].(*RangeExpr); isRange {
+				return true, ""
 			}
 			expr = typed.Object
 		case *MemberExpr:
@@ -257,14 +274,14 @@ func (c *scriptChecker) mutatorReceiverShape(expr Expression) (mutatorReceiverSh
 			// entry present at runtime. An object whose type excludes
 			// hashes proves the hop dispatches a builtin instead (`a.dup`),
 			// so what it yields is a temporary; otherwise the hop may name
-			// a slot and the shape is no longer provable either way.
+			// a slot, class-1 proof is gone, and only the root survives for
+			// the block-parameter arm.
 			if c.provablyLeavesCollectionStorage(typed.Object) {
-				return mutatorReceiverTemporary, ""
+				return true, ""
 			}
-			shape = mutatorReceiverUnknown
 			expr = typed.Object
 		default:
-			return mutatorReceiverTemporary, ""
+			return true, ""
 		}
 	}
 }
@@ -272,34 +289,14 @@ func (c *scriptChecker) mutatorReceiverShape(expr Expression) (mutatorReceiverSh
 // provablyNotCollection reports whether expr's inferred type excludes every
 // collection kind a registered mutator can update (array, hash, shape).
 func (c *scriptChecker) provablyNotCollection(expr Expression) bool {
-	arms, ok := typeExprArms(c.inferExpressionType(expr), 0)
-	if !ok || len(arms) == 0 {
-		return false
-	}
-	for _, arm := range arms {
+	return typeExprArmsAll(c.inferExpressionType(expr), func(arm *TypeExpr) bool {
 		switch arm.Kind {
 		case TypeArray, TypeHash, TypeShape, TypeAny, TypeUnknown, TypeUnion:
 			return false
-		}
-	}
-	return true
-}
-
-// provablyHashLike reports whether expr's inferred type proves a hash-like
-// value, whose member and index hops read stored entries.
-func (c *scriptChecker) provablyHashLike(expr Expression) bool {
-	arms, ok := typeExprArms(c.inferExpressionType(expr), 0)
-	if !ok || len(arms) == 0 {
-		return false
-	}
-	for _, arm := range arms {
-		switch arm.Kind {
-		case TypeHash, TypeShape:
 		default:
-			return false
+			return true
 		}
-	}
-	return true
+	})
 }
 
 // provablyLeavesCollectionStorage reports whether a member hop off expr
@@ -309,32 +306,36 @@ func (c *scriptChecker) provablyHashLike(expr Expression) bool {
 // out temporaries, but the nominal arms carry too little here to build a
 // warning on.
 func (c *scriptChecker) provablyLeavesCollectionStorage(expr Expression) bool {
-	arms, ok := typeExprArms(c.inferExpressionType(expr), 0)
-	if !ok || len(arms) == 0 {
-		return false
-	}
-	for _, arm := range arms {
+	return typeExprArmsAll(c.inferExpressionType(expr), func(arm *TypeExpr) bool {
 		switch arm.Kind {
 		case TypeArray, TypeString, TypeInt, TypeFloat, TypeNumber, TypeBool,
 			TypeSymbol, TypeNil, TypeRange, TypeTime, TypeDuration, TypeMoney,
 			TypeFunction:
+			return true
 		default:
 			return false
 		}
-	}
-	return true
+	})
 }
 
 // mutatorDiscardCallSuffix renders the call tail of the teaching example:
-// nothing for a bare member read, the call's own argument shape otherwise.
+// nothing for a bare member read, the call's own argument shape otherwise,
+// and the block spelled out so following the advice keeps the block.
 func mutatorDiscardCallSuffix(call *CallExpr) string {
 	if call == nil {
 		return ""
 	}
-	if len(call.Args) == 0 && len(call.KwArgs) == 0 {
-		return "()"
+	args := "()"
+	if len(call.Args) > 0 || len(call.KwArgs) > 0 {
+		args = "(...)"
 	}
-	return "(...)"
+	if call.Block != nil {
+		if args == "()" {
+			return " { ... }"
+		}
+		return args + " { ... }"
+	}
+	return args
 }
 
 // mutatorDiscardReceiverSource renders a receiver expression compactly for

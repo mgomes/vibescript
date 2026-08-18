@@ -167,15 +167,13 @@ type scriptChecker struct {
 	// statement boundary (result-position leaves of function and
 	// value-carrying block bodies), so the discarded-mutator check knows a
 	// statement position from a result position. The marking is syntactic
-	// and stable, so it accumulates across walks.
+	// and stable, so it accumulates across walks; resultBodiesMarked keys
+	// the bodies already collected so a re-walk skips the traversal.
 	resultCarryingStatements map[Statement]struct{}
+	resultBodiesMarked       map[any]struct{}
 	// mutatorDiscardBlocks is the stack of block-literal walks in progress,
 	// innermost last, for the discarded-mutator check's block-parameter arm.
-	mutatorDiscardBlocks []mutatorDiscardBlock
-	// pendingBlockCallMember hands the enclosing call's member name to the
-	// block walk it is about to start, so the walk knows whether the call
-	// provably discards the block's results.
-	pendingBlockCallMember     string
+	mutatorDiscardBlocks       []mutatorDiscardBlock
 	returnAnalyzes             map[returnSummaryCacheKey]functionReturnAnalysis
 	returnAnalysisContextBytes int
 	memberFreeReturnAnalyzes   map[returnSummaryCacheKey]functionReturnAnalysis
@@ -1713,7 +1711,7 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 	}
 	defer c.withFreshLocalInferenceScope()()
 	defer c.withImplicitReturnCapture(fn)()
-	defer c.enterMutatorDiscardFunctionBody(fn.Body)()
+	defer c.enterMutatorDiscardFunctionBody(fn)()
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
 	popNameScope := c.pushFunctionNameScope(fn)
@@ -2967,7 +2965,7 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 	}
 	c.withFreshLocalInference(func() {
 		defer c.withImplicitReturnCapture(fn)()
-		defer c.enterMutatorDiscardFunctionBody(fn.Body)()
+		defer c.enterMutatorDiscardFunctionBody(fn)()
 		popScope := c.pushScope(make(map[string]struct{}))
 		defer popScope()
 		popNameScope := c.pushFunctionNameScope(fn)
@@ -5244,11 +5242,11 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				}
 				blockResult = checkBlockResult{exact: true}
 			} else {
+				callMember := ""
 				if member, ok := typed.Callee.(*MemberExpr); ok {
-					c.pendingBlockCallMember = member.Property
+					callMember = member.Property
 				}
-				blockResult = c.checkBlockLiteral(function, typed.Block, false)
-				c.pendingBlockCallMember = ""
+				blockResult = c.checkBlockLiteral(function, typed.Block, false, callMember)
 			}
 		}
 		// A body proved never to complete leaves the fill reachable only where it
@@ -8437,6 +8435,7 @@ func (c *scriptChecker) checkBlockLiteral(
 	function string,
 	block *BlockLiteral,
 	localReturns bool,
+	callMember string,
 ) checkBlockResult {
 	return c.checkBlockLiteralWithIvarWidening(
 		function,
@@ -8444,6 +8443,7 @@ func (c *scriptChecker) checkBlockLiteral(
 		localReturns,
 		true,
 		!localReturns,
+		callMember,
 	)
 }
 
@@ -8453,13 +8453,12 @@ func (c *scriptChecker) checkBlockLiteralWithIvarWidening(
 	localReturns bool,
 	widenIvars bool,
 	preserveNamespaceWrites bool,
+	callMember string,
 ) checkBlockResult {
 	if block == nil {
 		return checkBlockResult{}
 	}
-	enclosingCallMember := c.pendingBlockCallMember
-	c.pendingBlockCallMember = ""
-	defer c.enterMutatorDiscardBlock(block, enclosingCallMember)()
+	defer c.enterMutatorDiscardBlock(block, callMember)()
 	previousSummaryYieldsActive := c.summaryYieldsActive
 	if localReturns {
 		c.summaryYieldsActive = false

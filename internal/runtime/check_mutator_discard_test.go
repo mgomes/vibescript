@@ -59,6 +59,18 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "push updates a temporary",
 		},
 		{
+			// mutablePathFor rejects constant roots, so the write lands on
+			// a detached copy in static and instance methods alike.
+			name:   "class constant in a static method",
+			source: "class C\n  ROWS = [1]\n  def self.grow()\n    ROWS.push(2)\n    nil\n  end\nend\nC.grow()\nputs \"done\"",
+			want:   "push updates a temporary",
+		},
+		{
+			name:   "class constant in an instance method",
+			source: "class D\n  ROWS = [1]\n  def grow()\n    ROWS.push(2)\n    nil\n  end\nend\nD.new.grow()\nputs \"done\"",
+			want:   "push updates a temporary",
+		},
+		{
 			name:   "each block parameter",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0) }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -184,6 +196,16 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			name:   "reduce accumulator carries the block result",
 			source: "total = [1, 2].reduce([]) { |acc, x| acc.push(x) }\nputs total",
 		},
+		{
+			// An uppercase FUNCTION-LOCAL binding is addressable -- only
+			// constant reads detach -- so the constant arm must not fire.
+			name:   "uppercase local binding",
+			source: "def f()\n  B = [1]\n  B.push(2)\n  puts B\nend\nf()\nputs \"done\"",
+		},
+		{
+			name:   "class reference receiver",
+			source: "class K\nend\ndef f()\n  K.push(1)\n  nil\nend\nf()\nputs \"done\"",
+		},
 	}
 
 	for _, tc := range tests {
@@ -221,6 +243,18 @@ func TestDiscardedMutatorMessagesTeachTheFix(t *testing.T) {
 			name:   "slice receiver keeps the range spelling",
 			source: "xs = [1, 2, 3]\nxs[0..1].push(9)\nputs \"done\"",
 			want:   "push updates a temporary; the update reaches nothing. Assign the result, as in `x = xs[0..1].push(...)`",
+		},
+		{
+			// The advice must keep the call's block, or following it would
+			// run a different computation.
+			name:   "block-taking call keeps its block in the example",
+			source: "xs = [1, 2]\nxs.dup.fill do\n  0\nend\nputs \"done\"",
+			want:   "fill updates a temporary; the update reaches nothing. Assign the result, as in `x = xs.dup.fill { ... }`",
+		},
+		{
+			name:   "constant receiver spells the assignment",
+			source: "class C\n  ROWS = [1]\n  def self.grow()\n    ROWS.push(2)\n    nil\n  end\nend\nC.grow()\nputs \"done\"",
+			want:   "push updates a temporary; the update reaches nothing. Assign the result, as in `x = ROWS.push(...)`",
 		},
 		{
 			name:   "block arm names the parameter and the idioms",
