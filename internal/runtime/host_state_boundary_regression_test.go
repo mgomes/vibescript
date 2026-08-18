@@ -203,3 +203,37 @@ end`)
 		t.Fatalf("sibling observed a host write: other[:s2] is set")
 	}
 }
+
+// Repro F: a wrapper reachable from BOTH host state and a plain-data
+// receiver must be recorded as host state. The receiver walk runs with no
+// recorder; if it reached the shared wrapper first through the shared seen
+// map, the roots walk would skip it unrecorded, and the next dispatch on it
+// would detach it as script data -- losing the host's install.
+func TestHostStateBoundaryRegressionSharedSeenDoesNotShadowRootRecording(t *testing.T) {
+	t.Parallel()
+
+	svc := NewObject(map[string]Value{
+		"stamp": MarkHostBuiltin(NewBuiltin("svc.stamp", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if receiver.Kind() == KindHash || receiver.Kind() == KindObject {
+				receiver.Hash()["s"] = NewInt(9)
+			}
+			return NewNil(), nil
+		})),
+	})
+	script := compileScriptDefault(t, `def run()
+  svc[:slot] = { stamp: svc[:stamp] }
+  box = { m: svc[:stamp], w: svc[:slot] }
+  box.m()
+  svc[:slot].stamp()
+  svc[:slot][:s]
+end`)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Globals: map[string]Value{"svc": svc},
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.Kind() != KindInt || got.Int() != 9 {
+		t.Fatalf("the host's install landed in a detached copy: %#v, want 9", got)
+	}
+}

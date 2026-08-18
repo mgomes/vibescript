@@ -146,6 +146,10 @@ type Execution struct {
 	// Call live (#1210).
 	capabilityBoundRoots []Value
 	hostStateIdentities  map[uintptr]struct{}
+	// hostStateRevisits counts uncharged re-walk visits of recorded host
+	// state; every 64th is charged one scan step so total walk CPU stays
+	// coupled to the step quota.
+	hostStateRevisits    uint64
 	isolationForwards    map[uintptr]isolationForward
 	addressedBrackets    int
 	memoryEst            memoryEstimator

@@ -275,19 +275,19 @@ func (exec *Execution) markHostWritableState(receiver Value) error {
 	// wrapper's walk to a single charged visit; the recorder attributes
 	// exactly what each walk reaches first.
 	seen := make(map[uintptr]struct{})
-	receiverRecord := exec.hostStateIdentities
-	if !exec.receiverIsHostState(receiver) {
-		receiverRecord = nil
-	}
-	if err := exec.markSharedGraphRecording(receiver, seen, receiverRecord); err != nil {
-		return err
-	}
+	// Roots first: a wrapper reachable from both a plain-data receiver and
+	// host state must be recorded as host state, and the shared seen map
+	// would otherwise let the receiver walk shadow the roots walk.
 	for _, root := range exec.capabilityBoundRoots {
 		if err := exec.markSharedGraphRecording(root, seen, exec.hostStateIdentities); err != nil {
 			return err
 		}
 	}
-	return nil
+	receiverRecord := exec.hostStateIdentities
+	if !exec.receiverIsHostState(receiver) {
+		receiverRecord = nil
+	}
+	return exec.markSharedGraphRecording(receiver, seen, receiverRecord)
 }
 
 // markSharedGraph forces every collection reachable from val to the shared
@@ -314,11 +314,20 @@ func (exec *Execution) markSharedGraphRecording(val Value, seen, record map[uint
 		seen[id] = struct{}{}
 		if record != nil {
 			if _, recorded := record[id]; recorded {
-				// Already host state from an earlier walk: marking again is
-				// free, so a loop of dispatches over stable host state pays
-				// map hits, not quota. Descend anyway -- a script write can
-				// hang a new wrapper under a recorded one.
+				// Already host state from an earlier walk: re-marking is
+				// cheap, so a loop of dispatches over stable host state pays
+				// a heavily discounted rate rather than the full walk --
+				// enough that CPU stays coupled to the step quota, since a
+				// hostile script can otherwise grow the graph once and drive
+				// unlimited free re-walks. Descend anyway: a script write
+				// can hang a new wrapper under a recorded one.
 				charge = false
+				exec.hostStateRevisits++
+				if exec.hostStateRevisits%64 == 0 {
+					if err := exec.chargeScanSteps(1); err != nil {
+						return err
+					}
+				}
 			} else {
 				record[id] = struct{}{}
 			}
