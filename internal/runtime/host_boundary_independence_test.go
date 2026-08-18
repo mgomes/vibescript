@@ -36,6 +36,39 @@ end
 	}
 }
 
+// TestHostBuiltinReturnIndependentOfRetainedBacking pins the inbound
+// direction: a host builtin that returns a wrapper over a map it still holds
+// must not keep a live channel into script state -- mutating the retained
+// backing after the call reaches nothing the script observes.
+func TestHostBuiltinReturnIndependentOfRetainedBacking(t *testing.T) {
+	t.Parallel()
+
+	retained := map[string]Value{"k": NewInt(1)}
+	engine := MustNewEngine(Config{})
+	engine.RegisterBuiltin("give", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewHash(retained), nil
+	})
+	engine.RegisterBuiltin("corrupt", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		retained["k"] = NewString("scribbled")
+		return NewNil(), nil
+	})
+	script, err := engine.Compile(`def run()
+  h = give()
+  corrupt()
+  h.inspect
+end`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "{k: 1}" {
+		t.Fatalf("host-retained backing wrote into script state: %s", got.String())
+	}
+}
+
 // TestCallResultIndependentOfARetainedHostHandle drives the same contract
 // end to end: a host builtin legitimately retains an argument, the script
 // returns that collection, and writes through the retained handle's live

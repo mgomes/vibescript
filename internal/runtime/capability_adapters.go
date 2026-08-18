@@ -302,10 +302,19 @@ func (a *dbCapabilityAdapter) CapabilityContracts() map[string]CapabilityMethodC
 
 func (a *dbCapabilityAdapter) wrapCall(method string, fn, validatedFn func(db.ExecutionContext, []Value, map[string]Value, Value) (Value, error)) BuiltinFunc {
 	return func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		call := fn
 		if validatedFn != nil && exec.capabilityArgsValidated(method) {
-			return validatedFn(exec, args, kwargs, block)
+			call = validatedFn
 		}
-		return fn(exec, args, kwargs, block)
+		result, err := call(exec, args, kwargs, block)
+		if err != nil {
+			return result, err
+		}
+		// Every db call ends in CloneMethodResult, so the value returned here
+		// is already validated and isolated from host state; the proof lets
+		// the dispatcher skip detaching it a second time.
+		exec.markValidatedCapabilityReturn(method, result)
+		return result, nil
 	}
 }
 

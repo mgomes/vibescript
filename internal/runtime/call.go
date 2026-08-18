@@ -345,7 +345,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		contractCheck := exec.beginContractVerification(builtin)
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		if err == nil && builtin.hostDriven && !builtin.declaredNonRetaining() {
-			publishCollection(result)
+			result, err = exec.detachHostBuiltinResult(builtin, result)
 		}
 		contractCheck.check(exec, builtin)
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = prevReceiver, prevArgs, prevKwargs

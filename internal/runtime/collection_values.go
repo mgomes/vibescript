@@ -134,6 +134,29 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 	return receiver, args, kwargs, nil
 }
 
+// detachHostBuiltinResult makes a host builtin's collection return independent
+// of the host, so a backing map or slice the Go body still holds cannot write
+// into script state after the call. A first-party capability return the
+// dispatcher's proof covers was already validated and cloned by its adapter
+// and crosses as it is; a builtin that declared itself non-retaining is
+// trusted the same way and never reaches here.
+func (exec *Execution) detachHostBuiltinResult(builtin *Builtin, result Value) (Value, error) {
+	if !isCollection(result) {
+		return result, nil
+	}
+	if exec.capabilityReturnProof.covers(builtin.Name, result) {
+		return result, nil
+	}
+	if err := exec.preflightDeepClone(result); err != nil {
+		return NewNil(), err
+	}
+	detached := deepCloneValueForContainment(result)
+	if err := exec.checkMemoryValue(detached); err != nil {
+		return NewNil(), err
+	}
+	return detached, nil
+}
+
 // isolateHostCollection returns a wrapper the host may write through. Host
 // contracts treat mutation as a write to any reachable container, so a
 // shallow copy of the root is not enough: `child = {x: 1}; a = {child: child}`
