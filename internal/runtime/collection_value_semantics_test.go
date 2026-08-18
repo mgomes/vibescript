@@ -857,6 +857,47 @@ end
 	}
 }
 
+// TestIndexedMissReadsAndContinuesOrdinarily pins that an indexed miss along
+// a mutable path reads exactly as evaluating the expression would: object
+// specials like MatchData captures resolve, the remaining hops still run --
+// side effects included -- and the error identity matches ordinary
+// evaluation.
+func TestIndexedMissReadsAndContinuesOrdinarily(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ name, body, want string }{
+		{"tail after mid-path miss still runs", "a = []\n  c = []\n  out = begin\n    a[9][c.push(1).size].push(2)\n  rescue => e\n    \"rescued\"\n  end\n  out.to_s + \" \" + c.size.to_s", "rescued 1"},
+		{"match capture chains a mutator", "m = \"ab\".match(/(?<x>a)/)\n  out = m[:x].sub(\"a\", \"-\")\n  out", "-"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  "+tc.body+"\nend\n")
+			if got := callFunc(t, script, "run", nil).String(); got != tc.want {
+				t.Fatalf("%s = %s, want %s", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOrdinaryReceiverDoesNotInheritThePermission pins that a mutator whose
+// receiver expression falls to ordinary evaluation cannot write in place
+// through the enclosing mutator's record, even when the evaluated temporary
+// happens to be the recorded wrapper.
+func TestOrdinaryReceiverDoesNotInheritThePermission(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  a = [1]
+  a.push((true ? a : a).push(2))
+  a.inspect
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "[1, [1, 2]]" {
+		t.Fatalf("conditional receiver = %s, want [1, [1, 2]]", got)
+	}
+}
+
 // TestMutatorArgumentDoesNotDropTheOuterWrite pins that an inner mutator in
 // an argument expression -- whose isolation may copy and rebind the very
 // slot the outer mutator addressed -- still leaves the outer write landing

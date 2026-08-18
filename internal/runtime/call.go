@@ -2814,6 +2814,11 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		var addressed bool
 		receiver, addressed, err = exec.addressMutableReceiver(member.Object, env)
 		if !addressed {
+			// The permission in force belongs to an enclosing mutator's
+			// receiver; an ordinary evaluation must not inherit it, or a
+			// temporary that happens to be the recorded wrapper writes in
+			// place (`a.push((true ? a : a).push(2))`).
+			exec.withdrawAddressed()
 			receiver, err = ordinaryReceiver()
 		}
 	} else {

@@ -149,6 +149,9 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 			var addressed bool
 			obj, addressed, err = exec.addressMutableReceiver(e.Object, env)
 			if !addressed {
+				// See evalMemberCallExpr: an ordinary evaluation must not
+				// inherit the enclosing permission.
+				exec.withdrawAddressed()
 				obj, err = exec.evalExpressionWithAuto(e.Object, env, memberReceiverAutoInvokes(e.Object, e.Property, env))
 			}
 			if err != nil {
@@ -1085,6 +1088,9 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 		var addressed bool
 		left, addressed, err = exec.addressMutableReceiver(expr.Left, env)
 		if !addressed {
+			// See evalMemberCallExpr: an ordinary evaluation must not
+			// inherit the enclosing permission.
+			exec.withdrawAddressed()
 			left, err = exec.evalExpression(expr.Left, env)
 		}
 	} else {
