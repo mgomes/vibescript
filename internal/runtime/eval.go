@@ -1922,7 +1922,39 @@ func implicitBlockParamArity(params []string) int {
 // CallBlock invokes a block value with the provided arguments.
 // This is the public entry point for capability adapters that need to
 // call user-supplied blocks (e.g. db.each, db.tx).
+//
+// It is a host boundary: the arguments come from Go code that may retain
+// their backing, and the return value is script state the host must not
+// hold live, so both directions cross as independent values (#1210) unless
+// the invoking builtin declared itself non-retaining. Native builtins
+// drive blocks through the internal paths and pay none of this.
 func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
+	if exec.builtinFrameHostCrossing {
+		var detachedArgs []Value
+		for i, arg := range args {
+			if !isCollection(arg) {
+				continue
+			}
+			detached, err := exec.detachHostCrossingValue(arg)
+			if err != nil {
+				return NewNil(), err
+			}
+			if detachedArgs == nil {
+				detachedArgs = append([]Value(nil), args...)
+			}
+			detachedArgs[i] = detached
+		}
+		if detachedArgs != nil {
+			args = detachedArgs
+		}
+		result, err := exec.callBlockValue(block, args, Position{})
+		if err != nil || !isCollection(result) {
+			return result, err
+		}
+		// The host's copy, like a Call result's: uncharged, and callables
+		// inside it detach from engine state the same way.
+		return cloneValueForHost(result), nil
+	}
 	return exec.callBlockValue(block, args, Position{})
 }
 

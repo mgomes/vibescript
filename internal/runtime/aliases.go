@@ -515,38 +515,78 @@ type hostValueCloneState struct {
 // through Value.Array or Value.Hash into script-reachable state. A graph of
 // sole wrappers has no other owner: its one owner is the call that is ending,
 // so the result transfers out as it is and independence costs no copy.
-func valueNeedsHostClone(val Value) bool {
-	switch val.Kind() {
+// kindAliasesEngineState reports whether a value of this kind always clones
+// at the host boundary: callables, classes, instances, and enums alias
+// compiled engine state however they are reached. One predicate feeds both
+// the top-level gate and the composite scan, so a new kind cannot be added
+// to one and missed by the other.
+func kindAliasesEngineState(kind ValueKind) bool {
+	switch kind {
 	case KindFunction, KindClass, KindInstance, KindEnum, KindEnumValue, KindBlock, KindBuiltin:
 		return true
-	case KindArray, KindHash, KindObject:
-		return hostBoundaryNeedsClone(val, hostValueScanState{
-			arrays: make(map[uintptr]struct{}),
-			maps:   make(map[uintptr]struct{}),
-		})
 	default:
 		return false
 	}
 }
 
+func valueNeedsHostClone(val Value) bool {
+	if kindAliasesEngineState(val.Kind()) {
+		return true
+	}
+	switch val.Kind() {
+	case KindArray, KindHash, KindObject:
+		return hostBoundaryNeedsClone(val, &hostValueScanState{})
+	default:
+		return false
+	}
+}
+
+// hostValueScanState allocates its dedup maps lazily: a cycle needs nesting,
+// so a flat result -- the common Call return -- scans without allocating.
 type hostValueScanState struct {
 	arrays map[uintptr]struct{}
 	maps   map[uintptr]struct{}
 }
 
-func hostBoundaryNeedsClone(val Value, state hostValueScanState) bool {
-	switch val.Kind() {
-	case KindFunction, KindClass, KindInstance, KindEnum, KindEnumValue, KindBlock, KindBuiltin:
+func (s *hostValueScanState) seenArray(id uintptr) bool {
+	if id == 0 {
+		return false
+	}
+	if _, ok := s.arrays[id]; ok {
 		return true
+	}
+	if s.arrays == nil {
+		s.arrays = make(map[uintptr]struct{})
+	}
+	s.arrays[id] = struct{}{}
+	return false
+}
+
+func (s *hostValueScanState) seenMap(ptr uintptr) bool {
+	if ptr == 0 {
+		return false
+	}
+	if _, ok := s.maps[ptr]; ok {
+		return true
+	}
+	if s.maps == nil {
+		s.maps = make(map[uintptr]struct{})
+	}
+	s.maps[ptr] = struct{}{}
+	return false
+}
+
+func hostBoundaryNeedsClone(val Value, state *hostValueScanState) bool {
+	if kindAliasesEngineState(val.Kind()) {
+		return true
+	}
+	switch val.Kind() {
 	case KindArray:
 		// Key on the array wrapper so a cyclic array (one that reaches itself)
 		// terminates at the seen check; the wrapper identity is stable even
 		// while in-place mutators swap the element backing.
-		if id := arrayIdentity(val); id != 0 {
-			if _, ok := state.arrays[id]; ok {
-				return false
-			}
-			state.arrays[id] = struct{}{}
+		if state.seenArray(arrayIdentity(val)) {
+			return false
 		}
 		if !val.Unpublished() && !val.SoleRef() {
 			return true
@@ -562,12 +602,8 @@ func hostBoundaryNeedsClone(val Value, state hostValueScanState) bool {
 		// two wrappers sharing an entry map but carrying distinct defaults are each
 		// scanned: a second wrapper's clone-needing default is not skipped, and a
 		// default cycling back to this wrapper terminates at the seen check.
-		ptr := hashScanIdentity(val)
-		if ptr != 0 {
-			if _, ok := state.maps[ptr]; ok {
-				return false
-			}
-			state.maps[ptr] = struct{}{}
+		if state.seenMap(hashScanIdentity(val)) {
+			return false
 		}
 		if !val.Unpublished() && !val.SoleRef() {
 			return true

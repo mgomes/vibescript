@@ -36,6 +36,167 @@ end
 	}
 }
 
+// yieldCrossingCapability drives the CallBlock boundary from both sides: its
+// pass method yields a wrapper over a map the host retains, and its grab
+// method stashes whatever the block returns.
+type yieldCrossingCapability struct {
+	retained map[string]Value
+	stashed  *Value
+}
+
+func (c *yieldCrossingCapability) Bind(_ CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cross": NewObject(map[string]Value{
+			"pass": NewBuiltin("cross.pass", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				return exec.CallBlock(block, []Value{NewHash(c.retained)})
+			}),
+			"grab": NewBuiltin("cross.grab", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				v, err := exec.CallBlock(block, nil)
+				if err != nil {
+					return NewNil(), err
+				}
+				*c.stashed = v
+				return NewNil(), nil
+			}),
+			"install": NewBuiltin("cross.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				receiver.Hash()["data"] = NewHash(c.retained)
+				return NewNil(), nil
+			}),
+		}),
+	}, nil
+}
+
+func (c *yieldCrossingCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return nil
+}
+
+// TestCallBlockIsAHostBoundary pins both directions of the block channel: a
+// value the host yields enters script state detached from the host's
+// backing, and the block's return value crosses to the host as a copy, so
+// neither side can write through the other afterwards.
+func TestCallBlockIsAHostBoundary(t *testing.T) {
+	t.Parallel()
+
+	t.Run("yielded value is detached", func(t *testing.T) {
+		t.Parallel()
+		cap := &yieldCrossingCapability{retained: map[string]Value{"k": NewInt(1)}}
+		script := compileScriptDefault(t, `def run()
+  kept = nil
+  cross.pass { |v| kept = v; nil }
+  kept.inspect
+end`)
+		got, err := script.Call(context.Background(), "run", nil, callOptionsWithCapabilities(cap))
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		cap.retained["k"] = NewString("scribbled")
+		second, err := script.Call(context.Background(), "run", nil, callOptionsWithCapabilities(cap))
+		if err != nil {
+			t.Fatalf("second call: %v", err)
+		}
+		if got.String() != "{k: 1}" || second.String() != `{k: "scribbled"}` {
+			t.Fatalf("yield crossing = %s then %s, want {k: 1} then {k: scribbled}", got.String(), second.String())
+		}
+	})
+
+	t.Run("block return is copied for the host", func(t *testing.T) {
+		t.Parallel()
+		var stashed Value
+		cap := &yieldCrossingCapability{stashed: &stashed}
+		script := compileScriptDefault(t, `def run()
+  h = {k: 1}
+  cross.grab { h }
+  h
+end`)
+		result, err := script.Call(context.Background(), "run", nil, callOptionsWithCapabilities(cap))
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		stashed.Hash()["k"] = NewString("scribbled")
+		if result.String() != "{k: 1}" {
+			t.Fatalf("a write through the block-return handle reached the Call result: %s", result.String())
+		}
+	})
+}
+
+// TestFactoryInstalledWrapperDoesNotTransferLive pins the receiver
+// carve-out's boundary: a wrapper the host installs into its live capability
+// object mid-call is a host-held handle, so reading it out of the Call must
+// yield an independent value.
+func TestFactoryInstalledWrapperDoesNotTransferLive(t *testing.T) {
+	t.Parallel()
+
+	cap := &yieldCrossingCapability{retained: map[string]Value{"k": NewInt(1)}}
+	script := compileScriptDefault(t, `def run()
+  cross.install()
+  cross[:data]
+end`)
+	result, err := script.Call(context.Background(), "run", nil, callOptionsWithCapabilities(cap))
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	cap.retained["k"] = NewString("scribbled")
+	if result.String() != "{k: 1}" {
+		t.Fatalf("an installed wrapper transferred live out of the Call: %s", result.String())
+	}
+}
+
+// TestDeclaredNonMutatingStillMarksNestedArguments pins that skipping the
+// isolation copy under a non-mutation declaration does not skip retention
+// marking: a nested wrapper the host stashes must not transfer out of the
+// Call live.
+func TestDeclaredNonMutatingStillMarksNestedArguments(t *testing.T) {
+	t.Parallel()
+
+	var stashed Value
+	engine := MustNewEngine(Config{})
+	engine.registerHostBuiltin("snap", DeclareNonMutating(NewBuiltin("snap", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		stashed = args[0].Hash()["inner"]
+		return NewNil(), nil
+	})))
+	script, err := engine.Compile(`def run()
+  h = {inner: [1, 2]}
+  snap(h)
+  h[:inner]
+end`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	stashed.Array()[0] = NewString("scribbled")
+	if result.String() != "[1, 2]" {
+		t.Fatalf("a nested stash under a non-mutation declaration stayed live: %s", result.String())
+	}
+}
+
+// TestDBCapabilityReturnIsIndependentOfHostState is the canary behind the
+// db adapter's return proof: the proof lets the dispatcher skip the boundary
+// detach, so it is only sound while every db call really clones its result
+// out of host state. A future method that returns a host-backed wrapper
+// without CloneMethodResult fails here.
+func TestDBCapabilityReturnIsIndependentOfHostState(t *testing.T) {
+	t.Parallel()
+
+	retained := map[string]Value{"id": NewInt(1)}
+	stub := &dbCapabilityStub{findResult: NewHash(retained)}
+	script := compileScriptDefault(t, `def run()
+  db.find("Player", 1)
+end`)
+	result, err := script.Call(context.Background(), "run", nil, callOptionsWithCapabilities(
+		MustNewDBCapability("db", stub),
+	))
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	retained["id"] = NewString("scribbled")
+	if result.String() != "{id: 1}" {
+		t.Fatalf("a proof-marked db return stayed live against host state: %s", result.String())
+	}
+}
+
 // TestHostBuiltinArgumentIndependentOfHostWrites pins the outbound
 // direction for builtin arguments: a host writing through the live backing
 // of a value it received must not change what the script observes, even

@@ -335,6 +335,8 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// long as the body runs, and nothing the estimator walks reaches them.
 		prevReceiver, prevArgs, prevKwargs := exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs
 		prevReserved := exec.builtinFrameRootsReserved
+		prevHostCrossing := exec.builtinFrameHostCrossing
+		exec.builtinFrameHostCrossing = builtin.hostDriven && !builtin.declaredNonRetaining()
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = receiver, args, kwargs
 		// A new frame holds new values, so it reserves its own.
 		exec.builtinFrameRootsReserved = false
@@ -347,9 +349,17 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if err == nil && builtin.hostDriven && !builtin.declaredNonRetaining() {
 			result, err = exec.detachHostBuiltinResult(builtin, result)
 		}
+		if err == nil && builtin.hostDriven && !builtin.declaredNonMutating() {
+			// A factory may have installed fresh wrappers into the live
+			// receiver during the call (the sanctioned publication channel);
+			// they are host-held handles and must not transfer out of the
+			// Call boundary live (#1210).
+			err = exec.markSharedGraph(receiver, make(map[uintptr]struct{}))
+		}
 		contractCheck.check(exec, builtin)
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = prevReceiver, prevArgs, prevKwargs
 		exec.builtinFrameRootsReserved = prevReserved
+		exec.builtinFrameHostCrossing = prevHostCrossing
 		// Dropping the claims moves any array a shrink narrowed off the storage
 		// it gave up, which is the first point that storage can be released.
 		// That copy is charged, so it can fail; a failure the call itself did

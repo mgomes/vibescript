@@ -225,6 +225,11 @@ type Execution struct {
 	builtinFrameReceiver Value
 	builtinFrameArgs     []Value
 	builtinFrameKwargs   map[string]Value
+	// builtinFrameHostCrossing records that the innermost builtin frame is a
+	// host-driven builtin that did not declare itself non-retaining, so a
+	// CallBlock under it is a host boundary: yielded arguments and the
+	// block's return value must cross as independent values (#1210).
+	builtinFrameHostCrossing bool
 	// builtinFrameRootsReserved records that a CallBlock under this frame has
 	// already folded those values into the reserved scratch. A block that enters
 	// a script function which yields reaches CallBlock again under the same

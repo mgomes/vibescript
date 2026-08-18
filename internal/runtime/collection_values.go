@@ -125,19 +125,67 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 		}
 	}
 	if !builtin.declaredNonRetaining() {
-		// Publish the wrappers the host will actually see, after isolation,
-		// so a later script write copies instead of mutating a retained
-		// handle. Publishing first would mark a sole argument shared and
+		// Mark everything the host will actually see, after isolation: the
+		// host may retain any reachable wrapper, not just a root, and the
+		// interpreter cannot see how many handles exist on the other side.
+		// A marked wrapper makes a later script write copy and keeps the
+		// Call boundary from transferring it out live. Marking first would
 		// force a copy the host then mutates invisibly.
-		publishCollection(receiver)
+		seen := make(map[uintptr]struct{})
+		if err := exec.markSharedGraph(receiver, seen); err != nil {
+			return NewNil(), nil, nil, err
+		}
 		for _, arg := range args {
-			publishCollection(arg)
+			if err := exec.markSharedGraph(arg, seen); err != nil {
+				return NewNil(), nil, nil, err
+			}
 		}
 		for _, arg := range kwargs {
-			publishCollection(arg)
+			if err := exec.markSharedGraph(arg, seen); err != nil {
+				return NewNil(), nil, nil, err
+			}
 		}
 	}
 	return receiver, args, kwargs, nil
+}
+
+// markSharedGraph forces every collection reachable from val to the shared
+// state. The host boundary uses it where Go code gets live sight of script
+// wrappers: the interpreter cannot see how many handles the other side
+// keeps, so each must copy on the next script write and clone rather than
+// transfer at the Call boundary.
+func (exec *Execution) markSharedGraph(val Value, seen map[uintptr]struct{}) error {
+	if !isCollection(val) {
+		return nil
+	}
+	if id := collectionIdentity(val); id != 0 {
+		if _, ok := seen[id]; ok {
+			return nil
+		}
+		seen[id] = struct{}{}
+	}
+	if err := exec.chargeScanSteps(1); err != nil {
+		return err
+	}
+	val.MarkSharedRef()
+	switch val.Kind() {
+	case KindArray:
+		for _, elem := range val.Array() {
+			if err := exec.markSharedGraph(elem, seen); err != nil {
+				return err
+			}
+		}
+	case KindHash, KindObject:
+		var walkErr error
+		val.RangeHashEntries(func(_ string, item Value) {
+			if walkErr != nil {
+				return
+			}
+			walkErr = exec.markSharedGraph(item, seen)
+		})
+		return walkErr
+	}
+	return nil
 }
 
 // detachHostBuiltinResult makes a host builtin's collection return independent
@@ -153,10 +201,21 @@ func (exec *Execution) detachHostBuiltinResult(builtin *Builtin, result Value) (
 	if exec.capabilityReturnProof.covers(builtin.Name, result) {
 		return result, nil
 	}
-	if err := exec.preflightDeepClone(result); err != nil {
+	return exec.detachHostCrossingValue(result)
+}
+
+// detachHostCrossingValue makes a host-supplied value independent of the Go
+// state that built it before it enters script state: a yielded block
+// argument, like a host builtin's return, may wrap a map or slice the host
+// still holds. The copy is charged; it is script state now.
+func (exec *Execution) detachHostCrossingValue(val Value) (Value, error) {
+	if !isCollection(val) {
+		return val, nil
+	}
+	if err := exec.preflightDeepClone(val); err != nil {
 		return NewNil(), err
 	}
-	detached := deepCloneValueForContainment(result)
+	detached := deepCloneValueForContainment(val)
 	if err := exec.checkMemoryValue(detached); err != nil {
 		return NewNil(), err
 	}
