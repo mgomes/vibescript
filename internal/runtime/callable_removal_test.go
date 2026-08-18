@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -169,5 +170,20 @@ func TestADRLambdaExampleIsACompileError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "named function") || !strings.Contains(err.Error(), "block") {
 		t.Fatalf("error = %v, want it to name both replacements", err)
+	}
+}
+
+// The Proc namespace itself must not read as a value: it is a fence, not an
+// object a script could pass around.
+func TestProcNamespaceIsNotAValue(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, "def run\n  x = Proc\n  x\nend\n")
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatal("bare Proc read produced a value")
+	}
+	if !strings.Contains(err.Error(), "was removed; executable code is not a value") {
+		t.Fatalf("error = %v, want the removal teaching message", err)
 	}
 }

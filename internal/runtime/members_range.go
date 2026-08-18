@@ -326,8 +326,10 @@ func rangeMemberFilter(property string) Value {
 // the first match.
 func rangeMemberFind() Value {
 	return NewAutoBuiltin("range.find", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-		if len(args) > 0 {
-			return NewNil(), fmt.Errorf("range.find does not take arguments")
+		// An explicit nil ifnone is plain data meaning no fallback, matching
+		// array.find.
+		if len(args) > 1 || (len(args) == 1 && args[0].Kind() != KindNil) {
+			return NewNil(), fmt.Errorf("range.find takes no fallback; a miss returns nil")
 		}
 		if len(kwargs) > 0 {
 			return NewNil(), fmt.Errorf("range.find does not take keyword arguments")

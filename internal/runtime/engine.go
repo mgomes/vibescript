@@ -439,12 +439,16 @@ func registerRemovedCallableFences(engine *Engine) {
 			checkSpec:  &staticCallSpec{minArgs: 0, maxArgs: -1, removedMessage: removedCallableMessage(name)},
 		})
 	}
-	engine.builtins["Proc"] = NewObject(map[string]Value{
-		"new": newCheckedAutoBuiltin(
-			"Proc.new",
-			builtinRemovedCallable("Proc.new"),
-			staticCallSpec{minArgs: 0, maxArgs: -1, removedMessage: removedCallableMessage("Proc.new")},
-		),
+	// Proc itself is a fence too, not a namespace object: an object would
+	// read as a value (`x = Proc`), which is exactly what the removal
+	// forbids. Auto-invocation makes the bare read, the member form
+	// (Proc.new resolves the receiver first), and any call all land on the
+	// same teaching error.
+	engine.registerDefaultBuiltin(builtinDefinition{
+		name:       "Proc",
+		fn:         builtinRemovedCallable("Proc.new"),
+		autoInvoke: true,
+		checkSpec:  &staticCallSpec{minArgs: 0, maxArgs: -1, removedMessage: removedCallableMessage("Proc.new")},
 	})
 }
 
