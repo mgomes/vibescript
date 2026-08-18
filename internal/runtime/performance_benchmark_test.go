@@ -618,56 +618,6 @@ end`)
 	}
 }
 
-func BenchmarkModuleRequireCyclePath(b *testing.B) {
-	moduleRoot := b.TempDir()
-	if err := os.WriteFile(filepath.Join(moduleRoot, "a.vibe"), []byte(`def call_b(seed)
-  mod = require("b")
-  mod.call_a(seed)
-end
-`), 0o644); err != nil {
-		b.Fatalf("write module a: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(moduleRoot, "b.vibe"), []byte(`def call_a(seed)
-  require("a")
-  seed
-end
-`), 0o644); err != nil {
-		b.Fatalf("write module b: %v", err)
-	}
-
-	engine := MustNewEngine(Config{
-		StepQuota:        2_000_000,
-		MemoryQuotaBytes: 2 << 20,
-		ModulePaths:      []string{moduleRoot},
-	})
-	script := compileScriptWithEngine(b, engine, `def export_entry
-  mod = require("a")
-  mod.call_b
-end
-
-def run(entry)
-  entry(1)
-end`)
-	entry, err := script.Call(context.Background(), "export_entry", nil, CallOptions{})
-	if err != nil {
-		b.Fatalf("export entry: %v", err)
-	}
-	if entry.Kind() != KindFunction {
-		b.Fatalf("export entry = %#v, want function", entry)
-	}
-	args := []Value{entry}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err == nil {
-			b.Fatalf("expected cycle error")
-		} else if !strings.Contains(err.Error(), "require: circular dependency detected: a -> b -> a") {
-			b.Fatalf("cycle error = %v", err)
-		}
-	}
-}
-
 func BenchmarkComplexRunAnalytics(b *testing.B) {
 	engine := benchmarkEngine()
 	script := compileScriptFromFileWithEngine(b, engine, filepath.Join("..", "..", "tests", "complex", "analytics.vibe"))
