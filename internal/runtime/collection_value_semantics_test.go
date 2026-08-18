@@ -857,6 +857,32 @@ end
 	}
 }
 
+// TestMutatorArgumentDoesNotDropTheOuterWrite pins that an inner mutator in
+// an argument expression -- whose isolation may copy and rebind the very
+// slot the outer mutator addressed -- still leaves the outer write landing
+// on the same logical receiver: `a.push(a.pop)` reads back as the original
+// contents. A script rebind still detaches the pending write (see
+// TestEmptyFilterDoesNotOverwriteAReboundNestedSlot); only the isolation's
+// own displacement forwards.
+func TestMutatorArgumentDoesNotDropTheOuterWrite(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ name, body, want string }{
+		{"sole root", "a = [1, 2]\n  a.push(a.pop)\n  a.inspect", "[1, 2]"},
+		{"shared sibling", "a = [1, 2]\n  b = a\n  a.push(a.pop)\n  a.inspect + \" \" + b.inspect", "[1, 2] [1, 2]"},
+		{"nested slot", "h = {x: [1, 2]}\n  h[:x].push(h[:x].shift)\n  h.inspect", "{x: [2, 1]}"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  "+tc.body+"\nend\n")
+			if got := callFunc(t, script, "run", nil).String(); got != tc.want {
+				t.Fatalf("%s = %s, want %s", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestMutatorChainThroughAnAccessorTemporary pins the tail semantics after a
 // path leaves collection storage: the first hop runs exactly as evaluating it
 // alone would (`a.pop` pops), and everything after it works a temporary --

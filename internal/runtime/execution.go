@@ -138,6 +138,8 @@ type Execution struct {
 	envStack                  []*Env
 	validatedCapabilityArgs   []string
 	capabilityReturnProof     capabilityReturnProof
+	isolationForwards         map[uintptr]isolationForward
+	addressedBrackets         int
 	memoryEst                 memoryEstimator
 	reservedScratchBytes      int
 

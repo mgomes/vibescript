@@ -245,7 +245,7 @@ func newUniversalSendBuiltin(name string, allowPrivate bool) Value {
 			// or an enclosing mutator's write could land on the wrong slot.
 			// Nested send/public_send keeps the path so a.send(:send, :push, 2)
 			// can still rebind the original receiver.
-			exec.restore(addressedScope{})
+			exec.withdrawAddressed()
 		}
 		return exec.invokeCallable(member, receiver, callArgs, kwargs, block, Position{})
 	})

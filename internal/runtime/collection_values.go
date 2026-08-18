@@ -433,9 +433,20 @@ func (exec *Execution) addressCollection(val Value, chain []uintptr, target muta
 
 // savedAddressedScope snapshots the permission currently in force. Callers take
 // it before resolving a receiver and defer restoring it, which withdraws the
-// permission on every exit without a closure to allocate.
+// permission on every exit without a closure to allocate. The save/restore
+// pair also brackets the window in which a captured path can be pending,
+// which is what bounds how long isolation forwards are retained.
 func (exec *Execution) savedAddressedScope() addressedScope {
+	exec.addressedBrackets++
 	return exec.addressed
+}
+
+// withdrawAddressed clears the permission in force without closing a
+// bracket: the caller's own deferred restore still runs. It is what a
+// temporary's evaluation uses so an enclosing mutator's record cannot vouch
+// for a wrapper reached another way.
+func (exec *Execution) withdrawAddressed() {
+	exec.addressed = addressedScope{}
 }
 
 // addressedScope is the permission state a write displaced, so that restoring it
@@ -456,9 +467,19 @@ type addressedScope struct {
 	valid  bool
 }
 
-// restore withdraws the permission addressCollection granted.
+// restore withdraws the permission addressCollection granted and closes the
+// bracket its paired savedAddressedScope opened. When the outermost bracket
+// closes no captured path can be pending anywhere, so the isolation forwards
+// recorded inside the window are dropped -- that is what keeps the map (and
+// the displaced wrappers it pins) from outliving one write's statement.
 func (exec *Execution) restore(saved addressedScope) {
 	exec.addressed = saved
+	if exec.addressedBrackets > 0 {
+		exec.addressedBrackets--
+	}
+	if exec.addressedBrackets == 0 && exec.isolationForwards != nil {
+		exec.isolationForwards = nil
+	}
 }
 
 // detachStoredCollection returns the value a write should place in a slot of the
@@ -719,7 +740,7 @@ func (exec *Execution) resolveMutableReceiver(expr Expression, env *Env) (Value,
 	// enclosing mutator's receiver, and it must not vouch for a temporary
 	// that happens to be the same wrapper (`a.push(a.itself.push(2))`).
 	if !addressable {
-		exec.restore(addressedScope{})
+		exec.withdrawAddressed()
 		return leaf, targetTemporary, nil
 	}
 	exec.captureEvaluatedPath(&path, env)
@@ -749,7 +770,7 @@ func (exec *Execution) addressMutableReceiver(expr Expression, env *Env) (Value,
 	} else {
 		// The leaf is a temporary; the permission in force belongs to an
 		// enclosing mutator's receiver and must not vouch for it.
-		exec.restore(addressedScope{})
+		exec.withdrawAddressed()
 	}
 	return leaf, true, nil
 }
@@ -935,6 +956,7 @@ func (exec *Execution) walkMutablePath(path mutablePath, env *Env) (Value, []uin
 		if err != nil {
 			return NewNil(), nil, false, true, err
 		}
+		exec.recordIsolationForward(current, copied)
 		path.root.rebind(copied)
 		return copied, nil, true, true, nil
 	}
@@ -1004,7 +1026,7 @@ func (exec *Execution) readAddressablePath(path mutablePath, env *Env) (Value, [
 // copying and rebinding every level a second slot can still reach.
 func (exec *Execution) isolateMutablePath(path mutablePath, env *Env) (Value, []uintptr, error) {
 	current, ok := path.root.get()
-	if len(path.captured) > 0 && (!ok || !capturedReceiverUnchanged(path.captured[0], current)) {
+	if len(path.captured) > 0 && (!ok || !exec.capturedReceiverUnchanged(path.captured[0], current)) {
 		// The root slot no longer names the receiver that was evaluated.
 		// Isolate that receiver as a temporary; the live slot belongs to
 		// whatever the right side (or an argument) just bound there.
@@ -1021,6 +1043,7 @@ func (exec *Execution) isolateMutablePath(path mutablePath, env *Env) (Value, []
 		if err != nil {
 			return NewNil(), nil, err
 		}
+		exec.recordIsolationForward(current, copied)
 		path.root.rebind(copied)
 		current = copied
 	}
@@ -1041,7 +1064,7 @@ func (exec *Execution) isolateMutablePath(path mutablePath, env *Env) (Value, []
 			// to the miss, not that newly created receiver.
 			return NewNil(), nil, nil
 		}
-		if i+1 < len(path.captured) && !capturedReceiverUnchanged(path.captured[i+1], child) {
+		if i+1 < len(path.captured) && !exec.capturedReceiverUnchanged(path.captured[i+1], child) {
 			// An intermediate slot was rebound. The pending write belongs
 			// to the receiver already evaluated, not the replacement.
 			return exec.isolateCapturedLeaf(path)
@@ -1055,6 +1078,7 @@ func (exec *Execution) isolateMutablePath(path mutablePath, env *Env) (Value, []
 				return NewNil(), nil, err
 			}
 			copied.AdoptSoleRef()
+			exec.recordIsolationForward(child, copied)
 			child = copied
 		}
 		current = child
@@ -1069,7 +1093,7 @@ func (exec *Execution) replaceMutableLeaf(replacement Value) (Value, error) {
 	path := exec.addressed.target
 	env := exec.addressed.env
 	current, ok := path.root.get()
-	if len(path.captured) > 0 && (!ok || !capturedReceiverUnchanged(path.captured[0], current)) {
+	if len(path.captured) > 0 && (!ok || !exec.capturedReceiverUnchanged(path.captured[0], current)) {
 		replacement.AdoptSoleRef()
 		return replacement, nil
 	}
@@ -1082,6 +1106,7 @@ func (exec *Execution) replaceMutableLeaf(replacement Value) (Value, error) {
 			return current, nil
 		}
 		replacement.AdoptSoleRef()
+		exec.recordIsolationForward(current, replacement)
 		path.root.rebind(replacement)
 		return replacement, nil
 	}
@@ -1090,6 +1115,7 @@ func (exec *Execution) replaceMutableLeaf(replacement Value) (Value, error) {
 		if err != nil {
 			return NewNil(), err
 		}
+		exec.recordIsolationForward(current, copied)
 		path.root.rebind(copied)
 		current = copied
 	}
@@ -1109,7 +1135,7 @@ func (exec *Execution) replaceMutableLeaf(replacement Value) (Value, error) {
 			replacement.AdoptSoleRef()
 			return replacement, nil
 		}
-		if i+1 < len(path.captured) && !capturedReceiverUnchanged(path.captured[i+1], child) {
+		if i+1 < len(path.captured) && !exec.capturedReceiverUnchanged(path.captured[i+1], child) {
 			replacement.AdoptSoleRef()
 			return replacement, nil
 		}
@@ -1122,6 +1148,7 @@ func (exec *Execution) replaceMutableLeaf(replacement Value) (Value, error) {
 				return NewNil(), err
 			}
 			copied.AdoptSoleRef()
+			exec.recordIsolationForward(child, copied)
 			child = copied
 		}
 		current = child
@@ -1138,7 +1165,7 @@ func (exec *Execution) replaceMutableLeaf(replacement Value) (Value, error) {
 		replacement.AdoptSoleRef()
 		return replacement, nil
 	}
-	if len(path.captured) > len(path.steps) && !capturedReceiverUnchanged(path.captured[len(path.steps)], child) {
+	if len(path.captured) > len(path.steps) && !exec.capturedReceiverUnchanged(path.captured[len(path.steps)], child) {
 		// The leaf slot was rebound. The pending empty write belongs to
 		// the previously evaluated receiver, not the replacement.
 		replacement.AdoptSoleRef()
@@ -1148,6 +1175,7 @@ func (exec *Execution) replaceMutableLeaf(replacement Value) (Value, error) {
 		return NewNil(), err
 	}
 	replacement.AdoptSoleRef()
+	exec.recordIsolationForward(child, replacement)
 	return replacement, nil
 }
 
@@ -1171,14 +1199,62 @@ func (exec *Execution) isolateCapturedLeaf(path mutablePath) (Value, []uintptr, 
 	return leaf, chain, nil
 }
 
+// isolationForward records that a copy-on-write isolation displaced one
+// wrapper with another in the same slot. The displaced Value is retained so
+// the identity used as the map key cannot be reused by a later allocation
+// while a captured path may still consult it.
+type isolationForward struct {
+	displaced Value
+	to        uintptr
+}
+
+// recordIsolationForward notes that an isolation installed replacement where
+// displaced used to be. A captured path that still holds the displaced
+// wrapper then recognizes the replacement as the same logical receiver,
+// updated -- `a.push(a.pop)` must land the push even though pop's isolation
+// rebound the root. A script rebind (`a = [9]`) records nothing and stays a
+// mismatch, which is what keeps the captured-receiver doctrine intact.
+func (exec *Execution) recordIsolationForward(displaced, replacement Value) {
+	fromID := collectionIdentity(displaced)
+	toID := collectionIdentity(replacement)
+	if fromID == 0 || toID == 0 {
+		return
+	}
+	if exec.isolationForwards == nil {
+		exec.isolationForwards = make(map[uintptr]isolationForward)
+	}
+	exec.isolationForwards[fromID] = isolationForward{displaced: displaced, to: toID}
+}
+
+// forwardsToLive reports whether capturedID reaches liveID through recorded
+// isolation displacements. The chain is bounded: a pathological write
+// pattern cannot loop it.
+func (exec *Execution) forwardsToLive(capturedID, liveID uintptr) bool {
+	for range 64 {
+		forward, ok := exec.isolationForwards[capturedID]
+		if !ok {
+			return false
+		}
+		if forward.to == liveID {
+			return true
+		}
+		capturedID = forward.to
+	}
+	return false
+}
+
 // capturedReceiverUnchanged reports whether live is still the wrapper (or
-// scalar) that was evaluated. Collection identity is zero for strings and
-// nil, so a later collection in that slot is always a replacement.
-func capturedReceiverUnchanged(captured, live Value) bool {
+// scalar) that was evaluated, or an isolation's copy of it installed in the
+// same slot. Collection identity is zero for strings and nil, so a later
+// collection in that slot is always a replacement.
+func (exec *Execution) capturedReceiverUnchanged(captured, live Value) bool {
 	capturedID := collectionIdentity(captured)
 	liveID := collectionIdentity(live)
 	if capturedID != 0 {
-		return liveID == capturedID
+		if liveID == capturedID {
+			return true
+		}
+		return exec.forwardsToLive(capturedID, liveID)
 	}
 	if liveID != 0 {
 		return false
@@ -1217,11 +1293,11 @@ func (exec *Execution) addressedExclusiveRoot(val Value) bool {
 func (exec *Execution) readPathTailAsTemporary(current Value, prefix mutablePath, ancestors []uintptr, steps []mutablePathStep, env *Env) (Value, error) {
 	saved := exec.savedAddressedScope()
 	defer exec.restore(saved)
-	exec.restore(addressedScope{})
+	exec.withdrawAddressed()
 	if len(steps) > 0 && steps[0].member != nil && isCollection(current) {
 		exec.addressCollection(current, ancestors, prefix, env)
 		hopped, err := exec.readTailMemberHop(current, &steps[0])
-		exec.restore(addressedScope{})
+		exec.withdrawAddressed()
 		if err != nil {
 			return NewNil(), err
 		}
@@ -1285,7 +1361,7 @@ func (exec *Execution) arrayRangeTemporary(container Value, step *mutablePathSte
 	}
 	saved := exec.savedAddressedScope()
 	defer exec.restore(saved)
-	exec.restore(addressedScope{})
+	exec.withdrawAddressed()
 	result, err := exec.readPathTailOrdinarily(sliced, tail, env)
 	return result, true, err
 }
