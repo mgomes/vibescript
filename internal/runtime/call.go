@@ -840,6 +840,9 @@ type callFunctionRebinder struct {
 	pendingGlobalSources []Value
 	globalsScanned       bool
 	globalsDataFast      bool
+	// exec, when set, receives host-state root registrations for lazily
+	// materialized builtin-bearing globals; the eager path records at bind.
+	exec *Execution
 }
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
@@ -1199,7 +1202,14 @@ func (r *callFunctionRebinder) rebindGlobalValue(val Value) Value {
 	if r.globalsDataFast && r.inboundValueUnseen(val) {
 		return copyInboundDataValue(val)
 	}
-	return r.rebindValue(val)
+	rebound := r.rebindValue(val)
+	if r.exec != nil && graphContainsBuiltin(rebound) {
+		// A builtin-bearing global is host-visible state like a capability
+		// object (#1210); it joins the host-state roots the moment it
+		// materializes. The data-fast path above cannot carry a builtin.
+		r.exec.recordHostStateRoot(rebound)
+	}
+	return rebound
 }
 
 func (r *callFunctionRebinder) scanPendingGlobalSources() bool {
@@ -3604,10 +3614,7 @@ func (binding hostGlobalLazyBinding) materialize() Value {
 // would cost a lazy-materialization hop on every first read; enums bind
 // eagerly so they resolve as constants exactly like the per-call enum clones.
 func hostGlobalBindsEagerly(val Value) bool {
-	// A builtin-bearing composite is a host facade, not data worth a lazy
-	// copy: binding it eagerly is also what records it as a host-state
-	// root, which the lazy materialization path never does.
-	return immutableDataValue(val) || val.Kind() == KindEnum || graphContainsBuiltin(val)
+	return immutableDataValue(val) || val.Kind() == KindEnum
 }
 
 // immutableDataValue reports whether a value's data cannot be mutated through
@@ -3656,7 +3663,8 @@ func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebind
 			// A global carrying host builtins is host-visible state like a
 			// capability object: dispatching on it keeps its factory channel
 			// live, and post-dispatch marking covers what a builtin installs
-			// into it (#1210).
+			// into it (#1210). The lazy path records the same at
+			// materialization.
 			exec.recordHostStateRoot(rebound)
 		}
 	}
@@ -3680,13 +3688,7 @@ func bindGlobalsForCallLazy(exec *Execution, root *Env, rebinder *callFunctionRe
 
 	for name, val := range globals {
 		if hostGlobalBindsEagerly(val) {
-			rebound := rebinder.rebindValue(val)
-			root.Define(name, rebound)
-			if graphContainsBuiltin(rebound) {
-				// See bindGlobalsForCall: builtin-bearing globals are
-				// host-visible state.
-				exec.recordHostStateRoot(rebound)
-			}
+			root.Define(name, rebinder.rebindValue(val))
 			continue
 		}
 		root.defineLazy(name, hostGlobalLazyBinding{rebinder: rebinder, value: val})

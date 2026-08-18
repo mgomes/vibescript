@@ -1935,8 +1935,9 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	if exec.builtinFrameHostCrossing || exec.builtinDepth == 0 {
 		// Anything the host installed into its receiver or a host-visible
 		// root before this yield must be shared before the block can read
-		// it, or a block-side write lands in the host's retained backing --
-		// the install-then-yield window.
+		// it, or a block-side write lands in the host's retained backing.
+		// Stable host state re-walks as uncharged map hits, so yield-heavy
+		// loops pay quota only for what actually changed.
 		if err := exec.markHostWritableState(exec.builtinFrameReceiver); err != nil {
 			return NewNil(), err
 		}

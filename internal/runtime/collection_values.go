@@ -139,8 +139,15 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 		seen := make(map[uintptr]struct{})
 		// The receiver graph too: a retaining builtin may stash a receiver
 		// sub-wrapper even when it declared non-mutation, and an unmarked
-		// sole wrapper would transfer out of the Call live.
-		if err := exec.markSharedGraph(receiver, seen); err != nil {
+		// sole wrapper would transfer out of the Call live -- a script can
+		// grow a host-state graph by assigning into it, so no walk can be
+		// skipped. The walks stay cheap because only a wrapper's first
+		// recording is charged; re-walks of stable host state are map hits.
+		receiverRecord := exec.hostStateIdentities
+		if !exec.receiverIsHostState(receiver) {
+			receiverRecord = nil
+		}
+		if err := exec.markSharedGraphRecording(receiver, seen, receiverRecord); err != nil {
 			return NewNil(), nil, nil, err
 		}
 		for _, arg := range args {
@@ -260,30 +267,24 @@ func (exec *Execution) receiverIsHostState(receiver Value) bool {
 // dispatch isolates, and a wrapper removed from host state before the call
 // returns was already marked when it was installed.
 func (exec *Execution) markHostWritableState(receiver Value) error {
-	receiverIsHostState := exec.receiverIsHostState(receiver)
-	seen := make(map[uintptr]struct{})
-	if err := exec.markSharedGraph(receiver, seen); err != nil {
-		return err
-	}
 	// The identity set grows only from host state: the roots' graphs, plus
 	// the receiver's own when it already is host state (a factory installed
 	// into it). A plain script-data receiver is marked -- the host saw it --
 	// but must not join the liveness rule, or its next dispatch would cross
-	// live despite a sibling binding.
-	if receiverIsHostState && exec.hostStateIdentities != nil {
-		for id := range seen {
-			exec.hostStateIdentities[id] = struct{}{}
-		}
+	// live despite a sibling binding. One shared seen map keeps every
+	// wrapper's walk to a single charged visit; the recorder attributes
+	// exactly what each walk reaches first.
+	seen := make(map[uintptr]struct{})
+	receiverRecord := exec.hostStateIdentities
+	if !exec.receiverIsHostState(receiver) {
+		receiverRecord = nil
 	}
-	rootSeen := make(map[uintptr]struct{})
+	if err := exec.markSharedGraphRecording(receiver, seen, receiverRecord); err != nil {
+		return err
+	}
 	for _, root := range exec.capabilityBoundRoots {
-		if err := exec.markSharedGraph(root, rootSeen); err != nil {
+		if err := exec.markSharedGraphRecording(root, seen, exec.hostStateIdentities); err != nil {
 			return err
-		}
-	}
-	if exec.hostStateIdentities != nil {
-		for id := range rootSeen {
-			exec.hostStateIdentities[id] = struct{}{}
 		}
 	}
 	return nil
@@ -295,23 +296,44 @@ func (exec *Execution) markHostWritableState(receiver Value) error {
 // keeps, so each must copy on the next script write and clone rather than
 // transfer at the Call boundary.
 func (exec *Execution) markSharedGraph(val Value, seen map[uintptr]struct{}) error {
+	return exec.markSharedGraphRecording(val, seen, nil)
+}
+
+// markSharedGraphRecording is markSharedGraph with an optional recorder: each
+// wrapper visited for the first time also joins record, which is how the
+// host-state identity set grows from exactly the graphs that are host state.
+func (exec *Execution) markSharedGraphRecording(val Value, seen, record map[uintptr]struct{}) error {
 	if !isCollection(val) {
 		return nil
 	}
+	charge := true
 	if id := collectionIdentity(val); id != 0 {
 		if _, ok := seen[id]; ok {
 			return nil
 		}
 		seen[id] = struct{}{}
+		if record != nil {
+			if _, recorded := record[id]; recorded {
+				// Already host state from an earlier walk: marking again is
+				// free, so a loop of dispatches over stable host state pays
+				// map hits, not quota. Descend anyway -- a script write can
+				// hang a new wrapper under a recorded one.
+				charge = false
+			} else {
+				record[id] = struct{}{}
+			}
+		}
 	}
-	if err := exec.chargeScanSteps(1); err != nil {
-		return err
+	if charge {
+		if err := exec.chargeScanSteps(1); err != nil {
+			return err
+		}
 	}
 	val.MarkSharedRef()
 	switch val.Kind() {
 	case KindArray:
 		for _, elem := range val.Array() {
-			if err := exec.markSharedGraph(elem, seen); err != nil {
+			if err := exec.markSharedGraphRecording(elem, seen, record); err != nil {
 				return err
 			}
 		}
@@ -321,7 +343,7 @@ func (exec *Execution) markSharedGraph(val Value, seen map[uintptr]struct{}) err
 			if walkErr != nil {
 				return
 			}
-			walkErr = exec.markSharedGraph(item, seen)
+			walkErr = exec.markSharedGraphRecording(item, seen, record)
 		})
 		return walkErr
 	}
