@@ -309,6 +309,14 @@ func (exec *Execution) markSharedGraphRecording(val Value, seen, record map[uint
 	charge := true
 	if id := collectionIdentity(val); id != 0 {
 		if _, ok := seen[id]; ok {
+			// A duplicate edge to an already-visited wrapper is still work;
+			// charging it at the discounted rate keeps fan-in shapes -- one
+			// array holding thousands of references to one wrapper -- from
+			// buying uncharged traversals.
+			exec.hostStateRevisits++
+			if exec.hostStateRevisits%64 == 0 {
+				return exec.chargeScanSteps(1)
+			}
 			return nil
 		}
 		seen[id] = struct{}{}
