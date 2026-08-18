@@ -1933,6 +1933,13 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	// from outside any dispatch -- a stashed Execution, a goroutine -- and
 	// that caller is host code by definition.
 	if exec.builtinFrameHostCrossing || exec.builtinDepth == 0 {
+		// Anything the host installed into its receiver or a host-visible
+		// root before this yield must be shared before the block can read
+		// it, or a block-side write lands in the host's retained backing --
+		// the install-then-yield window.
+		if err := exec.markHostWritableState(exec.builtinFrameReceiver); err != nil {
+			return NewNil(), err
+		}
 		var detachedArgs []Value
 		for i, arg := range args {
 			if !isCollection(arg) {

@@ -3604,7 +3604,10 @@ func (binding hostGlobalLazyBinding) materialize() Value {
 // would cost a lazy-materialization hop on every first read; enums bind
 // eagerly so they resolve as constants exactly like the per-call enum clones.
 func hostGlobalBindsEagerly(val Value) bool {
-	return immutableDataValue(val) || val.Kind() == KindEnum
+	// A builtin-bearing composite is a host facade, not data worth a lazy
+	// copy: binding it eagerly is also what records it as a host-state
+	// root, which the lazy materialization path never does.
+	return immutableDataValue(val) || val.Kind() == KindEnum || graphContainsBuiltin(val)
 }
 
 // immutableDataValue reports whether a value's data cannot be mutated through

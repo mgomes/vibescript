@@ -137,6 +137,12 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 		// Call boundary from transferring it out live. Marking first would
 		// force a copy the host then mutates invisibly.
 		seen := make(map[uintptr]struct{})
+		// The receiver graph too: a retaining builtin may stash a receiver
+		// sub-wrapper even when it declared non-mutation, and an unmarked
+		// sole wrapper would transfer out of the Call live.
+		if err := exec.markSharedGraph(receiver, seen); err != nil {
+			return NewNil(), nil, nil, err
+		}
 		for _, arg := range args {
 			if err := exec.markSharedGraph(arg, seen); err != nil {
 				return NewNil(), nil, nil, err
@@ -254,17 +260,29 @@ func (exec *Execution) receiverIsHostState(receiver Value) bool {
 // dispatch isolates, and a wrapper removed from host state before the call
 // returns was already marked when it was installed.
 func (exec *Execution) markHostWritableState(receiver Value) error {
+	receiverIsHostState := exec.receiverIsHostState(receiver)
 	seen := make(map[uintptr]struct{})
 	if err := exec.markSharedGraph(receiver, seen); err != nil {
 		return err
 	}
+	// The identity set grows only from host state: the roots' graphs, plus
+	// the receiver's own when it already is host state (a factory installed
+	// into it). A plain script-data receiver is marked -- the host saw it --
+	// but must not join the liveness rule, or its next dispatch would cross
+	// live despite a sibling binding.
+	if receiverIsHostState && exec.hostStateIdentities != nil {
+		for id := range seen {
+			exec.hostStateIdentities[id] = struct{}{}
+		}
+	}
+	rootSeen := make(map[uintptr]struct{})
 	for _, root := range exec.capabilityBoundRoots {
-		if err := exec.markSharedGraph(root, seen); err != nil {
+		if err := exec.markSharedGraph(root, rootSeen); err != nil {
 			return err
 		}
 	}
 	if exec.hostStateIdentities != nil {
-		for id := range seen {
+		for id := range rootSeen {
 			exec.hostStateIdentities[id] = struct{}{}
 		}
 	}
