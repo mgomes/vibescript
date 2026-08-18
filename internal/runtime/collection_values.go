@@ -103,9 +103,8 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 		// out of the Call live (#1210). Any other receiver is script data:
 		// it detaches when shared, exactly as an argument would, so a host
 		// write cannot reach a sibling binding.
-		if !exec.receiverIsHostState(receiver) && isCollection(receiver) &&
-			!receiver.Unpublished() && !receiver.SoleRef() {
-			receiver, err = exec.detachHostCrossingValue(receiver)
+		if !exec.receiverIsHostState(receiver) {
+			receiver, err = exec.isolateHostReceiver(receiver)
 			if err != nil {
 				return NewNil(), nil, nil, err
 			}
@@ -446,6 +445,66 @@ func (exec *Execution) isolateHostCollection(val Value) (Value, error) {
 		return NewNil(), err
 	}
 	return cloned, nil
+}
+
+// isolateHostReceiver detaches plain script receiver data when any wrapper in
+// its graph has a sibling owner.
+func (exec *Execution) isolateHostReceiver(val Value) (Value, error) {
+	if !isCollection(val) {
+		return val, nil
+	}
+	needed, err := exec.hostReceiverNeedsIsolation(val, make(map[uintptr]struct{}))
+	if err != nil || !needed {
+		return val, err
+	}
+	if err := exec.preflightDeepClone(val); err != nil {
+		return NewNil(), err
+	}
+	cloned := deepCloneValueForContainment(val)
+	if err := exec.checkMemoryValue(cloned); err != nil {
+		return NewNil(), err
+	}
+	return cloned, nil
+}
+
+// hostReceiverNeedsIsolation reports whether a collection graph contains a
+// wrapper named by more than one durable slot.
+func (exec *Execution) hostReceiverNeedsIsolation(val Value, seen map[uintptr]struct{}) (bool, error) {
+	if !isCollection(val) {
+		return false, nil
+	}
+	if id := collectionIdentity(val); id != 0 {
+		if _, ok := seen[id]; ok {
+			return false, nil
+		}
+		seen[id] = struct{}{}
+	}
+	if err := exec.chargeScanSteps(1); err != nil {
+		return false, err
+	}
+	if !val.Unpublished() && !val.SoleRef() {
+		return true, nil
+	}
+	switch val.Kind() {
+	case KindArray:
+		for _, elem := range val.Array() {
+			needed, err := exec.hostReceiverNeedsIsolation(elem, seen)
+			if err != nil || needed {
+				return needed, err
+			}
+		}
+	case KindHash, KindObject:
+		var needed bool
+		var walkErr error
+		val.RangeHashEntries(func(_ string, item Value) {
+			if needed || walkErr != nil {
+				return
+			}
+			needed, walkErr = exec.hostReceiverNeedsIsolation(item, seen)
+		})
+		return needed, walkErr
+	}
+	return false, nil
 }
 
 // hostCollectionNeedsIsolation reports whether val or any collection it

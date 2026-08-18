@@ -252,6 +252,40 @@ end`)
 	}
 }
 
+// TestSoleHostReceiverDetachesItsSharedChild pins the receiver graph rule: a
+// sole parent can still contain a child that another script slot names.
+func TestSoleHostReceiverDetachesItsSharedChild(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	engine.RegisterBuiltin("build_receiver", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+		mutateChild := MarkHostBuiltin(NewBuiltin("receiver.mutate_child", func(_ *Execution, receiver Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			if err := receiver.Hash()["child"].HashSet(NewString("x"), NewInt(9)); err != nil {
+				return NewNil(), err
+			}
+			return NewNil(), nil
+		}))
+		return NewObject(map[string]Value{"mutate_child": mutateChild}), nil
+	})
+	script, err := engine.Compile(`def run()
+  parent = build_receiver()
+  child = {x: 1}
+  parent[:child] = child
+  parent.mutate_child()
+  child[:x]
+end`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.Int() != 1 {
+		t.Fatalf("a host write through a sole parent reached its shared child: %d, want 1", got.Int())
+	}
+}
+
 // TestGlobalsHostedBuiltinObjectIsHostState pins that a builtin-bearing
 // global object gets capability-object treatment: its factory installs work
 // in place, and what they install cannot transfer out of the Call live.
