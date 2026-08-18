@@ -167,8 +167,10 @@ func PublishRefEntries(entries map[string]Value) {
 }
 
 // MarkSharedRef forces v to the shared state, so that the next write through it
-// copies. The host boundary uses it for the values it hands out and takes in,
-// where the interpreter cannot see how many handles exist on the other side.
+// copies. The host boundary uses it for values it takes in, where the
+// interpreter cannot see how many handles exist on the other side; values it
+// hands out are independent copies (or sole graphs transferred whole), so
+// nothing outbound needs marking.
 //
 // It is intended for the interpreter's internal use; hosts should not call it,
 // and it carries no compatibility promise (see
