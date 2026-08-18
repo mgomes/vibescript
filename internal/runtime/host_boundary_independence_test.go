@@ -141,6 +141,31 @@ end`)
 	}
 }
 
+// TestFactoryInstallsSurviveRepeatedCalls pins the factory channel's other
+// half: marking what a call installed must not make the next call copy the
+// capability object out from under it -- installs land on the same live
+// receiver every time, including when the installing call errors and the
+// script rescues.
+func TestFactoryInstallsSurviveRepeatedCalls(t *testing.T) {
+	t.Parallel()
+
+	cap := &yieldCrossingCapability{retained: map[string]Value{"k": NewInt(1)}}
+	script := compileScriptDefault(t, `def run()
+  cross.install()
+  first = cross[:data]
+  cross.install()
+  second = cross[:data]
+  first.inspect + " " + second.inspect
+end`)
+	got, err := script.Call(context.Background(), "run", nil, callOptionsWithCapabilities(cap))
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "{k: 1} {k: 1}" {
+		t.Fatalf("repeated installs = %s, want {k: 1} {k: 1}", got.String())
+	}
+}
+
 // TestDeclaredNonMutatingStillMarksNestedArguments pins that skipping the
 // isolation copy under a non-mutation declaration does not skip retention
 // marking: a nested wrapper the host stashes must not transfer out of the

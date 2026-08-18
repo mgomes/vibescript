@@ -95,20 +95,25 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 	}
 	var err error
 	if !builtin.declaredNonMutating() {
-		// The receiver isolates only when shared: it is the host's own
-		// capability object, and mutating it in place is the sanctioned
-		// factory pattern (publish a method by writing the receiver), which
-		// the post-call publication scan binds contracts to. Arguments are
-		// script data and isolate whenever any durable slot names them, so
-		// a host write can never land in script-observable state (#1210).
-		receiver, err = exec.isolateHostCollection(receiver, true)
-		if err != nil {
-			return NewNil(), nil, nil, err
+		// The receiver isolates only when its root wrapper is shared -- a
+		// script binding also names it -- and stays live otherwise: it is
+		// the host's own capability object, and mutating it in place is the
+		// sanctioned factory pattern (publish a method by writing the
+		// receiver), which must keep working call after call. Installed
+		// wrappers are caught at the boundary instead (see
+		// markInstalledCollections). Arguments are script data and isolate
+		// whenever any durable slot names them, so a host write can never
+		// land in script-observable state (#1210).
+		if isCollection(receiver) && !receiver.Unpublished() && !receiver.SoleRef() {
+			receiver, err = exec.detachHostCrossingValue(receiver)
+			if err != nil {
+				return NewNil(), nil, nil, err
+			}
 		}
 		if len(args) > 0 {
 			args = slices.Clone(args)
 			for i, arg := range args {
-				args[i], err = exec.isolateHostCollection(arg, false)
+				args[i], err = exec.isolateHostCollection(arg)
 				if err != nil {
 					return NewNil(), nil, nil, err
 				}
@@ -117,7 +122,7 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 		if len(kwargs) > 0 {
 			kwargs = maps.Clone(kwargs)
 			for key, arg := range kwargs {
-				kwargs[key], err = exec.isolateHostCollection(arg, false)
+				kwargs[key], err = exec.isolateHostCollection(arg)
 				if err != nil {
 					return NewNil(), nil, nil, err
 				}
@@ -132,9 +137,6 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 		// Call boundary from transferring it out live. Marking first would
 		// force a copy the host then mutates invisibly.
 		seen := make(map[uintptr]struct{})
-		if err := exec.markSharedGraph(receiver, seen); err != nil {
-			return NewNil(), nil, nil, err
-		}
 		for _, arg := range args {
 			if err := exec.markSharedGraph(arg, seen); err != nil {
 				return NewNil(), nil, nil, err
@@ -147,6 +149,66 @@ func (exec *Execution) prepareHostDrivenCollections(builtin *Builtin, receiver V
 		}
 	}
 	return receiver, args, kwargs, nil
+}
+
+// collectCollectionIdentities records the wrapper identity of every
+// collection reachable from val. The dispatch snapshots a host-driven
+// builtin's receiver with it before the call, so the post-call walk can
+// mark only what the call installed.
+func collectCollectionIdentities(val Value, into map[uintptr]struct{}) {
+	if !isCollection(val) {
+		return
+	}
+	id := collectionIdentity(val)
+	if id != 0 {
+		if _, ok := into[id]; ok {
+			return
+		}
+		into[id] = struct{}{}
+	}
+	switch val.Kind() {
+	case KindArray:
+		for _, elem := range val.Array() {
+			collectCollectionIdentities(elem, into)
+		}
+	case KindHash, KindObject:
+		val.RangeHashEntries(func(_ string, item Value) {
+			collectCollectionIdentities(item, into)
+		})
+	}
+}
+
+// markInstalledCollections marks every collection reachable from the
+// receiver that was not there before the call: a factory installed it, so
+// it is a host-held handle that must copy on the next script write and
+// clone rather than transfer at the Call boundary. The receiver itself and
+// anything it already held stay unmarked, which is what keeps the next
+// call's root-shared check from copying the capability object out from
+// under later installs.
+func (exec *Execution) markInstalledCollections(val Value, before map[uintptr]struct{}, seen map[uintptr]struct{}) {
+	if !isCollection(val) {
+		return
+	}
+	id := collectionIdentity(val)
+	if id != 0 {
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		if _, existed := before[id]; !existed {
+			val.MarkSharedRef()
+		}
+	}
+	switch val.Kind() {
+	case KindArray:
+		for _, elem := range val.Array() {
+			exec.markInstalledCollections(elem, before, seen)
+		}
+	case KindHash, KindObject:
+		val.RangeHashEntries(func(_ string, item Value) {
+			exec.markInstalledCollections(item, before, seen)
+		})
+	}
 }
 
 // markSharedGraph forces every collection reachable from val to the shared
@@ -232,15 +294,12 @@ func (exec *Execution) detachHostCrossingValue(val Value) (Value, error) {
 // An unpublished graph is reachable from nothing but this call and is left
 // in place: a host write to it is invisible to the script by construction.
 // A published wrapper in the graph deep-copies the whole value, so a host
-// write can never land in script-observable state (#1210). With sharedOnly,
-// a sole published wrapper is also left live -- the receiver's rule, where
-// in-place factory mutation is sanctioned and only sibling bindings need
-// protecting.
-func (exec *Execution) isolateHostCollection(val Value, sharedOnly bool) (Value, error) {
+// write can never land in script-observable state (#1210).
+func (exec *Execution) isolateHostCollection(val Value) (Value, error) {
 	if !isCollection(val) {
 		return val, nil
 	}
-	needed, err := exec.hostCollectionNeedsIsolation(val, sharedOnly, make(map[uintptr]struct{}))
+	needed, err := exec.hostCollectionNeedsIsolation(val, make(map[uintptr]struct{}))
 	if err != nil || !needed {
 		return val, err
 	}
@@ -255,9 +314,9 @@ func (exec *Execution) isolateHostCollection(val Value, sharedOnly bool) (Value,
 }
 
 // hostCollectionNeedsIsolation reports whether val or any collection it
-// reaches is named from a durable slot (or, with sharedOnly, from more than
-// one). A cycle is a single visit, not a reason to copy.
-func (exec *Execution) hostCollectionNeedsIsolation(val Value, sharedOnly bool, seen map[uintptr]struct{}) (bool, error) {
+// reaches is named from a durable slot at all. A cycle is a single visit,
+// not a reason to copy.
+func (exec *Execution) hostCollectionNeedsIsolation(val Value, seen map[uintptr]struct{}) (bool, error) {
 	if !isCollection(val) {
 		return false, nil
 	}
@@ -270,13 +329,13 @@ func (exec *Execution) hostCollectionNeedsIsolation(val Value, sharedOnly bool, 
 	if err := exec.chargeScanSteps(1); err != nil {
 		return false, err
 	}
-	if !val.Unpublished() && (!sharedOnly || !val.SoleRef()) {
+	if !val.Unpublished() {
 		return true, nil
 	}
 	switch val.Kind() {
 	case KindArray:
 		for _, elem := range val.Array() {
-			needed, err := exec.hostCollectionNeedsIsolation(elem, sharedOnly, seen)
+			needed, err := exec.hostCollectionNeedsIsolation(elem, seen)
 			if err != nil || needed {
 				return needed, err
 			}
@@ -288,7 +347,7 @@ func (exec *Execution) hostCollectionNeedsIsolation(val Value, sharedOnly bool, 
 			if needed || walkErr != nil {
 				return
 			}
-			needed, walkErr = exec.hostCollectionNeedsIsolation(item, sharedOnly, seen)
+			needed, walkErr = exec.hostCollectionNeedsIsolation(item, seen)
 		})
 		return needed, walkErr
 	}

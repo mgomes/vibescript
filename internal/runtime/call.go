@@ -344,17 +344,23 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// non-mutation and then wrote to the reachable graph without advancing
 		// the epoch panics here rather than silently costing a later check its
 		// accuracy.
+		var receiverBefore map[uintptr]struct{}
+		if builtin.hostDriven && !builtin.declaredNonMutating() && isCollection(receiver) {
+			receiverBefore = make(map[uintptr]struct{})
+			collectCollectionIdentities(receiver, receiverBefore)
+		}
 		contractCheck := exec.beginContractVerification(builtin)
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		if err == nil && builtin.hostDriven && !builtin.declaredNonRetaining() {
 			result, err = exec.detachHostBuiltinResult(builtin, result)
 		}
-		if err == nil && builtin.hostDriven && !builtin.declaredNonMutating() {
+		if receiverBefore != nil {
 			// A factory may have installed fresh wrappers into the live
 			// receiver during the call (the sanctioned publication channel);
 			// they are host-held handles and must not transfer out of the
-			// Call boundary live (#1210).
-			err = exec.markSharedGraph(receiver, make(map[uintptr]struct{}))
+			// Call boundary live (#1210). This runs on the error path too --
+			// a script can rescue the error and still reach the install.
+			exec.markInstalledCollections(receiver, receiverBefore, make(map[uintptr]struct{}))
 		}
 		contractCheck.check(exec, builtin)
 		exec.builtinFrameReceiver, exec.builtinFrameArgs, exec.builtinFrameKwargs = prevReceiver, prevArgs, prevKwargs
