@@ -949,6 +949,182 @@ func TestMutatorChainThroughAnAccessorTemporary(t *testing.T) {
 	}
 }
 
+// TestAssignThroughACallFormAccessorReachesNothing pins that the call-form
+// spelling of an accessor receiver behaves exactly like the member form
+// (#1221, following #1219): the call's result is a temporary, so the write
+// lands on a detached copy and reaches nothing a durable slot still names.
+func TestAssignThroughACallFormAccessorReachesNothing(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ name, body, want string }{
+		{"index assign through accessor call", "a = [[1]]\n  b = a\n  a.last()[0] = 9\n  a.inspect + \" \" + b.inspect", "[[1]] [[1]]"},
+		{"call and member spellings agree", "a = [[1]]\n  b = a\n  a.last()[0] = 9\n  a.last[0] = 9\n  a.inspect + \" \" + b.inspect", "[[1]] [[1]]"},
+		{"nested tail", "a = [[[1]]]\n  b = a\n  a.last()[0][0] = 9\n  a.inspect + \" \" + b.inspect", "[[[1]]] [[[1]]]"},
+		{"member assign through call", "h = {inner: {x: 1}}\n  g = h\n  h.values()[0].x = 2\n  h.inspect + \" \" + g.inspect", "{inner: {x: 1}} {inner: {x: 1}}"},
+		{"compound assign through call", "a = [[1]]\n  b = a\n  a.last()[0] += 8\n  a.inspect + \" \" + b.inspect", "[[1]] [[1]]"},
+		{"getter call hands out the ivar", "c = Cart.new\n  c.items()[0] = 9\n  c.items.inspect", "[1]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, collectionSemanticsPrelude+"def run()\n  "+tc.body+"\nend\n")
+			if got := callFunc(t, script, "run", nil).String(); got != tc.want {
+				t.Fatalf("%s = %s, want %s", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAssignThroughAGetterCallLeavesTheIvarIntact pins the issue's second
+// reproduction (#1221) in every spelling: a getter reached as an explicit
+// call (`geta()[0]`), a bare parenless name (`geta[0]`), or parenless
+// through self (`self.geta[0]`) hands out the live ivar wrapper, and an
+// assignment through it must not write that storage in place. The getter
+// still runs exactly once per assignment, and a bare name that names no
+// zero-argument call keeps its route: a required-argument method and an
+// unknown member error exactly as reading the expression would.
+func TestAssignThroughAGetterCallLeavesTheIvarIntact(t *testing.T) {
+	t.Parallel()
+
+	const prelude = `class Holder
+  def initialize()
+    @a = [1]
+    @calls = 0
+  end
+
+  def geta()
+    @calls += 1
+    @a
+  end
+
+  def getb(x)
+    @a
+  end
+
+  def poke_call()
+    geta()[0] = 9
+    @a.inspect + " " + @calls.to_s
+  end
+
+  def poke_parenless()
+    geta[0] = 9
+    @a.inspect + " " + @calls.to_s
+  end
+
+  def poke_self_parenless()
+    self.geta[0] = 9
+    @a.inspect + " " + @calls.to_s
+  end
+
+  def poke_compound_parenless()
+    geta[0] += 8
+    @a.inspect + " " + @calls.to_s
+  end
+
+  def poke_required_params()
+    out = begin
+      getb[0] = 9
+    rescue => e
+      e.message
+    end
+    out + " " + @a.inspect
+  end
+
+  def poke_unknown()
+    begin
+      nope[0] = 9
+    rescue => e
+      e.message
+    end
+  end
+end
+
+`
+	cases := []struct{ name, body, want string }{
+		{"explicit call", "Holder.new.poke_call()", "[1] 1"},
+		{"bare parenless", "Holder.new.poke_parenless()", "[1] 1"},
+		{"parenless through self", "Holder.new.poke_self_parenless()", "[1] 1"},
+		{"compound parenless", "Holder.new.poke_compound_parenless()", "[1] 1"},
+		{"required-argument method errors as a read would", "Holder.new.poke_required_params()", "missing argument x [1]"},
+		{"unknown member keeps its error", "Holder.new.poke_unknown()", "unknown member nope"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, prelude+"def run()\n  "+tc.body+"\nend\n")
+			if got := callFunc(t, script, "run", nil).String(); got != tc.want {
+				t.Fatalf("%s = %s, want %s", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestUnresolvedBareNameAssignKeepsItsRoute pins that claiming auto-invoked
+// bare-name roots (#1221) leaves every other unresolved root exactly as it
+// was: an undefined name keeps its error identity, and a class-constant root
+// keeps the in-place class-storage write channel.
+func TestUnresolvedBareNameAssignKeepsItsRoute(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ name, source, want string }{
+		{
+			name: "undefined variable keeps its error",
+			source: `def run()
+  begin
+    nope[0] = 9
+  rescue => e
+    e.message
+  end
+end
+`,
+			want: "undefined variable nope",
+		},
+		{
+			name: "class constant root writes class storage",
+			source: `class Consts
+  LIST = [1]
+
+  def poke()
+    LIST[0] = 9
+    LIST.inspect
+  end
+end
+
+def run()
+  Consts.new.poke()
+end
+`,
+			want: "[9]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, tc.source)
+			if got := callFunc(t, script, "run", nil).String(); got != tc.want {
+				t.Fatalf("%s = %s, want %s", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuiltinNamespaceMemberAssignStaysInPlace pins the one sanctioned
+// in-place member-assign channel: writing a member of an engine builtin
+// object (`JSON.parse = ...`) must land where the same call reads it back,
+// not on a detached copy.
+func TestBuiltinNamespaceMemberAssignStaysInPlace(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  JSON.parse = "swapped"
+  JSON.parse
+end
+`)
+	if got := callFunc(t, script, "run", nil).String(); got != "swapped" {
+		t.Fatalf("builtin namespace member assign = %s, want swapped", got)
+	}
+}
+
 // TestMissingIndexedSlotStaysNilAndEvaluatesOnce pins that an indexed miss
 // reads as nil exactly as the expression would -- the cached index is not
 // re-evaluated, so a side-effecting selector runs once and cannot address a
