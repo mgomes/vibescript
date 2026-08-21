@@ -1236,12 +1236,64 @@ func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
 }
 
 func sourceBlockClosesOnLine(openLine string) bool {
-	trimmed := strings.TrimSpace(openLine)
-	semi := strings.LastIndex(trimmed, ";")
-	if semi < 0 {
-		return false
+	code, _, _ := strings.Cut(openLine, "#")
+	depth := 0
+	atStmtStart := true
+	prev := ""
+	for _, tok := range identifierTokens(code) {
+		switch tok {
+		case "def", "class", "module", "begin", "case", "for":
+			depth++
+			atStmtStart = false
+		case "if", "unless", "while", "until":
+			if atStmtStart {
+				depth++
+			}
+			atStmtStart = false
+		case "do":
+			if prev != "while" && prev != "until" && prev != "for" {
+				depth++
+			}
+			atStmtStart = false
+		case "end":
+			depth--
+			atStmtStart = false
+		default:
+			atStmtStart = tok == ";"
+		}
+		if tok != ";" {
+			prev = tok
+		}
 	}
-	return isClosingEndLine(trimmed[semi+1:])
+	return depth == 0
+}
+
+func identifierTokens(s string) []string {
+	var tokens []string
+	start := -1
+	flush := func(i int) {
+		if start >= 0 {
+			tokens = append(tokens, s[start:i])
+			start = -1
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == ';' {
+			flush(i)
+			tokens = append(tokens, ";")
+			continue
+		}
+		if c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		flush(i)
+	}
+	flush(len(s))
+	return tokens
 }
 
 func isClosingEndLine(text string) bool {
