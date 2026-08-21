@@ -1265,13 +1265,13 @@ func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
 				atStmtStart = false
 				inLoopHeader = false
 			case "for", "while", "until":
-				if atStmtStart || prev == "=" {
+				if atStmtStart || prefixControlOpens(prev) {
 					depth++
 					inLoopHeader = true
 				}
 				atStmtStart = false
 			case "if", "unless":
-				if atStmtStart || prev == "=" {
+				if atStmtStart || prefixControlOpens(prev) {
 					depth++
 				}
 				atStmtStart = false
@@ -1314,6 +1314,25 @@ func lineFromColumn(line string, column int) string {
 		return ""
 	}
 	return line[idx:]
+}
+
+func prefixControlOpens(prev string) bool {
+	return !tokenIsValue(prev)
+}
+
+func tokenIsValue(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	switch tok {
+	case "end", "true", "false", "nil", "self", ")", "]", "}":
+		return true
+	}
+	c := tok[0]
+	return c == '_' ||
+		c >= 'A' && c <= 'Z' ||
+		c >= 'a' && c <= 'z' ||
+		c >= '0' && c <= '9'
 }
 
 func slashStartsRegex(afterValue, afterSpace bool, s string, i int) bool {
@@ -1362,13 +1381,13 @@ func sourceClosedBeforeColumn(lines []string, start ast.Position, hoverLine, hov
 			atStmtStart = false
 			inLoopHeader = false
 		case "for", "while", "until":
-			if atStmtStart || prev == "=" {
+			if atStmtStart || prefixControlOpens(prev) {
 				depth++
 				inLoopHeader = true
 			}
 			atStmtStart = false
 		case "if", "unless":
-			if atStmtStart || prev == "=" {
+			if atStmtStart || prefixControlOpens(prev) {
 				depth++
 			}
 			atStmtStart = false
@@ -1458,6 +1477,14 @@ func (sc *sourceScan) tokens(s string) []string {
 			continue
 		}
 		if percentClose != 0 {
+			if escape {
+				escape = false
+				continue
+			}
+			if c == '\\' {
+				escape = true
+				continue
+			}
 			if c == percentOpen && percentOpen != percentClose {
 				percentDepth++
 			} else if c == percentClose {
@@ -1498,6 +1525,10 @@ func (sc *sourceScan) tokens(s string) []string {
 				i += 3
 				depth := 1
 				for i < len(s) && depth > 0 {
+					if s[i] == '\\' && i+1 < len(s) {
+						i += 2
+						continue
+					}
 					if s[i] == open && open != close {
 						depth++
 					} else if s[i] == close {
@@ -1622,6 +1653,10 @@ func (sc *sourceScan) tokens(s string) []string {
 			continue
 		}
 		flush(i)
+		switch c {
+		case '(', ')', '[', ']', '{', '}', ',':
+			tokens = append(tokens, string(c))
+		}
 		afterValue = false
 		afterDot = false
 	}
@@ -1698,7 +1733,8 @@ func nestedControlContains(stmts []ast.Statement, lines []string, hoverLine, hov
 				return true
 			}
 		case *ast.IfStmt:
-			if lineInStatements(s.Consequent, lines, hoverLine, hoverColumn) ||
+			if expressionContainsHover(s.Condition, hoverLine, hoverColumn) ||
+				lineInStatements(s.Consequent, lines, hoverLine, hoverColumn) ||
 				lineInStatements(s.Alternate, lines, hoverLine, hoverColumn) {
 				return true
 			}
@@ -1708,15 +1744,19 @@ func nestedControlContains(stmts []ast.Statement, lines []string, hoverLine, hov
 				}
 			}
 		case *ast.ForStmt:
-			if lineInStatements(s.Body, lines, hoverLine, hoverColumn) {
+			if expressionContainsHover(s.Target, hoverLine, hoverColumn) ||
+				expressionContainsHover(s.Iterable, hoverLine, hoverColumn) ||
+				lineInStatements(s.Body, lines, hoverLine, hoverColumn) {
 				return true
 			}
 		case *ast.WhileStmt:
-			if lineInStatements(s.Body, lines, hoverLine, hoverColumn) {
+			if expressionContainsHover(s.Condition, hoverLine, hoverColumn) ||
+				lineInStatements(s.Body, lines, hoverLine, hoverColumn) {
 				return true
 			}
 		case *ast.UntilStmt:
-			if lineInStatements(s.Body, lines, hoverLine, hoverColumn) {
+			if expressionContainsHover(s.Condition, hoverLine, hoverColumn) ||
+				lineInStatements(s.Body, lines, hoverLine, hoverColumn) {
 				return true
 			}
 		case *ast.TryStmt:
@@ -1733,6 +1773,39 @@ func nestedControlContains(stmts []ast.Statement, lines []string, hoverLine, hov
 		}
 	}
 	return false
+}
+
+func scopePropertyContainsHover(e *ast.ScopeExpr, hoverLine, hoverColumn int) bool {
+	if e == nil || e.Property == "" {
+		return false
+	}
+	line, col, ok := expressionSourceEnd(e.Object)
+	if !ok || line != hoverLine {
+		return false
+	}
+	start := col + 2
+	if hoverColumn <= 0 {
+		return true
+	}
+	return hoverColumn >= start && hoverColumn < start+len(e.Property)
+}
+
+func expressionSourceEnd(expr ast.Expression) (line, col int, ok bool) {
+	if expr == nil {
+		return 0, 0, false
+	}
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return e.Pos().Line, e.Pos().Column + len(e.Name), true
+	case *ast.ScopeExpr:
+		line, col, ok = expressionSourceEnd(e.Object)
+		if !ok || line != e.Object.Pos().Line {
+			return 0, 0, false
+		}
+		return line, col + 2 + len(e.Property), true
+	default:
+		return 0, 0, false
+	}
 }
 
 func expressionContainsHover(expr ast.Expression, hoverLine, hoverColumn int) bool {
@@ -1772,6 +1845,11 @@ func expressionContainsHover(expr ast.Expression, hoverLine, hoverColumn int) bo
 		}
 	case *ast.MemberExpr:
 		return expressionContainsHover(e.Object, hoverLine, hoverColumn)
+	case *ast.ScopeExpr:
+		if expressionContainsHover(e.Object, hoverLine, hoverColumn) {
+			return true
+		}
+		return scopePropertyContainsHover(e, hoverLine, hoverColumn)
 	case *ast.IndexExpr:
 		if expressionContainsHover(e.Object, hoverLine, hoverColumn) {
 			return true

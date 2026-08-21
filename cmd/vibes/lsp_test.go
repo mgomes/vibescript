@@ -3644,6 +3644,22 @@ func TestHoverIncludeExtendDirectiveIsContextual(t *testing.T) {
 	if got := hoverValue(t, inString, 1, 3); strings.Contains(got, "Removed mixin") {
 		t.Fatalf("hover(include in string) = %q, must not serve mixin-removal docs", got)
 	}
+	callArgIf := "class C\n  def run(flag)\n    pick(if flag\n      1\n    end)\n    include Naming\n  end\nend\n"
+	if got := hoverValue(t, callArgIf, 5, 4); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after call-arg if) = %q, must not serve mixin-removal docs", got)
+	}
+	ifCond := "class C\n  if include(Naming)\n    1\n  end\nend\n"
+	if got := hoverValue(t, ifCond, 1, 5); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include in if condition) = %q, must not serve mixin-removal docs", got)
+	}
+	scopeCall := "class C\n  x = Mod::include()\nend\n"
+	if got := hoverValue(t, scopeCall, 1, 11); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include in scope call) = %q, must not serve mixin-removal docs", got)
+	}
+	escapedPercent := "class C\n  def run\n    values = %w[bracket\\] end]\n    include Naming\n  end\nend\n"
+	if got := hoverValue(t, escapedPercent, 3, 4); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after escaped percent) = %q, must not serve mixin-removal docs", got)
+	}
 }
 
 func TestHoverBareAssignmentIsNotASetterCall(t *testing.T) {
