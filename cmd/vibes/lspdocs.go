@@ -1422,10 +1422,13 @@ type sourceScan struct {
 	percentOpen  byte
 	percentClose byte
 	percentDepth int
+	interpDepth  int
 	escape       bool
 	afterValue   bool
 	afterDot     bool
 	inRegex      bool
+	hitComment   bool
+	innerStr     byte
 }
 
 func (sc *sourceScan) tokens(s string) []string {
@@ -1439,6 +1442,9 @@ func (sc *sourceScan) tokens(s string) []string {
 	afterValue := sc.afterValue
 	afterDot := sc.afterDot
 	inRegex := sc.inRegex
+	interpDepth := sc.interpDepth
+	innerStr := sc.innerStr
+	hitComment := false
 	afterSpace := false
 	flush := func(i int) {
 		if start >= 0 {
@@ -1461,12 +1467,46 @@ func (sc *sourceScan) tokens(s string) []string {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		if inStr != 0 {
+			if interpDepth > 0 {
+				if innerStr != 0 {
+					if escape {
+						escape = false
+						continue
+					}
+					if c == '\\' {
+						escape = true
+						continue
+					}
+					if c == innerStr {
+						innerStr = 0
+					}
+					continue
+				}
+				if c == '"' || c == '\'' {
+					innerStr = c
+					continue
+				}
+				if c == '{' {
+					interpDepth++
+					continue
+				}
+				if c == '}' {
+					interpDepth--
+					continue
+				}
+				continue
+			}
 			if escape {
 				escape = false
 				continue
 			}
 			if c == '\\' {
 				escape = true
+				continue
+			}
+			if c == '#' && i+1 < len(s) && s[i+1] == '{' {
+				interpDepth = 1
+				i++
 				continue
 			}
 			if c == inStr {
@@ -1512,6 +1552,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			continue
 		}
 		if c == '#' {
+			hitComment = true
 			break
 		}
 		if c == '%' && i+1 < len(s) {
@@ -1675,6 +1716,9 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.afterValue = afterValue
 	sc.afterDot = afterDot
 	sc.inRegex = inRegex
+	sc.interpDepth = interpDepth
+	sc.innerStr = innerStr
+	sc.hitComment = hitComment
 	return tokens
 }
 
@@ -1702,7 +1746,8 @@ func sourceInsideLiteral(lines []string, hoverLine, hoverColumn int) bool {
 	scan.afterValue = false
 	scan.afterDot = false
 	scan.tokens(text[:idx])
-	return scan.inStr != 0 || scan.percentClose != 0 || scan.inRegex
+	return scan.inStr != 0 || scan.percentClose != 0 || scan.inRegex ||
+		scan.hitComment || scan.interpDepth > 0
 }
 
 func percentLiteralCloser(open byte) byte {
@@ -1913,6 +1958,22 @@ func expressionContainsHover(expr ast.Expression, hoverLine, hoverColumn int) bo
 				return true
 			}
 		}
+	case *ast.WhileStmt:
+		if expressionContainsHover(e.Condition, hoverLine, hoverColumn) {
+			return true
+		}
+		return lineInStatements(e.Body, nil, hoverLine, hoverColumn)
+	case *ast.UntilStmt:
+		if expressionContainsHover(e.Condition, hoverLine, hoverColumn) {
+			return true
+		}
+		return lineInStatements(e.Body, nil, hoverLine, hoverColumn)
+	case *ast.ForStmt:
+		if expressionContainsHover(e.Target, hoverLine, hoverColumn) ||
+			expressionContainsHover(e.Iterable, hoverLine, hoverColumn) {
+			return true
+		}
+		return lineInStatements(e.Body, nil, hoverLine, hoverColumn)
 	case *ast.CaseExpr:
 		if expressionContainsHover(e.Target, hoverLine, hoverColumn) {
 			return true
