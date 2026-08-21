@@ -1501,6 +1501,17 @@ func interpIdentSkip(s string, i int) (name string, extra int, ok bool) {
 	return s[start:i], i - start - 1, true
 }
 
+func isControlKeyword(tok string) bool {
+	switch tok {
+	case "def", "class", "module", "begin", "case", "end",
+		"if", "unless", "while", "until", "for", "do",
+		"rescue", "ensure", "else", "elsif", "when":
+		return true
+	default:
+		return false
+	}
+}
+
 func identCanBeLocal(tok string) bool {
 	if tok == "" || strings.HasPrefix(tok, ".") || strings.HasSuffix(tok, ":") {
 		return false
@@ -1678,6 +1689,7 @@ type sourceScan struct {
 	lastIdent          string
 	locals             map[string]struct{}
 	afterDef           bool
+	afterDefName       bool
 	inParams           bool
 	paramDepth         int
 	inPipes            bool
@@ -1710,6 +1722,7 @@ func (sc *sourceScan) tokens(s string) []string {
 		locals = map[string]struct{}{}
 	}
 	afterDef := sc.afterDef
+	afterDefName := sc.afterDefName
 	inParams := sc.inParams
 	paramDepth := sc.paramDepth
 	inPipes := sc.inPipes
@@ -1728,6 +1741,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			localsStack = append(localsStack, locals)
 			locals = map[string]struct{}{}
 			afterDef = true
+			afterDefName = false
 			inParams = false
 			paramDepth = 0
 			inPipes = false
@@ -1756,16 +1770,23 @@ func (sc *sourceScan) tokens(s string) []string {
 				inLoopHeader = false
 			} else {
 				openers = append(openers, "do")
+				localsStack = append(localsStack, locals)
+				cloned := make(map[string]struct{}, len(locals))
+				for name := range locals {
+					cloned[name] = struct{}{}
+				}
+				locals = cloned
 			}
 			atStmtStart = false
 		case "end":
 			if n := len(openers); n > 0 {
 				top := openers[n-1]
 				openers = openers[:n-1]
-				if top == "def" && len(localsStack) > 0 {
+				if (top == "def" || top == "do") && len(localsStack) > 0 {
 					locals = localsStack[len(localsStack)-1]
 					localsStack = localsStack[:len(localsStack)-1]
 					afterDef = false
+					afterDefName = false
 					inParams = false
 					paramDepth = 0
 					inPipes = false
@@ -1803,6 +1824,12 @@ func (sc *sourceScan) tokens(s string) []string {
 			lastIdent = tok
 			if (inParams || inPipes) && identCanBeLocal(tok) {
 				locals[tok] = struct{}{}
+			} else if afterDef && !inParams && identCanBeLocal(tok) && !isControlKeyword(tok) {
+				if afterDefName {
+					locals[tok] = struct{}{}
+				} else {
+					afterDefName = true
+				}
 			}
 			applyOpener(tok)
 		}
@@ -2369,6 +2396,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.lastIdent = lastIdent
 	sc.locals = locals
 	sc.afterDef = afterDef
+	sc.afterDefName = afterDefName
 	sc.inParams = inParams
 	sc.paramDepth = paramDepth
 	sc.inPipes = inPipes

@@ -3816,6 +3816,14 @@ func TestHoverIncludeExtendDirectiveIsContextual(t *testing.T) {
 	if got := hoverValue(t, leakedParamRegex, 0, 40); strings.Contains(got, "Removed mixin") {
 		t.Fatalf("hover(include in class-body regex) = %q, must not serve mixin-removal docs", got)
 	}
+	parenlessParam := "class C; def run total; total /2; end; include Naming; end\n"
+	if got := hoverValue(t, parenlessParam, 0, 39); !strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after parenless param /2) = %q, want mixin-removal docs", got)
+	}
+	doBlockLocal := "class C; values.each do |total|; end; total /include Naming/; end\n"
+	if got := hoverValue(t, doBlockLocal, 0, 45); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after do-block param) = %q, must not serve mixin-removal docs", got)
+	}
 }
 
 func TestHoverBareAssignmentIsNotASetterCall(t *testing.T) {
