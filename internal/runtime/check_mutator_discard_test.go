@@ -715,6 +715,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].each(1) { puts row } }\nputs \"done\"",
 		},
 		{
+			name:   "for loop over unknown iterable still observes in the body",
+			source: "values = [1]\nrows = [[1], [2]]\nrows.each { |row| row.push(0); for x in values; puts row; end }\nputs \"done\"",
+		},
+		{
+			name:   "seeded reduce still observes in the block",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].reduce(0) { puts row; 0 } }\nputs \"done\"",
+		},
+		{
 			name:   "raise before try overwrite still observes later",
 			source: "def risky\n  raise \"x\"\nend\nrows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  begin\n    risky()\n    row = []\n  rescue\n    nil\n  end\n  puts row\nend\nputs \"done\"",
 		},

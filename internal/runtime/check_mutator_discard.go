@@ -228,6 +228,8 @@ func (c *scriptChecker) staticIteratorCallMayComplete(receiver Expression, prope
 		return staticWindowSizeMayRun(call) && len(call.KwArgs) == 0
 	case "grep", "grep_v":
 		return len(call.Args) == 1 && len(call.KwArgs) == 0
+	case "reduce":
+		return len(call.Args) <= 1 && len(call.KwArgs) == 0
 	default:
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
 	}
@@ -1105,9 +1107,16 @@ func (c *scriptChecker) statementsObserveNameExcept(statements []Statement, name
 			observed = c.untilStmtObservesName(typed, names, except)
 		case *ForStmt:
 			observed = c.expressionObservesName(typed.Iterable, names)
-			if !observed && staticForLoopMayIterate(typed) {
+			if !observed {
+				length, known := staticCollectionLength(typed.Iterable)
+				if !known || length > 0 {
+					bodyNames := copyNameSet(names)
+					removeBindingTargetNames(typed.Target, bodyNames)
+					observed = c.statementsObserveNameExcept(typed.Body, bodyNames, except)
+				}
+			}
+			if staticForLoopMayIterate(typed) {
 				removeBindingTargetNames(typed.Target, names)
-				observed = c.statementsObserveNameExcept(typed.Body, names, except)
 			}
 		case *ReturnStmt:
 			observed = c.expressionObservesName(typed.Value, names)
