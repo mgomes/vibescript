@@ -291,6 +291,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			source: "true ? 1 : [3].clear\nputs \"done\"",
 		},
 		{
+			name:   "non-completing ternary arm is not reported",
+			source: "def f(flag)\n  flag ? [1].clear(2) : nil\n  nil\nend\nf(true)\nputs \"done\"",
+		},
+		{
 			name:   "unreachable rescue fallback",
 			source: "1 rescue [1].push(2)\nputs \"done\"",
 		},

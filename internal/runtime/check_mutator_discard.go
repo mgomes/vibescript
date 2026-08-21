@@ -490,8 +490,10 @@ func blockParamNames(block *BlockLiteral) map[string]struct{} {
 // poisons the receiver's structural facts (an unproven dispatch may mutate
 // its receiver), which are exactly the facts the receiver shape needs. The
 // returned func emits the warning; the caller invokes it only once the
-// statement's walk proves the call can complete, and it is nil when there
-// is nothing to report.
+// statement's walk proves the expression can complete, and it is nil when
+// there is nothing to report. Each collected site is gated on its own
+// completion so a ternary that finishes through one arm does not report a
+// mutator in another arm that cannot run.
 //
 // The receiver-type gate (provablyNotCollection) runs only once an arm is
 // otherwise ready to warn: inference is the expensive step, and the common
@@ -504,6 +506,9 @@ func (c *scriptChecker) mutatorDiscardVerdict(function string, stmt *ExprStmt) f
 	}
 	var reports []func()
 	for _, site := range c.discardedMutatorCalls(stmt.Expr) {
+		if !c.discardedMutatorSiteMayComplete(site) {
+			continue
+		}
 		if report := c.oneMutatorDiscardVerdict(function, stmt, site.member, site.call); report != nil {
 			reports = append(reports, report)
 		}
@@ -516,6 +521,26 @@ func (c *scriptChecker) mutatorDiscardVerdict(function string, stmt *ExprStmt) f
 			report()
 		}
 	}
+}
+
+func (c *scriptChecker) discardedMutatorSiteMayComplete(site discardedMutatorSite) bool {
+	var expr Expression
+	if site.call != nil {
+		expr = site.call
+	} else {
+		expr = site.member
+	}
+	if expr == nil || !c.expressionMayCompleteForBinding(expr) {
+		return false
+	}
+	if site.call == nil || site.member == nil {
+		return true
+	}
+	if site.member.Property == "clear" {
+		return len(site.call.Args) == 0 && len(site.call.KwArgs) == 0 &&
+			site.call.Block == nil
+	}
+	return true
 }
 
 func (c *scriptChecker) oneMutatorDiscardVerdict(function string, stmt *ExprStmt, member *MemberExpr, call *CallExpr) func() {
