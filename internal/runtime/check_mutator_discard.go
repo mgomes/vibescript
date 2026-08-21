@@ -219,7 +219,8 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 	case "zip", "join", "transpose", "length", "size", "empty?",
 		"first", "last", "inspect", "to_s", "to_a", "hash", "itself",
 		"union", "difference", "intersection", "keys", "values", "slice",
-		"compact", "except", "flatten", "values_at":
+		"compact", "except", "flatten", "values_at",
+		"include?", "member?", "key?", "has_key?", "value?", "has_value?":
 		return false
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
@@ -1494,8 +1495,8 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 				}
 			case *WhileStmt:
 				if search(typed.Body) {
-					reachesBackEdge := pathContinues || remainderIsNext(typed.Body, stmt)
-					exitsLoop := remainderIsBreak(typed.Body, stmt)
+					reachesBackEdge := pathContinues || remainderIsNext(typed.Body, stmt) || c.remainderMayNext(typed.Body, stmt)
+					exitsLoop := remainderIsBreak(typed.Body, stmt) || c.remainderMayBreak(typed.Body, stmt)
 					if reachesBackEdge &&
 						c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) {
 						observes = true
@@ -1510,8 +1511,8 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 				}
 			case *UntilStmt:
 				if search(typed.Body) {
-					reachesBackEdge := pathContinues || remainderIsNext(typed.Body, stmt)
-					exitsLoop := remainderIsBreak(typed.Body, stmt)
+					reachesBackEdge := pathContinues || remainderIsNext(typed.Body, stmt) || c.remainderMayNext(typed.Body, stmt)
+					exitsLoop := remainderIsBreak(typed.Body, stmt) || c.remainderMayBreak(typed.Body, stmt)
 					if reachesBackEdge &&
 						c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) {
 						observes = true
@@ -1526,8 +1527,8 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 				}
 			case *ForStmt:
 				if search(typed.Body) {
-					reachesBackEdge := pathContinues || remainderIsNext(typed.Body, stmt)
-					exitsLoop := remainderIsBreak(typed.Body, stmt)
+					reachesBackEdge := pathContinues || remainderIsNext(typed.Body, stmt) || c.remainderMayNext(typed.Body, stmt)
+					exitsLoop := remainderIsBreak(typed.Body, stmt) || c.remainderMayBreak(typed.Body, stmt)
 					if reachesBackEdge &&
 						(c.expressionObservesName(typed.Iterable, names) ||
 							c.statementsObserveNameExcept(typed.Body, names, stmt)) {
@@ -1713,6 +1714,41 @@ func remainderIsBreak(body []Statement, stmt *ExprStmt) bool {
 		_, ok := s.(*BreakStmt)
 		return ok
 	})
+}
+
+func (c *scriptChecker) remainderMayBreak(body []Statement, stmt *ExprStmt) bool {
+	rest, ok := statementsAfter(body, stmt)
+	if !ok {
+		return false
+	}
+	return c.statementsMayBreak(rest)
+}
+
+func (c *scriptChecker) remainderMayNext(body []Statement, stmt *ExprStmt) bool {
+	rest, ok := statementsAfter(body, stmt)
+	if !ok {
+		return false
+	}
+	return remainderContainsNext(rest)
+}
+
+func remainderContainsNext(stmts []Statement) bool {
+	for _, stmt := range stmts {
+		switch typed := stmt.(type) {
+		case *NextStmt:
+			return true
+		case *IfStmt:
+			if remainderContainsNext(typed.Consequent) || remainderContainsNext(typed.Alternate) {
+				return true
+			}
+			for _, branch := range typed.ElseIf {
+				if remainderContainsNext(branch.Consequent) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func remainderIsControl(body []Statement, stmt *ExprStmt, match func(Statement) bool) bool {
