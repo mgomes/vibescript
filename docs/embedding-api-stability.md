@@ -107,7 +107,7 @@ during the 2026-06/07 mutator, hash-order, and estimator-memoization work
 | --- | --- | --- |
 | Runtime hooks | `RuntimeStringer`, `RuntimeEqualer`, `RuntimeIdenticaler`, `NewValue` | format/compare runtime-only kinds whose payload types live outside `vibes/value` |
 | Mutation epoch | `MutationEpoch`, `BumpMutationEpoch` | invalidate the memory estimator's memoized base walk (#905) |
-| Identity | `ArrayIdentity`, `HashIdentity`, `SliceIdentity`, `EqualityContext` | cycle detection / seen-sets during graph walks; hosts use `Value.Identical` |
+| Identity | `ArrayIdentity`, `HashIdentity`, `ObjectIdentity`, `SliceIdentity`, `EqualityContext` | cycle detection / seen-sets during graph walks; representation identity is internal |
 | Quota accounting | `HashDataBytes`, `ArrayDataBytes`, `HashOrderCapacity` | charge wrapper and reservation bytes to the memory quota |
 | Wrapper mutation | `SetArrayElems`, `SetArrayWindow`, `ArrayWindowHead`, `ReserveHashOrder`, `ReserveHashOrderUnpublished`, `HashSetUnpublished` | primitives behind Ruby-style in-place mutators and clone bookkeeping (#873, #895); the window pair lets an in-place shrink tell how much of an allocation it has left behind, which a slice header does not say; the unpublished pair is the literal builder's epoch-free write |
 | Hash constructors | `NewHashWithOrder`, `NewHashWithTrustedOrder`, `NewHashWithCapacity` | rebuild a hash with a recorded or trusted key order, or pre-size an empty one |
@@ -153,10 +153,13 @@ program (see the `vibes/value` package doc for the host-facing wording):
   and host-only graphs are never charged to a later call (the estimator
   walks only execution-reachable state; epoch churn merely costs a memo
   refresh — nothing persists execution-to-execution).
-- `ArrayIdentity`/`HashIdentity` return bare `uintptr`s. A wrapper that
-  never escapes its host function can be stack-allocated, and a goroutine
-  stack copy relocates it, changing the identity of a live value. Only the
-  runtime's single-traversal usage is safe; hosts use `Value.Identical`.
+- `ArrayIdentity`/`HashIdentity`/`ObjectIdentity` return bare `uintptr`s. A
+  wrapper that never escapes its host function can be stack-allocated, and a
+  goroutine stack copy relocates it, changing the identity of a live value.
+  Only the runtime's single-traversal usage is safe. Wrapper identity is not a
+  supported host operation: `Value.Identical` compares collection contents,
+  not wrappers. A host that needs provenance must track it separately rather
+  than infer it from Vibescript's runtime storage.
 
 ## Frozen values (#422) — NOT implemented, decision pending
 
