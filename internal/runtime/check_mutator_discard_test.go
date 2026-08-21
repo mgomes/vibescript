@@ -49,6 +49,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "clear updates a temporary",
 		},
 		{
+			name:   "auto-invoked function receiver",
+			source: "def rows()\n  [1]\nend\nrows.push(2)\nputs \"done\"",
+			want:   "push updates a temporary",
+		},
+		{
 			name:   "slice receiver",
 			source: "xs = [1, 2, 3]\nxs[0..1].push(9)\nputs \"done\"",
 			want:   "push updates a temporary",

@@ -487,6 +487,12 @@ func (c *scriptChecker) mutatorReceiverShape(expr Expression) (temporary bool, r
 				}
 				return true, ""
 			}
+			// A zero-argument function used without parentheses auto-invokes
+			// (walkMutablePath rejects rootAutoInvokes roots), so rows.push
+			// mutates the detached return value the same way rows().push does.
+			if c.identifierIsAutoInvokedTemporary(typed.Name) {
+				return true, ""
+			}
 			return false, typed.Name
 		case *IvarExpr, *ClassVarExpr:
 			return false, ""
@@ -518,6 +524,25 @@ func (c *scriptChecker) mutatorReceiverShape(expr Expression) (temporary bool, r
 			return true, ""
 		}
 	}
+}
+
+// identifierIsAutoInvokedTemporary reports whether name would auto-invoke as
+// a zero-argument function rather than name a local slot. A scope binding
+// or option global wins, matching ordinary evaluation's lookup order.
+func (c *scriptChecker) identifierIsAutoInvokedTemporary(name string) bool {
+	if c.scopeHas(name) || c.optionGlobalSeeded(name) {
+		return false
+	}
+	if c.script == nil {
+		return false
+	}
+	if fn, ok := c.script.functions[name]; ok {
+		return len(fn.Params) == 0
+	}
+	if fn, ok := c.typeRootFunction(name); ok {
+		return len(fn.Params) == 0
+	}
+	return false
 }
 
 // provablyNotCollection reports whether expr's inferred type excludes every
