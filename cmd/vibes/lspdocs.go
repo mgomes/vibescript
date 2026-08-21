@@ -2251,6 +2251,17 @@ func expressionContainsHover(expr ast.Expression, hoverLine, hoverColumn int) bo
 		}
 	case *ast.BlockLiteral:
 		return lineInStatements(e.Body, nil, hoverLine, hoverColumn)
+	case *ast.TryStmt:
+		if lineInStatements(e.Body, nil, hoverLine, hoverColumn) ||
+			lineInStatements(e.Else, nil, hoverLine, hoverColumn) ||
+			lineInStatements(e.Ensure, nil, hoverLine, hoverColumn) {
+			return true
+		}
+		for _, clause := range e.Rescues {
+			if lineInStatements(clause.Body, nil, hoverLine, hoverColumn) {
+				return true
+			}
+		}
 	case *ast.IfExpr:
 		if expressionContainsHover(e.Condition, hoverLine, hoverColumn) ||
 			expressionContainsHover(e.Consequent, hoverLine, hoverColumn) ||
