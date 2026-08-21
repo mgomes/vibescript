@@ -239,6 +239,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later read after both if branches return is not an observation",
+			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each do |row|\n    row.push(0)\n    if flag\n      return nil\n    else\n      return nil\n    end\n    puts row\n  end\nend\nf(true)\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "later non-raising try rescue is not an observation",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); begin; nil; rescue; puts row; end }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -639,6 +644,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "later rescue after a raising body observes the rebound parameter",
 			source: "rows = [[1], [2]]\nrows.each do |row|\n  begin\n    row.push(0)\n    raise \"x\"\n  rescue\n    puts row\n  end\nend\nputs \"done\"",
+		},
+		{
+			name:   "compound assignment still observes the mutated binding",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); row ||= []; puts row }\nputs \"done\"",
+		},
+		{
+			name:   "empty for loop still observes the mutated binding",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); for row in []; nil; end; puts row }\nputs \"done\"",
 		},
 		{
 			name:   "raise before try overwrite still observes later",

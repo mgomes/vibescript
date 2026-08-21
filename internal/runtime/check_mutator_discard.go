@@ -1032,7 +1032,10 @@ func (c *scriptChecker) statementsObserveNameExcept(statements []Statement, name
 		case *AssignStmt:
 			observed = assignmentTargetObservesName(typed.Target, names) ||
 				c.expressionObservesName(typed.Value, names)
-			if !observed {
+			if !observed && typed.Operator != tokenNone {
+				observed = assignmentCompoundReadsName(typed.Target, names)
+			}
+			if !observed && typed.Operator == tokenNone {
 				removeBindingTargetNames(typed.Target, names)
 			}
 		case *ExprStmt:
@@ -1048,7 +1051,7 @@ func (c *scriptChecker) statementsObserveNameExcept(statements []Statement, name
 			observed = c.untilStmtObservesName(typed, names, except)
 		case *ForStmt:
 			observed = c.expressionObservesName(typed.Iterable, names)
-			if !observed {
+			if !observed && staticForLoopMayIterate(typed) {
 				removeBindingTargetNames(typed.Target, names)
 				observed = c.statementsObserveNameExcept(typed.Body, names, except)
 			}
@@ -1161,9 +1164,42 @@ func (c *scriptChecker) statementFallsThrough(stmt Statement) bool {
 		return false
 	case *ExprStmt:
 		return c.expressionProvablyCompletes(typed.Expr)
+	case *IfStmt:
+		return c.ifStmtFallsThrough(typed)
 	default:
 		return true
 	}
+}
+
+func (c *scriptChecker) ifStmtFallsThrough(stmt *IfStmt) bool {
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if known && truthy {
+		return c.statementsMayCompleteNormally(stmt.Consequent)
+	}
+	if known && !truthy {
+		for _, branch := range stmt.ElseIf {
+			t, k := staticExpressionTruthiness(branch.Condition)
+			if !k {
+				return true
+			}
+			if t {
+				return c.statementsMayCompleteNormally(branch.Consequent)
+			}
+		}
+		return c.statementsMayCompleteNormally(stmt.Alternate)
+	}
+	if c.statementsMayCompleteNormally(stmt.Consequent) {
+		return true
+	}
+	for _, branch := range stmt.ElseIf {
+		if c.statementsMayCompleteNormally(branch.Consequent) {
+			return true
+		}
+	}
+	if len(stmt.Alternate) == 0 {
+		return true
+	}
+	return c.statementsMayCompleteNormally(stmt.Alternate)
 }
 
 func (c *scriptChecker) ifStmtObservesName(stmt *IfStmt, names map[string]struct{}, except *ExprStmt) bool {
@@ -1246,7 +1282,9 @@ func (c *scriptChecker) applyDefiniteBindingKills(statements []Statement, names 
 	for _, statement := range statements {
 		switch typed := statement.(type) {
 		case *AssignStmt:
-			removeBindingTargetNames(typed.Target, names)
+			if typed.Operator == tokenNone {
+				removeBindingTargetNames(typed.Target, names)
+			}
 		case *IfStmt:
 			c.applyDefiniteIfBindingKills(typed, names)
 		}
@@ -1472,6 +1510,30 @@ func (c *scriptChecker) expressionObservesName(expr Expression, names map[string
 // target. A bare identifier or destructure leaf is the slot being
 // overwritten, not a read; an index or member target still reads the
 // receiver.
+func assignmentCompoundReadsName(target Expression, names map[string]struct{}) bool {
+	switch typed := target.(type) {
+	case *Identifier:
+		_, ok := names[typed.Name]
+		return ok
+	case *DestructureTarget:
+		for _, el := range typed.Elements {
+			if assignmentCompoundReadsName(el.Target, names) {
+				return true
+			}
+		}
+		return false
+	default:
+		return assignmentTargetObservesName(target, names)
+	}
+}
+
+func staticForLoopMayIterate(stmt *ForStmt) bool {
+	if length, ok := staticCollectionLength(stmt.Iterable); ok {
+		return length > 0
+	}
+	return true
+}
+
 func assignmentTargetObservesName(target Expression, names map[string]struct{}) bool {
 	switch typed := target.(type) {
 	case *Identifier:
