@@ -2234,15 +2234,22 @@ func (c *scriptChecker) ifStmtMayBreak(stmt *IfStmt) bool {
 		}
 		return c.statementsMayBreak(stmt.Alternate)
 	}
-	if c.statementsMayBreak(stmt.Consequent) || c.statementsMayBreak(stmt.Alternate) {
+	if c.statementsMayBreak(stmt.Consequent) {
 		return true
 	}
 	for _, branch := range stmt.ElseIf {
+		t, k := staticExpressionTruthiness(branch.Condition)
+		if k && !t {
+			continue
+		}
 		if c.statementsMayBreak(branch.Consequent) {
 			return true
 		}
+		if k && t {
+			return false
+		}
 	}
-	return false
+	return c.statementsMayBreak(stmt.Alternate)
 }
 
 func (c *scriptChecker) tryStmtFallsThrough(stmt *TryStmt) bool {

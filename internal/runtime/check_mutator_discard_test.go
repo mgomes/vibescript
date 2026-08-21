@@ -710,6 +710,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "true elsif next shadows else break so suffix is unreachable",
+			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each { |row| while true; row.push(0); if flag; nil; elsif true; next; else; break; end; end; puts row }\nend\nf(true)\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "min ignores its block so it is not an observation",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].min { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
