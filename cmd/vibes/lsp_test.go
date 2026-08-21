@@ -3764,6 +3764,22 @@ func TestHoverIncludeExtendDirectiveIsContextual(t *testing.T) {
 	if got := hoverValue(t, interpDivision, 4, 2); !strings.Contains(got, "Removed mixin") {
 		t.Fatalf("hover(include after interp division) = %q, want mixin-removal docs", got)
 	}
+	sameLineUnicodeMethod := "class C; def run; ππππππππ; end; include Naming; end\n"
+	if got := hoverValue(t, sameLineUnicodeMethod, 0, 33); !strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after same-line unicode method) = %q, want mixin-removal docs", got)
+	}
+	sameLineUnicodeBegin := "class C; begin; ππππππππ; end; include Naming; end\n"
+	if got := hoverValue(t, sameLineUnicodeBegin, 0, 31); !strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after same-line unicode begin) = %q, want mixin-removal docs", got)
+	}
+	interpUnicodeDivision := "class C\n  def run\n    text = \"#{π / 2}\"\n  end\n  include Naming\nend\n"
+	if got := hoverValue(t, interpUnicodeDivision, 4, 2); !strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after unicode interp division) = %q, want mixin-removal docs", got)
+	}
+	percentInterpUnicodeDivision := "class C\n  def run\n    values = %W[#{ \nπ / 2\n}]\n  end\n  include Naming\nend\n"
+	if got := hoverValue(t, percentInterpUnicodeDivision, 6, 2); !strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after unicode percent interp division) = %q, want mixin-removal docs", got)
+	}
 }
 
 func TestHoverBareAssignmentIsNotASetterCall(t *testing.T) {

@@ -1143,8 +1143,8 @@ func sourceBlockClosedBeforeColumn(lines []string, start ast.Position, hoverLine
 		return false
 	}
 	line := lineAt(lines, hoverLine-1)
-	limit := min(len(line), hoverColumn-1)
-	if limit < 0 {
+	limit := columnToByte(line, hoverColumn)
+	if limit <= 0 {
 		return false
 	}
 	text := lineFromColumn(line[:limit], start.Column)
@@ -1478,6 +1478,17 @@ func tokenIsValue(tok string) bool {
 	return ast.IsIdentifierStart(r) || r >= '0' && r <= '9'
 }
 
+func interpIdentSkip(s string, i int) (afterValue bool, extra int) {
+	r, size := utf8.DecodeRuneInString(s[i:])
+	if size < 1 {
+		size = 1
+	}
+	if ast.IsIdentifierStart(r) || r >= '0' && r <= '9' {
+		return true, size - 1
+	}
+	return false, 0
+}
+
 func slashStartsRegex(afterValue, afterSpace bool, s string, i int) bool {
 	if !afterValue {
 		return true
@@ -1498,8 +1509,8 @@ func sourceClosedBeforeColumn(lines []string, start ast.Position, hoverLine, hov
 		return false
 	}
 	line := lineAt(lines, hoverLine-1)
-	limit := min(len(line), hoverColumn-1)
-	if limit < 0 {
+	limit := columnToByte(line, hoverColumn)
+	if limit <= 0 {
 		return false
 	}
 	scan := sourceScan{}
@@ -1670,8 +1681,9 @@ func (sc *sourceScan) tokens(s string) []string {
 					afterValue = true
 					continue
 				}
-				if ast.IsIdentifierStart(rune(c)) || c >= '0' && c <= '9' {
+				if after, extra := interpIdentSkip(s, i); after {
 					afterValue = true
+					i += extra
 					continue
 				}
 				afterValue = false
@@ -1752,8 +1764,9 @@ func (sc *sourceScan) tokens(s string) []string {
 					afterValue = true
 					continue
 				}
-				if ast.IsIdentifierStart(rune(c)) || c >= '0' && c <= '9' {
+				if after, extra := interpIdentSkip(s, i); after {
 					afterValue = true
+					i += extra
 					continue
 				}
 				afterValue = false
@@ -2484,9 +2497,9 @@ func hoverInsideStatement(stmt ast.Statement, lines []string, hoverLine, hoverCo
 		line := lineAt(lines, hoverLine-1)
 		from := 0
 		if hoverLine == start.Line && start.Column > 0 {
-			from = min(len(line), start.Column-1)
+			from = columnToByte(line, start.Column)
 		}
-		to := min(len(line), hoverColumn)
+		to := columnToByte(line, hoverColumn+1)
 		if from < to {
 			segment := line[from:to]
 			if i := strings.LastIndex(segment, "end"); i >= 0 {
