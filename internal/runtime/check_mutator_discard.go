@@ -1458,11 +1458,20 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 							observes = true
 						}
 					}
-					if c.tryStmtFallsThrough(typed) || pathContinues {
+					mutationPathContinues := pathContinues
+					if inRescue || inElse {
+						mutationPathContinues = pathContinues &&
+							c.statementsMayCompleteNormally(typed.Ensure)
+					} else if inBody {
+						mutationPathContinues = c.tryStmtFallsThrough(typed) || pathContinues
+					}
+					if mutationPathContinues {
 						if c.statementsObserveName(stmts[i+1:], names) {
 							observes = true
 						}
 						pathContinues = c.statementsMayCompleteNormally(stmts[i+1:])
+					} else {
+						pathContinues = false
 					}
 					return true
 				}

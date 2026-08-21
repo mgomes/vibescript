@@ -594,6 +594,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); while true; if true; raise \"x\"; end; break; end; puts row }\nputs \"done\"",
 			want:   "mutating block parameter row",
 		},
+		{
+			name:   "raising rescue after the mutation is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| begin; raise \"x\"; rescue; row.push(0); raise \"y\"; end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
 	}
 
 	for _, tc := range tests {
