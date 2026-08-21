@@ -126,6 +126,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter v",
 		},
 		{
+			name:   "hash each_with_index pair destructure",
+			source: "h = {a: [1]}\nh.each_with_index { |(k, v), i| v.push(2) }\nputs \"done\"",
+			want:   "mutating block parameter v",
+		},
+		{
 			name: "builtin each after a user each of the same body",
 			source: "class Widget\n  def each()\n    @saved = yield [1]\n    @saved\n  end\nend\n" +
 				"def apply(x)\n  x.each { |row| row.push(0) }\nend\n" +
@@ -265,6 +270,11 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			name: "union of array and instance",
 			source: "class Widget\n  def push(x)\n    @seen = x\n  end\nend\n" +
 				"def f(flag)\n  (flag ? [] : Widget.new).push(1)\nend\n" +
+				"f(true)\nputs \"done\"",
+		},
+		{
+			name: "conditional uppercase local is addressable",
+			source: "def f(flag)\n  if flag\n    ROWS = []\n  end\n  ROWS.push(2)\nend\n" +
 				"f(true)\nputs \"done\"",
 		},
 		{

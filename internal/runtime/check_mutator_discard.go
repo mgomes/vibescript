@@ -225,10 +225,22 @@ func (c *scriptChecker) iteratorYieldTypes(receiver Expression, property string,
 		}
 		out[name] = paramYields[i]
 	}
-	if property == "each" && hashLike &&
-		len(block.Params)+len(block.ImplicitParams) < 2 && len(block.Params) == 1 {
-		if target, ok := block.Params[0].Target.(*DestructureTarget); ok {
-			projectHashPairOntoDestructure(out, target, recv)
+	if hashLike && len(block.Params) >= 1 {
+		pairParam := 0
+		switch property {
+		case "each":
+			if len(block.Params)+len(block.ImplicitParams) >= 2 {
+				pairParam = -1
+			}
+		case "each_with_index":
+			pairParam = 0
+		default:
+			pairParam = -1
+		}
+		if pairParam >= 0 {
+			if target, ok := block.Params[pairParam].Target.(*DestructureTarget); ok {
+				projectHashPairOntoDestructure(out, target, recv)
+			}
 		}
 	}
 	if len(out) == 0 {
@@ -530,7 +542,8 @@ func (c *scriptChecker) mutatorReceiverShape(expr Expression) (temporary bool, r
 			// it), so it is not a temporary. Class and namespace
 			// references keep their own member dispatch and stay out of
 			// scope.
-			if isConstantIdentifier(typed.Name) && !c.scopeHas(typed.Name) {
+			if isConstantIdentifier(typed.Name) && !c.scopeHas(typed.Name) &&
+				!c.liveLocalNameHas(typed.Name) {
 				if c.optionGlobalSeeded(typed.Name) {
 					return false, typed.Name
 				}
