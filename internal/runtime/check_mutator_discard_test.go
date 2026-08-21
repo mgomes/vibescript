@@ -558,6 +558,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			source: "{a: 1}.store([1], 2)\nputs \"done\"",
 		},
 		{
+			name:   "hash delete with an unsupported key cannot update",
+			source: "{a: 1}.delete([1])\nputs \"done\"",
+		},
+		{
 			name:   "case later clause after aborting match",
 			source: "def f(x)\n  case x\n  when 1, [1].clear(2)\n    nil\n  when 2\n    [2].push(3)\n  end\n  nil\nend\nf(1)\nputs \"done\"",
 		},

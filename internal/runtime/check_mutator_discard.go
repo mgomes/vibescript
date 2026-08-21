@@ -627,10 +627,10 @@ func (c *scriptChecker) discardedMutatorSiteMayComplete(site discardedMutatorSit
 	if site.call == nil || site.member == nil {
 		return true
 	}
-	return collectionMutatorCallShapeMayComplete(site.member.Property, site.call)
+	return c.collectionMutatorCallShapeMayComplete(site.member.Object, site.member.Property, site.call)
 }
 
-func collectionMutatorCallShapeMayComplete(property string, call *CallExpr) bool {
+func (c *scriptChecker) collectionMutatorCallShapeMayComplete(receiver Expression, property string, call *CallExpr) bool {
 	if call == nil {
 		return true
 	}
@@ -651,7 +651,13 @@ func collectionMutatorCallShapeMayComplete(property string, call *CallExpr) bool
 		}
 		return true
 	case "delete":
-		return n == 1 && !kwargs
+		if n != 1 || kwargs {
+			return false
+		}
+		if c.receiverIsHashLike(receiver) {
+			return staticHashKeyMayComplete(call.Args[0])
+		}
+		return true
 	case "store":
 		if n != 2 || kwargs {
 			return false
@@ -850,7 +856,7 @@ func (c *scriptChecker) expressionProvablyCompletes(expr Expression) bool {
 	}
 	member, call := discardedMemberCall(expr)
 	if member != nil && isCollectionMutator(member.Property) {
-		return collectionMutatorCallShapeMayComplete(member.Property, call)
+		return c.collectionMutatorCallShapeMayComplete(member.Object, member.Property, call)
 	}
 	return true
 }
@@ -1499,6 +1505,15 @@ func tryBodyAfterMayRaise(body []Statement, stmt *ExprStmt) bool {
 		}
 	}
 	return found && !statementsProvenNonRaising(rest)
+}
+
+func (c *scriptChecker) receiverIsHashLike(expr Expression) bool {
+	if _, ok := expr.(*HashLiteral); ok {
+		return true
+	}
+	return typeExprArmsAll(c.inferExpressionType(expr), func(arm *TypeExpr) bool {
+		return arm.Kind == TypeHash || arm.Kind == TypeShape
+	})
 }
 
 func staticHashKeyMayComplete(expr Expression) bool {
