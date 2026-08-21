@@ -1,4 +1,4 @@
-# vibe: 0.4
+# vibe: 1.0
 
 def run
   parsed = JSON.parse("{\"id\":\"p-1\",\"score\":10}")

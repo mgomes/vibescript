@@ -1,3 +1,5 @@
+# vibe: 1.0
+
 def collect_until(limit)
   out = []
   n = 0

@@ -1,4 +1,4 @@
-# vibe: 0.4
+# vibe: 1.0
 
 def total_raised_by_currency(donations)
   grouped = {}

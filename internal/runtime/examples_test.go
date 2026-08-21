@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -312,6 +313,13 @@ func TestExamples(t *testing.T) {
 			want:     intVal(12),
 		},
 		{
+			name:     "basics/score_with_namespace",
+			file:     "basics/namespaces.vibe",
+			function: "score_with_bonus",
+			args:     []Value{intVal(32)},
+			want:     intVal(42),
+		},
+		{
 			name:     "collections/head",
 			file:     "collections/arrays.vibe",
 			function: "head",
@@ -348,6 +356,19 @@ func TestExamples(t *testing.T) {
 				intVal(2),
 				intVal(3),
 			),
+		},
+		{
+			name:     "collections/update_without_aliasing",
+			file:     "collections/arrays.vibe",
+			function: "update_without_aliasing",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(3)),
+				intVal(10),
+			},
+			want: hashVal(map[string]Value{
+				"updated":  arrayVal(intVal(10), intVal(2), intVal(3)),
+				"original": arrayVal(intVal(1), intVal(2), intVal(3)),
+			}),
 		},
 		{
 			name:     "arrays/first_two",
@@ -718,9 +739,9 @@ func TestExamples(t *testing.T) {
 			),
 		},
 		{
-			name:     "collections/fetch_symbol_key",
+			name:     "collections/fetch_hash_key",
 			file:     "collections/symbols.vibe",
-			function: "fetch_symbol_key",
+			function: "fetch_hash_key",
 			args: []Value{
 				hashVal(map[string]Value{
 					"read":  boolVal(true),
@@ -729,6 +750,20 @@ func TestExamples(t *testing.T) {
 				symbolVal("write"),
 			},
 			want: boolVal(false),
+		},
+		{
+			name:     "collections/normalized_hash_view",
+			file:     "collections/symbols.vibe",
+			function: "normalized_hash_view",
+			args: []Value{
+				hashVal(map[string]Value{
+					"name": strVal("Ada"),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"same_entry": boolVal(true),
+				"keys":       arrayVal(strVal("name")),
+			}),
 		},
 		{
 			name:     "conditionals/fundraising_badge_legend",
@@ -1312,9 +1347,9 @@ func TestExamples(t *testing.T) {
 			want: arrayVal(strVal("goal"), intVal(1000), strVal("raised"), intVal(250)),
 		},
 		{
-			name:     "hashes/symbolize_report",
+			name:     "hashes/index_report_by_id",
 			file:     "hashes/operations.vibe",
-			function: "symbolize_report",
+			function: "index_report_by_id",
 			args: []Value{
 				arrayVal(
 					hashVal(map[string]Value{
@@ -2254,6 +2289,14 @@ func TestAllExampleFilesCompile(t *testing.T) {
 			t.Fatalf("relative example path: %v", err)
 		}
 		t.Run(rel, func(t *testing.T) {
+			source, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read example %q: %v", rel, err)
+			}
+			firstLine := strings.SplitN(string(source), "\n", 2)[0]
+			if firstLine != "# vibe: 1.0" {
+				t.Errorf("example %q version header = %q, want %q", rel, firstLine, "# vibe: 1.0")
+			}
 			_ = compileScriptFromFileWithEngine(t, engine, path)
 		})
 	}

@@ -1,4 +1,4 @@
-# vibe: 0.4
+# vibe: 1.0
 
 def merge_defaults(player, defaults)
   defaults.merge(player)
@@ -24,7 +24,7 @@ def to_pairs(record)
   record.flatten
 end
 
-def symbolize_report(records)
+def index_report_by_id(records)
   report = {}
   records.each do |record|
     report[record[:id]] = {

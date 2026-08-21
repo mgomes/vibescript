@@ -1,7 +1,7 @@
 # Campaign Reporting
 
 ```vibe
-# vibe: 0.4
+# vibe: 1.0
 # uses: db, events
 
 def daily_summary(campaign_id)

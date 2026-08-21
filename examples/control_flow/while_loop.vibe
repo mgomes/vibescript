@@ -1,3 +1,5 @@
+# vibe: 1.0
+
 def countdown(start)
   out = []
   n = start

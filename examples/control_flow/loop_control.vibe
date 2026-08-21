@@ -1,3 +1,5 @@
+# vibe: 1.0
+
 def odds_below(limit)
   out = []
   n = 0
