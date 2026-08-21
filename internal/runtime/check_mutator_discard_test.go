@@ -264,6 +264,21 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later grep without a pattern is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].grep { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later aborting callee is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].clear(2).each { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later try overwrite is not observed in ensure",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  begin\n    row = []\n  ensure\n    puts row\n  end\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "later mismatched try rescue is not an observation",
 			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  begin\n    raise TypeError, \"x\"\n  rescue ArgumentError\n    puts row\n  end\nend\nputs \"done\"",
 			want:   "mutating block parameter row",

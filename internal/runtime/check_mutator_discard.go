@@ -216,6 +216,8 @@ func staticIteratorCallMayComplete(property string, call *CallExpr) bool {
 		return len(call.Args) <= 1 && len(call.KwArgs) == 0
 	case "each_cons", "each_slice":
 		return staticWindowSizeMayRun(call) && len(call.KwArgs) == 0
+	case "grep":
+		return len(call.Args) == 1 && len(call.KwArgs) == 0
 	default:
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
 	}
@@ -1319,8 +1321,12 @@ func (c *scriptChecker) applyDefiniteIfBindingKills(stmt *IfStmt, names map[stri
 }
 
 func (c *scriptChecker) tryStmtObservesName(stmt *TryStmt, names map[string]struct{}, except *ExprStmt) bool {
+	live := copyNameSet(names)
 	if c.statementsObserveNameExcept(stmt.Body, names, except) {
 		return true
+	}
+	if tryBodyDefinitelyRuns(stmt.Body) {
+		c.applyDefiniteBindingKills(stmt.Body, live)
 	}
 	if !statementsProvenNonRaising(stmt.Body) {
 		raisedName, knownRaise := statementsRaisedTypeName(stmt.Body)
@@ -1328,23 +1334,39 @@ func (c *scriptChecker) tryStmtObservesName(stmt *TryStmt, names map[string]stru
 			if !rescueClauseMayMatch(clause, raisedName, knownRaise) {
 				continue
 			}
-			if c.statementsObserveNameExcept(clause.Body, names, except) {
+			if c.statementsObserveNameExcept(clause.Body, live, except) {
 				return true
 			}
 		}
 	}
 	if c.statementsMayCompleteNormally(stmt.Body) &&
-		c.statementsObserveNameExcept(stmt.Else, names, except) {
+		c.statementsObserveNameExcept(stmt.Else, live, except) {
 		return true
 	}
-	return c.statementsObserveNameExcept(stmt.Ensure, names, except)
+	return c.statementsObserveNameExcept(stmt.Ensure, live, except)
 }
 
 func (c *scriptChecker) applyDefiniteTryBindingKills(stmt *TryStmt, names map[string]struct{}) {
-	if statementsProvenNonRaising(stmt.Body) {
+	if tryBodyDefinitelyRuns(stmt.Body) {
 		c.applyDefiniteBindingKills(stmt.Body, names)
 	}
 	c.applyDefiniteBindingKills(stmt.Ensure, names)
+}
+
+func tryBodyDefinitelyRuns(body []Statement) bool {
+	for _, stmt := range body {
+		switch typed := stmt.(type) {
+		case *AssignStmt:
+			continue
+		case *ExprStmt:
+			if !expressionProvenNonRaising(typed.Expr) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (c *scriptChecker) applyDefiniteBindingKills(statements []Statement, names map[string]struct{}) {
@@ -1497,6 +1519,14 @@ func (c *scriptChecker) expressionObservesName(expr Expression, names map[string
 	case *CallExpr:
 		if c.expressionObservesName(typed.Callee, names) {
 			return true
+		}
+		if member, ok := typed.Callee.(*MemberExpr); ok &&
+			!c.expressionProvablyCompletes(member.Object) {
+			return false
+		}
+		if _, ok := typed.Callee.(*CallExpr); ok &&
+			!c.expressionProvablyCompletes(typed.Callee) {
+			return false
 		}
 		for _, arg := range typed.Args {
 			if c.expressionObservesName(arg, names) {
