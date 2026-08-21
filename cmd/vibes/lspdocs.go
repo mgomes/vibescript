@@ -1716,6 +1716,7 @@ type sourceScan struct {
 	inRescueHeader     bool
 	pendingRescueBind  bool
 	rescueBinds        []sourceRescueBind
+	afterBlockPipes    bool
 	afterBrace         bool
 	interpPercentOpen  byte
 	interpPercentClose byte
@@ -1770,6 +1771,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	inRescueHeader := sc.inRescueHeader
 	pendingRescueBind := sc.pendingRescueBind
 	rescueBinds := sc.rescueBinds
+	afterBlockPipes := sc.afterBlockPipes
 	afterBrace := sc.afterBrace
 	interpPercentOpen := sc.interpPercentOpen
 	interpPercentClose := sc.interpPercentClose
@@ -1822,11 +1824,13 @@ func (sc *sourceScan) tokens(s string) []string {
 			}
 			atStmtStart = false
 		case "rescue":
-			if n := len(rescueBinds); n > 0 {
-				restoreSourceRescueBind(&rescueBinds[n-1], locals)
+			if atStmtStart {
+				if n := len(rescueBinds); n > 0 {
+					restoreSourceRescueBind(&rescueBinds[n-1], locals)
+				}
+				inRescueHeader = true
+				pendingRescueBind = false
 			}
-			inRescueHeader = true
-			pendingRescueBind = false
 			atStmtStart = false
 			inLoopHeader = false
 			afterDef = false
@@ -1868,6 +1872,7 @@ func (sc *sourceScan) tokens(s string) []string {
 				}
 				seedImplicitBlockLocals(cloned)
 				locals = cloned
+				afterBlockPipes = true
 			}
 			atStmtStart = false
 		case "end":
@@ -1952,6 +1957,9 @@ func (sc *sourceScan) tokens(s string) []string {
 				inForTargets = false
 			}
 			applyOpener(tok)
+			if tok != "do" {
+				afterBlockPipes = false
+			}
 		}
 	}
 	for i := 0; i < len(s); i++ {
@@ -2539,6 +2547,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			applyOpener(";")
 			afterValue = false
 			afterDot = false
+			afterBlockPipes = false
 			continue
 		}
 		r, size := utf8.DecodeRuneInString(s[i:])
@@ -2594,7 +2603,10 @@ func (sc *sourceScan) tokens(s string) []string {
 			afterBrace = false
 			continue
 		case '|':
-			if !inPipes {
+			if inPipes {
+				inParamDefault = false
+				inPipes = false
+			} else if afterBlockPipes {
 				var parent map[string]struct{}
 				if n := len(localsStack); n > 0 {
 					parent = localsStack[n-1]
@@ -2607,15 +2619,15 @@ func (sc *sourceScan) tokens(s string) []string {
 					}
 					delete(locals, name)
 				}
-			} else {
-				inParamDefault = false
+				inPipes = true
 			}
-			inPipes = !inPipes
+			afterBlockPipes = false
 			afterBrace = false
 		case '{':
 			afterDef = false
 			afterBrace = true
 			if afterValue {
+				afterBlockPipes = true
 				openers = append(openers, "brace")
 				localsStack = append(localsStack, locals)
 				cloned := make(map[string]struct{}, len(locals))
@@ -2672,6 +2684,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.inRescueHeader = inRescueHeader
 	sc.pendingRescueBind = pendingRescueBind
 	sc.rescueBinds = rescueBinds
+	sc.afterBlockPipes = afterBlockPipes
 	sc.afterBrace = afterBrace
 	sc.interpPercentOpen = interpPercentOpen
 	sc.interpPercentClose = interpPercentClose
