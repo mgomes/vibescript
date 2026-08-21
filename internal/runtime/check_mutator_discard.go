@@ -190,7 +190,7 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 				}
 			}
 		}
-	case "sort":
+	case "sort", "slice_when", "chunk_while":
 		if length, ok := staticCollectionLength(receiver); ok {
 			return length >= 2
 		}
@@ -212,11 +212,13 @@ func staticIteratorCallMayComplete(property string, call *CallExpr) bool {
 	case "each", "each_key", "each_value", "each_pair", "reverse_each", "map",
 		"select", "reject", "filter":
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
-	case "each_with_index", "cycle":
+	case "cycle":
 		return len(call.Args) <= 1 && len(call.KwArgs) == 0
+	case "each_with_index":
+		return len(call.Args) == 0 && len(call.KwArgs) == 0
 	case "each_cons", "each_slice":
 		return staticWindowSizeMayRun(call) && len(call.KwArgs) == 0
-	case "grep":
+	case "grep", "grep_v":
 		return len(call.Args) == 1 && len(call.KwArgs) == 0
 	default:
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
@@ -659,9 +661,28 @@ func (c *scriptChecker) discardedMutatorSiteMayComplete(site discardedMutatorSit
 		return false
 	}
 	if site.call == nil || site.member == nil {
+		return collectionMutatorCallActuallyWrites(site.member.Property, site.call)
+	}
+	if !c.collectionMutatorCallShapeMayComplete(site.member.Object, site.member.Property, site.call) {
+		return false
+	}
+	return collectionMutatorCallActuallyWrites(site.member.Property, site.call)
+}
+
+func collectionMutatorCallActuallyWrites(property string, call *CallExpr) bool {
+	switch property {
+	case "push", "append", "prepend", "unshift":
+		if call == nil {
+			return false
+		}
+		expanded := call
+		if got, ok := staticExpandedCall(call); ok {
+			expanded = got
+		}
+		return len(expanded.Args) >= 1
+	default:
 		return true
 	}
-	return c.collectionMutatorCallShapeMayComplete(site.member.Object, site.member.Property, site.call)
 }
 
 func (c *scriptChecker) collectionMutatorCallShapeMayComplete(receiver Expression, property string, call *CallExpr) bool {
@@ -1357,6 +1378,9 @@ func tryBodyDefinitelyRuns(body []Statement) bool {
 	for _, stmt := range body {
 		switch typed := stmt.(type) {
 		case *AssignStmt:
+			if !expressionProvenNonRaising(typed.Value) {
+				return false
+			}
 			continue
 		case *ExprStmt:
 			if !expressionProvenNonRaising(typed.Expr) {
@@ -1373,7 +1397,7 @@ func (c *scriptChecker) applyDefiniteBindingKills(statements []Statement, names 
 	for _, statement := range statements {
 		switch typed := statement.(type) {
 		case *AssignStmt:
-			if typed.Operator == tokenNone {
+			if typed.Operator == tokenNone && expressionProvenNonRaising(typed.Value) {
 				removeBindingTargetNames(typed.Target, names)
 			}
 		case *IfStmt:
