@@ -1251,7 +1251,11 @@ func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
 		scan.afterValue = false
 		scan.afterDot = false
 		prev := ""
-		for _, tok := range scan.tokens(lineAt(lines, line-1)) {
+		text := lineAt(lines, line-1)
+		if line == start.Line {
+			text = lineFromColumn(text, start.Column)
+		}
+		for _, tok := range scan.tokens(text) {
 			switch tok {
 			case "def", "class", "module", "begin", "case":
 				depth++
@@ -1296,6 +1300,32 @@ func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
 		inLoopHeader = false
 	}
 	return classEnd
+}
+
+func lineFromColumn(line string, column int) string {
+	if column <= 1 {
+		return line
+	}
+	idx := column - 1
+	if idx >= len(line) {
+		return ""
+	}
+	return line[idx:]
+}
+
+func slashStartsRegex(afterValue, afterSpace bool, s string, i int) bool {
+	if !afterValue {
+		return true
+	}
+	if !afterSpace || i+1 >= len(s) {
+		return false
+	}
+	switch s[i+1] {
+	case ' ', '\t', '\r', '\n':
+		return false
+	default:
+		return true
+	}
 }
 
 func sourceClosedBeforeColumn(lines []string, start ast.Position, hoverLine, hoverColumn int) bool {
@@ -1370,6 +1400,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	escape := sc.escape
 	afterValue := sc.afterValue
 	afterDot := sc.afterDot
+	afterSpace := false
 	flush := func(i int) {
 		if start >= 0 {
 			tok := s[start:i]
@@ -1447,6 +1478,7 @@ func (sc *sourceScan) tokens(s string) []string {
 				}
 				afterValue = true
 				afterDot = false
+				afterSpace = false
 				continue
 			}
 		}
@@ -1467,6 +1499,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			}
 			start = -1
 			afterValue = true
+			afterSpace = false
 			i--
 			continue
 		}
@@ -1474,9 +1507,15 @@ func (sc *sourceScan) tokens(s string) []string {
 			flush(i)
 			inStr = c
 			afterValue = true
+			afterSpace = false
 			continue
 		}
-		if c == '/' && !afterValue {
+		if c == ' ' || c == '\t' {
+			flush(i)
+			afterSpace = true
+			continue
+		}
+		if c == '/' && slashStartsRegex(afterValue, afterSpace, s, i) {
 			flush(i)
 			i++
 			escape = false
@@ -1503,8 +1542,10 @@ func (sc *sourceScan) tokens(s string) []string {
 			}
 			i--
 			afterValue = true
+			afterSpace = false
 			continue
 		}
+		afterSpace = false
 		if c == '.' {
 			flush(i)
 			afterDot = true
@@ -1539,10 +1580,8 @@ func (sc *sourceScan) tokens(s string) []string {
 			continue
 		}
 		flush(i)
-		if c != ' ' && c != '\t' {
-			afterValue = false
-			afterDot = false
-		}
+		afterValue = false
+		afterDot = false
 	}
 	flush(len(s))
 	sc.inStr = inStr
@@ -1677,6 +1716,9 @@ func expressionContainsHover(expr ast.Expression, hoverLine, hoverColumn int) bo
 	case *ast.BinaryExpr:
 		return expressionContainsHover(e.Left, hoverLine, hoverColumn) ||
 			expressionContainsHover(e.Right, hoverLine, hoverColumn)
+	case *ast.RangeExpr:
+		return expressionContainsHover(e.Start, hoverLine, hoverColumn) ||
+			expressionContainsHover(e.End, hoverLine, hoverColumn)
 	case *ast.ConditionalExpr:
 		return expressionContainsHover(e.Condition, hoverLine, hoverColumn) ||
 			expressionContainsHover(e.Consequent, hoverLine, hoverColumn) ||
