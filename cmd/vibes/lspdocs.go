@@ -1036,7 +1036,8 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 		i++
 	}
 	if i >= len(runes) || runes[i] == '#' || runes[i] == ';' {
-		return !classBodyHasLocal(st, word, line+1, start+1)
+		return !classBodyHasLocal(st, word, line+1, start+1) &&
+			!classBodyHasAccessor(st, word)
 	}
 	switch runes[i] {
 	case '=':
@@ -1170,6 +1171,20 @@ func classBodyHasLocal(st *ast.ClassStmt, word string, hoverLine, hoverColumn in
 		return false
 	}
 	return statementsBindLocal(st.Body, word, hoverLine, hoverColumn)
+}
+
+func classBodyHasAccessor(st *ast.ClassStmt, word string) bool {
+	if st == nil || word == "" {
+		return false
+	}
+	for _, prop := range st.Properties {
+		for _, name := range prop.Names {
+			if name.Name == word {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func statementsBindLocal(stmts []ast.Statement, word string, hoverLine, hoverColumn int) bool {
@@ -1429,6 +1444,7 @@ type sourceScan struct {
 	inRegex      bool
 	hitComment   bool
 	innerStr     byte
+	inCharClass  bool
 }
 
 func (sc *sourceScan) tokens(s string) []string {
@@ -1445,6 +1461,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	interpDepth := sc.interpDepth
 	innerStr := sc.innerStr
 	hitComment := false
+	inCharClass := sc.inCharClass
 	afterSpace := false
 	flush := func(i int) {
 		if start >= 0 {
@@ -1545,6 +1562,16 @@ func (sc *sourceScan) tokens(s string) []string {
 				escape = true
 				continue
 			}
+			if inCharClass {
+				if c == ']' {
+					inCharClass = false
+				}
+				continue
+			}
+			if c == '[' {
+				inCharClass = true
+				continue
+			}
 			if c == '/' {
 				inRegex = false
 				afterValue = true
@@ -1627,6 +1654,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			i++
 			escape = false
 			closed := false
+			inCharClass = false
 			for i < len(s) {
 				ch := s[i]
 				if escape {
@@ -1636,6 +1664,18 @@ func (sc *sourceScan) tokens(s string) []string {
 				}
 				if ch == '\\' {
 					escape = true
+					i++
+					continue
+				}
+				if inCharClass {
+					if ch == ']' {
+						inCharClass = false
+					}
+					i++
+					continue
+				}
+				if ch == '[' {
+					inCharClass = true
 					i++
 					continue
 				}
@@ -1719,6 +1759,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.interpDepth = interpDepth
 	sc.innerStr = innerStr
 	sc.hitComment = hitComment
+	sc.inCharClass = inCharClass
 	return tokens
 }
 
@@ -1944,6 +1985,12 @@ func expressionContainsHover(expr ast.Expression, hoverLine, hoverColumn int) bo
 			expressionContainsHover(e.Fallback, hoverLine, hoverColumn)
 	case *ast.SplatArg:
 		return expressionContainsHover(e.Value, hoverLine, hoverColumn)
+	case *ast.YieldExpr:
+		for _, arg := range e.Args {
+			if expressionContainsHover(arg, hoverLine, hoverColumn) {
+				return true
+			}
+		}
 	case *ast.BlockLiteral:
 		return lineInStatements(e.Body, nil, hoverLine, hoverColumn)
 	case *ast.IfExpr:
