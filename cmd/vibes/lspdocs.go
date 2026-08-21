@@ -2024,6 +2024,7 @@ func (sc *sourceScan) tokens(s string) []string {
 		}
 	}
 	var interpAssignToks []string
+	interpInLoopHeader := false
 	pushInterpBlock := func(kind string) {
 		openers = append(openers, kind)
 		localsStack = append(localsStack, locals)
@@ -2131,10 +2132,17 @@ func (sc *sourceScan) tokens(s string) []string {
 		switch name {
 		case "do":
 			interpAssignToks = interpAssignToks[:0]
+			if interpInLoopHeader {
+				interpInLoopHeader = false
+				afterValue = false
+				lastIdent = ""
+				return
+			}
 			pushInterpBlock("do")
 		case "if", "unless", "case", "begin", "while", "until", "for":
 			if !afterValue {
 				openers = append(openers, name)
+				interpInLoopHeader = name == "while" || name == "until" || name == "for"
 				afterValue = false
 				lastIdent = ""
 				return
@@ -2988,6 +2996,10 @@ func (sc *sourceScan) tokens(s string) []string {
 				lastIdent = ""
 				continue
 			}
+			afterValue = true
+			afterDot = false
+			lastIdent = ""
+			continue
 		case ';':
 			afterDef = false
 			afterBrace = false
