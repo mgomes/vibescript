@@ -640,6 +640,8 @@ func collectionMutatorCallShapeMayComplete(property string, call *CallExpr) bool
 	switch property {
 	case "clear":
 		return n == 0 && !kwargs && !block
+	case "push", "append", "prepend", "unshift":
+		return !kwargs
 	case "pop", "shift":
 		if n > 1 || kwargs {
 			return false
@@ -1082,6 +1084,36 @@ func ifExprObservesName(expr *IfExpr, names map[string]struct{}) bool {
 	return expressionObservesName(expr.Alternate, names)
 }
 
+func caseExprObservesName(expr *CaseExpr, names map[string]struct{}) bool {
+	if expressionObservesName(expr.Target, names) {
+		return true
+	}
+	if result, known := staticCaseExpressionResult(expr); known {
+		for _, clause := range expr.Clauses {
+			for _, candidate := range clause.Values {
+				if expressionObservesName(candidate.Expr, names) {
+					return true
+				}
+			}
+			if clause.Result == result {
+				return expressionObservesName(result, names)
+			}
+		}
+		return expressionObservesName(result, names)
+	}
+	for _, clause := range expr.Clauses {
+		for _, candidate := range clause.Values {
+			if expressionObservesName(candidate.Expr, names) {
+				return true
+			}
+		}
+		if expressionObservesName(clause.Result, names) {
+			return true
+		}
+	}
+	return expressionObservesName(expr.ElseExpr, names)
+}
+
 func withoutBlockParamNames(names map[string]struct{}, block *BlockLiteral) map[string]struct{} {
 	if block == nil || len(names) == 0 {
 		return names
@@ -1135,10 +1167,15 @@ func expressionObservesName(expr Expression, names map[string]struct{}) bool {
 		if typed.Block == nil {
 			return false
 		}
-		if member, ok := typed.Callee.(*MemberExpr); ok &&
-			isCollectionMutator(member.Property) &&
-			!mutatorInvokesSuppliedBlock(member.Property) {
-			return false
+		if member, ok := typed.Callee.(*MemberExpr); ok {
+			if isCollectionMutator(member.Property) &&
+				!mutatorInvokesSuppliedBlock(member.Property) {
+				return false
+			}
+			if blockResultDiscardingIterator(member.Property) &&
+				!staticIteratorMayYield(member.Property, member.Object, typed) {
+				return false
+			}
 		}
 		for _, param := range typed.Block.Params {
 			if expressionObservesName(param.DefaultVal, names) {
@@ -1163,25 +1200,17 @@ func expressionObservesName(expr Expression, names map[string]struct{}) bool {
 		return expressionObservesName(typed.Consequent, names) ||
 			expressionObservesName(typed.Alternate, names)
 	case *RescueExpr:
-		return expressionObservesName(typed.Body, names) ||
-			expressionObservesName(typed.Fallback, names)
+		if expressionObservesName(typed.Body, names) {
+			return true
+		}
+		if expressionProvenNonRaising(typed.Body) {
+			return false
+		}
+		return expressionObservesName(typed.Fallback, names)
 	case *IfExpr:
 		return ifExprObservesName(typed, names)
 	case *CaseExpr:
-		if expressionObservesName(typed.Target, names) {
-			return true
-		}
-		for _, clause := range typed.Clauses {
-			for _, candidate := range clause.Values {
-				if expressionObservesName(candidate.Expr, names) {
-					return true
-				}
-			}
-			if expressionObservesName(clause.Result, names) {
-				return true
-			}
-		}
-		return expressionObservesName(typed.ElseExpr, names)
+		return caseExprObservesName(typed, names)
 	case *BinaryExpr:
 		if expressionObservesName(typed.Left, names) {
 			return true
