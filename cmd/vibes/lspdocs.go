@@ -1637,6 +1637,24 @@ func (sc *sourceScan) tokens(s string) []string {
 					}
 					continue
 				}
+				if inRegex {
+					if escape {
+						escape = false
+						continue
+					}
+					if c == '\\' {
+						escape = true
+						continue
+					}
+					if c == '/' {
+						inRegex = false
+					}
+					continue
+				}
+				if c == '/' && slashStartsRegex(false, true, s, i) {
+					inRegex = true
+					continue
+				}
 				if c == '"' || c == '\'' {
 					innerStr = c
 					continue
@@ -1746,6 +1764,16 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				inCharClassStart = false
+				if c == '[' && i+1 < len(s) && s[i+1] == ':' {
+					i += 2
+					for i+1 < len(s) && (s[i] != ':' || s[i+1] != ']') {
+						i++
+					}
+					if i+1 < len(s) {
+						i++
+					}
+					continue
+				}
 				if c == ']' {
 					inCharClass = false
 				}
@@ -1907,6 +1935,17 @@ func (sc *sourceScan) tokens(s string) []string {
 						continue
 					}
 					inCharClassStart = false
+					if ch == '[' && i+1 < len(s) && s[i+1] == ':' {
+						i += 2
+						for i+1 < len(s) && (s[i] != ':' || s[i+1] != ']') {
+							i++
+						}
+						if i+1 < len(s) {
+							i++
+						}
+						i++
+						continue
+					}
 					if ch == ']' {
 						inCharClass = false
 					}
@@ -2195,7 +2234,7 @@ func memberPropertyContainsHover(e *ast.MemberExpr, hoverLine, hoverColumn int) 
 	if hoverColumn <= 0 {
 		return true
 	}
-	return hoverColumn >= start && hoverColumn < start+len(e.Property)
+	return hoverColumn >= start && hoverColumn < start+utf8.RuneCountInString(e.Property)
 }
 
 func scopePropertyContainsHover(e *ast.ScopeExpr, hoverLine, hoverColumn int) bool {
@@ -2210,7 +2249,7 @@ func scopePropertyContainsHover(e *ast.ScopeExpr, hoverLine, hoverColumn int) bo
 	if hoverColumn <= 0 {
 		return true
 	}
-	return hoverColumn >= start && hoverColumn < start+len(e.Property)
+	return hoverColumn >= start && hoverColumn < start+utf8.RuneCountInString(e.Property)
 }
 
 func expressionSourceEnd(expr ast.Expression) (line, col int, ok bool) {
@@ -2219,13 +2258,13 @@ func expressionSourceEnd(expr ast.Expression) (line, col int, ok bool) {
 	}
 	switch e := expr.(type) {
 	case *ast.Identifier:
-		return e.Pos().Line, e.Pos().Column + len(e.Name), true
+		return e.Pos().Line, e.Pos().Column + utf8.RuneCountInString(e.Name), true
 	case *ast.ScopeExpr:
 		line, col, ok = expressionSourceEnd(e.Object)
 		if !ok || line != e.Object.Pos().Line {
 			return 0, 0, false
 		}
-		return line, col + 2 + len(e.Property), true
+		return line, col + 2 + utf8.RuneCountInString(e.Property), true
 	default:
 		return 0, 0, false
 	}
@@ -2372,7 +2411,7 @@ func expressionContainsHover(expr ast.Expression, hoverLine, hoverColumn int) bo
 			return true
 		}
 		start := e.Pos().Column
-		return hoverColumn >= start && hoverColumn < start+len(e.Name)
+		return hoverColumn >= start && hoverColumn < start+utf8.RuneCountInString(e.Name)
 	}
 	return false
 }
