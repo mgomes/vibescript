@@ -127,12 +127,10 @@ func (c *scriptChecker) currentBlockDiscardsStatement(stmt *ExprStmt) bool {
 	if !enclosing.discardsResults {
 		return false
 	}
-	for _, bodyStmt := range enclosing.block.Body {
-		if bodyStmt == Statement(stmt) {
-			return true
-		}
-	}
-	return false
+	leaves := make(map[Statement]struct{})
+	collectImplicitReturnLeaves(enclosing.block.Body, leaves)
+	_, ok := leaves[stmt]
+	return ok
 }
 
 // mutatorDiscardCallFacts reports whether call is a builtin iterator that
@@ -277,8 +275,13 @@ func projectHashPairOntoDestructure(out map[string]*TypeExpr, target *Destructur
 			elType = val
 		}
 		idx++
-		if ident, ok := el.Target.(*Identifier); ok && ident.Name != "" && elType != nil {
-			out[ident.Name] = elType
+		switch nested := el.Target.(type) {
+		case *Identifier:
+			if nested.Name != "" && elType != nil {
+				out[nested.Name] = elType
+			}
+		case *DestructureTarget:
+			projectYieldOntoDestructure(out, nested, elType)
 		}
 	}
 }
@@ -491,7 +494,12 @@ func (c *scriptChecker) blockParamMutatorDiscardVerdict(function string, stmt *E
 	if index < 0 {
 		return nil
 	}
-	if statementsReferenceAnyName(body[index+1:], map[string]struct{}{root: {}}) {
+	names := map[string]struct{}{root: {}}
+	if statementsReferenceAnyName(body[index+1:], names) {
+		return nil
+	}
+	_, call := discardedMemberCall(stmt.Expr)
+	if call != nil && call.Block != nil && statementsReferenceAnyName(call.Block.Body, names) {
 		return nil
 	}
 	if c.provablyNotCollection(member.Object) {
@@ -723,7 +731,28 @@ func memberCollectionEntryType(obj *TypeExpr, property string) *TypeExpr {
 // out temporaries, but the nominal arms carry too little here to build a
 // warning on.
 func (c *scriptChecker) provablyLeavesCollectionStorage(expr Expression) bool {
-	return typeExprArmsAll(c.inferExpressionType(expr), func(arm *TypeExpr) bool {
+	ty := c.inferExpressionType(expr)
+	if ty == nil {
+		if ident, ok := expr.(*Identifier); ok {
+			ty = c.blockParamYieldType(ident.Name)
+		}
+	}
+	return typeExprLeavesCollectionStorage(ty)
+}
+
+func (c *scriptChecker) blockParamYieldType(name string) *TypeExpr {
+	if len(c.mutatorDiscardBlocks) == 0 {
+		return nil
+	}
+	enclosing := &c.mutatorDiscardBlocks[len(c.mutatorDiscardBlocks)-1]
+	if enclosing.yieldTypes == nil {
+		return nil
+	}
+	return enclosing.yieldTypes[name]
+}
+
+func typeExprLeavesCollectionStorage(ty *TypeExpr) bool {
+	return typeExprArmsAll(ty, func(arm *TypeExpr) bool {
 		switch arm.Kind {
 		case TypeArray, TypeString, TypeInt, TypeFloat, TypeNumber, TypeBool,
 			TypeSymbol, TypeNil, TypeRange, TypeTime, TypeDuration, TypeMoney,

@@ -131,6 +131,18 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter v",
 		},
 		{
+			name:   "nested hash pair value destructure",
+			source: "h = {a: [[1], [2]]}\nh.each { |(k, (head, tail))| tail.push(3) }\nputs \"done\"",
+			want:   "mutating block parameter tail",
+		},
+		{
+			name: "builtin each after user each with conditional leaf",
+			source: "class Widget\n  def each()\n    @saved = yield [1]\n    @saved\n  end\nend\n" +
+				"def apply(x, flag)\n  x.each { |row| if flag; row.dup.push(0); else; row.dup.clear; end }\nend\n" +
+				"apply(Widget.new, true)\napply([[1]], true)\nputs \"done\"",
+			want: "push updates a temporary",
+		},
+		{
 			name: "builtin each after a user each of the same body",
 			source: "class Widget\n  def each()\n    @saved = yield [1]\n    @saved\n  end\nend\n" +
 				"def apply(x)\n  x.each { |row| row.push(0) }\nend\n" +
@@ -271,6 +283,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			source: "class Widget\n  def push(x)\n    @seen = x\n  end\nend\n" +
 				"def f(flag)\n  (flag ? [] : Widget.new).push(1)\nend\n" +
 				"f(true)\nputs \"done\"",
+		},
+		{
+			name:   "mutator block reads the parameter",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.fill { |i| puts row; i } }\nputs \"done\"",
 		},
 		{
 			name: "conditional uppercase local is addressable",
