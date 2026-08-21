@@ -1046,6 +1046,12 @@ func (c *scriptChecker) statementsObserveNameExcept(statements []Statement, name
 			observed = c.whileStmtObservesName(typed, names, except)
 		case *UntilStmt:
 			observed = c.untilStmtObservesName(typed, names, except)
+		case *ForStmt:
+			observed = c.expressionObservesName(typed.Iterable, names)
+			if !observed {
+				removeBindingTargetNames(typed.Target, names)
+				observed = c.statementsObserveNameExcept(typed.Body, names, except)
+			}
 		case *ReturnStmt:
 			observed = c.expressionObservesName(typed.Value, names)
 		case *RaiseStmt:
@@ -1216,9 +1222,11 @@ func (c *scriptChecker) tryStmtObservesName(stmt *TryStmt, names map[string]stru
 	if c.statementsObserveNameExcept(stmt.Body, names, except) {
 		return true
 	}
-	for _, clause := range stmt.Rescues {
-		if c.statementsObserveNameExcept(clause.Body, names, except) {
-			return true
+	if !statementsProvenNonRaising(stmt.Body) {
+		for _, clause := range stmt.Rescues {
+			if c.statementsObserveNameExcept(clause.Body, names, except) {
+				return true
+			}
 		}
 	}
 	if c.statementsObserveNameExcept(stmt.Else, names, except) {
@@ -1228,7 +1236,9 @@ func (c *scriptChecker) tryStmtObservesName(stmt *TryStmt, names map[string]stru
 }
 
 func (c *scriptChecker) applyDefiniteTryBindingKills(stmt *TryStmt, names map[string]struct{}) {
-	c.applyDefiniteBindingKills(stmt.Body, names)
+	if statementsProvenNonRaising(stmt.Body) {
+		c.applyDefiniteBindingKills(stmt.Body, names)
+	}
 	c.applyDefiniteBindingKills(stmt.Ensure, names)
 }
 

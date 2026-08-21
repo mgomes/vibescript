@@ -234,6 +234,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later for-loop overwrite is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); for row in [1]; puts row; end }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later non-raising try rescue is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); begin; nil; rescue; puts row; end }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "later read after a nested return is not an observation",
 			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each do |row|\n    if flag\n      row.push(0)\n      return nil\n    end\n    puts row\n  end\nend\nf(true)\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -629,6 +639,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "later rescue after a raising body observes the rebound parameter",
 			source: "rows = [[1], [2]]\nrows.each do |row|\n  begin\n    row.push(0)\n    raise \"x\"\n  rescue\n    puts row\n  end\nend\nputs \"done\"",
+		},
+		{
+			name:   "raise before try overwrite still observes later",
+			source: "def risky\n  raise \"x\"\nend\nrows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  begin\n    risky()\n    row = []\n  rescue\n    nil\n  end\n  puts row\nend\nputs \"done\"",
 		},
 		{
 			name:   "later rescue after a nested raising path observes the rebound parameter",
