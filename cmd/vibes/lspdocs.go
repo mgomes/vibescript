@@ -1569,18 +1569,19 @@ func sourceClosedBeforeColumn(lines []string, start ast.Position, hoverLine, hov
 }
 
 type sourceScan struct {
-	inStr        byte
-	percentOpen  byte
-	percentClose byte
-	percentDepth int
-	interpDepth  int
-	escape       bool
-	afterValue   bool
-	afterDot     bool
-	inRegex      bool
-	hitComment   bool
-	innerStr     byte
-	inCharClass  bool
+	inStr            byte
+	percentOpen      byte
+	percentClose     byte
+	percentDepth     int
+	interpDepth      int
+	escape           bool
+	afterValue       bool
+	afterDot         bool
+	inRegex          bool
+	hitComment       bool
+	innerStr         byte
+	inCharClass      bool
+	inCharClassStart bool
 }
 
 func (sc *sourceScan) tokens(s string) []string {
@@ -1598,6 +1599,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	innerStr := sc.innerStr
 	hitComment := false
 	inCharClass := sc.inCharClass
+	inCharClassStart := sc.inCharClassStart
 	afterSpace := false
 	flush := func(i int) {
 		if start >= 0 {
@@ -1736,6 +1738,14 @@ func (sc *sourceScan) tokens(s string) []string {
 				continue
 			}
 			if inCharClass {
+				if inCharClassStart && c == '^' {
+					continue
+				}
+				if inCharClassStart && c == ']' {
+					inCharClassStart = false
+					continue
+				}
+				inCharClassStart = false
 				if c == ']' {
 					inCharClass = false
 				}
@@ -1743,6 +1753,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			}
 			if c == '[' {
 				inCharClass = true
+				inCharClassStart = true
 				continue
 			}
 			if c == '/' {
@@ -1886,6 +1897,16 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				if inCharClass {
+					if inCharClassStart && ch == '^' {
+						i++
+						continue
+					}
+					if inCharClassStart && ch == ']' {
+						inCharClassStart = false
+						i++
+						continue
+					}
+					inCharClassStart = false
 					if ch == ']' {
 						inCharClass = false
 					}
@@ -1894,6 +1915,7 @@ func (sc *sourceScan) tokens(s string) []string {
 				}
 				if ch == '[' {
 					inCharClass = true
+					inCharClassStart = true
 					i++
 					continue
 				}
@@ -1979,6 +2001,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.innerStr = innerStr
 	sc.hitComment = hitComment
 	sc.inCharClass = inCharClass
+	sc.inCharClassStart = inCharClassStart
 	return tokens
 }
 
