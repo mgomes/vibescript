@@ -3580,6 +3580,14 @@ func TestHoverIncludeExtendDirectiveIsContextual(t *testing.T) {
 	if got := hoverValue(t, assignRHS, 1, 6); strings.Contains(got, "Removed mixin") {
 		t.Fatalf("hover(include on assignment RHS) = %q, must not serve mixin-removal docs", got)
 	}
+	assignIf := "class C\n  x = if true; include Naming; end\nend\n"
+	if got := hoverValue(t, assignIf, 1, 16); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include in assigned if) = %q, must not serve mixin-removal docs", got)
+	}
+	sameLineAssign := "class C\n  x = 1; include Naming\nend\n"
+	if got := hoverValue(t, sameLineAssign, 1, 9); !strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after same-line assignment) = %q, want mixin-removal docs", got)
+	}
 	nestedPercent := "class C\n  def run\n    values = %w[[x] end]\n    include Naming\n  end\nend\n"
 	if got := hoverValue(t, nestedPercent, 3, 4); strings.Contains(got, "Removed mixin") {
 		t.Fatalf("hover(include after nested percent) = %q, must not serve mixin-removal docs", got)

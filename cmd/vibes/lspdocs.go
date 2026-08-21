@@ -1545,6 +1545,19 @@ func expressionContainsHover(expr ast.Expression, hoverLine int) bool {
 		}
 	case *ast.BlockLiteral:
 		return lineInStatements(e.Body, nil, hoverLine, 0)
+	case *ast.IfExpr:
+		if expressionContainsHover(e.Condition, hoverLine) ||
+			expressionContainsHover(e.Consequent, hoverLine) ||
+			expressionContainsHover(e.Alternate, hoverLine) {
+			return true
+		}
+		for _, branch := range e.ElseIf {
+			if expressionContainsHover(branch.Condition, hoverLine) ||
+				expressionContainsHover(branch.Result, hoverLine) {
+				return true
+			}
+		}
+		return false
 	case *ast.CaseExpr:
 		if expressionContainsHover(e.Target, hoverLine) {
 			return true
