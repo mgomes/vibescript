@@ -144,6 +144,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later read in a statically false while is not an observation",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  while false\n    puts row\n  end\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later read in a statically true until is not an observation",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  until true\n    puts row\n  end\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "union of shape collection fields",
 			source: "def f(rows: array<{items: array<int>}> | array<{items: array<string>}>)\n  rows.each { |row| row.items.clear }\n  nil\nend\nf([{items: [1]}])\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -474,6 +484,18 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "each on an empty receiver never runs the block",
 			source: "[].each { |row| row.push(1) }\nputs \"done\"",
+		},
+		{
+			name:   "delete miss block observes the rebound parameter",
+			source: "rows = [[1], [2]]\nother = [1]\nrows.each { |row| row.push(0); other.delete(2) { puts row } }\nputs \"done\"",
+		},
+		{
+			name:   "pop with a negative count cannot update",
+			source: "[1].pop(-1)\nputs \"done\"",
+		},
+		{
+			name:   "shift with a non-integer count cannot update",
+			source: "[1].shift(\"x\")\nputs \"done\"",
 		},
 		{
 			name:   "case later clause after aborting match",

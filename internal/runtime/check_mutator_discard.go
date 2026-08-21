@@ -641,7 +641,13 @@ func collectionMutatorCallShapeMayComplete(property string, call *CallExpr) bool
 	case "clear":
 		return n == 0 && !kwargs && !block
 	case "pop", "shift":
-		return n <= 1 && !kwargs
+		if n > 1 || kwargs {
+			return false
+		}
+		if n == 1 {
+			return staticNonNegativeCountMayComplete(call.Args[0])
+		}
+		return true
 	case "delete":
 		return n == 1 && !kwargs
 	case "store":
@@ -968,6 +974,14 @@ func statementsObserveNameExcept(statements []Statement, names map[string]struct
 			if ifStmtObservesName(typed, names, except) {
 				return true
 			}
+		case *WhileStmt:
+			if whileStmtObservesName(typed, names, except) {
+				return true
+			}
+		case *UntilStmt:
+			if untilStmtObservesName(typed, names, except) {
+				return true
+			}
 		case *ReturnStmt:
 			if expressionObservesName(typed.Value, names) {
 				return true
@@ -1014,6 +1028,28 @@ func ifStmtObservesName(stmt *IfStmt, names map[string]struct{}, except *ExprStm
 		}
 	}
 	return statementsObserveNameExcept(stmt.Alternate, names, except)
+}
+
+func whileStmtObservesName(stmt *WhileStmt, names map[string]struct{}, except *ExprStmt) bool {
+	if expressionObservesName(stmt.Condition, names) {
+		return true
+	}
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if stmt.BodyFirst || !known || truthy {
+		return statementsObserveNameExcept(stmt.Body, names, except)
+	}
+	return false
+}
+
+func untilStmtObservesName(stmt *UntilStmt, names map[string]struct{}, except *ExprStmt) bool {
+	if expressionObservesName(stmt.Condition, names) {
+		return true
+	}
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if stmt.BodyFirst || !known || !truthy {
+		return statementsObserveNameExcept(stmt.Body, names, except)
+	}
+	return false
 }
 
 func ifExprObservesName(expr *IfExpr, names map[string]struct{}) bool {
@@ -1359,11 +1395,26 @@ func filterMutatorWritesAfterBlock(property string) bool {
 
 func mutatorInvokesSuppliedBlock(property string) bool {
 	switch property {
-	case "fill", "delete_if", "keep_if":
+	case "fill", "delete_if", "keep_if", "delete":
 		return true
 	default:
 		return false
 	}
+}
+
+func staticNonNegativeCountMayComplete(expr Expression) bool {
+	if value, exact := integerLiteralValue(expr); exact {
+		if value.IsBigInt() {
+			return false
+		}
+		return value.Int() >= 0
+	}
+	val, ok := staticLiteralValue(expr)
+	if !ok {
+		return true
+	}
+	n, err := valueToInt(val)
+	return err == nil && n >= 0
 }
 
 func indexCollectionElementType(obj *TypeExpr, expr *IndexExpr) *TypeExpr {
