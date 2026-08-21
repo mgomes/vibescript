@@ -454,7 +454,7 @@ func (c *scriptChecker) mutatorDiscardVerdict(function string, stmt *ExprStmt) f
 		return nil
 	}
 	var reports []func()
-	for _, site := range discardedMutatorCalls(stmt.Expr) {
+	for _, site := range c.discardedMutatorCalls(stmt.Expr) {
 		if report := c.oneMutatorDiscardVerdict(function, stmt, site.member, site.call); report != nil {
 			reports = append(reports, report)
 		}
@@ -544,8 +544,10 @@ type discardedMutatorSite struct {
 }
 
 // discardedMutatorCalls collects mutator sites in a statement expression,
-// including discarded arms of a ternary, if, case, or rescue expression.
-func discardedMutatorCalls(expr Expression) []discardedMutatorSite {
+// including discarded arms of a ternary, if, case, rescue, or short-circuit
+// expression. Unreachable arms follow the same truthiness decision as the
+// expression walk.
+func (c *scriptChecker) discardedMutatorCalls(expr Expression) []discardedMutatorSite {
 	var sites []discardedMutatorSite
 	var walk func(Expression)
 	walk = func(e Expression) {
@@ -558,12 +560,21 @@ func discardedMutatorCalls(expr Expression) []discardedMutatorSite {
 		}
 		switch typed := e.(type) {
 		case *ConditionalExpr:
-			walk(typed.Consequent)
-			walk(typed.Alternate)
+			truthy, known := c.inferredConditionTruthiness(typed.Condition)
+			if !known || truthy {
+				walk(typed.Consequent)
+			}
+			if !known || !truthy {
+				walk(typed.Alternate)
+			}
 		case *RescueExpr:
 			walk(typed.Body)
 			walk(typed.Fallback)
 		case *IfExpr:
+			if branch, ok := c.inferredIfExpressionBranch(typed); ok {
+				walk(branch)
+				return
+			}
 			walk(typed.Consequent)
 			for _, branch := range typed.ElseIf {
 				walk(branch.Result)
@@ -574,6 +585,12 @@ func discardedMutatorCalls(expr Expression) []discardedMutatorSite {
 				walk(clause.Result)
 			}
 			walk(typed.ElseExpr)
+		case *BinaryExpr:
+			if typed.Operator == tokenAnd || typed.Operator == tokenOr {
+				if binaryRightMayEvaluate(typed) && !c.binaryRightUnreachable(typed) {
+					walk(typed.Right)
+				}
+			}
 		}
 	}
 	walk(expr)
@@ -619,11 +636,29 @@ func statementsAfterObserveName(body []Statement, stmt *ExprStmt, names map[stri
 					return true
 				}
 			case *TryStmt:
-				nested := search(typed.Body) || search(typed.Else) || search(typed.Ensure)
-				for _, clause := range typed.Rescues {
-					nested = search(clause.Body) || nested
+				inBody := search(typed.Body)
+				inElse := false
+				inRescue := false
+				inEnsure := false
+				if !inBody {
+					inElse = search(typed.Else)
 				}
-				if nested {
+				if !inBody && !inElse {
+					for _, clause := range typed.Rescues {
+						if search(clause.Body) {
+							inRescue = true
+							break
+						}
+					}
+				}
+				if !inBody && !inElse && !inRescue {
+					inEnsure = search(typed.Ensure)
+				}
+				if inBody || inElse || inRescue || inEnsure {
+					if (inBody || inElse || inRescue) &&
+						statementsObserveName(typed.Ensure, names) {
+						observes = true
+					}
 					if statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
@@ -631,21 +666,24 @@ func statementsAfterObserveName(body []Statement, stmt *ExprStmt, names map[stri
 				}
 			case *WhileStmt:
 				if search(typed.Body) {
-					if statementsObserveName(stmts[i+1:], names) {
+					if loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) ||
+						statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
 					return true
 				}
 			case *UntilStmt:
 				if search(typed.Body) {
-					if statementsObserveName(stmts[i+1:], names) {
+					if loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) ||
+						statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
 					return true
 				}
 			case *ForStmt:
 				if search(typed.Body) {
-					if statementsObserveName(stmts[i+1:], names) {
+					if statementsObserveNameExcept(typed.Body, names, stmt) ||
+						statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
 					return true
@@ -659,7 +697,19 @@ func statementsAfterObserveName(body []Statement, stmt *ExprStmt, names map[stri
 }
 
 func statementsObserveName(statements []Statement, names map[string]struct{}) bool {
+	return statementsObserveNameExcept(statements, names, nil)
+}
+
+func loopBackEdgeObservesName(condition Expression, body []Statement, stmt *ExprStmt, names map[string]struct{}) bool {
+	return expressionReferencesAnyName(condition, names) ||
+		statementsObserveNameExcept(body, names, stmt)
+}
+
+func statementsObserveNameExcept(statements []Statement, names map[string]struct{}, except *ExprStmt) bool {
 	for _, statement := range statements {
+		if except != nil && statement == Statement(except) {
+			continue
+		}
 		switch typed := statement.(type) {
 		case *AssignStmt:
 			if assignmentTargetObservesName(typed.Target, names) ||
@@ -672,13 +722,13 @@ func statementsObserveName(statements []Statement, names map[string]struct{}) bo
 			}
 		case *IfStmt:
 			if expressionReferencesAnyName(typed.Condition, names) ||
-				statementsObserveName(typed.Consequent, names) ||
-				statementsObserveName(typed.Alternate, names) {
+				statementsObserveNameExcept(typed.Consequent, names, except) ||
+				statementsObserveNameExcept(typed.Alternate, names, except) {
 				return true
 			}
 			for _, branch := range typed.ElseIf {
 				if expressionReferencesAnyName(branch.Condition, names) ||
-					statementsObserveName(branch.Consequent, names) {
+					statementsObserveNameExcept(branch.Consequent, names, except) {
 					return true
 				}
 			}

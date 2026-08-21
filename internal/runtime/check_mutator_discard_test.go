@@ -69,6 +69,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "push updates a temporary",
 		},
 		{
+			name:   "statically selected ternary arm",
+			source: "true ? [1].push(2) : [3].clear\nputs \"done\"",
+			want:   "push updates a temporary",
+		},
+		{
+			name:   "short-circuit and result",
+			source: "true && [1].push(2)\nputs \"done\"",
+			want:   "push updates a temporary",
+		},
+		{
 			name:   "union of array-of-array arms",
 			source: "def f(rows: array<array<int>> | array<array<string>>)\n  rows.each { |row| row.clear }\n  nil\nend\nf([[1]])\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -252,6 +262,22 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "block reads the parameter after the mutation",
 			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  puts row\nend\nputs \"done\"",
+		},
+		{
+			name:   "unreachable short-circuit mutator",
+			source: "true || [1].push(2)\nputs \"done\"",
+		},
+		{
+			name:   "unreachable ternary alternate",
+			source: "true ? 1 : [3].clear\nputs \"done\"",
+		},
+		{
+			name:   "ensure observes the rebound parameter",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  begin\n    row.push(0)\n  ensure\n    puts row\n  end\nend\nputs \"done\"",
+		},
+		{
+			name:   "while condition observes the rebound parameter",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  while row.length < 3\n    row.push(0)\n  end\nend\nputs \"done\"",
 		},
 		{
 			name:   "map block result carries the mutation",
