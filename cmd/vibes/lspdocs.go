@@ -2870,7 +2870,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			lastIdent = ""
 			continue
 		case '<':
-			if inParams && inParamDefault && !fromEqualsDefault {
+			if (inParams || inPipes) && inParamDefault && !fromEqualsDefault {
 				genericDepth++
 			}
 		case '>':
@@ -2879,7 +2879,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			}
 		case ',':
 			if genericDepth == 0 && collectionDepth == 0 &&
-				((inParams && paramDepth <= 1) || (inPipes && paramDepth == 0)) {
+				((inParams && paramDepth <= 1) || inPipes) {
 				inParamDefault = false
 				fromEqualsDefault = false
 			}
