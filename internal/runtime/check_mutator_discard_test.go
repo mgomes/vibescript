@@ -304,6 +304,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "fetch_values of a present key is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.fetch_values(:a) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later aborting binary left is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].clear(2) + row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "later aborting loop condition is not an observation",
 			source: "first = true\nrows = [[1], [2]]\nrows.each { |row| row.push(0); while first || [[1].clear(2), row]; first = false; end }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -822,6 +832,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "raising prefix still observes in rescue",
 			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each do |row|\n    begin\n      row.push(0)\n      if flag\n        raise \"x\"\n      end\n      row = []\n    rescue\n      puts row\n    end\n  end\nend\nf(true)\nputs \"done\"",
+		},
+		{
+			name:   "fill with a start selector still observes in the block",
+			source: "xs = [1]\nrows = [[1], [2]]\nrows.each { |row| row.push(0); xs.fill(0) { puts row; 9 } }\nputs \"done\"",
 		},
 		{
 			name:   "raise before try overwrite still observes later",

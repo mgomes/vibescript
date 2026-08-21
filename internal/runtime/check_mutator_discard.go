@@ -205,10 +205,15 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		return length >= 2
 	case "fetch":
 		return staticFetchFallbackMayRun(receiver, call)
-	case "fetch_values":
-		return call != nil && len(call.Args) > 0
 	case "merge":
 		return call != nil && len(call.Args) > 0
+	case "fetch_values":
+		return staticFetchValuesMayMiss(receiver, call)
+	case "fill":
+		if length, ok := staticCollectionLength(receiver); ok {
+			return length > 0
+		}
+		return true
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
 		return length > 0
@@ -273,9 +278,43 @@ func (c *scriptChecker) staticIteratorCallMayComplete(receiver Expression, prope
 		return len(call.KwArgs) == 0
 	case "merge":
 		return len(call.Args) >= 1 && len(call.KwArgs) == 0
+	case "fill":
+		return len(call.Args) <= 2 && len(call.KwArgs) == 0
 	default:
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
 	}
+}
+
+func staticFetchValuesMayMiss(receiver Expression, call *CallExpr) bool {
+	if call == nil || len(call.Args) == 0 {
+		return false
+	}
+	hash, ok := receiver.(*HashLiteral)
+	if !ok {
+		return true
+	}
+	present := make(map[string]struct{}, len(hash.Pairs))
+	for _, pair := range hash.Pairs {
+		key, ok := staticLiteralHashKey(pair.Key)
+		if !ok {
+			return true
+		}
+		present[key] = struct{}{}
+	}
+	for _, arg := range call.Args {
+		value, ok := staticLiteralValue(arg)
+		if !ok {
+			return true
+		}
+		key, err := hashKeyString(value)
+		if err != nil {
+			return true
+		}
+		if _, found := present[key]; !found {
+			return true
+		}
+	}
+	return false
 }
 
 func staticFetchFallbackMayRun(receiver Expression, call *CallExpr) bool {
@@ -1817,6 +1856,9 @@ func (c *scriptChecker) expressionObservesName(expr Expression, names map[string
 	case *BinaryExpr:
 		if c.expressionObservesName(typed.Left, names) {
 			return true
+		}
+		if !c.expressionProvablyCompletes(typed.Left) {
+			return false
 		}
 		if (typed.Operator == tokenAnd || typed.Operator == tokenOr) &&
 			!binaryRightMayEvaluate(typed) {
