@@ -680,7 +680,7 @@ func (c *scriptChecker) collectionMutatorCallShapeMayComplete(receiver Expressio
 		if n < 1 || kwargs {
 			return false
 		}
-		return staticInsertIndexMayComplete(call.Args[0])
+		return staticInsertIndexMayComplete(call.Args[0], receiver)
 	case "delete_if", "keep_if":
 		return n == 0 && !kwargs && block
 	case "fill":
@@ -884,13 +884,23 @@ func discardedMemberCall(expr Expression) (*MemberExpr, *CallExpr) {
 }
 
 func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprStmt, names map[string]struct{}) (found, observes bool) {
+	pathContinues := true
 	var search func([]Statement) bool
+	observeAfter := func(stmts []Statement, i int) {
+		if pathContinues && c.statementsObserveName(stmts[i+1:], names) {
+			observes = true
+		}
+		if pathContinues {
+			pathContinues = c.statementsMayCompleteNormally(stmts[i+1:])
+		}
+	}
 	search = func(stmts []Statement) bool {
 		for i, s := range stmts {
 			if s == Statement(stmt) {
 				if c.statementsObserveName(stmts[i+1:], names) {
 					observes = true
 				}
+				pathContinues = c.statementsMayCompleteNormally(stmts[i+1:])
 				return true
 			}
 			switch typed := s.(type) {
@@ -901,9 +911,7 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 				}
 				nested = search(typed.Alternate) || nested
 				if nested {
-					if c.statementsObserveName(stmts[i+1:], names) {
-						observes = true
-					}
+					observeAfter(stmts, i)
 					return true
 				}
 			case *TryStmt:
@@ -948,32 +956,47 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 						c.statementsObserveName(typed.Ensure, names) {
 						observes = true
 					}
-					if c.statementsObserveName(stmts[i+1:], names) {
+					if pathContinues && c.statementsObserveName(stmts[i+1:], names) {
 						observes = true
+					}
+					if pathContinues {
+						pathContinues = c.statementsMayCompleteNormally(stmts[i+1:])
 					}
 					return true
 				}
 			case *WhileStmt:
 				if search(typed.Body) {
-					if c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) ||
-						c.statementsObserveName(stmts[i+1:], names) {
+					if pathContinues &&
+						(c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) ||
+							c.statementsObserveName(stmts[i+1:], names)) {
 						observes = true
+					}
+					if pathContinues {
+						pathContinues = c.statementsMayCompleteNormally(stmts[i+1:])
 					}
 					return true
 				}
 			case *UntilStmt:
 				if search(typed.Body) {
-					if c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) ||
-						c.statementsObserveName(stmts[i+1:], names) {
+					if pathContinues &&
+						(c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) ||
+							c.statementsObserveName(stmts[i+1:], names)) {
 						observes = true
+					}
+					if pathContinues {
+						pathContinues = c.statementsMayCompleteNormally(stmts[i+1:])
 					}
 					return true
 				}
 			case *ForStmt:
 				if search(typed.Body) {
-					if c.statementsObserveNameExcept(typed.Body, names, stmt) ||
-						c.statementsObserveName(stmts[i+1:], names) {
+					if pathContinues &&
+						(c.statementsObserveNameExcept(typed.Body, names, stmt) ||
+							c.statementsObserveName(stmts[i+1:], names)) {
 						observes = true
+					}
+					if pathContinues {
+						pathContinues = c.statementsMayCompleteNormally(stmts[i+1:])
 					}
 					return true
 				}
@@ -1050,7 +1073,11 @@ func (c *scriptChecker) remainderMayCompleteNormally(body []Statement, stmt *Exp
 	if !ok {
 		return true
 	}
-	for _, statement := range rest {
+	return c.statementsMayCompleteNormally(rest)
+}
+
+func (c *scriptChecker) statementsMayCompleteNormally(stmts []Statement) bool {
+	for _, statement := range stmts {
 		if !c.statementFallsThrough(statement) {
 			return false
 		}
@@ -1857,7 +1884,7 @@ func staticHashReplaceArgMayComplete(expr Expression) bool {
 	return kind == KindHash || kind == KindObject
 }
 
-func staticInsertIndexMayComplete(expr Expression) bool {
+func staticInsertIndexMayComplete(expr, receiver Expression) bool {
 	val, ok := staticLiteralValue(expr)
 	if !ok {
 		return true
@@ -1865,8 +1892,18 @@ func staticInsertIndexMayComplete(expr Expression) bool {
 	if val.Kind() != KindInt && val.Kind() != KindFloat {
 		return false
 	}
-	_, err := valueToInt(val)
-	return err == nil
+	n, err := valueToInt(val)
+	if err != nil {
+		return false
+	}
+	if n >= 0 {
+		return true
+	}
+	length, ok := staticCollectionLength(receiver)
+	if !ok {
+		return true
+	}
+	return n+length+1 >= 0
 }
 
 func staticFillCallMayComplete(call *CallExpr) bool {
