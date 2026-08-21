@@ -3852,6 +3852,14 @@ func TestHoverIncludeExtendDirectiveIsContextual(t *testing.T) {
 	if got := hoverValue(t, indexAssignNotLocal, 0, 34); strings.Contains(got, "Removed mixin") {
 		t.Fatalf("hover(include after index assignment) = %q, must not serve mixin-removal docs", got)
 	}
+	interpHashComment := "class C\n  def run\n    text = \"#{\n#{ ignored\n1\n}\"\n  end\n  include Naming\nend\n"
+	if got := hoverValue(t, interpHashComment, 7, 2); !strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after interp #{ comment) = %q, want mixin-removal docs", got)
+	}
+	parenCallBrace := "class C; values.each() { total = 1 }; total /include Naming/; end\n"
+	if got := hoverValue(t, parenCallBrace, 0, 45); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after parenthesized call brace) = %q, must not serve mixin-removal docs", got)
+	}
 }
 
 func TestHoverBareAssignmentIsNotASetterCall(t *testing.T) {

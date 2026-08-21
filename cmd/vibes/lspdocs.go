@@ -1912,13 +1912,6 @@ func (sc *sourceScan) tokens(s string) []string {
 					break
 				}
 				if c == '#' {
-					if i+1 < len(s) && s[i+1] == '{' {
-						interpDepth++
-						afterValue = false
-						lastIdent = ""
-						i++
-						continue
-					}
 					break
 				}
 				if c == '"' || c == '\'' {
@@ -2036,13 +2029,6 @@ func (sc *sourceScan) tokens(s string) []string {
 					break
 				}
 				if c == '#' {
-					if i+1 < len(s) && s[i+1] == '{' {
-						interpDepth++
-						afterValue = false
-						lastIdent = ""
-						i++
-						continue
-					}
 					break
 				}
 				if c == '"' || c == '\'' {
@@ -2199,13 +2185,6 @@ func (sc *sourceScan) tokens(s string) []string {
 							continue
 						}
 						if ch == '#' {
-							if i+1 < len(s) && s[i+1] == '{' {
-								interpDepth++
-								afterValue = false
-								lastIdent = ""
-								i += 2
-								continue
-							}
 							break
 						}
 						if ch == '"' || ch == '\'' {
@@ -2474,6 +2453,15 @@ func (sc *sourceScan) tokens(s string) []string {
 					inParams = false
 				}
 			}
+			afterValue = true
+			afterDot = false
+			afterBrace = false
+			continue
+		case ']':
+			afterValue = true
+			afterDot = false
+			afterBrace = false
+			continue
 		case '|':
 			inPipes = !inPipes
 			afterBrace = false
