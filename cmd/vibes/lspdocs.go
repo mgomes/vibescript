@@ -2391,8 +2391,14 @@ func (sc *sourceScan) tokens(s string) []string {
 				continue
 			}
 			flush(i)
-			if identCanBeLocal(lastIdent) {
-				locals[lastIdent] = struct{}{}
+			for j := len(tokens) - 1; j >= 0; j-- {
+				tok := tokens[j]
+				if tok == ";" || tok == "=" || isControlKeyword(tok) {
+					break
+				}
+				if identCanBeLocal(tok) {
+					locals[tok] = struct{}{}
+				}
 			}
 			tokens = append(tokens, "=")
 			afterValue = false
