@@ -2568,8 +2568,9 @@ func (sc *sourceScan) tokens(s string) []string {
 		if size < 1 {
 			size = 1
 		}
-		identCont := start >= 0 && ast.IsIdentifierRune(r)
-		identStart := start < 0 && (ast.IsIdentifierStart(r) || r >= '0' && r <= '9')
+		identCont := start >= 0 && (ast.IsIdentifierRune(r) ||
+			r == '@' && start+1 == i && s[start] == '@')
+		identStart := start < 0 && (ast.IsIdentifierStart(r) || r == '@' || r >= '0' && r <= '9')
 		if identStart || identCont {
 			if start < 0 {
 				start = i
