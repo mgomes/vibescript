@@ -1016,7 +1016,8 @@ func assignmentFollowsWord(lines []string, line, character int) bool {
 // alone and is not a local. Assignment (`include = 1`) and uses outside
 // those containers stay ordinary identifiers.
 func mixinDirectiveContext(program *ast.Program, lines []string, line, character int, word string) bool {
-	if !inClassOrModuleBody(program, lines, line+1) {
+	st := mixinContainer(program, lines, line+1)
+	if st == nil {
 		return false
 	}
 	runes, _, end, ok := wordSpanAtPosition(lines, line, character)
@@ -1028,7 +1029,7 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 		i++
 	}
 	if i >= len(runes) {
-		return userSymbolHover(program, lines, word, line, character) == ""
+		return !classBodyHasLocal(st, word, line+1)
 	}
 	switch runes[i] {
 	case '=':
@@ -1040,16 +1041,14 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 	}
 }
 
-func inClassOrModuleBody(program *ast.Program, lines []string, hoverLine int) bool {
+func mixinContainer(program *ast.Program, lines []string, hoverLine int) *ast.ClassStmt {
 	if program == nil {
-		return false
+		return nil
 	}
 	fileEnd := len(lines) + 1
-	var covers func(st *ast.ClassStmt, start, end int) bool
-	covers = func(st *ast.ClassStmt, start, end int) bool {
-		if hoverLine > start && hoverLine <= end {
-			return true
-		}
+	var found *ast.ClassStmt
+	var walk func(st *ast.ClassStmt, start, end int)
+	walk = func(st *ast.ClassStmt, start, end int) {
 		siblingStarts := classChildStarts(st)
 		for _, nested := range st.Modules {
 			nestedEnd := end
@@ -1058,11 +1057,21 @@ func inClassOrModuleBody(program *ast.Program, lines []string, hoverLine int) bo
 					nestedEnd = sibling - 1
 				}
 			}
-			if covers(nested, nested.Position.Line, nestedEnd) {
-				return true
+			walk(nested, nested.Position.Line, nestedEnd)
+			if found != nil {
+				return
+			}
+			if hoverLine > nested.Position.Line && hoverLine <= nestedEnd {
+				return
 			}
 		}
-		return false
+		if hoverLine <= start || hoverLine > end {
+			return
+		}
+		if classMethodBodyContains(st, hoverLine, end) {
+			return
+		}
+		found = st
 	}
 	for i, stmt := range program.Statements {
 		st, ok := stmt.(*ast.ClassStmt)
@@ -1075,7 +1084,52 @@ func inClassOrModuleBody(program *ast.Program, lines []string, hoverLine int) bo
 				nextStart = pos.Line
 			}
 		}
-		if covers(st, st.Position.Line, nextStart-1) {
+		walk(st, st.Position.Line, nextStart-1)
+		if found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func classMethodBodyContains(st *ast.ClassStmt, hoverLine, classEnd int) bool {
+	starts := classChildStarts(st)
+	check := func(m *ast.FunctionStmt) bool {
+		mEnd := classEnd
+		for _, sibling := range starts {
+			if sibling > m.Position.Line && sibling-1 < mEnd {
+				mEnd = sibling - 1
+			}
+		}
+		return hoverLine > m.Position.Line && hoverLine <= mEnd
+	}
+	for _, m := range st.Methods {
+		if check(m) {
+			return true
+		}
+	}
+	for _, m := range st.ClassMethods {
+		if check(m) {
+			return true
+		}
+	}
+	return false
+}
+
+func classBodyHasLocal(st *ast.ClassStmt, word string, hoverLine int) bool {
+	if st == nil {
+		return false
+	}
+	for _, stmt := range st.Body {
+		if stmt.Pos().Line >= hoverLine {
+			continue
+		}
+		as, ok := stmt.(*ast.AssignStmt)
+		if !ok {
+			continue
+		}
+		id, ok := as.Target.(*ast.Identifier)
+		if ok && id.Name == word {
 			return true
 		}
 	}
