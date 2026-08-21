@@ -1391,6 +1391,14 @@ func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
 			continue
 		}
 		if line == start.Line {
+			if start.Column > 1 {
+				limit := columnToByte(text, start.Column)
+				if limit > 0 {
+					pre := sourceScan{}
+					pre.tokens(text[:limit])
+					scan.locals = pre.locals
+				}
+			}
 			text = lineFromColumn(text, start.Column)
 		}
 		for _, tok := range scan.tokens(text) {
@@ -1748,7 +1756,11 @@ func (sc *sourceScan) tokens(s string) []string {
 		switch tok {
 		case "def":
 			localsStack = append(localsStack, locals)
-			locals = map[string]struct{}{}
+			cloned := make(map[string]struct{}, len(locals))
+			for name := range locals {
+				cloned[name] = struct{}{}
+			}
+			locals = cloned
 			afterDef = true
 			afterDefName = false
 			inParams = false
@@ -2463,6 +2475,11 @@ func (sc *sourceScan) tokens(s string) []string {
 			afterBrace = false
 			continue
 		case '|':
+			if !inPipes {
+				for _, name := range []string{"it", "_1", "_2", "_3", "_4", "_5", "_6", "_7", "_8", "_9"} {
+					delete(locals, name)
+				}
+			}
 			inPipes = !inPipes
 			afterBrace = false
 		case '{':
