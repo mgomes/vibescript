@@ -1037,7 +1037,7 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 	}
 	if i >= len(runes) || runes[i] == '#' || runes[i] == ';' {
 		return !classBodyHasLocal(st, word, line+1, start+1) &&
-			!classBodyHasAccessor(st, word)
+			!classBodyHasAccessor(st, word, lines, line+1, start+1)
 	}
 	switch runes[i] {
 	case '=':
@@ -1173,18 +1173,43 @@ func classBodyHasLocal(st *ast.ClassStmt, word string, hoverLine, hoverColumn in
 	return statementsBindLocal(st.Body, word, hoverLine, hoverColumn)
 }
 
-func classBodyHasAccessor(st *ast.ClassStmt, word string) bool {
+func classBodyHasAccessor(st *ast.ClassStmt, word string, lines []string, hoverLine, hoverColumn int) bool {
 	if st == nil || word == "" {
 		return false
 	}
 	for _, prop := range st.Properties {
+		covers := false
 		for _, name := range prop.Names {
 			if name.Name == word {
-				return true
+				covers = true
+				break
 			}
+		}
+		if covers && propertyDeclCoversHover(lines, prop, hoverLine, hoverColumn) {
+			return true
 		}
 	}
 	return false
+}
+
+func propertyDeclCoversHover(lines []string, prop ast.PropertyDecl, hoverLine, hoverColumn int) bool {
+	if prop.Position.Line != hoverLine {
+		return false
+	}
+	line := lineAt(lines, hoverLine-1)
+	start := prop.Position.Column - 1
+	if start < 0 {
+		start = 0
+	}
+	if start > len(line) {
+		return false
+	}
+	semi := strings.IndexByte(line[start:], ';')
+	endCol := len(line) + 1
+	if semi >= 0 {
+		endCol = start + semi + 1
+	}
+	return hoverColumn > prop.Position.Column && hoverColumn < endCol
 }
 
 func statementsBindLocal(stmts []ast.Statement, word string, hoverLine, hoverColumn int) bool {
@@ -1532,6 +1557,10 @@ func (sc *sourceScan) tokens(s string) []string {
 			continue
 		}
 		if percentClose != 0 {
+			if c == '#' && i+1 < len(s) && s[i+1] == '{' {
+				i = skipInterpolation(s, i) - 1
+				continue
+			}
 			if escape {
 				escape = false
 				continue
@@ -1593,6 +1622,10 @@ func (sc *sourceScan) tokens(s string) []string {
 				for i < len(s) && depth > 0 {
 					if s[i] == '\\' && i+1 < len(s) {
 						i += 2
+						continue
+					}
+					if s[i] == '#' && i+1 < len(s) && s[i+1] == '{' {
+						i = skipInterpolation(s, i)
 						continue
 					}
 					if s[i] == open && open != close {
@@ -1791,6 +1824,53 @@ func sourceInsideLiteral(lines []string, hoverLine, hoverColumn int) bool {
 		scan.hitComment || scan.interpDepth > 0
 }
 
+func skipInterpolation(s string, i int) int {
+	if i+1 >= len(s) || s[i] != '#' || s[i+1] != '{' {
+		return i + 1
+	}
+	i += 2
+	depth := 1
+	inner := byte(0)
+	escape := false
+	for i < len(s) && depth > 0 {
+		c := s[i]
+		if inner != 0 {
+			if escape {
+				escape = false
+				i++
+				continue
+			}
+			if c == '\\' {
+				escape = true
+				i++
+				continue
+			}
+			if c == inner {
+				inner = 0
+			}
+			i++
+			continue
+		}
+		if c == '"' || c == '\'' {
+			inner = c
+			i++
+			continue
+		}
+		if c == '{' {
+			depth++
+			i++
+			continue
+		}
+		if c == '}' {
+			depth--
+			i++
+			continue
+		}
+		i++
+	}
+	return i
+}
+
 func percentLiteralCloser(open byte) byte {
 	switch open {
 	case '[':
@@ -1884,6 +1964,25 @@ func nestedControlContains(stmts []ast.Statement, lines []string, hoverLine, hov
 	return false
 }
 
+func memberPropertyContainsHover(e *ast.MemberExpr, hoverLine, hoverColumn int) bool {
+	if e == nil || e.Property == "" {
+		return false
+	}
+	line, col, ok := expressionSourceEnd(e.Object)
+	if !ok || line != hoverLine {
+		return false
+	}
+	sep := 1
+	if e.Safe {
+		sep = 2
+	}
+	start := col + sep
+	if hoverColumn <= 0 {
+		return true
+	}
+	return hoverColumn >= start && hoverColumn < start+len(e.Property)
+}
+
 func scopePropertyContainsHover(e *ast.ScopeExpr, hoverLine, hoverColumn int) bool {
 	if e == nil || e.Property == "" {
 		return false
@@ -1953,7 +2052,10 @@ func expressionContainsHover(expr ast.Expression, hoverLine, hoverColumn int) bo
 			}
 		}
 	case *ast.MemberExpr:
-		return expressionContainsHover(e.Object, hoverLine, hoverColumn)
+		if expressionContainsHover(e.Object, hoverLine, hoverColumn) {
+			return true
+		}
+		return memberPropertyContainsHover(e, hoverLine, hoverColumn)
 	case *ast.ScopeExpr:
 		if expressionContainsHover(e.Object, hoverLine, hoverColumn) {
 			return true
