@@ -1903,6 +1903,16 @@ func (sc *sourceScan) tokens(s string) []string {
 					interpPercentDepth = depth
 					break
 				}
+				if c == '#' {
+					if i+1 < len(s) && s[i+1] == '{' {
+						interpDepth++
+						afterValue = false
+						lastIdent = ""
+						i++
+						continue
+					}
+					break
+				}
 				if c == '"' || c == '\'' {
 					innerStr = c
 					afterValue = true
@@ -2015,6 +2025,16 @@ func (sc *sourceScan) tokens(s string) []string {
 					interpPercentOpen = open
 					interpPercentClose = close
 					interpPercentDepth = depth
+					break
+				}
+				if c == '#' {
+					if i+1 < len(s) && s[i+1] == '{' {
+						interpDepth++
+						afterValue = false
+						lastIdent = ""
+						i++
+						continue
+					}
 					break
 				}
 				if c == '"' || c == '\'' {
