@@ -1286,17 +1286,11 @@ func propertyDeclCoversHover(lines []string, prop ast.PropertyDecl, hoverLine, h
 		return false
 	}
 	line := lineAt(lines, hoverLine-1)
-	start := prop.Position.Column - 1
-	if start < 0 {
-		start = 0
-	}
-	if start > len(line) {
-		return false
-	}
-	semi := strings.IndexByte(line[start:], ';')
-	endCol := len(line) + 1
+	rest := lineFromColumn(line, prop.Position.Column)
+	semi := strings.IndexByte(rest, ';')
+	endCol := prop.Position.Column + utf8.RuneCountInString(rest)
 	if semi >= 0 {
-		endCol = start + semi + 1
+		endCol = prop.Position.Column + utf8.RuneCountInString(rest[:semi])
 	}
 	return hoverColumn > prop.Position.Column && hoverColumn < endCol
 }
@@ -1703,6 +1697,24 @@ func (sc *sourceScan) tokens(s string) []string {
 					if c == innerStr {
 						innerStr = 0
 					}
+					continue
+				}
+				if inRegex {
+					if escape {
+						escape = false
+						continue
+					}
+					if c == '\\' {
+						escape = true
+						continue
+					}
+					if c == '/' {
+						inRegex = false
+					}
+					continue
+				}
+				if c == '/' && slashStartsRegex(false, true, s, i) {
+					inRegex = true
 					continue
 				}
 				if c == '"' || c == '\'' {
