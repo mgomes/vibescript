@@ -198,6 +198,22 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 	return true
 }
 
+func staticIteratorCallMayComplete(property string, call *CallExpr) bool {
+	if call == nil {
+		return true
+	}
+	switch property {
+	case "each", "each_key", "each_value", "reverse_each":
+		return len(call.Args) == 0 && len(call.KwArgs) == 0
+	case "each_with_index", "cycle":
+		return len(call.Args) <= 1 && len(call.KwArgs) == 0
+	case "each_cons", "each_slice":
+		return staticWindowSizeMayRun(call) && len(call.KwArgs) == 0
+	default:
+		return true
+	}
+}
+
 func staticWindowSizeMayRun(call *CallExpr) bool {
 	if call == nil || len(call.Args) != 1 {
 		return false
@@ -1265,7 +1281,8 @@ func (c *scriptChecker) tryStmtObservesName(stmt *TryStmt, names map[string]stru
 			}
 		}
 	}
-	if c.statementsObserveNameExcept(stmt.Else, names, except) {
+	if c.statementsMayCompleteNormally(stmt.Body) &&
+		c.statementsObserveNameExcept(stmt.Else, names, except) {
 		return true
 	}
 	return c.statementsObserveNameExcept(stmt.Ensure, names, except)
@@ -1448,7 +1465,8 @@ func (c *scriptChecker) expressionObservesName(expr Expression, names map[string
 				return false
 			}
 			if c.receiverOwnsBuiltinIterator(member.Object, member.Property) &&
-				!staticIteratorMayYield(member.Property, member.Object, typed) {
+				(!staticIteratorCallMayComplete(member.Property, typed) ||
+					!staticIteratorMayYield(member.Property, member.Object, typed)) {
 				return false
 			}
 			if member.Property == "delete" && staticDeleteMissBlockUnreachable(member.Object, typed) {
