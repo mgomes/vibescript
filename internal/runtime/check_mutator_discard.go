@@ -1126,6 +1126,23 @@ func collectionMutatorCallActuallyWrites(property string, call *CallExpr, receiv
 			return false
 		}
 		return true
+	case "replace":
+		if call == nil {
+			return true
+		}
+		expanded := call
+		if got, ok := staticExpandedCall(call); ok {
+			expanded = got
+		}
+		if len(expanded.Args) != 1 {
+			return true
+		}
+		recvLen, recvOK := staticCollectionLength(receiver)
+		argLen, argOK := staticCollectionLength(expanded.Args[0])
+		if recvOK && argOK && recvLen == 0 && argLen == 0 {
+			return false
+		}
+		return true
 	case "delete":
 		return !staticDeleteIsMiss(receiver, call)
 	default:
@@ -1734,6 +1751,16 @@ func (c *scriptChecker) remainderMayNext(body []Statement, stmt *ExprStmt) bool 
 	return remainderContainsNext(rest)
 }
 
+func tryEnsureAborts(stmts []Statement) bool {
+	for _, stmt := range stmts {
+		switch stmt.(type) {
+		case *RaiseStmt, *ReturnStmt, *BreakStmt, *RetryStmt:
+			return true
+		}
+	}
+	return false
+}
+
 func remainderContainsNext(stmts []Statement) bool {
 	for _, stmt := range stmts {
 		switch typed := stmt.(type) {
@@ -1749,6 +1776,9 @@ func remainderContainsNext(stmts []Statement) bool {
 				}
 			}
 		case *TryStmt:
+			if tryEnsureAborts(typed.Ensure) {
+				return remainderContainsNext(typed.Ensure)
+			}
 			if remainderContainsNext(typed.Body) || remainderContainsNext(typed.Else) ||
 				remainderContainsNext(typed.Ensure) {
 				return true
