@@ -1568,6 +1568,34 @@ func slashStartsRegex(afterValue, afterSpace bool, s string, i int, lastIdent st
 	}
 }
 
+func symbolLiteralExtra(s string, start int) (int, bool) {
+	if start >= len(s) {
+		return 0, false
+	}
+	rest := s[start:]
+	for _, lit := range []string{
+		"[]=", "[]", "===", "<=>", "**", "<<", "<=", ">=", "==", "!=", "&&", "||",
+		"+", "-", "*", "/", "%", "<", ">", "&", "|", "!",
+	} {
+		if strings.HasPrefix(rest, lit) {
+			return len(lit), true
+		}
+	}
+	r, size := utf8.DecodeRuneInString(rest)
+	if size < 1 || !ast.IsIdentifierStart(r) {
+		return 0, false
+	}
+	n := size
+	for n < len(rest) {
+		r, size = utf8.DecodeRuneInString(rest[n:])
+		if size < 1 || !ast.IsIdentifierRune(r) {
+			break
+		}
+		n += size
+	}
+	return n, true
+}
+
 func percentStartsArray(afterValue, afterSpace bool, lastIdent string, locals map[string]struct{}) bool {
 	if !afterValue {
 		return true
@@ -2180,7 +2208,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				if interpPercentDepth > 0 {
-					end, depth, closed := skipPercentArrayFrom(s, i, interpPercentOpen, interpPercentClose, interpPercentDepth)
+					end, depth, closed := skipPercentArrayFrom(s, i, interpPercentOpen, interpPercentClose, interpPercentDepth, true)
 					if closed {
 						interpPercentDepth = 0
 						afterValue = true
@@ -2202,10 +2230,11 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				if percentStartsArray(afterValue, afterSpace, lastIdent, locals) &&
-					c == '%' && i+2 < len(s) && strings.ContainsRune("wWiI", rune(s[i+1])) {
+					c == '%' && i+2 < len(s) && strings.ContainsRune("wWiI", rune(s[i+1])) &&
+					isPercentArrayDelimiter(s[i+2]) {
 					open := s[i+2]
 					close := percentLiteralCloser(open)
-					end, depth, closed := skipPercentArrayFrom(s, i+3, open, close, 1)
+					end, depth, closed := skipPercentArrayFrom(s, i+3, open, close, 1, s[i+1] == 'W' || s[i+1] == 'I')
 					if closed {
 						afterValue = true
 						i = end
@@ -2320,7 +2349,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				if interpPercentDepth > 0 {
-					end, depth, closed := skipPercentArrayFrom(s, i, interpPercentOpen, interpPercentClose, interpPercentDepth)
+					end, depth, closed := skipPercentArrayFrom(s, i, interpPercentOpen, interpPercentClose, interpPercentDepth, true)
 					if closed {
 						interpPercentDepth = 0
 						afterValue = true
@@ -2342,10 +2371,11 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				if percentStartsArray(afterValue, afterSpace, lastIdent, locals) &&
-					c == '%' && i+2 < len(s) && strings.ContainsRune("wWiI", rune(s[i+1])) {
+					c == '%' && i+2 < len(s) && strings.ContainsRune("wWiI", rune(s[i+1])) &&
+					isPercentArrayDelimiter(s[i+2]) {
 					open := s[i+2]
 					close := percentLiteralCloser(open)
-					end, depth, closed := skipPercentArrayFrom(s, i+3, open, close, 1)
+					end, depth, closed := skipPercentArrayFrom(s, i+3, open, close, 1, s[i+1] == 'W' || s[i+1] == 'I')
 					if closed {
 						afterValue = true
 						i = end
@@ -2491,7 +2521,8 @@ func (sc *sourceScan) tokens(s string) []string {
 		if c == '%' && i+1 < len(s) {
 			kind := s[i+1]
 			if percentStartsArray(afterValue, afterSpace, lastIdent, locals) &&
-				strings.ContainsRune("wWiI", rune(kind)) && i+2 < len(s) {
+				strings.ContainsRune("wWiI", rune(kind)) && i+2 < len(s) &&
+				isPercentArrayDelimiter(s[i+2]) {
 				open := s[i+2]
 				close := percentLiteralCloser(open)
 				flush(i)
@@ -2622,27 +2653,16 @@ func (sc *sourceScan) tokens(s string) []string {
 				continue
 			}
 		}
-		if c == ':' && i+1 < len(s) && (s[i+1] == '_' ||
-			s[i+1] >= 'A' && s[i+1] <= 'Z' ||
-			s[i+1] >= 'a' && s[i+1] <= 'z') {
-			flush(i)
-			i++
-			start = i
-			i++
-			for i < len(s) {
-				ch := s[i]
-				if ch == '_' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' {
-					i++
-					continue
-				}
-				break
+		if c == ':' && i+1 < len(s) && s[i+1] != ':' {
+			if extra, ok := symbolLiteralExtra(s, i+1); ok {
+				flush(i)
+				i += extra
+				start = -1
+				afterValue = true
+				afterSpace = false
+				lastIdent = ""
+				continue
 			}
-			start = -1
-			afterValue = true
-			afterSpace = false
-			lastIdent = ""
-			i--
-			continue
 		}
 		if c == '"' || c == '\'' {
 			flush(i)
@@ -3130,10 +3150,14 @@ func sourceInsideLiteral(lines []string, hoverLine, hoverColumn int) bool {
 		scan.hitComment || scan.interpDepth > 0
 }
 
-func skipPercentArrayFrom(s string, i int, open, close byte, depth int) (end, newDepth int, closed bool) {
+func skipPercentArrayFrom(s string, i int, open, close byte, depth int, interpolates bool) (end, newDepth int, closed bool) {
 	for i < len(s) && depth > 0 {
 		if s[i] == '\\' && i+1 < len(s) {
 			i += 2
+			continue
+		}
+		if interpolates && s[i] == '#' && i+1 < len(s) && s[i+1] == '{' {
+			i = skipInterpolationExpr(s, i+2)
 			continue
 		}
 		if open != close && s[i] == open {
@@ -3147,6 +3171,60 @@ func skipPercentArrayFrom(s string, i int, open, close byte, depth int) (end, ne
 		i++
 	}
 	return i, depth, false
+}
+
+func skipInterpolationExpr(s string, i int) int {
+	depth := 1
+	var innerStr byte
+	escape := false
+	for i < len(s) && depth > 0 {
+		c := s[i]
+		if innerStr != 0 {
+			if escape {
+				escape = false
+				i++
+				continue
+			}
+			if c == '\\' {
+				escape = true
+				i++
+				continue
+			}
+			if c == innerStr {
+				innerStr = 0
+			}
+			i++
+			continue
+		}
+		if c == '"' || c == '\'' {
+			innerStr = c
+			i++
+			continue
+		}
+		if c == '{' {
+			depth++
+			i++
+			continue
+		}
+		if c == '}' {
+			depth--
+			i++
+			continue
+		}
+		i++
+	}
+	return i
+}
+
+func isPercentArrayDelimiter(c byte) bool {
+	if c == 0 || c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+		return false
+	}
+	if c == '_' || c >= '0' && c <= '9' ||
+		c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' {
+		return false
+	}
+	return true
 }
 
 func percentLiteralCloser(open byte) byte {
