@@ -1447,14 +1447,25 @@ func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
 }
 
 func lineFromColumn(line string, column int) string {
-	if column <= 1 {
-		return line
-	}
-	idx := column - 1
+	idx := columnToByte(line, column)
 	if idx >= len(line) {
 		return ""
 	}
 	return line[idx:]
+}
+
+func columnToByte(line string, column int) int {
+	if column <= 1 {
+		return 0
+	}
+	n := 1
+	for i := range line {
+		if n == column {
+			return i
+		}
+		n++
+	}
+	return len(line)
 }
 
 func prefixControlOpens(prev string) bool {
@@ -1466,7 +1477,7 @@ func tokenIsValue(tok string) bool {
 		return false
 	}
 	switch tok {
-	case "end", "true", "false", "nil", "self", ")", "]", "}":
+	case "end", "true", "false", "nil", "self", ")", "]", "}", `""`, "//", "%":
 		return true
 	}
 	r, _ := utf8.DecodeRuneInString(tok)
@@ -1653,12 +1664,44 @@ func (sc *sourceScan) tokens(s string) []string {
 			}
 			if c == inStr {
 				inStr = 0
+				tokens = append(tokens, `""`)
+				afterValue = true
 			}
 			continue
 		}
 		if percentClose != 0 {
+			if interpDepth > 0 {
+				if innerStr != 0 {
+					if escape {
+						escape = false
+						continue
+					}
+					if c == '\\' {
+						escape = true
+						continue
+					}
+					if c == innerStr {
+						innerStr = 0
+					}
+					continue
+				}
+				if c == '"' || c == '\'' {
+					innerStr = c
+					continue
+				}
+				if c == '{' {
+					interpDepth++
+					continue
+				}
+				if c == '}' {
+					interpDepth--
+					continue
+				}
+				continue
+			}
 			if c == '#' && i+1 < len(s) && s[i+1] == '{' {
-				i = skipInterpolation(s, i) - 1
+				interpDepth = 1
+				i++
 				continue
 			}
 			if escape {
@@ -1678,6 +1721,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					percentClose = 0
 					percentDepth = 0
 					afterValue = true
+					tokens = append(tokens, "%")
 				}
 			}
 			continue
@@ -1704,6 +1748,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			if c == '/' {
 				inRegex = false
 				afterValue = true
+				tokens = append(tokens, "//")
 			}
 			continue
 		}
@@ -1720,12 +1765,50 @@ func (sc *sourceScan) tokens(s string) []string {
 				i += 3
 				depth := 1
 				for i < len(s) && depth > 0 {
+					if interpDepth > 0 {
+						ch := s[i]
+						if innerStr != 0 {
+							if escape {
+								escape = false
+								i++
+								continue
+							}
+							if ch == '\\' {
+								escape = true
+								i++
+								continue
+							}
+							if ch == innerStr {
+								innerStr = 0
+							}
+							i++
+							continue
+						}
+						if ch == '"' || ch == '\'' {
+							innerStr = ch
+							i++
+							continue
+						}
+						if ch == '{' {
+							interpDepth++
+							i++
+							continue
+						}
+						if ch == '}' {
+							interpDepth--
+							i++
+							continue
+						}
+						i++
+						continue
+					}
 					if s[i] == '\\' && i+1 < len(s) {
 						i += 2
 						continue
 					}
 					if s[i] == '#' && i+1 < len(s) && s[i+1] == '{' {
-						i = skipInterpolation(s, i)
+						interpDepth = 1
+						i += 2
 						continue
 					}
 					if s[i] == open && open != close {
@@ -1742,6 +1825,8 @@ func (sc *sourceScan) tokens(s string) []string {
 					percentOpen = open
 					percentClose = close
 					percentDepth = depth
+				} else {
+					tokens = append(tokens, "%")
 				}
 				afterValue = true
 				afterDot = false
@@ -1818,6 +1903,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					for i < len(s) && (s[i] == 'i' || s[i] == 'm' || s[i] == 'x' || s[i] == 'o' || s[i] == 'u' || s[i] == 'n') {
 						i++
 					}
+					tokens = append(tokens, "//")
 					break
 				}
 				i++
@@ -1966,10 +2052,7 @@ func sourceInsideLiteral(lines []string, hoverLine, hoverColumn int) bool {
 		return scan.inStr != 0 || scan.percentClose != 0 || scan.inRegex
 	}
 	text := lineAt(lines, hoverLine-1)
-	idx := hoverColumn - 1
-	if idx < 0 {
-		idx = 0
-	}
+	idx := columnToByte(text, hoverColumn)
 	if idx > len(text) {
 		idx = len(text)
 	}
@@ -1978,53 +2061,6 @@ func sourceInsideLiteral(lines []string, hoverLine, hoverColumn int) bool {
 	scan.tokens(text[:idx])
 	return scan.inStr != 0 || scan.percentClose != 0 || scan.inRegex ||
 		scan.hitComment || scan.interpDepth > 0
-}
-
-func skipInterpolation(s string, i int) int {
-	if i+1 >= len(s) || s[i] != '#' || s[i+1] != '{' {
-		return i + 1
-	}
-	i += 2
-	depth := 1
-	inner := byte(0)
-	escape := false
-	for i < len(s) && depth > 0 {
-		c := s[i]
-		if inner != 0 {
-			if escape {
-				escape = false
-				i++
-				continue
-			}
-			if c == '\\' {
-				escape = true
-				i++
-				continue
-			}
-			if c == inner {
-				inner = 0
-			}
-			i++
-			continue
-		}
-		if c == '"' || c == '\'' {
-			inner = c
-			i++
-			continue
-		}
-		if c == '{' {
-			depth++
-			i++
-			continue
-		}
-		if c == '}' {
-			depth--
-			i++
-			continue
-		}
-		i++
-	}
-	return i
 }
 
 func percentLiteralCloser(open byte) byte {
