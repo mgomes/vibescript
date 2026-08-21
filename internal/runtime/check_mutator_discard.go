@@ -1786,6 +1786,22 @@ func ensurePathMayComplete(stmts []Statement) bool {
 			if !ensureIfMayComplete(typed) {
 				return false
 			}
+		case *WhileStmt:
+			truthy, known := staticExpressionTruthiness(typed.Condition)
+			if known && !truthy {
+				break
+			}
+			if known && truthy && !ensureContainsBreak(typed.Body) {
+				return false
+			}
+		case *UntilStmt:
+			truthy, known := staticExpressionTruthiness(typed.Condition)
+			if known && truthy {
+				break
+			}
+			if known && !truthy && !ensureContainsBreak(typed.Body) {
+				return false
+			}
 		case *TryStmt:
 			if !ensurePathMayComplete(typed.Ensure) {
 				return false
@@ -1809,6 +1825,48 @@ func ensurePathMayComplete(stmts []Statement) bool {
 		}
 	}
 	return true
+}
+
+func ensureContainsBreak(stmts []Statement) bool {
+	for _, stmt := range stmts {
+		switch typed := stmt.(type) {
+		case *BreakStmt:
+			return true
+		case *RaiseStmt, *ReturnStmt, *RetryStmt, *NextStmt:
+			return false
+		case *IfStmt:
+			if ensureIfMayComplete(typed) {
+				continue
+			}
+			truthy, known := staticExpressionTruthiness(typed.Condition)
+			if known && truthy {
+				if ensureContainsBreak(typed.Consequent) {
+					return true
+				}
+				continue
+			}
+			if known && !truthy {
+				if ensureContainsBreak(typed.Alternate) {
+					return true
+				}
+				for _, branch := range typed.ElseIf {
+					if ensureContainsBreak(branch.Consequent) {
+						return true
+					}
+				}
+				continue
+			}
+			if ensureContainsBreak(typed.Consequent) || ensureContainsBreak(typed.Alternate) {
+				return true
+			}
+			for _, branch := range typed.ElseIf {
+				if ensureContainsBreak(branch.Consequent) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func ensureIfMayComplete(stmt *IfStmt) bool {
