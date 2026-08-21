@@ -535,6 +535,16 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			source: "[1].keep_if()\nputs \"done\"",
 		},
 		{
+			name:   "hash replace of a non-hash cannot update",
+			source: "{ a: 1 }.replace([1])\nputs \"done\"",
+		},
+		{
+			name: "user push that yields observes the rebound parameter",
+			source: "class Widget\n  def push\n    yield\n  end\nend\n" +
+				"widget = Widget.new\nrows = [[1], [2]]\n" +
+				"rows.each { |row| row.push(0); widget.push { puts row } }\nputs \"done\"",
+		},
+		{
 			name:   "case later clause after aborting match",
 			source: "def f(x)\n  case x\n  when 1, [1].clear(2)\n    nil\n  when 2\n    [2].push(3)\n  end\n  nil\nend\nf(1)\nputs \"done\"",
 		},

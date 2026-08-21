@@ -655,7 +655,10 @@ func collectionMutatorCallShapeMayComplete(property string, call *CallExpr) bool
 	case "store":
 		return n == 2 && !kwargs
 	case "replace":
-		return n == 1 && !kwargs
+		if n != 1 || kwargs {
+			return false
+		}
+		return staticHashReplaceArgMayComplete(call.Args[0])
 	case "insert":
 		return n >= 1 && !kwargs
 	case "delete_if", "keep_if":
@@ -714,7 +717,7 @@ func (c *scriptChecker) blockParamMutatorDiscardVerdict(function string, stmt *E
 		return nil
 	}
 	names := map[string]struct{}{root: {}}
-	found, laterObserves := statementsAfterObserveName(enclosing.block.Body, stmt, names)
+	found, laterObserves := c.statementsAfterObserveName(enclosing.block.Body, stmt, names)
 	if !found {
 		return nil
 	}
@@ -724,7 +727,7 @@ func (c *scriptChecker) blockParamMutatorDiscardVerdict(function string, stmt *E
 	if call != nil && call.Block != nil &&
 		mutatorInvokesSuppliedBlock(member.Property) &&
 		!filterMutatorWritesAfterBlock(member.Property) &&
-		statementsObserveName(call.Block.Body, names) {
+		c.statementsObserveName(call.Block.Body, names) {
 		return nil
 	}
 	if c.provablyNotCollection(member.Object) {
@@ -861,12 +864,12 @@ func discardedMemberCall(expr Expression) (*MemberExpr, *CallExpr) {
 	return nil, nil
 }
 
-func statementsAfterObserveName(body []Statement, stmt *ExprStmt, names map[string]struct{}) (found, observes bool) {
+func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprStmt, names map[string]struct{}) (found, observes bool) {
 	var search func([]Statement) bool
 	search = func(stmts []Statement) bool {
 		for i, s := range stmts {
 			if s == Statement(stmt) {
-				if statementsObserveName(stmts[i+1:], names) {
+				if c.statementsObserveName(stmts[i+1:], names) {
 					observes = true
 				}
 				return true
@@ -879,7 +882,7 @@ func statementsAfterObserveName(body []Statement, stmt *ExprStmt, names map[stri
 				}
 				nested = search(typed.Alternate) || nested
 				if nested {
-					if statementsObserveName(stmts[i+1:], names) {
+					if c.statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
 					return true
@@ -904,38 +907,38 @@ func statementsAfterObserveName(body []Statement, stmt *ExprStmt, names map[stri
 					inEnsure = search(typed.Ensure)
 				}
 				if inBody || inElse || inRescue || inEnsure {
-					if inBody && statementsObserveName(typed.Else, names) {
+					if inBody && c.statementsObserveName(typed.Else, names) {
 						observes = true
 					}
 					if (inBody || inElse || inRescue) &&
-						statementsObserveName(typed.Ensure, names) {
+						c.statementsObserveName(typed.Ensure, names) {
 						observes = true
 					}
-					if statementsObserveName(stmts[i+1:], names) {
+					if c.statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
 					return true
 				}
 			case *WhileStmt:
 				if search(typed.Body) {
-					if loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) ||
-						statementsObserveName(stmts[i+1:], names) {
+					if c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) ||
+						c.statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
 					return true
 				}
 			case *UntilStmt:
 				if search(typed.Body) {
-					if loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) ||
-						statementsObserveName(stmts[i+1:], names) {
+					if c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) ||
+						c.statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
 					return true
 				}
 			case *ForStmt:
 				if search(typed.Body) {
-					if statementsObserveNameExcept(typed.Body, names, stmt) ||
-						statementsObserveName(stmts[i+1:], names) {
+					if c.statementsObserveNameExcept(typed.Body, names, stmt) ||
+						c.statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
 					return true
@@ -948,16 +951,16 @@ func statementsAfterObserveName(body []Statement, stmt *ExprStmt, names map[stri
 	return found, observes
 }
 
-func statementsObserveName(statements []Statement, names map[string]struct{}) bool {
-	return statementsObserveNameExcept(statements, names, nil)
+func (c *scriptChecker) statementsObserveName(statements []Statement, names map[string]struct{}) bool {
+	return c.statementsObserveNameExcept(statements, names, nil)
 }
 
-func loopBackEdgeObservesName(condition Expression, body []Statement, stmt *ExprStmt, names map[string]struct{}) bool {
+func (c *scriptChecker) loopBackEdgeObservesName(condition Expression, body []Statement, stmt *ExprStmt, names map[string]struct{}) bool {
 	return expressionReferencesAnyName(condition, names) ||
-		statementsObserveNameExcept(body, names, stmt)
+		c.statementsObserveNameExcept(body, names, stmt)
 }
 
-func statementsObserveNameExcept(statements []Statement, names map[string]struct{}, except *ExprStmt) bool {
+func (c *scriptChecker) statementsObserveNameExcept(statements []Statement, names map[string]struct{}, except *ExprStmt) bool {
 	for _, statement := range statements {
 		if except != nil && statement == Statement(except) {
 			continue
@@ -965,32 +968,32 @@ func statementsObserveNameExcept(statements []Statement, names map[string]struct
 		switch typed := statement.(type) {
 		case *AssignStmt:
 			if assignmentTargetObservesName(typed.Target, names) ||
-				expressionObservesName(typed.Value, names) {
+				c.expressionObservesName(typed.Value, names) {
 				return true
 			}
 		case *ExprStmt:
-			if expressionObservesName(typed.Expr, names) {
+			if c.expressionObservesName(typed.Expr, names) {
 				return true
 			}
 		case *IfStmt:
-			if ifStmtObservesName(typed, names, except) {
+			if c.ifStmtObservesName(typed, names, except) {
 				return true
 			}
 		case *WhileStmt:
-			if whileStmtObservesName(typed, names, except) {
+			if c.whileStmtObservesName(typed, names, except) {
 				return true
 			}
 		case *UntilStmt:
-			if untilStmtObservesName(typed, names, except) {
+			if c.untilStmtObservesName(typed, names, except) {
 				return true
 			}
 		case *ReturnStmt:
-			if expressionObservesName(typed.Value, names) {
+			if c.expressionObservesName(typed.Value, names) {
 				return true
 			}
 		case *RaiseStmt:
-			if expressionObservesName(typed.Value, names) ||
-				expressionObservesName(typed.Message, names) {
+			if c.expressionObservesName(typed.Value, names) ||
+				c.expressionObservesName(typed.Message, names) {
 				return true
 			}
 		default:
@@ -1002,13 +1005,13 @@ func statementsObserveNameExcept(statements []Statement, names map[string]struct
 	return false
 }
 
-func ifStmtObservesName(stmt *IfStmt, names map[string]struct{}, except *ExprStmt) bool {
-	if expressionObservesName(stmt.Condition, names) {
+func (c *scriptChecker) ifStmtObservesName(stmt *IfStmt, names map[string]struct{}, except *ExprStmt) bool {
+	if c.expressionObservesName(stmt.Condition, names) {
 		return true
 	}
 	truthy, known := staticExpressionTruthiness(stmt.Condition)
 	if !known || truthy {
-		if statementsObserveNameExcept(stmt.Consequent, names, except) {
+		if c.statementsObserveNameExcept(stmt.Consequent, names, except) {
 			return true
 		}
 	}
@@ -1016,12 +1019,12 @@ func ifStmtObservesName(stmt *IfStmt, names map[string]struct{}, except *ExprStm
 		return false
 	}
 	for _, branch := range stmt.ElseIf {
-		if expressionObservesName(branch.Condition, names) {
+		if c.expressionObservesName(branch.Condition, names) {
 			return true
 		}
 		truthy, known = staticExpressionTruthiness(branch.Condition)
 		if !known || truthy {
-			if statementsObserveNameExcept(branch.Consequent, names, except) {
+			if c.statementsObserveNameExcept(branch.Consequent, names, except) {
 				return true
 			}
 		}
@@ -1029,38 +1032,38 @@ func ifStmtObservesName(stmt *IfStmt, names map[string]struct{}, except *ExprStm
 			return false
 		}
 	}
-	return statementsObserveNameExcept(stmt.Alternate, names, except)
+	return c.statementsObserveNameExcept(stmt.Alternate, names, except)
 }
 
-func whileStmtObservesName(stmt *WhileStmt, names map[string]struct{}, except *ExprStmt) bool {
-	if expressionObservesName(stmt.Condition, names) {
+func (c *scriptChecker) whileStmtObservesName(stmt *WhileStmt, names map[string]struct{}, except *ExprStmt) bool {
+	if c.expressionObservesName(stmt.Condition, names) {
 		return true
 	}
 	truthy, known := staticExpressionTruthiness(stmt.Condition)
 	if stmt.BodyFirst || !known || truthy {
-		return statementsObserveNameExcept(stmt.Body, names, except)
+		return c.statementsObserveNameExcept(stmt.Body, names, except)
 	}
 	return false
 }
 
-func untilStmtObservesName(stmt *UntilStmt, names map[string]struct{}, except *ExprStmt) bool {
-	if expressionObservesName(stmt.Condition, names) {
+func (c *scriptChecker) untilStmtObservesName(stmt *UntilStmt, names map[string]struct{}, except *ExprStmt) bool {
+	if c.expressionObservesName(stmt.Condition, names) {
 		return true
 	}
 	truthy, known := staticExpressionTruthiness(stmt.Condition)
 	if stmt.BodyFirst || !known || !truthy {
-		return statementsObserveNameExcept(stmt.Body, names, except)
+		return c.statementsObserveNameExcept(stmt.Body, names, except)
 	}
 	return false
 }
 
-func ifExprObservesName(expr *IfExpr, names map[string]struct{}) bool {
-	if expressionObservesName(expr.Condition, names) {
+func (c *scriptChecker) ifExprObservesName(expr *IfExpr, names map[string]struct{}) bool {
+	if c.expressionObservesName(expr.Condition, names) {
 		return true
 	}
 	truthy, known := staticExpressionTruthiness(expr.Condition)
 	if !known || truthy {
-		if expressionObservesName(expr.Consequent, names) {
+		if c.expressionObservesName(expr.Consequent, names) {
 			return true
 		}
 	}
@@ -1068,12 +1071,12 @@ func ifExprObservesName(expr *IfExpr, names map[string]struct{}) bool {
 		return false
 	}
 	for _, branch := range expr.ElseIf {
-		if expressionObservesName(branch.Condition, names) {
+		if c.expressionObservesName(branch.Condition, names) {
 			return true
 		}
 		truthy, known = staticExpressionTruthiness(branch.Condition)
 		if !known || truthy {
-			if expressionObservesName(branch.Result, names) {
+			if c.expressionObservesName(branch.Result, names) {
 				return true
 			}
 		}
@@ -1081,37 +1084,37 @@ func ifExprObservesName(expr *IfExpr, names map[string]struct{}) bool {
 			return false
 		}
 	}
-	return expressionObservesName(expr.Alternate, names)
+	return c.expressionObservesName(expr.Alternate, names)
 }
 
-func caseExprObservesName(expr *CaseExpr, names map[string]struct{}) bool {
-	if expressionObservesName(expr.Target, names) {
+func (c *scriptChecker) caseExprObservesName(expr *CaseExpr, names map[string]struct{}) bool {
+	if c.expressionObservesName(expr.Target, names) {
 		return true
 	}
 	if _, known := staticCaseExpressionResult(expr); known {
 		for _, clause := range expr.Clauses {
 			for _, candidate := range clause.Values {
-				if expressionObservesName(candidate.Expr, names) {
+				if c.expressionObservesName(candidate.Expr, names) {
 					return true
 				}
 				if staticCaseWhenCandidateMatches(expr, candidate.Expr, candidate.Splat) {
-					return expressionObservesName(clause.Result, names)
+					return c.expressionObservesName(clause.Result, names)
 				}
 			}
 		}
-		return expressionObservesName(expr.ElseExpr, names)
+		return c.expressionObservesName(expr.ElseExpr, names)
 	}
 	for _, clause := range expr.Clauses {
 		for _, candidate := range clause.Values {
-			if expressionObservesName(candidate.Expr, names) {
+			if c.expressionObservesName(candidate.Expr, names) {
 				return true
 			}
 		}
-		if expressionObservesName(clause.Result, names) {
+		if c.expressionObservesName(clause.Result, names) {
 			return true
 		}
 	}
-	return expressionObservesName(expr.ElseExpr, names)
+	return c.expressionObservesName(expr.ElseExpr, names)
 }
 
 func withoutBlockParamNames(names map[string]struct{}, block *BlockLiteral) map[string]struct{} {
@@ -1145,22 +1148,22 @@ func removeBindingTargetNames(target Expression, names map[string]struct{}) {
 	}
 }
 
-func expressionObservesName(expr Expression, names map[string]struct{}) bool {
+func (c *scriptChecker) expressionObservesName(expr Expression, names map[string]struct{}) bool {
 	if expr == nil || len(names) == 0 {
 		return false
 	}
 	switch typed := expr.(type) {
 	case *CallExpr:
-		if expressionObservesName(typed.Callee, names) {
+		if c.expressionObservesName(typed.Callee, names) {
 			return true
 		}
 		for _, arg := range typed.Args {
-			if expressionObservesName(arg, names) {
+			if c.expressionObservesName(arg, names) {
 				return true
 			}
 		}
 		for _, kwarg := range typed.KwArgs {
-			if expressionObservesName(kwarg.Value, names) {
+			if c.expressionObservesName(kwarg.Value, names) {
 				return true
 			}
 		}
@@ -1168,7 +1171,8 @@ func expressionObservesName(expr Expression, names map[string]struct{}) bool {
 			return false
 		}
 		if member, ok := typed.Callee.(*MemberExpr); ok {
-			if mutatorIgnoresSuppliedBlock(member.Property) {
+			if mutatorIgnoresSuppliedBlock(member.Property) &&
+				c.receiverOwnsBuiltinIterator(member.Object, member.Property) {
 				return false
 			}
 			if blockResultDiscardingIterator(member.Property) &&
@@ -1177,48 +1181,48 @@ func expressionObservesName(expr Expression, names map[string]struct{}) bool {
 			}
 		}
 		for _, param := range typed.Block.Params {
-			if expressionObservesName(param.DefaultVal, names) {
+			if c.expressionObservesName(param.DefaultVal, names) {
 				return true
 			}
 		}
-		return statementsObserveName(typed.Block.Body, withoutBlockParamNames(names, typed.Block))
+		return c.statementsObserveName(typed.Block.Body, withoutBlockParamNames(names, typed.Block))
 	case *BlockLiteral:
 		for _, param := range typed.Params {
-			if expressionObservesName(param.DefaultVal, names) {
+			if c.expressionObservesName(param.DefaultVal, names) {
 				return true
 			}
 		}
-		return statementsObserveName(typed.Body, withoutBlockParamNames(names, typed))
+		return c.statementsObserveName(typed.Body, withoutBlockParamNames(names, typed))
 	case *ConditionalExpr:
-		if expressionObservesName(typed.Condition, names) {
+		if c.expressionObservesName(typed.Condition, names) {
 			return true
 		}
 		if branch, known := staticConditionalExpressionBranch(typed); known {
-			return expressionObservesName(branch, names)
+			return c.expressionObservesName(branch, names)
 		}
-		return expressionObservesName(typed.Consequent, names) ||
-			expressionObservesName(typed.Alternate, names)
+		return c.expressionObservesName(typed.Consequent, names) ||
+			c.expressionObservesName(typed.Alternate, names)
 	case *RescueExpr:
-		if expressionObservesName(typed.Body, names) {
+		if c.expressionObservesName(typed.Body, names) {
 			return true
 		}
 		if expressionProvenNonRaising(typed.Body) {
 			return false
 		}
-		return expressionObservesName(typed.Fallback, names)
+		return c.expressionObservesName(typed.Fallback, names)
 	case *IfExpr:
-		return ifExprObservesName(typed, names)
+		return c.ifExprObservesName(typed, names)
 	case *CaseExpr:
-		return caseExprObservesName(typed, names)
+		return c.caseExprObservesName(typed, names)
 	case *BinaryExpr:
-		if expressionObservesName(typed.Left, names) {
+		if c.expressionObservesName(typed.Left, names) {
 			return true
 		}
 		if (typed.Operator == tokenAnd || typed.Operator == tokenOr) &&
 			!binaryRightMayEvaluate(typed) {
 			return false
 		}
-		return expressionObservesName(typed.Right, names)
+		return c.expressionObservesName(typed.Right, names)
 	default:
 		return expressionReferencesAnyName(expr, names)
 	}
@@ -1457,6 +1461,20 @@ func staticCaseWhenCandidateMatches(expr *CaseExpr, candidate Expression, splat 
 	}
 	matched, err := caseCandidateMatches(nil, target, value)
 	return err == nil && matched
+}
+
+func staticHashReplaceArgMayComplete(expr Expression) bool {
+	switch expr.(type) {
+	case *ArrayLiteral, *IntegerLiteral, *FloatLiteral, *StringLiteral,
+		*BoolLiteral, *NilLiteral, *SymbolLiteral, *RangeExpr:
+		return false
+	}
+	val, ok := staticLiteralValue(expr)
+	if !ok {
+		return true
+	}
+	kind := val.Kind()
+	return kind == KindHash || kind == KindObject
 }
 
 func staticNonNegativeCountMayComplete(expr Expression) bool {
