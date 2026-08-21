@@ -2520,6 +2520,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			}
 			bracketDepth := 0
 			skipMember := false
+			skipIndexReceiver := false
 			for j := len(tokens) - 1; j >= 0; j-- {
 				tok := tokens[j]
 				if tok == ";" || tok == "=" || isControlKeyword(tok) {
@@ -2533,6 +2534,9 @@ func (sc *sourceScan) tokens(s string) []string {
 					if bracketDepth > 0 {
 						bracketDepth--
 					}
+					if bracketDepth == 0 {
+						skipIndexReceiver = true
+					}
 					continue
 				}
 				if bracketDepth > 0 {
@@ -2540,10 +2544,12 @@ func (sc *sourceScan) tokens(s string) []string {
 				}
 				if tok == "." || strings.HasPrefix(tok, ".") {
 					skipMember = true
+					skipIndexReceiver = false
 					continue
 				}
-				if skipMember {
+				if skipMember || skipIndexReceiver {
 					skipMember = false
+					skipIndexReceiver = false
 					continue
 				}
 				if tok == "," || tok == "(" || tok == ")" {
