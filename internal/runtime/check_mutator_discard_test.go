@@ -610,6 +610,21 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "at ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].at(0) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "ensure raise after break is not an observation of the suffix",
+			source: "rows = [[1], [2]]\nrows.each { |row| while true; row.push(0); begin; break; ensure; raise \"x\"; end; end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "nested ensure raise after next is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| while row.length < 3; row.push(0); begin; next; ensure; if true; raise \"x\"; end; end; end }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "ensure raise after next is not an observation of the loop condition",
 			source: "rows = [[1], [2]]\nrows.each { |row| while row.length < 3; row.push(0); begin; next; ensure; raise \"x\"; end; end }\nputs \"done\"",
 			want:   "mutating block parameter row",

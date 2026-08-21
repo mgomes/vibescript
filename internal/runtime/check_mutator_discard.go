@@ -222,7 +222,7 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		"compact", "except", "flatten", "values_at",
 		"include?", "member?", "key?", "has_key?", "value?", "has_value?",
 		"shuffle", "reverse", "rotate", "product", "sample", "permutation",
-		"min", "max", "minmax":
+		"min", "max", "minmax", "at":
 		return false
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
@@ -1752,13 +1752,40 @@ func (c *scriptChecker) remainderMayNext(body []Statement, stmt *ExprStmt) bool 
 }
 
 func tryEnsureAborts(stmts []Statement) bool {
+	return !ensurePathMayComplete(stmts)
+}
+
+func ensurePathMayComplete(stmts []Statement) bool {
 	for _, stmt := range stmts {
-		switch stmt.(type) {
+		switch typed := stmt.(type) {
 		case *RaiseStmt, *ReturnStmt, *BreakStmt, *RetryStmt:
-			return true
+			return false
+		case *IfStmt:
+			truthy, known := staticExpressionTruthiness(typed.Condition)
+			if known && truthy {
+				if !ensurePathMayComplete(typed.Consequent) {
+					return false
+				}
+			} else if known && !truthy {
+				if !ensurePathMayComplete(typed.Alternate) {
+					return false
+				}
+				for _, branch := range typed.ElseIf {
+					t, k := staticExpressionTruthiness(branch.Condition)
+					if !k {
+						continue
+					}
+					if t {
+						if !ensurePathMayComplete(branch.Consequent) {
+							return false
+						}
+						break
+					}
+				}
+			}
 		}
 	}
-	return false
+	return true
 }
 
 func remainderContainsNext(stmts []Statement) bool {
@@ -1882,6 +1909,9 @@ func (c *scriptChecker) statementsMayBreak(stmts []Statement) bool {
 				return false
 			}
 		case *TryStmt:
+			if tryEnsureAborts(typed.Ensure) {
+				return c.statementsMayBreak(typed.Ensure)
+			}
 			if c.statementsMayBreak(typed.Body) || c.statementsMayBreak(typed.Else) ||
 				c.statementsMayBreak(typed.Ensure) {
 				return true
