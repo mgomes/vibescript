@@ -2132,8 +2132,26 @@ func (sc *sourceScan) tokens(s string) []string {
 		case "do":
 			interpAssignToks = interpAssignToks[:0]
 			pushInterpBlock("do")
+		case "if", "unless", "case", "begin", "while", "until", "for":
+			if !afterValue {
+				openers = append(openers, name)
+				afterValue = false
+				lastIdent = ""
+				return
+			}
+			afterValue = true
+			lastIdent = name
 		case "end":
 			interpAssignToks = interpAssignToks[:0]
+			if n := len(openers); n > 0 {
+				switch openers[n-1] {
+				case "if", "unless", "case", "begin", "while", "until", "for":
+					openers = openers[:n-1]
+					afterValue = true
+					lastIdent = ""
+					return
+				}
+			}
 			if !popInterpBlock() {
 				afterValue = true
 				lastIdent = name
@@ -2887,7 +2905,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			lastIdent = ""
 			continue
 		case '<':
-			if (inParams || inPipes) && inParamDefault && !fromEqualsDefault {
+			if (inParams || inPipes || (afterDef && !inParams)) && inParamDefault && !fromEqualsDefault {
 				genericDepth++
 			}
 		case '>':
@@ -2896,7 +2914,8 @@ func (sc *sourceScan) tokens(s string) []string {
 			}
 		case ',':
 			if genericDepth == 0 && collectionDepth == 0 &&
-				((inParams && paramDepth <= 1) || inPipes) {
+				((inParams && paramDepth <= 1) || inPipes ||
+					(afterDef && !inParams && afterDefName)) {
 				inParamDefault = false
 				fromEqualsDefault = false
 			}
