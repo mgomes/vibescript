@@ -1849,9 +1849,6 @@ func ensureContainsBreak(stmts []Statement) bool {
 		case *RaiseStmt, *ReturnStmt, *RetryStmt, *NextStmt:
 			return false
 		case *IfStmt:
-			if ensureIfMayComplete(typed) {
-				continue
-			}
 			truthy, known := staticExpressionTruthiness(typed.Condition)
 			if known && truthy {
 				if ensureContainsBreak(typed.Consequent) {
