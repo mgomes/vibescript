@@ -3516,6 +3516,18 @@ func TestHoverIncludeExtendDirectiveIsContextual(t *testing.T) {
 	if got := hoverValue(t, nestedOnDef, 2, 4); strings.Contains(got, "Removed mixin") {
 		t.Fatalf("hover(include inside method after nested end) = %q, must not serve mixin-removal docs", got)
 	}
+	inClassIf := "class C\n  if true\n    include Naming\n  end\nend\n"
+	if got := hoverValue(t, inClassIf, 2, 4); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include in class-level if) = %q, must not serve mixin-removal docs", got)
+	}
+	endInString := "class C\n  def run(label = \"end\")\n    include Naming\n  end\nend\n"
+	if got := hoverValue(t, endInString, 2, 4); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include in method with end in string) = %q, must not serve mixin-removal docs", got)
+	}
+	unindentedNested := "class C\n  def run\nif true\nend\n    include Naming\n  end\nend\n"
+	if got := hoverValue(t, unindentedNested, 4, 4); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after unindented nested end) = %q, must not serve mixin-removal docs", got)
+	}
 	afterNestedModule := "module Outer\n  module Inner\n    include = 1\n  end\n  include\nend\n"
 	if got := hoverValue(t, afterNestedModule, 4, 2); !strings.Contains(got, "Removed mixin") {
 		t.Fatalf("hover(include after nested module) = %q, want mixin-removal docs", got)

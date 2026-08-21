@@ -1020,6 +1020,9 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 	if st == nil {
 		return false
 	}
+	if classControlFlowContains(st, line+1) {
+		return false
+	}
 	runes, start, end, ok := wordSpanAtPosition(lines, line, character)
 	if !ok {
 		return false
@@ -1210,67 +1213,51 @@ func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
 	if start.Line < 1 {
 		return classEnd
 	}
-	idx := start.Line - 1
-	if idx >= len(lines) {
-		return classEnd
-	}
-	openLine := lineAt(lines, idx)
-	if sourceBlockClosesOnLine(openLine) {
-		return start.Line
-	}
-	indent := leadingIndent(openLine)
 	last := classEnd
 	if last > len(lines) {
 		last = len(lines)
 	}
-	for line := start.Line + 1; line <= last; line++ {
-		text := lineAt(lines, line-1)
-		if !isClosingEndLine(text) {
-			continue
-		}
-		if leadingIndent(text) <= indent {
-			return line
+	depth := 0
+	for line := start.Line; line <= last; line++ {
+		atStmtStart := true
+		prev := ""
+		for _, tok := range identifierTokensSkippingStrings(lineAt(lines, line-1)) {
+			switch tok {
+			case "def", "class", "module", "begin", "case", "for":
+				depth++
+				atStmtStart = false
+			case "if", "unless", "while", "until":
+				if atStmtStart {
+					depth++
+				}
+				atStmtStart = false
+			case "do":
+				if prev != "while" && prev != "until" && prev != "for" {
+					depth++
+				}
+				atStmtStart = false
+			case "end":
+				depth--
+				if depth == 0 {
+					return line
+				}
+				atStmtStart = false
+			default:
+				atStmtStart = tok == ";"
+			}
+			if tok != ";" {
+				prev = tok
+			}
 		}
 	}
 	return classEnd
 }
 
-func sourceBlockClosesOnLine(openLine string) bool {
-	code, _, _ := strings.Cut(openLine, "#")
-	depth := 0
-	atStmtStart := true
-	prev := ""
-	for _, tok := range identifierTokens(code) {
-		switch tok {
-		case "def", "class", "module", "begin", "case", "for":
-			depth++
-			atStmtStart = false
-		case "if", "unless", "while", "until":
-			if atStmtStart {
-				depth++
-			}
-			atStmtStart = false
-		case "do":
-			if prev != "while" && prev != "until" && prev != "for" {
-				depth++
-			}
-			atStmtStart = false
-		case "end":
-			depth--
-			atStmtStart = false
-		default:
-			atStmtStart = tok == ";"
-		}
-		if tok != ";" {
-			prev = tok
-		}
-	}
-	return depth == 0
-}
-
-func identifierTokens(s string) []string {
+func identifierTokensSkippingStrings(s string) []string {
 	var tokens []string
 	start := -1
+	inStr := byte(0)
+	escape := false
 	flush := func(i int) {
 		if start >= 0 {
 			tokens = append(tokens, s[start:i])
@@ -1279,6 +1266,28 @@ func identifierTokens(s string) []string {
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
+		if inStr != 0 {
+			if escape {
+				escape = false
+				continue
+			}
+			if c == '\\' {
+				escape = true
+				continue
+			}
+			if c == inStr {
+				inStr = 0
+			}
+			continue
+		}
+		if c == '#' {
+			break
+		}
+		if c == '"' || c == '\'' {
+			flush(i)
+			inStr = c
+			continue
+		}
 		if c == ';' {
 			flush(i)
 			tokens = append(tokens, ";")
@@ -1296,27 +1305,67 @@ func identifierTokens(s string) []string {
 	return tokens
 }
 
-func isClosingEndLine(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	rest, ok := strings.CutPrefix(trimmed, "end")
-	if !ok {
+func classControlFlowContains(st *ast.ClassStmt, hoverLine int) bool {
+	if st == nil {
 		return false
 	}
-	rest = strings.TrimLeft(rest, " \t")
-	return rest == "" || strings.HasPrefix(rest, "#") || strings.HasPrefix(rest, ";")
+	return nestedControlContains(st.Body, hoverLine)
 }
 
-func leadingIndent(s string) int {
-	n := 0
-	for _, r := range s {
-		switch r {
-		case ' ', '\t':
-			n++
-		default:
-			return n
+func nestedControlContains(stmts []ast.Statement, hoverLine int) bool {
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *ast.IfStmt:
+			if lineInStatements(s.Consequent, hoverLine) ||
+				lineInStatements(s.Alternate, hoverLine) {
+				return true
+			}
+			for _, branch := range s.ElseIf {
+				if nestedControlContains([]ast.Statement{branch}, hoverLine) {
+					return true
+				}
+			}
+		case *ast.ForStmt:
+			if lineInStatements(s.Body, hoverLine) {
+				return true
+			}
+		case *ast.WhileStmt:
+			if lineInStatements(s.Body, hoverLine) {
+				return true
+			}
+		case *ast.UntilStmt:
+			if lineInStatements(s.Body, hoverLine) {
+				return true
+			}
+		case *ast.TryStmt:
+			if lineInStatements(s.Body, hoverLine) ||
+				lineInStatements(s.Else, hoverLine) ||
+				lineInStatements(s.Ensure, hoverLine) {
+				return true
+			}
+			for _, clause := range s.Rescues {
+				if lineInStatements(clause.Body, hoverLine) {
+					return true
+				}
+			}
 		}
 	}
-	return n
+	return false
+}
+
+func lineInStatements(stmts []ast.Statement, hoverLine int) bool {
+	if nestedControlContains(stmts, hoverLine) {
+		return true
+	}
+	for _, stmt := range stmts {
+		if stmt == nil {
+			continue
+		}
+		if hoverLine >= stmt.Pos().Line && hoverLine <= statementLastLine(stmt) {
+			return true
+		}
+	}
+	return false
 }
 
 func rescueBindingCovers(clause ast.RescueClause, hoverLine, hoverColumn int) bool {
