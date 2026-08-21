@@ -1,4 +1,4 @@
-# vibe: 0.4
+# vibe: 1.0
 
 def times(n)
   i = 0
@@ -8,7 +8,7 @@ def times(n)
   end
 end
 
-def with_retry(max_attempts, delay_seconds)
+def first_truthy(max_attempts)
   attempt = 0
   while attempt < max_attempts
     result = yield(attempt)

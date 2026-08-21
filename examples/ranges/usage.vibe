@@ -1,4 +1,4 @@
-# vibe: 0.4
+# vibe: 1.0
 
 def inclusive_range_sum(start, finish)
   total = 0

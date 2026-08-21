@@ -3,6 +3,17 @@
 This is the consolidated reference for Vibescript syntax and core semantics.
 Use this with focused guides in `docs/` for deeper examples.
 
+## Language Boundary
+
+Vibescript is an embedded workflow language, not a general-purpose Ruby
+runtime. Scripts call named functions and methods, transform value-semantic
+collections, and invoke host-provided capabilities. Blocks are synchronous
+syntax attached to a call, executable code cannot be retained as a value, and
+modules provide namespaces without mixins. The embedding host owns concurrency,
+delay, scheduling, and external authority. See
+[ADR-006](adr/006-slim-language-for-predictable-sandboxing.md) for the rationale
+and [Migrating to 1.0](migrating-to-1.0.md) for replacement patterns.
+
 ## Source Structure
 
 - Files are UTF-8 text, typically with `.vibe` extension.
@@ -167,7 +178,8 @@ Function features:
 - Keyword/default arguments.
 - Optional type annotations.
 - Optional return type annotations.
-- Optional block parameters.
+- An optional call-attached block, inspected with `block_given?` and run with
+  `yield`.
 
 Run a supplied block with `yield`, and ask `block_given?` whether the current
 call was given one before yielding. See `docs/blocks.md` for details.
@@ -604,11 +616,13 @@ See `docs/errors.md` for parser/runtime error formats and stack traces.
 Load shared code from other files with `require`:
 
 ```vibe
-helpers = require("public/helpers", as: "helpers")
+require("public/helpers", as: "helpers")
 helpers.normalize(input)
 ```
 
 Module resolution is governed by host `Config.ModulePaths` and policy lists.
+Required exports are called directly through the module namespace; exported
+functions cannot be detached, stored, or passed as values.
 File-based modules are distinct from in-source `module Name ... end`
 declarations (see the Classes section and `docs/classes.md`).
 

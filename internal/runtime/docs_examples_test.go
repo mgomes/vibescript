@@ -29,6 +29,12 @@ func TestDocsExampleSnippetsCompile(t *testing.T) {
 		}
 		snippets := extractVibeCodeFences(string(data))
 		for idx, snippet := range snippets {
+			if strings.Contains(snippet, "# vibe:") {
+				firstLine := strings.SplitN(snippet, "\n", 2)[0]
+				if firstLine != "# vibe: 1.0" {
+					t.Errorf("%s snippet #%d version header = %q, want %q", entry.Name(), idx+1, firstLine, "# vibe: 1.0")
+				}
+			}
 			if _, err := engine.Compile(snippet); err != nil {
 				t.Fatalf("%s snippet #%d compile failed: %v\n%s", entry.Name(), idx+1, err, snippet)
 			}

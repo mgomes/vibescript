@@ -1,7 +1,7 @@
 # Automated Rewards
 
 ```vibe
-# vibe: 0.4
+# vibe: 1.0
 # uses: db, jobs
 
 def reward_for_total(total)

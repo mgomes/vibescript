@@ -6,16 +6,37 @@
 
 As [vibe coding](https://en.wikipedia.org/wiki/Vibe_coding) grows in popularity, there will be many domains where we need to narrow what users can build. Instead of giving them a blank canvas, we can offer an opinionated set of well-defined primitives that combine into predictable, safe applications. Think of it less like traditional software development and more like [HyperCard](https://en.wikipedia.org/wiki/HyperCard): flexible, but within bounds.
 
-Even in these constrained environments, non-technical users still need a way to express custom logic. That’s where Vibescript comes in. It’s a Ruby-like scripting language designed to be easy to read, and easy for AI to vibe code. The interpreter is written in Go and can be embedded directly into any Go application.
+Even in these constrained environments, non-technical users still need a way to express custom logic. That’s where Vibescript comes in. It’s a small, Ruby-like workflow language designed to be easy to read and easy for AI to vibe code. The interpreter is written in Go and embeds directly into any Go application; the host keeps control of scheduling, I/O, and authority.
 
 **Key Features**
 
-- Ruby-like syntax: blocks, ranges, zero-paren defs, string-keyed hashes.
+- Ruby-like syntax: named functions, synchronous blocks, ranges, classes, enums,
+  and string-keyed hashes.
 - Gradual typing: optional annotations, nullable `?`, enums, positional/keyword args, return checks.
 - Time & Duration helpers: literals, math, offsets (`ago`/`after`), Go-layout `format`.
 - Money type and helpers.
-- Embeddable in Go with capabilities and `require`-style modules.
+- Embeddable in Go with typed capabilities and namespace-style modules.
 - Interactive REPL with history, autocomplete, help/vars panels.
+
+### Deliberately Small Language Surface
+
+Vibescript is for data-driven business rules inside a host application, not
+general-purpose Ruby programs:
+
+- Named functions and methods are called directly. Blocks stay attached to the
+  call that runs them synchronously; executable code cannot be stored or passed
+  around as a value.
+- Arrays and hashes behave as values, so an update never changes a sibling
+  alias. Hash labels, string keys, and symbol keys all address one string
+  keyspace.
+- Modules provide explicit namespaces, not mixins or behavior injection.
+- The Go host owns concurrency, delay, scheduling, and external effects. Scripts
+  reach approved systems only through capabilities supplied for that call.
+
+See the [language reference](docs/language_reference.md), the
+[1.0 migration guide](docs/migrating-to-1.0.md), and
+[ADR-006](docs/adr/006-slim-language-for-predictable-sandboxing.md) for the
+complete boundary and its rationale.
 
 ```vibe
 # Quick leaderboard report with typing, time math, and blocks
@@ -149,12 +170,15 @@ current feature/limitation list live in [docs/lsp.md](docs/lsp.md).
 
 Representative `.vibe` programs are grouped under `examples/`:
 
-- `examples/basics/` – literals, arithmetic, and simple function composition.
-- `examples/collections/` – array, hash, and symbol usage including mutation and lookups.
+- `examples/basics/` – literals, arithmetic, named calls, and explicit module
+  namespaces.
+- `examples/collections/` – collection value updates and normalized
+  string/symbol hash lookups.
 - `examples/control_flow/` – conditionals and recursion examples.
 - `examples/enums/` – nominal enum values, typed coercion, and serialization.
 - `examples/strings/` – string normalization, predicates, and splitting helpers.
-- `examples/blocks/` – block-friendly transformations (map/select/reduce) over collections.
+- `examples/blocks/` – synchronous, call-attached transformations
+  (map/select/reduce) over collections.
 - `examples/hashes/` – hash manipulation, merging, and reporting helpers.
 - `examples/loops/` – range iteration, collection loops, and accumulation helpers.
 - `examples/ranges/` – range literals, ascending/descending iteration, and filtered collection helpers.
@@ -163,7 +187,8 @@ Representative `.vibe` programs are grouped under `examples/`:
 - `examples/time/` – Time creation, formatting (Go layouts), and duration/time math.
 - `examples/errors/` – patterns that rely on `assert` for validation.
 - `examples/capabilities/` – samples that touch `ctx`, `db`, `events`, and other declared capabilities.
-- `examples/background/` – jobs and events workflows using typed capability adapters.
+- `examples/background/` – jobs and events workflows delegated to host-provided
+  capability adapters.
 - `examples/policies/` – authorization helpers consulted by manifest policies.
 
 ## Documentation

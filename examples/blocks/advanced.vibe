@@ -1,4 +1,4 @@
-# vibe: 0.4
+# vibe: 1.0
 
 def count_active(players)
   players.reduce(0) do |count, player|

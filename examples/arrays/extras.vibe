@@ -1,4 +1,4 @@
-# vibe: 0.4
+# vibe: 1.0
 
 def first_two(values)
   values.first(2)

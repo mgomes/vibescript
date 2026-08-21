@@ -1,4 +1,4 @@
-# vibe: 0.4
+# vibe: 1.0
 
 def fundraising_badge(amount)
   if amount >= 100000

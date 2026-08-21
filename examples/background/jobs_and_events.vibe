@@ -1,5 +1,6 @@
-# vibe: 0.4
+# vibe: 1.0
 # uses: jobs, events, db
+# The host owns the queue and performs delayed work after this call returns.
 
 def queue_recalc(player_id)
   jobs.enqueue(

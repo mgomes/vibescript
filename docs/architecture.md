@@ -54,7 +54,7 @@ Key files:
 3. Enforce allow/deny policy rules.
 4. Compile + cache module script by normalized cache key.
 5. Execute module in a module-local env.
-6. Export non-private functions to module object.
+6. Export non-private function names to a module namespace object.
 7. Inject non-conflicting exports into globals and optionally bind alias.
 
 Key files:

@@ -31,7 +31,8 @@ private def _rounding_hint
 end
 ```
 
-A main script can load the helpers and use the exported functions:
+A main script can load the helpers and call the exported names through a
+namespace:
 
 ```vibe
 # scripts/checkout.vibe
@@ -53,10 +54,11 @@ end
 ```
 
 When `total_with_fee` runs, `require("fees")` resolves the module relative to
-`Config.ModulePaths`, compiles it once, and returns an object containing the
+`Config.ModulePaths`, compiles it once, and returns a namespace containing the
 module’s exports. Functions are exported by default; use `private def` for
-module-only helpers. When an exported name conflicts with an
-existing global, the existing binding keeps precedence and the module object
+module-only helpers. Exported functions remain direct call targets, not values
+that can be detached or passed around. When an exported name conflicts with an
+existing global, the existing binding keeps precedence and the module namespace
 remains the conflict-free access path.
 
 Inside modules, explicit relative requires are supported:

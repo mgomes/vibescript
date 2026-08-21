@@ -431,7 +431,15 @@ Hash.new.fetch(:missing, 0)  # 0
 
 ### `require(module_name, as: nil) -> object`
 
-Loads a module from configured module search paths and returns an object containing the module's exported functions and enums. Module functions are exported by default; top-level enums are exported as well. Executable top-level statements run as the module initializer before exports are returned, so module-local values can be prepared for exported functions. `private def ...` keeps helper functions module-local. Exported names are injected into globals only when the name is still free (existing globals keep precedence), and `as:` can be used to bind the module object explicitly:
+Loads a module from configured module search paths and returns a namespace
+object containing its exported function names and enums. Exported functions are
+called directly through that namespace; they are not detachable function
+values. Module functions are exported by default, and top-level enums are
+exported as well. Executable top-level statements run as the module initializer
+before exports are returned, so module-local values can be prepared for later
+calls. `private def ...` keeps helper functions module-local. Exported names are
+injected into globals only when the name is still free (existing globals keep
+precedence), and `as:` can bind the namespace explicitly:
 
 ```vibe
 def calculate_total(amount)

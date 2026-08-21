@@ -1,13 +1,30 @@
 # Vibescript Overview
 
-Vibescript is a Ruby-inspired DSL for describing fundraising workflows. It
-supports literals, collections, hashes, numeric ranges, blocks, and built-in
-helpers for money and durations. Many of the examples mirror core Ruby
-enumerable patterns, letting non-programmers write expressive scripts that
-run inside Go services.
+Vibescript is a small, Ruby-inspired language for describing data-driven
+workflows inside Go services. It supports named functions, classes, enums,
+ordinary control flow, JSON-shaped values, synchronous blocks, and helpers for
+money, time, and durations. The familiar syntax is intentionally narrower than
+Ruby so hosts can keep execution and authority predictable.
 
 This document covers the basics. See the other files in this folder for deep
 dives on specific topics.
+
+## Language Boundary
+
+Script code transforms values and coordinates capabilities supplied by the
+embedding host. Arrays and hashes have value semantics, and hashes normalize
+string and symbol inputs into one string keyspace. Named functions and methods
+are called directly; blocks are syntax attached to the call that runs them and
+cannot escape as stored callbacks. Modules are explicit namespaces rather than
+mixins.
+
+The Go host owns concurrency, delay, scheduling, and external effects. It can
+run independent `Script.Call` invocations concurrently or expose a bounded
+batch, job, database, or event capability when a workflow needs those services.
+See the [language reference](language_reference.md),
+[1.0 migration guide](migrating-to-1.0.md), and
+[ADR-006](adr/006-slim-language-for-predictable-sandboxing.md) for the complete
+contract.
 
 ## Table of Contents
 

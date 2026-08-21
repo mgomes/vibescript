@@ -1,4 +1,4 @@
-# vibe: 0.4
+# vibe: 1.0
 
 def double_each(pledges)
   pledges.map do |pledge|
