@@ -3,5 +3,4 @@
   contract, hashes are one string keyspace rather than symbol-keyed, the
   `function` type is not listed as live, and the 1.0 migration guide now
   covers Tasks/`sleep` and the string keyspace. `Hash.new(0)` is a runtime
-  error, not a compile error. Hover on `Proc` and `include`/`extend` teaches
-  the removals.
+  error, not a compile error. Hover on `Proc` teaches the callable removal.

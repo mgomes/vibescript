@@ -37,8 +37,7 @@ namespace receiver resolves to the qualified entry first, so hovering
 `Math`, `Time`, `Duration`, `Regexp`, and `Hash` members resolve the
 same way. Hovering `Proc` explains that callable constructors were removed.
 Reserved keywords and contextual declaration words
-(`module`, `alias`, `include`, `extend`, `private`, ...) show a one-line
-description. Any other
+(`module`, `alias`, `private`, ...) show a one-line description. Any other
 identifier falls back to being classified as a plain symbol. UTF-16 positions
 (the LSP wire encoding) are translated correctly for documents containing
 multi-byte characters.
