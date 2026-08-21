@@ -1501,6 +1501,13 @@ func interpIdentSkip(s string, i int) (name string, extra int, ok bool) {
 	return s[start:i], i - start - 1, true
 }
 
+func seedImplicitBlockLocals(locals map[string]struct{}) {
+	locals["it"] = struct{}{}
+	for i := 1; i <= 9; i++ {
+		locals["_"+string(rune('0'+i))] = struct{}{}
+	}
+}
+
 func isControlKeyword(tok string) bool {
 	switch tok {
 	case "def", "class", "module", "begin", "case", "end",
@@ -1777,6 +1784,7 @@ func (sc *sourceScan) tokens(s string) []string {
 				for name := range locals {
 					cloned[name] = struct{}{}
 				}
+				seedImplicitBlockLocals(cloned)
 				locals = cloned
 			}
 			atStmtStart = false
@@ -2170,6 +2178,36 @@ func (sc *sourceScan) tokens(s string) []string {
 							i++
 							continue
 						}
+						if inRegex {
+							var extra int
+							var closed bool
+							escape, closed, inCharClass, inCharClassStart, extra = interpRegexConsume(
+								s, i, ch, escape, inCharClass, inCharClassStart)
+							if closed {
+								inRegex = false
+								afterValue = true
+							}
+							i += extra + 1
+							continue
+						}
+						if ch == '/' && slashStartsRegex(afterValue, afterSpace, s, i, lastIdent, locals) {
+							inRegex = true
+							inCharClass = false
+							inCharClassStart = false
+							afterSpace = false
+							i++
+							continue
+						}
+						if ch == '#' {
+							if i+1 < len(s) && s[i+1] == '{' {
+								interpDepth++
+								afterValue = false
+								lastIdent = ""
+								i += 2
+								continue
+							}
+							break
+						}
 						if ch == '"' || ch == '\'' {
 							innerStr = ch
 							i++
@@ -2177,14 +2215,25 @@ func (sc *sourceScan) tokens(s string) []string {
 						}
 						if ch == '{' {
 							interpDepth++
+							afterValue = false
+							lastIdent = ""
 							i++
 							continue
 						}
 						if ch == '}' {
 							interpDepth--
+							afterValue = true
 							i++
 							continue
 						}
+						if name, extra, ok := interpIdentSkip(s, i); ok {
+							afterValue = true
+							lastIdent = name
+							i += extra + 1
+							continue
+						}
+						afterValue = false
+						lastIdent = ""
 						i++
 						continue
 					}
@@ -2394,20 +2443,21 @@ func (sc *sourceScan) tokens(s string) []string {
 				}
 			}
 		case '|':
-			if afterBrace && !inPipes {
+			inPipes = !inPipes
+			afterBrace = false
+		case '{':
+			afterDef = false
+			afterBrace = true
+			if afterValue {
 				openers = append(openers, "brace")
 				localsStack = append(localsStack, locals)
 				cloned := make(map[string]struct{}, len(locals))
 				for name := range locals {
 					cloned[name] = struct{}{}
 				}
+				seedImplicitBlockLocals(cloned)
 				locals = cloned
 			}
-			inPipes = !inPipes
-			afterBrace = false
-		case '{':
-			afterDef = false
-			afterBrace = true
 		case '}':
 			afterBrace = false
 			if n := len(openers); n > 0 && openers[n-1] == "brace" {
