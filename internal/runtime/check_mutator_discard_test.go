@@ -169,6 +169,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "same-call delete miss block does not observe the write",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.delete(1) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later read after a matched case candidate is not an observation",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  case 1\n  when 1, puts(row)\n    nil\n  end\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "union of shape collection fields",
 			source: "def f(rows: array<{items: array<int>}> | array<{items: array<string>}>)\n  rows.each { |row| row.items.clear }\n  nil\nend\nf([{items: [1]}])\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -515,6 +525,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "push with a keyword argument cannot update",
 			source: "[1].push(value: 2)\nputs \"done\"",
+		},
+		{
+			name:   "delete_if without a block cannot update",
+			source: "[1].delete_if()\nputs \"done\"",
+		},
+		{
+			name:   "keep_if without a block cannot update",
+			source: "[1].keep_if()\nputs \"done\"",
 		},
 		{
 			name:   "case later clause after aborting match",

@@ -659,7 +659,7 @@ func collectionMutatorCallShapeMayComplete(property string, call *CallExpr) bool
 	case "insert":
 		return n >= 1 && !kwargs
 	case "delete_if", "keep_if":
-		return n == 0 && !kwargs
+		return n == 0 && !kwargs && block
 	default:
 		return true
 	}
@@ -1088,18 +1088,18 @@ func caseExprObservesName(expr *CaseExpr, names map[string]struct{}) bool {
 	if expressionObservesName(expr.Target, names) {
 		return true
 	}
-	if result, known := staticCaseExpressionResult(expr); known {
+	if _, known := staticCaseExpressionResult(expr); known {
 		for _, clause := range expr.Clauses {
 			for _, candidate := range clause.Values {
 				if expressionObservesName(candidate.Expr, names) {
 					return true
 				}
-			}
-			if clause.Result == result {
-				return expressionObservesName(result, names)
+				if staticCaseWhenCandidateMatches(expr, candidate.Expr, candidate.Splat) {
+					return expressionObservesName(clause.Result, names)
+				}
 			}
 		}
-		return expressionObservesName(result, names)
+		return expressionObservesName(expr.ElseExpr, names)
 	}
 	for _, clause := range expr.Clauses {
 		for _, candidate := range clause.Values {
@@ -1168,8 +1168,7 @@ func expressionObservesName(expr Expression, names map[string]struct{}) bool {
 			return false
 		}
 		if member, ok := typed.Callee.(*MemberExpr); ok {
-			if isCollectionMutator(member.Property) &&
-				!mutatorInvokesSuppliedBlock(member.Property) {
+			if mutatorIgnoresSuppliedBlock(member.Property) {
 				return false
 			}
 			if blockResultDiscardingIterator(member.Property) &&
@@ -1424,11 +1423,40 @@ func filterMutatorWritesAfterBlock(property string) bool {
 
 func mutatorInvokesSuppliedBlock(property string) bool {
 	switch property {
-	case "fill", "delete_if", "keep_if", "delete":
+	case "fill", "delete_if", "keep_if":
 		return true
 	default:
 		return false
 	}
+}
+
+func mutatorIgnoresSuppliedBlock(property string) bool {
+	switch property {
+	case "push", "append", "prepend", "unshift", "pop", "shift",
+		"insert", "clear", "store", "replace":
+		return true
+	default:
+		return false
+	}
+}
+
+func staticCaseWhenCandidateMatches(expr *CaseExpr, candidate Expression, splat bool) bool {
+	if splat {
+		return false
+	}
+	value, ok := staticLiteralValue(candidate)
+	if !ok {
+		return false
+	}
+	if expr.Target == nil {
+		return value.Truthy()
+	}
+	target, ok := staticLiteralValue(expr.Target)
+	if !ok {
+		return false
+	}
+	matched, err := caseCandidateMatches(nil, target, value)
+	return err == nil && matched
 }
 
 func staticNonNegativeCountMayComplete(expr Expression) bool {
