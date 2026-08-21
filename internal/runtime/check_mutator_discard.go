@@ -187,6 +187,10 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 				}
 			}
 		}
+	case "sort":
+		if length, ok := staticCollectionLength(receiver); ok {
+			return length >= 2
+		}
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
 		return length > 0
@@ -1047,6 +1051,11 @@ func (c *scriptChecker) statementsObserveNameExcept(statements []Statement, name
 		case *RaiseStmt:
 			observed = c.expressionObservesName(typed.Value, names) ||
 				c.expressionObservesName(typed.Message, names)
+		case *TryStmt:
+			observed = c.tryStmtObservesName(typed, names, except)
+			if !observed {
+				c.applyDefiniteTryBindingKills(typed, names)
+			}
 		default:
 			observed = statementsReferenceAnyName([]Statement{statement}, names)
 		}
@@ -1201,6 +1210,26 @@ func (c *scriptChecker) applyDefiniteIfBindingKills(stmt *IfStmt, names map[stri
 		}
 	}
 	c.applyDefiniteBindingKills(stmt.Alternate, names)
+}
+
+func (c *scriptChecker) tryStmtObservesName(stmt *TryStmt, names map[string]struct{}, except *ExprStmt) bool {
+	if c.statementsObserveNameExcept(stmt.Body, names, except) {
+		return true
+	}
+	for _, clause := range stmt.Rescues {
+		if c.statementsObserveNameExcept(clause.Body, names, except) {
+			return true
+		}
+	}
+	if c.statementsObserveNameExcept(stmt.Else, names, except) {
+		return true
+	}
+	return c.statementsObserveNameExcept(stmt.Ensure, names, except)
+}
+
+func (c *scriptChecker) applyDefiniteTryBindingKills(stmt *TryStmt, names map[string]struct{}) {
+	c.applyDefiniteBindingKills(stmt.Body, names)
+	c.applyDefiniteBindingKills(stmt.Ensure, names)
 }
 
 func (c *scriptChecker) applyDefiniteBindingKills(statements []Statement, names map[string]struct{}) {

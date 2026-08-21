@@ -224,6 +224,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later singleton sort block is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].sort { |a, b| puts row; 0 } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later try-body overwrite is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); begin; row = []; ensure; nil; end }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "later read after a nested return is not an observation",
 			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each do |row|\n    if flag\n      row.push(0)\n      return nil\n    end\n    puts row\n  end\nend\nf(true)\nputs \"done\"",
 			want:   "mutating block parameter row",
