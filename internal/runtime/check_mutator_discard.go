@@ -1522,6 +1522,8 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 								}
 							}
 						}
+					} else if inEnsure {
+						mutationPathContinues = pathContinues && c.tryStmtFallsThrough(typed)
 					}
 					if mutationPathContinues {
 						if c.statementsObserveName(stmts[i+1:], names) {

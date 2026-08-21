@@ -819,6 +819,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			source: "def f\n  begin\n    [1].push(2)\n  ensure\n    return nil\n  end\nend\nf()\nputs \"done\"",
 			want:   "push updates a temporary",
 		},
+		{
+			name:   "ensure mutation after a raising body does not observe the suffix",
+			source: "rows = [[1], [2]]\nrows.each { |row| begin; raise \"x\"; ensure; row.push(0); end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
 	}
 
 	for _, tc := range tests {
@@ -1344,6 +1349,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "begin without else still yields the body",
 			source: "def f\n  begin\n    [1].push(2)\n  rescue\n    nil\n  end\nend\ny = f()\nputs y",
+		},
+		{
+			name:   "ensure mutation after a completing body still observes the suffix",
+			source: "rows = [[1], [2]]\nrows.each { |row| begin; nil; ensure; row.push(0); end; puts row }\nputs \"done\"",
 		},
 	}
 
