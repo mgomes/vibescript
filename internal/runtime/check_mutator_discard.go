@@ -206,14 +206,13 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 	case "fetch":
 		return staticFetchFallbackMayRun(receiver, call)
 	case "merge":
-		return call != nil && len(call.Args) > 0
+		return staticMergeMayConflict(receiver, call)
 	case "fetch_values":
 		return staticFetchValuesMayMiss(receiver, call)
 	case "fill":
-		if length, ok := staticCollectionLength(receiver); ok {
-			return length > 0
-		}
-		return true
+		return staticFillMayYield(receiver, call)
+	case "zip":
+		return false
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
 		return length > 0
@@ -285,6 +284,73 @@ func (c *scriptChecker) staticIteratorCallMayComplete(receiver Expression, prope
 	}
 }
 
+func staticHashLiteralKeys(hash *HashLiteral) (map[string]struct{}, bool) {
+	if hash == nil {
+		return nil, false
+	}
+	keys := make(map[string]struct{}, len(hash.Pairs))
+	for _, pair := range hash.Pairs {
+		key, ok := staticLiteralHashKey(pair.Key)
+		if !ok {
+			return nil, false
+		}
+		keys[key] = struct{}{}
+	}
+	return keys, true
+}
+
+func staticMergeMayConflict(receiver Expression, call *CallExpr) bool {
+	if call == nil || len(call.Args) == 0 {
+		return false
+	}
+	hash, ok := receiver.(*HashLiteral)
+	if !ok {
+		return true
+	}
+	recvKeys, ok := staticHashLiteralKeys(hash)
+	if !ok {
+		return true
+	}
+	for _, arg := range call.Args {
+		other, ok := arg.(*HashLiteral)
+		if !ok {
+			return true
+		}
+		argKeys, ok := staticHashLiteralKeys(other)
+		if !ok {
+			return true
+		}
+		for key := range argKeys {
+			if _, found := recvKeys[key]; found {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func staticFillMayYield(receiver Expression, call *CallExpr) bool {
+	length, ok := staticCollectionLength(receiver)
+	if !ok {
+		return true
+	}
+	if length == 0 {
+		return false
+	}
+	if call == nil || len(call.Args) == 0 {
+		return true
+	}
+	if len(call.Args) != 2 {
+		return true
+	}
+	start, okStart := integerLiteralValue(call.Args[0])
+	count, okCount := integerLiteralValue(call.Args[1])
+	if !okStart || !okCount || start.IsBigInt() || count.IsBigInt() {
+		return true
+	}
+	return count.Int() > 0
+}
+
 func staticFetchValuesMayMiss(receiver Expression, call *CallExpr) bool {
 	if call == nil || len(call.Args) == 0 {
 		return false
@@ -320,6 +386,22 @@ func staticFetchValuesMayMiss(receiver Expression, call *CallExpr) bool {
 func staticFetchFallbackMayRun(receiver Expression, call *CallExpr) bool {
 	if call == nil || len(call.Args) < 1 || len(call.Args) > 2 {
 		return false
+	}
+	if hash, ok := receiver.(*HashLiteral); ok {
+		value, ok := staticLiteralValue(call.Args[0])
+		if !ok {
+			return true
+		}
+		key, err := hashKeyString(value)
+		if err != nil {
+			return true
+		}
+		keys, ok := staticHashLiteralKeys(hash)
+		if !ok {
+			return true
+		}
+		_, present := keys[key]
+		return !present
 	}
 	length, okLen := staticCollectionLength(receiver)
 	if !okLen {
@@ -1596,6 +1678,10 @@ func (c *scriptChecker) tryStmtObservesName(stmt *TryStmt, names map[string]stru
 			if c.statementsObserveNameExcept(clause.Body, clauseNames, except) {
 				return true
 			}
+			if knownRaise {
+				c.applyDefiniteBindingKills(clause.Body, live)
+				break
+			}
 		}
 	}
 	if c.statementsMayCompleteNormally(stmt.Body) &&
@@ -1607,6 +1693,18 @@ func (c *scriptChecker) tryStmtObservesName(stmt *TryStmt, names map[string]stru
 
 func (c *scriptChecker) applyDefiniteTryBindingKills(stmt *TryStmt, names map[string]struct{}) {
 	c.applyDefiniteBindingKills(stmt.Body, names)
+	if !statementsProvenNonRaising(stmt.Body) {
+		raisedName, knownRaise := statementsRaisedTypeName(stmt.Body)
+		if knownRaise {
+			for _, clause := range stmt.Rescues {
+				if !rescueClauseMayMatch(clause, raisedName, knownRaise) {
+					continue
+				}
+				c.applyDefiniteBindingKills(clause.Body, names)
+				break
+			}
+		}
+	}
 	c.applyDefiniteBindingKills(stmt.Ensure, names)
 }
 

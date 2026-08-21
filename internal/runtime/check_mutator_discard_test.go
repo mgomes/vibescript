@@ -314,6 +314,31 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "hash fetch hit is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.fetch(:a) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "disjoint merge is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.merge({b: 2}) { puts row; 2 } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "empty fill span is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].fill(0, 0) { puts row; 9 } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "zip ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].zip { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "ensure after rescue overwrite is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); begin; raise \"x\"; rescue; row = []; ensure; puts row; end }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "later aborting loop condition is not an observation",
 			source: "first = true\nrows = [[1], [2]]\nrows.each { |row| row.push(0); while first || [[1].clear(2), row]; first = false; end }\nputs \"done\"",
 			want:   "mutating block parameter row",
