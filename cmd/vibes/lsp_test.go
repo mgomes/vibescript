@@ -3800,6 +3800,14 @@ func TestHoverIncludeExtendDirectiveIsContextual(t *testing.T) {
 	if got := hoverValue(t, interpPercentQuote, 4, 2); !strings.Contains(got, "Removed mixin") {
 		t.Fatalf("hover(include after interp percent array) = %q, want mixin-removal docs", got)
 	}
+	paramDivision := "class C; def run(total); total /2; end; include Naming; end\n"
+	if got := hoverValue(t, paramDivision, 0, 40); !strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after param /2) = %q, want mixin-removal docs", got)
+	}
+	multilineInterpPercent := "class C\n  def run\n    text = \"#{%W[\n\"]}\"\n  end\n  include Naming\nend\n"
+	if got := hoverValue(t, multilineInterpPercent, 5, 2); !strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after multiline interp percent) = %q, want mixin-removal docs", got)
+	}
 }
 
 func TestHoverBareAssignmentIsNotASetterCall(t *testing.T) {

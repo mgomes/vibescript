@@ -1662,21 +1662,28 @@ func sourceClosedBeforeColumn(lines []string, start ast.Position, hoverLine, hov
 }
 
 type sourceScan struct {
-	inStr            byte
-	percentOpen      byte
-	percentClose     byte
-	percentDepth     int
-	interpDepth      int
-	escape           bool
-	afterValue       bool
-	afterDot         bool
-	inRegex          bool
-	hitComment       bool
-	innerStr         byte
-	inCharClass      bool
-	inCharClassStart bool
-	lastIdent        string
-	locals           map[string]struct{}
+	inStr              byte
+	percentOpen        byte
+	percentClose       byte
+	percentDepth       int
+	interpDepth        int
+	escape             bool
+	afterValue         bool
+	afterDot           bool
+	inRegex            bool
+	hitComment         bool
+	innerStr           byte
+	inCharClass        bool
+	inCharClassStart   bool
+	lastIdent          string
+	locals             map[string]struct{}
+	afterDef           bool
+	inParams           bool
+	paramDepth         int
+	inPipes            bool
+	interpPercentOpen  byte
+	interpPercentClose byte
+	interpPercentDepth int
 }
 
 func (sc *sourceScan) tokens(s string) []string {
@@ -1700,6 +1707,13 @@ func (sc *sourceScan) tokens(s string) []string {
 	if locals == nil {
 		locals = map[string]struct{}{}
 	}
+	afterDef := sc.afterDef
+	inParams := sc.inParams
+	paramDepth := sc.paramDepth
+	inPipes := sc.inPipes
+	interpPercentOpen := sc.interpPercentOpen
+	interpPercentClose := sc.interpPercentClose
+	interpPercentDepth := sc.interpPercentDepth
 	afterSpace := false
 	flush := func(i int) {
 		if start >= 0 {
@@ -1720,6 +1734,12 @@ func (sc *sourceScan) tokens(s string) []string {
 			lastIdent = tok
 			if tok == "def" {
 				locals = map[string]struct{}{}
+				afterDef = true
+				inParams = false
+				paramDepth = 0
+				inPipes = false
+			} else if (inParams || inPipes) && identCanBeLocal(tok) {
+				locals[tok] = struct{}{}
 			}
 		}
 	}
@@ -1753,6 +1773,17 @@ func (sc *sourceScan) tokens(s string) []string {
 					i += extra
 					continue
 				}
+				if interpPercentDepth > 0 {
+					end, depth, closed := skipPercentArrayFrom(s, i, interpPercentOpen, interpPercentClose, interpPercentDepth)
+					if closed {
+						interpPercentDepth = 0
+						afterValue = true
+						i = end
+						continue
+					}
+					interpPercentDepth = depth
+					break
+				}
 				if c == ' ' || c == '\t' {
 					afterSpace = true
 					continue
@@ -1765,10 +1796,19 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				afterSpace = false
-				if end, ok := skipPercentArrayLiteral(s, i); ok {
-					afterValue = true
-					i = end
-					continue
+				if !afterValue && c == '%' && i+2 < len(s) && strings.ContainsRune("wWiIqQ", rune(s[i+1])) {
+					open := s[i+2]
+					close := percentLiteralCloser(open)
+					end, depth, closed := skipPercentArrayFrom(s, i+3, open, close, 1)
+					if closed {
+						afterValue = true
+						i = end
+						continue
+					}
+					interpPercentOpen = open
+					interpPercentClose = close
+					interpPercentDepth = depth
+					break
 				}
 				if c == '"' || c == '\'' {
 					innerStr = c
@@ -1847,6 +1887,17 @@ func (sc *sourceScan) tokens(s string) []string {
 					i += extra
 					continue
 				}
+				if interpPercentDepth > 0 {
+					end, depth, closed := skipPercentArrayFrom(s, i, interpPercentOpen, interpPercentClose, interpPercentDepth)
+					if closed {
+						interpPercentDepth = 0
+						afterValue = true
+						i = end
+						continue
+					}
+					interpPercentDepth = depth
+					break
+				}
 				if c == ' ' || c == '\t' {
 					afterSpace = true
 					continue
@@ -1859,10 +1910,19 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				afterSpace = false
-				if end, ok := skipPercentArrayLiteral(s, i); ok {
-					afterValue = true
-					i = end
-					continue
+				if !afterValue && c == '%' && i+2 < len(s) && strings.ContainsRune("wWiIqQ", rune(s[i+1])) {
+					open := s[i+2]
+					close := percentLiteralCloser(open)
+					end, depth, closed := skipPercentArrayFrom(s, i+3, open, close, 1)
+					if closed {
+						afterValue = true
+						i = end
+						continue
+					}
+					interpPercentOpen = open
+					interpPercentClose = close
+					interpPercentDepth = depth
+					break
 				}
 				if c == '"' || c == '\'' {
 					innerStr = c
@@ -2203,6 +2263,27 @@ func (sc *sourceScan) tokens(s string) []string {
 			'+', '-', '*', '/', '%', '&', '|', '^', '<', '>', '!':
 			tokens = append(tokens, string(c))
 		}
+		switch c {
+		case '(':
+			if afterDef {
+				inParams = true
+				afterDef = false
+				paramDepth = 1
+			} else if inParams {
+				paramDepth++
+			}
+		case ')':
+			if inParams {
+				paramDepth--
+				if paramDepth <= 0 {
+					inParams = false
+				}
+			}
+		case '|':
+			inPipes = !inPipes
+		case ';', '{':
+			afterDef = false
+		}
 		afterValue = false
 		afterDot = false
 	}
@@ -2222,6 +2303,13 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.inCharClassStart = inCharClassStart
 	sc.lastIdent = lastIdent
 	sc.locals = locals
+	sc.afterDef = afterDef
+	sc.inParams = inParams
+	sc.paramDepth = paramDepth
+	sc.inPipes = inPipes
+	sc.interpPercentOpen = interpPercentOpen
+	sc.interpPercentClose = interpPercentClose
+	sc.interpPercentDepth = interpPercentDepth
 	return tokens
 }
 
@@ -2306,18 +2394,7 @@ func sourceInsideLiteral(lines []string, hoverLine, hoverColumn int) bool {
 		scan.hitComment || scan.interpDepth > 0
 }
 
-func skipPercentArrayLiteral(s string, i int) (end int, ok bool) {
-	if i < 0 || i+2 >= len(s) || s[i] != '%' {
-		return i, false
-	}
-	kind := s[i+1]
-	if !strings.ContainsRune("wWiIqQ", rune(kind)) {
-		return i, false
-	}
-	open := s[i+2]
-	close := percentLiteralCloser(open)
-	i += 3
-	depth := 1
+func skipPercentArrayFrom(s string, i int, open, close byte, depth int) (end, newDepth int, closed bool) {
 	for i < len(s) && depth > 0 {
 		if s[i] == '\\' && i+1 < len(s) {
 			i += 2
@@ -2328,12 +2405,12 @@ func skipPercentArrayLiteral(s string, i int) (end int, ok bool) {
 		} else if s[i] == close {
 			depth--
 			if depth == 0 {
-				return i, true
+				return i, 0, true
 			}
 		}
 		i++
 	}
-	return i, false
+	return i, depth, false
 }
 
 func percentLiteralCloser(open byte) byte {
