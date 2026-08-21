@@ -1691,38 +1691,40 @@ func sourceClosedBeforeColumn(lines []string, start ast.Position, hoverLine, hov
 }
 
 type sourceScan struct {
-	inStr              byte
-	percentOpen        byte
-	percentClose       byte
-	percentDepth       int
-	interpDepth        int
-	escape             bool
-	afterValue         bool
-	afterDot           bool
-	inRegex            bool
-	hitComment         bool
-	innerStr           byte
-	inCharClass        bool
-	inCharClassStart   bool
-	lastIdent          string
-	locals             map[string]struct{}
-	afterDef           bool
-	afterDefName       bool
-	inParams           bool
-	paramDepth         int
-	inPipes            bool
-	inParamDefault     bool
-	inForTargets       bool
-	inRescueHeader     bool
-	pendingRescueBind  bool
-	rescueBinds        []sourceRescueBind
-	afterBlockPipes    bool
-	afterBrace         bool
-	interpPercentOpen  byte
-	interpPercentClose byte
-	interpPercentDepth int
-	openers            []string
-	localsStack        []map[string]struct{}
+	inStr               byte
+	percentOpen         byte
+	percentClose        byte
+	percentDepth        int
+	percentInterpolates bool
+	interpDepth         int
+	escape              bool
+	afterValue          bool
+	afterDot            bool
+	inRegex             bool
+	hitComment          bool
+	innerStr            byte
+	inCharClass         bool
+	inCharClassStart    bool
+	lastIdent           string
+	locals              map[string]struct{}
+	afterDef            bool
+	afterDefName        bool
+	inParams            bool
+	paramDepth          int
+	inPipes             bool
+	inParamDefault      bool
+	genericDepth        int
+	inForTargets        bool
+	inRescueHeader      bool
+	pendingRescueBind   bool
+	rescueBinds         []sourceRescueBind
+	afterBlockPipes     bool
+	afterBrace          bool
+	interpPercentOpen   byte
+	interpPercentClose  byte
+	interpPercentDepth  int
+	openers             []string
+	localsStack         []map[string]struct{}
 }
 
 type sourceRescueBind struct {
@@ -1747,6 +1749,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	percentOpen := sc.percentOpen
 	percentClose := sc.percentClose
 	percentDepth := sc.percentDepth
+	percentInterpolates := sc.percentInterpolates
 	escape := sc.escape
 	afterValue := sc.afterValue
 	afterDot := sc.afterDot
@@ -1767,6 +1770,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	paramDepth := sc.paramDepth
 	inPipes := sc.inPipes
 	inParamDefault := sc.inParamDefault
+	genericDepth := sc.genericDepth
 	inForTargets := sc.inForTargets
 	inRescueHeader := sc.inRescueHeader
 	pendingRescueBind := sc.pendingRescueBind
@@ -2083,7 +2087,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			continue
 		}
 		if percentClose != 0 {
-			if interpDepth > 0 {
+			if interpDepth > 0 && percentInterpolates {
 				if innerStr != 0 {
 					if escape {
 						escape = false
@@ -2177,7 +2181,7 @@ func (sc *sourceScan) tokens(s string) []string {
 				lastIdent = ""
 				continue
 			}
-			if c == '#' && i+1 < len(s) && s[i+1] == '{' {
+			if percentInterpolates && c == '#' && i+1 < len(s) && s[i+1] == '{' {
 				interpDepth = 1
 				afterValue = false
 				afterSpace = false
@@ -2201,6 +2205,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					percentOpen = 0
 					percentClose = 0
 					percentDepth = 0
+					percentInterpolates = false
 					afterValue = true
 					tokens = append(tokens, "%")
 				}
@@ -2341,7 +2346,7 @@ func (sc *sourceScan) tokens(s string) []string {
 						i += 2
 						continue
 					}
-					if s[i] == '#' && i+1 < len(s) && s[i+1] == '{' {
+					if (kind == 'W' || kind == 'I' || kind == 'Q') && s[i] == '#' && i+1 < len(s) && s[i+1] == '{' {
 						interpDepth = 1
 						afterValue = false
 						lastIdent = ""
@@ -2362,6 +2367,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					percentOpen = open
 					percentClose = close
 					percentDepth = depth
+					percentInterpolates = kind == 'W' || kind == 'I' || kind == 'Q'
 				} else {
 					tokens = append(tokens, "%")
 				}
@@ -2402,6 +2408,12 @@ func (sc *sourceScan) tokens(s string) []string {
 		if c == ' ' || c == '\t' {
 			flush(i)
 			afterSpace = true
+			continue
+		}
+		if c == '/' && afterDef && !afterDefName {
+			afterDefName = true
+			afterValue = true
+			afterSpace = false
 			continue
 		}
 		if c == '/' && slashStartsRegex(afterValue, afterSpace, s, i, lastIdent, locals) {
@@ -2585,6 +2597,7 @@ func (sc *sourceScan) tokens(s string) []string {
 				if paramDepth <= 0 {
 					inParams = false
 					inParamDefault = false
+					genericDepth = 0
 				}
 			} else if inPipes && paramDepth > 0 {
 				paramDepth--
@@ -2593,8 +2606,16 @@ func (sc *sourceScan) tokens(s string) []string {
 			afterDot = false
 			afterBrace = false
 			continue
+		case '<':
+			if inParams || inParamDefault {
+				genericDepth++
+			}
+		case '>':
+			if genericDepth > 0 {
+				genericDepth--
+			}
 		case ',':
-			if (inParams && paramDepth <= 1) || (inPipes && paramDepth == 0) {
+			if genericDepth == 0 && ((inParams && paramDepth <= 1) || (inPipes && paramDepth == 0)) {
 				inParamDefault = false
 			}
 		case ']':
@@ -2663,6 +2684,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.percentOpen = percentOpen
 	sc.percentClose = percentClose
 	sc.percentDepth = percentDepth
+	sc.percentInterpolates = percentInterpolates
 	sc.escape = escape
 	sc.afterValue = afterValue
 	sc.afterDot = afterDot
@@ -2680,6 +2702,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.paramDepth = paramDepth
 	sc.inPipes = inPipes
 	sc.inParamDefault = inParamDefault
+	sc.genericDepth = genericDepth
 	sc.inForTargets = inForTargets
 	sc.inRescueHeader = inRescueHeader
 	sc.pendingRescueBind = pendingRescueBind
