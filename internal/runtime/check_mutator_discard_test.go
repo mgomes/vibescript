@@ -1354,6 +1354,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			name:   "ensure mutation after a completing body still observes the suffix",
 			source: "rows = [[1], [2]]\nrows.each { |row| begin; nil; ensure; row.push(0); end; puts row }\nputs \"done\"",
 		},
+		{
+			name:   "empty local alias each does not run the block",
+			source: "xs = []\nxs.each { [1].push(2) }\nputs \"done\"",
+		},
 	}
 
 	for _, tc := range tests {

@@ -157,7 +157,7 @@ func (c *scriptChecker) mutatorDiscardCallFacts(call *CallExpr, target staticCal
 	if !c.receiverOwnsBuiltinIterator(member.Object, member.Property) {
 		return mutatorDiscardCall{}
 	}
-	if !staticIteratorMayYield(member.Property, member.Object, call) {
+	if !c.staticIteratorMayYield(member.Property, member.Object, call) {
 		return mutatorDiscardCall{}
 	}
 	return mutatorDiscardCall{
@@ -169,8 +169,8 @@ func (c *scriptChecker) mutatorDiscardCallFacts(call *CallExpr, target staticCal
 // staticIteratorMayYield reports whether a builtin iterator can invoke its
 // block. cycle with a nonpositive count never iterates; each_cons and
 // each_slice error or yield nothing when the window cannot run; an empty
-// literal receiver never yields.
-func staticIteratorMayYield(property string, receiver Expression, call *CallExpr) bool {
+// collection, including an unpoisoned local alias of one, never yields.
+func (c *scriptChecker) staticIteratorMayYield(property string, receiver Expression, call *CallExpr) bool {
 	if expanded, ok := staticExpandedCall(call); ok {
 		call = expanded
 	}
@@ -185,17 +185,17 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		}
 		if property == "each_cons" {
 			if size, ok := staticPositiveWindowSize(call); ok {
-				if length, okLen := staticCollectionLength(receiver); okLen {
+				if length, okLen := c.staticReceiverCollectionLength(receiver); okLen {
 					return size <= length
 				}
 			}
 		}
 	case "sort", "slice_when", "chunk_while":
-		if length, ok := staticCollectionLength(receiver); ok {
+		if length, ok := c.staticReceiverCollectionLength(receiver); ok {
 			return length >= 2
 		}
 	case "reduce":
-		length, ok := staticCollectionLength(receiver)
+		length, ok := c.staticReceiverCollectionLength(receiver)
 		if !ok {
 			return true
 		}
@@ -226,10 +226,37 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		"min", "max", "minmax", "at":
 		return false
 	}
-	if length, ok := staticCollectionLength(receiver); ok {
+	if length, ok := c.staticReceiverCollectionLength(receiver); ok {
 		return length > 0
 	}
 	return true
+}
+
+func (c *scriptChecker) staticReceiverCollectionLength(receiver Expression) (int, bool) {
+	if length, ok := staticCollectionLength(receiver); ok {
+		return length, true
+	}
+	values, exact := c.staticValueExpressionAlternatives(receiver)
+	if !exact || len(values) == 0 {
+		return 0, false
+	}
+	var length int
+	have := false
+	for _, value := range values {
+		n, ok := staticCollectionLength(value)
+		if !ok {
+			return 0, false
+		}
+		if !have {
+			length = n
+			have = true
+			continue
+		}
+		if n != length {
+			return 0, false
+		}
+	}
+	return length, have
 }
 
 func (c *scriptChecker) staticIteratorCallMayComplete(receiver Expression, property string, call *CallExpr) bool {
@@ -2689,7 +2716,7 @@ func (c *scriptChecker) expressionObservesName(expr Expression, names map[string
 			}
 			if c.receiverOwnsBuiltinIterator(member.Object, member.Property) &&
 				(!c.staticIteratorCallMayComplete(member.Object, member.Property, typed) ||
-					!staticIteratorMayYield(member.Property, member.Object, typed)) {
+					!c.staticIteratorMayYield(member.Property, member.Object, typed)) {
 				return false
 			}
 			if member.Property == "delete" && staticDeleteMissBlockUnreachable(member.Object, typed) {
