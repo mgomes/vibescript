@@ -1038,7 +1038,8 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 	}
 	if i >= len(runes) || runes[i] == '#' || runes[i] == ';' {
 		return !classBodyHasLocal(st, word, line+1, start+1) &&
-			!classBodyHasAccessor(st, word, lines, line+1, start+1)
+			!classBodyHasAccessor(st, word, lines, line+1, start+1) &&
+			!classBodyHasAlias(st, word, lines, line+1, start+1)
 	}
 	switch runes[i] {
 	case '=':
@@ -1056,7 +1057,7 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 		}
 		switch ast.LookupIdent(string(runes[identStart:i])) {
 		case ast.TokenIdent, ast.TokenSelf:
-			return true
+			return !classBodyHasAlias(st, word, lines, line+1, start+1)
 		default:
 			return false
 		}
@@ -1236,6 +1237,29 @@ func classBodyHasLocal(st *ast.ClassStmt, word string, hoverLine, hoverColumn in
 		return false
 	}
 	return statementsBindLocal(st.Body, word, hoverLine, hoverColumn)
+}
+
+func classBodyHasAlias(st *ast.ClassStmt, word string, lines []string, hoverLine, hoverColumn int) bool {
+	if st == nil || word == "" {
+		return false
+	}
+	check := func(a *ast.AliasStmt) bool {
+		if a == nil || (a.NewName != word && a.OldName != word) {
+			return false
+		}
+		return propertyDeclCoversHover(lines, ast.PropertyDecl{Position: a.Position}, hoverLine, hoverColumn)
+	}
+	for _, a := range st.Aliases {
+		if check(a) {
+			return true
+		}
+	}
+	for _, member := range st.Members {
+		if check(member.Alias) {
+			return true
+		}
+	}
+	return false
 }
 
 func classBodyHasAccessor(st *ast.ClassStmt, word string, lines []string, hoverLine, hoverColumn int) bool {
@@ -1918,10 +1942,25 @@ func sourceInsideLiteral(lines []string, hoverLine, hoverColumn int) bool {
 		return false
 	}
 	scan := sourceScan{}
+	inBlockComment := false
 	for line := 1; line < hoverLine && line <= len(lines); line++ {
+		text := lineAt(lines, line-1)
+		if inBlockComment {
+			if isBlockCommentEnd(text) {
+				inBlockComment = false
+			}
+			continue
+		}
+		if isBlockCommentBegin(text) {
+			inBlockComment = true
+			continue
+		}
 		scan.afterValue = false
 		scan.afterDot = false
-		scan.tokens(lineAt(lines, line-1))
+		scan.tokens(text)
+	}
+	if inBlockComment {
+		return true
 	}
 	if hoverLine > len(lines) {
 		return scan.inStr != 0 || scan.percentClose != 0 || scan.inRegex
