@@ -863,6 +863,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			source: "xs = [1]\nrows = [[1], [2]]\nrows.each { |row| row.push(0); xs.fill(0) { puts row; 9 } }\nputs \"done\"",
 		},
 		{
+			name:   "sequential merge conflict still observes",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {}.merge({a: 1}, {a: 2}) { puts row; 2 } }\nputs \"done\"",
+		},
+		{
+			name:   "expanding fill on empty still observes",
+			source: "xs = []\nrows = [[1], [2]]\nrows.each { |row| row.push(0); xs.fill(0, 2) { puts row; 9 } }\nputs xs",
+		},
+		{
 			name:   "raise before try overwrite still observes later",
 			source: "def risky\n  raise \"x\"\nend\nrows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  begin\n    risky()\n    row = []\n  rescue\n    nil\n  end\n  puts row\nend\nputs \"done\"",
 		},

@@ -324,6 +324,7 @@ func staticMergeMayConflict(receiver Expression, call *CallExpr) bool {
 			if _, found := recvKeys[key]; found {
 				return true
 			}
+			recvKeys[key] = struct{}{}
 		}
 	}
 	return false
@@ -334,11 +335,8 @@ func staticFillMayYield(receiver Expression, call *CallExpr) bool {
 	if !ok {
 		return true
 	}
-	if length == 0 {
-		return false
-	}
 	if call == nil || len(call.Args) == 0 {
-		return true
+		return length > 0
 	}
 	if len(call.Args) != 2 {
 		return true
