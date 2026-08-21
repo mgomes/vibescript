@@ -1,6 +1,10 @@
 package runtime
 
-import "strconv"
+import (
+	"strconv"
+
+	"github.com/mgomes/vibescript/internal/ast"
+)
 
 // Under value semantics a mutator only matters where its receiver names a
 // slot the runtime can rebind: a local, instance, or class variable root
@@ -927,7 +931,9 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 							if c.statementsObserveName(clause.Body, names) {
 								observes = true
 							}
-							break
+							if knownRaise {
+								break
+							}
 						}
 					}
 					if inBody && c.statementsObserveName(typed.Else, names) {
@@ -999,6 +1005,9 @@ func (c *scriptChecker) statementsObserveNameExcept(statements []Statement, name
 			}
 		case *ExprStmt:
 			observed = c.expressionObservesName(typed.Expr, names)
+			if !observed && !c.expressionProvablyCompletes(typed.Expr) {
+				return false
+			}
 		case *IfStmt:
 			observed = c.ifStmtObservesName(typed, names, except)
 		case *WhileStmt:
@@ -1060,7 +1069,11 @@ func rescueClauseMayMatch(clause RescueClause, raisedName string, known bool) bo
 	if raisedName == "" {
 		return false
 	}
-	return clause.Ty.Name == raisedName
+	kind, ok := ast.CanonicalRuntimeErrorType(raisedName)
+	if !ok {
+		kind = raisedName
+	}
+	return rescueTypeMatchesErrorKind(clause.Ty, kind)
 }
 
 func statementsAfter(body []Statement, stmt *ExprStmt) ([]Statement, bool) {

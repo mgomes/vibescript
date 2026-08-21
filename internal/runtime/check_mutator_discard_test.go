@@ -194,6 +194,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later read after an aborting expression is not an observation",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  [1].clear(2)\n  puts row\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "typed rescue that cannot match a later raise is not an observation",
 			source: "rows = [[1], [2]]\nrows.each do |row|\n  begin\n    row.push(0)\n    raise TypeError, \"x\"\n  rescue ArgumentError\n    puts row\n  rescue TypeError\n    nil\n  end\nend\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -571,6 +576,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "later rescue after a nested raising path observes the rebound parameter",
 			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each do |row|\n    begin\n      if flag\n        row.push(0)\n        raise \"x\"\n      end\n    rescue\n      puts row\n    end\n  end\n  nil\nend\nf(true)\nputs \"done\"",
+		},
+		{
+			name:   "unknown raise still observes a later matching rescue",
+			source: "def risky\n  raise TypeError, \"x\"\nend\nrows = [[1], [2]]\nrows.each do |row|\n  begin\n    row.push(0)\n    risky\n  rescue ArgumentError\n    nil\n  rescue TypeError\n    puts row\n  end\nend\nputs \"done\"",
+		},
+		{
+			name:   "standard error rescue observes a type error raise",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  begin\n    row.push(0)\n    raise TypeError, \"x\"\n  rescue StandardError\n    puts row\n  end\nend\nputs \"done\"",
 		},
 		{
 			name:   "hash store with an unsupported key cannot update",
