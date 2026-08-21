@@ -30,17 +30,14 @@ import "strconv"
 
 // blockResultDiscardingIterator names the builtin iterator members whose
 // block results the runtime provably discards, which is what makes a block
-// body's final statement a discard position. Dispatch is untyped, so the
-// classification is by name; a user method sharing one of these names keeps
-// the conventional contract of ignoring block results.
+// body's final statement a discard position.
 //
 // The list is deliberately only the iterators that can yield collections.
 // The scalar-yielding ones (times, upto, step, each_char and kin) are
 // absent because a scalar parameter never reaches a collection mutator past
-// the receiver-type gate, so listing them would change nothing. Declaring
-// the fact at builtin registration instead (the DeclareNonMutating
-// precedent) was considered and declined while the check is warning-only:
-// a missing name costs one missed warning, never a false positive.
+// the receiver-type gate, so listing them would change nothing. A user
+// method sharing one of these names keeps its own block contract, so the
+// check also requires a receiver whose type proves the call is the builtin.
 func blockResultDiscardingIterator(member string) bool {
 	switch member {
 	case "each", "each_with_index", "each_slice", "each_cons",
@@ -51,13 +48,22 @@ func blockResultDiscardingIterator(member string) bool {
 	}
 }
 
+// mutatorDiscardCall is the enclosing call's contribution to the discarded-
+// mutator check: whether that call is a builtin iterator that discards
+// block results, and the types those results are yielded as when proven.
+type mutatorDiscardCall struct {
+	discardsResults bool
+	yieldTypes      map[string]*TypeExpr
+}
+
 // mutatorDiscardBlock records one enclosing block-literal walk: the block,
-// its parameter names, and whether the enclosing call provably discards the
-// block's results.
+// its parameter names, whether the enclosing call provably discards the
+// block's results, and the types those parameters are yielded as.
 type mutatorDiscardBlock struct {
 	block           *BlockLiteral
 	params          map[string]struct{}
 	discardsResults bool
+	yieldTypes      map[string]*TypeExpr
 }
 
 // enterMutatorDiscardFunctionBody arms the discarded-mutator check for one
@@ -89,24 +95,184 @@ func (c *scriptChecker) markResultCarryingStatements(key any, body []Statement) 
 	collectImplicitReturnLeaves(body, c.resultCarryingStatements)
 }
 
-// enterMutatorDiscardBlock arms the check for one block-body walk. The
-// enclosing call's member name (empty for non-member calls) decides whether
-// the block's final statement is a discard position, and the pushed context
-// carries the parameter names for the block-parameter arm. The returned
-// func pops the context.
-func (c *scriptChecker) enterMutatorDiscardBlock(block *BlockLiteral, callMember string) func() {
-	discards := blockResultDiscardingIterator(callMember)
-	if !discards {
+// enterMutatorDiscardBlock arms the check for one block-body walk. facts
+// decides whether the block's final statement is a discard position, and
+// the pushed context carries the parameter names for the block-parameter
+// arm. The returned func pops the context.
+func (c *scriptChecker) enterMutatorDiscardBlock(block *BlockLiteral, facts mutatorDiscardCall) func() {
+	if !facts.discardsResults {
 		c.markResultCarryingStatements(block, block.Body)
 	}
 	c.mutatorDiscardBlocks = append(c.mutatorDiscardBlocks, mutatorDiscardBlock{
 		block:           block,
 		params:          blockParamNames(block),
-		discardsResults: discards,
+		discardsResults: facts.discardsResults,
+		yieldTypes:      facts.yieldTypes,
 	})
 	return func() {
 		c.mutatorDiscardBlocks = c.mutatorDiscardBlocks[:len(c.mutatorDiscardBlocks)-1]
 	}
+}
+
+// mutatorDiscardCallFacts reports whether call is a builtin iterator that
+// discards block results, and the types it yields into the block's
+// parameters when that is proven. A resolved script method of the same
+// name keeps its own block contract; an untyped or named-class receiver
+// is left unproven rather than assumed to be the builtin.
+func (c *scriptChecker) mutatorDiscardCallFacts(call *CallExpr, target staticCallable, resolved bool) mutatorDiscardCall {
+	if call == nil {
+		return mutatorDiscardCall{}
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok || !blockResultDiscardingIterator(member.Property) {
+		return mutatorDiscardCall{}
+	}
+	if resolved && target.fn != nil {
+		return mutatorDiscardCall{}
+	}
+	if !c.receiverOwnsBuiltinIterator(member.Object, member.Property) {
+		return mutatorDiscardCall{}
+	}
+	return mutatorDiscardCall{
+		discardsResults: true,
+		yieldTypes:      c.iteratorYieldTypes(member.Object, member.Property, call.Block),
+	}
+}
+
+// receiverOwnsBuiltinIterator reports whether every inferred arm of
+// receiver dispatches property as an array or hash builtin, so a same-
+// named user method cannot be the callee.
+func (c *scriptChecker) receiverOwnsBuiltinIterator(receiver Expression, property string) bool {
+	return typeExprArmsAll(c.inferExpressionType(receiver), func(arm *TypeExpr) bool {
+		var kind string
+		switch arm.Kind {
+		case TypeArray:
+			kind = "array"
+		case TypeHash, TypeShape:
+			kind = "hash"
+		default:
+			return false
+		}
+		return memberKindOwns(kind, property)
+	})
+}
+
+// iteratorYieldTypes maps the block's parameter names to the types the
+// builtin iterator yields into them, when those types are proven. Missing
+// entries stay unknown and cannot support a discarded-mutator warning.
+func (c *scriptChecker) iteratorYieldTypes(receiver Expression, property string, block *BlockLiteral) map[string]*TypeExpr {
+	if block == nil {
+		return nil
+	}
+	names := blockParamNameList(block)
+	if len(names) == 0 {
+		return nil
+	}
+	yielded := c.builtinIteratorYieldedValue(receiver, property)
+	out := make(map[string]*TypeExpr, len(names))
+	if property == "each_with_index" {
+		if yielded != nil {
+			out[names[0]] = yielded
+		}
+		if len(names) > 1 {
+			out[names[1]] = checkTypeInt
+		}
+		return out
+	}
+	if yielded != nil {
+		out[names[0]] = yielded
+	}
+	return out
+}
+
+func blockParamNameList(block *BlockLiteral) []string {
+	var names []string
+	seen := make(map[string]struct{})
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		if _, dup := seen[name]; dup {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	for _, param := range block.Params {
+		add(param.Name)
+	}
+	for _, name := range block.ImplicitParams {
+		add(name)
+	}
+	return names
+}
+
+// builtinIteratorYieldedValue is the value the named builtin iterator
+// yields as the block's first argument: an array's element, a hash/shape
+// value for each_value, a key for each_key, or a fresh array window for
+// each_slice and each_cons. Unknown or partial element facts stay nil.
+func (c *scriptChecker) builtinIteratorYieldedValue(receiver Expression, property string) *TypeExpr {
+	recv := c.inferExpressionType(receiver)
+	switch property {
+	case "each_slice", "each_cons":
+		return checkTypeArray
+	case "each_key":
+		return collectionIteratorKeyType(recv)
+	case "each_value":
+		return collectionIteratorValueType(recv)
+	default:
+		return collectionIteratorElementType(recv)
+	}
+}
+
+func collectionIteratorElementType(recv *TypeExpr) *TypeExpr {
+	if recv == nil || recv.Kind != TypeArray || len(recv.TypeArgs) != 1 ||
+		literalArrayElementsPartial(recv) {
+		return nil
+	}
+	return recv.TypeArgs[0]
+}
+
+func collectionIteratorValueType(recv *TypeExpr) *TypeExpr {
+	if recv == nil {
+		return nil
+	}
+	switch recv.Kind {
+	case TypeHash:
+		if len(recv.TypeArgs) == 2 {
+			return recv.TypeArgs[1]
+		}
+	case TypeShape:
+		if len(recv.Shape) == 0 {
+			return nil
+		}
+		arms := make([]*TypeExpr, 0, len(recv.Shape))
+		for _, field := range recv.Shape {
+			arms = append(arms, shapeFieldValueType(field))
+		}
+		return unionTypeExprs(arms...)
+	}
+	return nil
+}
+
+func collectionIteratorKeyType(recv *TypeExpr) *TypeExpr {
+	if recv == nil {
+		return nil
+	}
+	switch recv.Kind {
+	case TypeHash:
+		if len(recv.TypeArgs) == 2 {
+			return recv.TypeArgs[0]
+		}
+	case TypeShape:
+		if recv.Name == shapeKeysStringMarker {
+			return checkTypeString
+		}
+		if recv.Name == shapeKeysSymbolMarker {
+			return checkTypeSymbol
+		}
+	}
+	return nil
 }
 
 func blockParamNames(block *BlockLiteral) map[string]struct{} {
@@ -207,6 +373,9 @@ func (c *scriptChecker) blockParamMutatorDiscardVerdict(function string, stmt *E
 	if c.provablyNotCollection(member.Object) {
 		return nil
 	}
+	if !c.blockParamMutatorProvablyCollection(member.Object, enclosing, root) {
+		return nil
+	}
 	return func() {
 		c.add(function, member.Pos(),
 			"mutating block parameter %s does not update the collection it was yielded from; build the result with map, or index the original",
@@ -297,6 +466,98 @@ func (c *scriptChecker) provablyNotCollection(expr Expression) bool {
 			return true
 		}
 	})
+}
+
+// blockParamMutatorProvablyCollection reports whether the mutator receiver
+// is a collection, either from its own inferred type or from the enclosing
+// iterator's proven yield type along the path from the block parameter.
+// Unknown and named-class yields stay silent: a user method named push on
+// a Widget is not a collection mutator.
+func (c *scriptChecker) blockParamMutatorProvablyCollection(
+	recv Expression,
+	enclosing *mutatorDiscardBlock,
+	root string,
+) bool {
+	if typeExprIsCollection(c.inferExpressionType(recv)) {
+		return true
+	}
+	if enclosing == nil {
+		return false
+	}
+	yield := enclosing.yieldTypes[root]
+	if yield == nil {
+		return false
+	}
+	return typeExprIsCollection(typeAlongPathFromRoot(recv, root, yield))
+}
+
+func typeExprIsCollection(ty *TypeExpr) bool {
+	return typeExprArmsAll(ty, func(arm *TypeExpr) bool {
+		switch arm.Kind {
+		case TypeArray, TypeHash, TypeShape:
+			return true
+		default:
+			return false
+		}
+	})
+}
+
+// typeAlongPathFromRoot types expr as if root had rootType, walking only
+// identifier, index, and member hops so an unannotated block parameter can
+// still prove collection dispatch from the iterator's yield.
+func typeAlongPathFromRoot(expr Expression, root string, rootType *TypeExpr) *TypeExpr {
+	switch typed := expr.(type) {
+	case *Identifier:
+		if typed.Name == root {
+			return rootType
+		}
+	case *IndexExpr:
+		return indexCollectionElementType(typeAlongPathFromRoot(typed.Object, root, rootType), typed)
+	case *MemberExpr:
+		return memberCollectionEntryType(typeAlongPathFromRoot(typed.Object, root, rootType), typed.Property)
+	}
+	return nil
+}
+
+func indexCollectionElementType(obj *TypeExpr, expr *IndexExpr) *TypeExpr {
+	if obj == nil || expr == nil || len(expr.Indices) != 1 {
+		return nil
+	}
+	if _, isRange := expr.Indices[0].(*RangeExpr); isRange {
+		return nil
+	}
+	switch obj.Kind {
+	case TypeArray:
+		if len(obj.TypeArgs) == 1 {
+			return obj.TypeArgs[0]
+		}
+	case TypeHash:
+		if len(obj.TypeArgs) == 2 {
+			return obj.TypeArgs[1]
+		}
+	case TypeShape:
+		key, ok := staticLiteralHashKey(expr.Indices[0])
+		if !ok {
+			return nil
+		}
+		field, present := obj.Shape[key]
+		if !present {
+			return nil
+		}
+		return shapeFieldValueType(field)
+	}
+	return nil
+}
+
+func memberCollectionEntryType(obj *TypeExpr, property string) *TypeExpr {
+	if obj == nil || obj.Kind != TypeShape {
+		return nil
+	}
+	field, present := obj.Shape[property]
+	if !present {
+		return nil
+	}
+	return shapeFieldValueType(field)
 }
 
 // provablyLeavesCollectionStorage reports whether a member hop off expr

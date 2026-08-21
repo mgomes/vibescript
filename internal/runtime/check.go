@@ -5242,11 +5242,12 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				}
 				blockResult = checkBlockResult{exact: true}
 			} else {
-				callMember := ""
-				if member, ok := typed.Callee.(*MemberExpr); ok {
-					callMember = member.Property
-				}
-				blockResult = c.checkBlockLiteral(function, typed.Block, false, callMember)
+				blockResult = c.checkBlockLiteral(
+					function,
+					typed.Block,
+					false,
+					c.mutatorDiscardCallFacts(typed, target, targetResolved),
+				)
 			}
 		}
 		// A body proved never to complete leaves the fill reachable only where it
@@ -8435,7 +8436,7 @@ func (c *scriptChecker) checkBlockLiteral(
 	function string,
 	block *BlockLiteral,
 	localReturns bool,
-	callMember string,
+	discard mutatorDiscardCall,
 ) checkBlockResult {
 	return c.checkBlockLiteralWithIvarWidening(
 		function,
@@ -8443,7 +8444,7 @@ func (c *scriptChecker) checkBlockLiteral(
 		localReturns,
 		true,
 		!localReturns,
-		callMember,
+		discard,
 	)
 }
 
@@ -8453,12 +8454,12 @@ func (c *scriptChecker) checkBlockLiteralWithIvarWidening(
 	localReturns bool,
 	widenIvars bool,
 	preserveNamespaceWrites bool,
-	callMember string,
+	discard mutatorDiscardCall,
 ) checkBlockResult {
 	if block == nil {
 		return checkBlockResult{}
 	}
-	defer c.enterMutatorDiscardBlock(block, callMember)()
+	defer c.enterMutatorDiscardBlock(block, discard)()
 	previousSummaryYieldsActive := c.summaryYieldsActive
 	if localReturns {
 		c.summaryYieldsActive = false

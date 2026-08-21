@@ -206,6 +206,22 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			name:   "class reference receiver",
 			source: "class K\nend\ndef f()\n  K.push(1)\n  nil\nend\nf()\nputs \"done\"",
 		},
+		{
+			// A user method named each that consumes the block result is
+			// not the builtin iterator, so the block body's mutation is
+			// observed and must stay silent.
+			name: "user each consumes the block result",
+			source: "class C\n  def each()\n    @saved = yield [1]\n    @saved\n  end\nend\n" +
+				"C.new.each { |row| row.push(1) }\nputs \"done\"",
+		},
+		{
+			// An unannotated block parameter yielded from a class instance
+			// may dispatch a user method named push; unknown and named
+			// receivers are not proven collection mutators.
+			name: "user push on each-yielded instance",
+			source: "class Widget\n  def push(x)\n    @seen = x\n  end\nend\n" +
+				"[Widget.new].each { |w| w.push(1) }\nputs \"done\"",
+		},
 	}
 
 	for _, tc := range tests {
