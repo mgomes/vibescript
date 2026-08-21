@@ -1772,22 +1772,22 @@ func ensurePathMayComplete(stmts []Statement) bool {
 			if !ensurePathMayComplete(typed.Ensure) {
 				return false
 			}
-			if ensurePathMayComplete(typed.Body) {
-				if !ensurePathMayComplete(typed.Else) {
-					return false
-				}
-			} else {
-				rescued := false
-				for _, clause := range typed.Rescues {
-					if ensurePathMayComplete(clause.Body) {
-						rescued = true
-						break
-					}
-				}
-				if !rescued {
-					return false
+			bodyCompletes := ensurePathMayComplete(typed.Body)
+			elseCompletes := ensurePathMayComplete(typed.Else)
+			rescueCompletes := false
+			for _, clause := range typed.Rescues {
+				if ensurePathMayComplete(clause.Body) {
+					rescueCompletes = true
+					break
 				}
 			}
+			if bodyCompletes && elseCompletes {
+				break
+			}
+			if rescueCompletes && !statementsProvenNonRaising(typed.Body) {
+				break
+			}
+			return false
 		}
 	}
 	return true
@@ -2702,7 +2702,7 @@ func universalHelperRejectsBlock(property string) bool {
 	case "itself", "dup", "clone", "freeze", "frozen?", "nil?", "eql?", "equal?":
 		return true
 	default:
-		return false
+		return isUniversalPredicate(property)
 	}
 }
 

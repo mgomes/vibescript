@@ -650,6 +650,21 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "respond_to? ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].respond_to?(:size) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "is_a? ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].is_a?(Array) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "is_type? ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].is_type?(:array) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "min ignores its block so it is not an observation",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].min { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -1211,6 +1226,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "keep_if true retains every element",
 			source: "{a: 1}.keep_if { true }\nputs \"done\"",
+		},
+		{
+			name:   "ensure nested try rescue observes the suffix",
+			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each { |row| while true; row.push(0); begin; break; ensure; begin; raise \"x\" if flag; rescue; nil; else; raise \"y\"; end; end; end; puts row }\nend\nf(true)\nputs \"done\"",
 		},
 	}
 
