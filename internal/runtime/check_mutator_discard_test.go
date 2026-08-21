@@ -839,6 +839,21 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			source: "xs = [1]\nrows = [[1], [2]]\nrows.each { |row| row.push(0); for x in xs; raise \"x\"; end; puts row }\nputs \"done\"",
 			want:   "mutating block parameter row",
 		},
+		{
+			name:   "single-element alias for does not observe via a back edge",
+			source: "xs = [1]\nrows = [[1], [2]]\nrows.each { |row| for x in xs; row.length; row.push(0); end }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "first matching rescue raise shadows catch-all break",
+			source: "rows = [[1], [2]]\nrows.each { |row| while true; row.push(0); begin; raise TypeError, \"t\"; rescue TypeError; raise \"x\"; rescue; break; end; end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "non-completing if condition does not count its break",
+			source: "rows = [[1], [2]]\nrows.each { |row| while true; row.push(0); if [1].clear(2); break; end; end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
 	}
 
 	for _, tc := range tests {

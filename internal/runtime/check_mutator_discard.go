@@ -1603,7 +1603,7 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 			case *ForStmt:
 				if search(typed.Body) {
 					reachesBackEdge := pathContinues || remainderIsNext(typed.Body, stmt) || c.remainderMayNext(typed.Body, stmt)
-					if length, ok := staticCollectionLength(typed.Iterable); ok && length <= 1 {
+					if length, ok := c.staticReceiverCollectionLength(typed.Iterable); ok && length <= 1 {
 						reachesBackEdge = false
 					}
 					exitsLoop := remainderIsBreak(typed.Body, stmt) || c.remainderMayBreak(typed.Body, stmt)
@@ -1975,12 +1975,8 @@ func ensureContainsBreak(stmts []Statement) bool {
 			if ensureContainsBreak(typed.Ensure) {
 				return true
 			}
-			if !statementsProvenNonRaising(typed.Body) {
-				for _, clause := range typed.Rescues {
-					if ensureContainsBreak(clause.Body) {
-						return true
-					}
-				}
+			if firstMatchingRescueMay(typed.Body, typed.Rescues, ensureContainsBreak) {
+				return true
 			}
 		}
 	}
@@ -2309,12 +2305,8 @@ func (c *scriptChecker) statementsMayBreak(stmts []Statement) bool {
 			if c.statementsMayBreak(typed.Ensure) {
 				return true
 			}
-			if !statementsProvenNonRaising(typed.Body) {
-				for _, clause := range typed.Rescues {
-					if c.statementsMayBreak(clause.Body) {
-						return true
-					}
-				}
+			if firstMatchingRescueMay(typed.Body, typed.Rescues, c.statementsMayBreak) {
+				return true
 			}
 			if !c.tryStmtFallsThrough(typed) {
 				return false
@@ -2324,13 +2316,38 @@ func (c *scriptChecker) statementsMayBreak(stmts []Statement) bool {
 	return false
 }
 
+func firstMatchingRescueMay(body []Statement, rescues []RescueClause, pred func([]Statement) bool) bool {
+	if statementsProvenNonRaising(body) {
+		return false
+	}
+	raisedName, knownRaise := statementsRaisedTypeName(body)
+	for _, clause := range rescues {
+		if !rescueClauseMayMatch(clause, raisedName, knownRaise) {
+			continue
+		}
+		if pred(clause.Body) {
+			return true
+		}
+		if knownRaise {
+			return false
+		}
+	}
+	return false
+}
+
 func (c *scriptChecker) ifStmtMayBreak(stmt *IfStmt) bool {
+	if !c.expressionProvablyCompletes(stmt.Condition) {
+		return false
+	}
 	truthy, known := staticExpressionTruthiness(stmt.Condition)
 	if known && truthy {
 		return c.statementsMayBreak(stmt.Consequent)
 	}
 	if known && !truthy {
 		for _, branch := range stmt.ElseIf {
+			if !c.expressionProvablyCompletes(branch.Condition) {
+				return false
+			}
 			t, k := staticExpressionTruthiness(branch.Condition)
 			if !k {
 				if c.statementsMayBreak(branch.Consequent) {
@@ -2348,6 +2365,9 @@ func (c *scriptChecker) ifStmtMayBreak(stmt *IfStmt) bool {
 		return true
 	}
 	for _, branch := range stmt.ElseIf {
+		if !c.expressionProvablyCompletes(branch.Condition) {
+			return false
+		}
 		t, k := staticExpressionTruthiness(branch.Condition)
 		if k && !t {
 			continue
