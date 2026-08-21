@@ -280,7 +280,8 @@ func arrayMemberGrouping(property string) (Value, error) {
 			// their backings were reserved as they grew, so the wrappers boxing
 			// each side are all that is left uncharged.
 			if err := scratch.reserve(saturatingAdd(
-				arraySlotBackingBytes(2), nestedArrayWrapperBytes(2))); err != nil {
+				arraySlotBackingBytes(2), nestedArrayWrapperBytes(2),
+			)); err != nil {
 				return NewNil(), err
 			}
 			return NewArray([]Value{NewArray(left), NewArray(right)}), nil
@@ -367,7 +368,8 @@ func arrayMemberGrouping(property string) (Value, error) {
 			// grows with the receiver.
 			if err := scratch.reserve(saturatingAdd(
 				hashResultBytes(len(groups)),
-				nestedArrayWrapperBytes(len(groups)))); err != nil {
+				nestedArrayWrapperBytes(len(groups)),
+			)); err != nil {
 				return NewNil(), err
 			}
 			// Ruby's Hash#group_by result lists groups in first-encounter order.

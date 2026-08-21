@@ -1258,7 +1258,8 @@ func (exec *Execution) chargeStringOperandBytes(operator TokenType, left, right 
 			return err
 		}
 		return exec.chargeStringScan(saturatingAdd(
-			concatenatedOperandBytes(left), concatenatedOperandBytes(right)))
+			concatenatedOperandBytes(left), concatenatedOperandBytes(right),
+		))
 	case tokenLT, tokenLTE, tokenGT, tokenGTE, tokenSpaceship:
 		// Comparison needs matching kinds: a string against a symbol is rejected
 		// on kind before either name is read, and ordering calls the pair
