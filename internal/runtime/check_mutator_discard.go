@@ -653,7 +653,10 @@ func collectionMutatorCallShapeMayComplete(property string, call *CallExpr) bool
 	case "delete":
 		return n == 1 && !kwargs
 	case "store":
-		return n == 2 && !kwargs
+		if n != 2 || kwargs {
+			return false
+		}
+		return staticHashKeyMayComplete(call.Args[0])
 	case "replace":
 		if n != 1 || kwargs {
 			return false
@@ -907,6 +910,13 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 					inEnsure = search(typed.Ensure)
 				}
 				if inBody || inElse || inRescue || inEnsure {
+					if inBody && tryBodyAfterMayRaise(typed.Body, stmt) {
+						for _, clause := range typed.Rescues {
+							if c.statementsObserveName(clause.Body, names) {
+								observes = true
+							}
+						}
+					}
 					if inBody && c.statementsObserveName(typed.Else, names) {
 						observes = true
 					}
@@ -1104,17 +1114,30 @@ func (c *scriptChecker) caseExprObservesName(expr *CaseExpr, names map[string]st
 		}
 		return c.expressionObservesName(expr.ElseExpr, names)
 	}
+	laterReachable := true
 	for _, clause := range expr.Clauses {
+		if !laterReachable {
+			break
+		}
+		canReachResult := false
 		for _, candidate := range clause.Values {
 			if c.expressionObservesName(candidate.Expr, names) {
 				return true
 			}
+			if !c.expressionProvablyCompletes(candidate.Expr) {
+				laterReachable = false
+				break
+			}
+			canReachResult = true
 		}
-		if c.expressionObservesName(clause.Result, names) {
+		if canReachResult && c.expressionObservesName(clause.Result, names) {
 			return true
 		}
 	}
-	return c.expressionObservesName(expr.ElseExpr, names)
+	if laterReachable {
+		return c.expressionObservesName(expr.ElseExpr, names)
+	}
+	return false
 }
 
 func withoutBlockParamNames(names map[string]struct{}, block *BlockLiteral) map[string]struct{} {
@@ -1461,6 +1484,30 @@ func staticCaseWhenCandidateMatches(expr *CaseExpr, candidate Expression, splat 
 	}
 	matched, err := caseCandidateMatches(nil, target, value)
 	return err == nil && matched
+}
+
+func tryBodyAfterMayRaise(body []Statement, stmt *ExprStmt) bool {
+	found := false
+	var rest []Statement
+	for _, s := range body {
+		if found {
+			rest = append(rest, s)
+			continue
+		}
+		if s == Statement(stmt) {
+			found = true
+		}
+	}
+	return found && !statementsProvenNonRaising(rest)
+}
+
+func staticHashKeyMayComplete(expr Expression) bool {
+	val, ok := staticLiteralValue(expr)
+	if !ok {
+		return true
+	}
+	_, err := hashKeyString(val)
+	return err == nil
 }
 
 func staticHashReplaceArgMayComplete(expr Expression) bool {

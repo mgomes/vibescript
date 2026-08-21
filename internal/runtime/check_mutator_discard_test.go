@@ -179,6 +179,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later read after an aborting case candidate is not an observation",
+			source: "def f(x)\n  rows = [[1], [2]]\n  rows.each do |row|\n    row.push(0)\n    case x\n    when 1, [1].clear(2)\n      nil\n    when 2\n      puts row\n    end\n  end\n  nil\nend\nf(1)\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "union of shape collection fields",
 			source: "def f(rows: array<{items: array<int>}> | array<{items: array<string>}>)\n  rows.each { |row| row.items.clear }\n  nil\nend\nf([{items: [1]}])\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -543,6 +548,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			source: "class Widget\n  def push\n    yield\n  end\nend\n" +
 				"widget = Widget.new\nrows = [[1], [2]]\n" +
 				"rows.each { |row| row.push(0); widget.push { puts row } }\nputs \"done\"",
+		},
+		{
+			name:   "later rescue after a raising body observes the rebound parameter",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  begin\n    row.push(0)\n    raise \"x\"\n  rescue\n    puts row\n  end\nend\nputs \"done\"",
+		},
+		{
+			name:   "hash store with an unsupported key cannot update",
+			source: "{a: 1}.store([1], 2)\nputs \"done\"",
 		},
 		{
 			name:   "case later clause after aborting match",
