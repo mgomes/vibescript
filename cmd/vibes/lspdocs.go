@@ -1224,35 +1224,46 @@ func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
 		last = len(lines)
 	}
 	depth := 0
+	inLoopHeader := false
 	for line := start.Line; line <= last; line++ {
 		atStmtStart := true
-		prev := ""
 		for _, tok := range identifierTokensSkippingStrings(lineAt(lines, line-1)) {
 			switch tok {
-			case "def", "class", "module", "begin", "case", "for":
+			case "def", "class", "module", "begin", "case":
 				depth++
 				atStmtStart = false
-			case "if", "unless", "while", "until":
+				inLoopHeader = false
+			case "for", "while", "until":
+				if atStmtStart {
+					depth++
+					inLoopHeader = true
+				}
+				atStmtStart = false
+			case "if", "unless":
 				if atStmtStart {
 					depth++
 				}
 				atStmtStart = false
+				inLoopHeader = false
 			case "do":
-				if prev != "while" && prev != "until" && prev != "for" {
+				if inLoopHeader {
+					inLoopHeader = false
+				} else {
 					depth++
 				}
 				atStmtStart = false
 			case "end":
 				depth--
+				inLoopHeader = false
 				if depth == 0 {
 					return line
 				}
 				atStmtStart = false
 			default:
 				atStmtStart = tok == ";"
-			}
-			if tok != ";" {
-				prev = tok
+				if tok == ";" {
+					inLoopHeader = false
+				}
 			}
 		}
 	}
