@@ -1772,7 +1772,11 @@ func ensurePathMayComplete(stmts []Statement) bool {
 			if !ensurePathMayComplete(typed.Ensure) {
 				return false
 			}
-			if !ensurePathMayComplete(typed.Body) {
+			if ensurePathMayComplete(typed.Body) {
+				if !ensurePathMayComplete(typed.Else) {
+					return false
+				}
+			} else {
 				rescued := false
 				for _, clause := range typed.Rescues {
 					if ensurePathMayComplete(clause.Body) {
@@ -2342,6 +2346,10 @@ func (c *scriptChecker) expressionObservesName(expr Expression, names map[string
 			return false
 		}
 		if member, ok := typed.Callee.(*MemberExpr); ok {
+			if universalHelperRejectsBlock(member.Property) &&
+				c.receiverOwnsUniversalHelper(member.Object) {
+				return false
+			}
 			if mutatorIgnoresSuppliedBlock(member.Property) &&
 				c.receiverOwnsBuiltinIterator(member.Object, member.Property) {
 				return false
@@ -2687,6 +2695,29 @@ func mutatorIgnoresSuppliedBlock(property string) bool {
 	default:
 		return false
 	}
+}
+
+func universalHelperRejectsBlock(property string) bool {
+	switch property {
+	case "itself", "dup", "clone", "freeze", "frozen?", "nil?", "eql?", "equal?":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *scriptChecker) receiverOwnsUniversalHelper(receiver Expression) bool {
+	return typeExprArmsAll(c.inferExpressionType(receiver), func(arm *TypeExpr) bool {
+		if arm == nil {
+			return false
+		}
+		switch arm.Kind {
+		case TypeAny, TypeUnknown, TypeFunction:
+			return false
+		default:
+			return true
+		}
+	})
 }
 
 func staticExpandedCall(call *CallExpr) (*CallExpr, bool) {
