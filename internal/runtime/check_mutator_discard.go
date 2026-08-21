@@ -1005,9 +1005,6 @@ func (c *scriptChecker) statementsObserveNameExcept(statements []Statement, name
 			}
 		case *ExprStmt:
 			observed = c.expressionObservesName(typed.Expr, names)
-			if !observed && !c.expressionProvablyCompletes(typed.Expr) {
-				return false
-			}
 		case *IfStmt:
 			observed = c.ifStmtObservesName(typed, names, except)
 		case *WhileStmt:
@@ -1025,7 +1022,7 @@ func (c *scriptChecker) statementsObserveNameExcept(statements []Statement, name
 		if observed {
 			return true
 		}
-		if !statementFallsThrough(statement) {
+		if !c.statementFallsThrough(statement) {
 			return false
 		}
 	}
@@ -1095,10 +1092,12 @@ func statementsAfter(body []Statement, stmt *ExprStmt) ([]Statement, bool) {
 	return nil, false
 }
 
-func statementFallsThrough(stmt Statement) bool {
-	switch stmt.(type) {
+func (c *scriptChecker) statementFallsThrough(stmt Statement) bool {
+	switch typed := stmt.(type) {
 	case *ReturnStmt, *RaiseStmt, *BreakStmt, *NextStmt, *RetryStmt:
 		return false
+	case *ExprStmt:
+		return c.expressionProvablyCompletes(typed.Expr)
 	default:
 		return true
 	}
