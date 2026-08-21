@@ -1684,6 +1684,8 @@ type sourceScan struct {
 	interpPercentOpen  byte
 	interpPercentClose byte
 	interpPercentDepth int
+	openers            []string
+	localsStack        []map[string]struct{}
 }
 
 func (sc *sourceScan) tokens(s string) []string {
@@ -1714,7 +1716,74 @@ func (sc *sourceScan) tokens(s string) []string {
 	interpPercentOpen := sc.interpPercentOpen
 	interpPercentClose := sc.interpPercentClose
 	interpPercentDepth := sc.interpPercentDepth
+	openers := sc.openers
+	localsStack := sc.localsStack
 	afterSpace := false
+	atStmtStart := true
+	inLoopHeader := false
+	prevTok := ""
+	applyOpener := func(tok string) {
+		switch tok {
+		case "def":
+			localsStack = append(localsStack, locals)
+			locals = map[string]struct{}{}
+			afterDef = true
+			inParams = false
+			paramDepth = 0
+			inPipes = false
+			openers = append(openers, "def")
+			atStmtStart = false
+			inLoopHeader = false
+		case "class", "module", "begin", "case":
+			openers = append(openers, tok)
+			atStmtStart = false
+			inLoopHeader = false
+			afterDef = false
+		case "for", "while", "until":
+			if atStmtStart || prefixControlOpens(prevTok) {
+				openers = append(openers, tok)
+				inLoopHeader = true
+			}
+			atStmtStart = false
+		case "if", "unless":
+			if atStmtStart || prefixControlOpens(prevTok) {
+				openers = append(openers, tok)
+			}
+			atStmtStart = false
+			inLoopHeader = false
+		case "do":
+			if inLoopHeader {
+				inLoopHeader = false
+			} else {
+				openers = append(openers, "do")
+			}
+			atStmtStart = false
+		case "end":
+			if n := len(openers); n > 0 {
+				top := openers[n-1]
+				openers = openers[:n-1]
+				if top == "def" && len(localsStack) > 0 {
+					locals = localsStack[len(localsStack)-1]
+					localsStack = localsStack[:len(localsStack)-1]
+					afterDef = false
+					inParams = false
+					paramDepth = 0
+					inPipes = false
+				}
+			}
+			atStmtStart = false
+			inLoopHeader = false
+		default:
+			atStmtStart = tok == ";"
+			if tok == ";" {
+				inLoopHeader = false
+				afterDef = false
+			}
+		}
+		if tok != ";" {
+			prevTok = tok
+		}
+	}
 	flush := func(i int) {
 		if start >= 0 {
 			tok := s[start:i]
@@ -1732,15 +1801,10 @@ func (sc *sourceScan) tokens(s string) []string {
 			afterValue = true
 			afterDot = false
 			lastIdent = tok
-			if tok == "def" {
-				locals = map[string]struct{}{}
-				afterDef = true
-				inParams = false
-				paramDepth = 0
-				inPipes = false
-			} else if (inParams || inPipes) && identCanBeLocal(tok) {
+			if (inParams || inPipes) && identCanBeLocal(tok) {
 				locals[tok] = struct{}{}
 			}
+			applyOpener(tok)
 		}
 	}
 	for i := 0; i < len(s); i++ {
@@ -2240,6 +2304,7 @@ func (sc *sourceScan) tokens(s string) []string {
 		if c == ';' {
 			flush(i)
 			tokens = append(tokens, ";")
+			applyOpener(";")
 			afterValue = false
 			afterDot = false
 			continue
@@ -2310,6 +2375,8 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.interpPercentOpen = interpPercentOpen
 	sc.interpPercentClose = interpPercentClose
 	sc.interpPercentDepth = interpPercentDepth
+	sc.openers = openers
+	sc.localsStack = localsStack
 	return tokens
 }
 
@@ -2387,6 +2454,13 @@ func sourceInsideLiteral(lines []string, hoverLine, hoverColumn int) bool {
 	if idx > len(text) {
 		idx = len(text)
 	}
+	if idx < len(text) {
+		_, size := utf8.DecodeRuneInString(text[idx:])
+		if size < 1 {
+			size = 1
+		}
+		idx += size
+	}
 	scan.afterValue = false
 	scan.afterDot = false
 	scan.tokens(text[:idx])
@@ -2443,7 +2517,8 @@ func nestedControlContains(stmts []ast.Statement, lines []string, hoverLine, hov
 				return true
 			}
 		case *ast.AssignStmt:
-			if expressionContainsHover(s.Value, hoverLine, hoverColumn) {
+			if expressionContainsHover(s.Target, hoverLine, hoverColumn) ||
+				expressionContainsHover(s.Value, hoverLine, hoverColumn) {
 				return true
 			}
 		case *ast.RaiseStmt:
