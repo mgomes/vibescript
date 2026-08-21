@@ -1341,10 +1341,19 @@ func (sc *sourceScan) tokens(s string) []string {
 				close := percentLiteralCloser(open)
 				flush(i)
 				i += 3
-				for i < len(s) && s[i] != close {
+				depth := 1
+				for i < len(s) && depth > 0 {
+					if s[i] == open && open != close {
+						depth++
+					} else if s[i] == close {
+						depth--
+						if depth == 0 {
+							break
+						}
+					}
 					i++
 				}
-				if i >= len(s) {
+				if depth > 0 {
 					percentClose = close
 				}
 				afterValue = true
@@ -1468,6 +1477,10 @@ func nestedControlContains(stmts []ast.Statement, lines []string, hoverLine, hov
 		switch s := stmt.(type) {
 		case *ast.ExprStmt:
 			if expressionContainsHover(s.Expr, hoverLine) {
+				return true
+			}
+		case *ast.AssignStmt:
+			if expressionContainsHover(s.Value, hoverLine) {
 				return true
 			}
 		case *ast.IfStmt:
