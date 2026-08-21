@@ -194,6 +194,15 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		if length, ok := staticCollectionLength(receiver); ok {
 			return length >= 2
 		}
+	case "reduce":
+		length, ok := staticCollectionLength(receiver)
+		if !ok {
+			return true
+		}
+		if call != nil && len(call.Args) >= 1 {
+			return length > 0
+		}
+		return length >= 2
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
 		return length > 0
@@ -217,9 +226,17 @@ func (c *scriptChecker) staticIteratorCallMayComplete(receiver Expression, prope
 			return len(call.Args) == 0 && len(call.KwArgs) == 0
 		}
 		return true
-	case "each_key", "each_value", "each_pair", "reverse_each", "map",
+	case "each_key", "each_value", "each_pair", "reverse_each",
 		"select", "reject", "filter":
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
+	case "map":
+		if c.receiverIsArrayLike(receiver) {
+			return true
+		}
+		if c.receiverIsHashLike(receiver) {
+			return len(call.Args) == 0 && len(call.KwArgs) == 0
+		}
+		return true
 	case "cycle":
 		return len(call.Args) <= 1 && len(call.KwArgs) == 0
 	case "each_with_index":

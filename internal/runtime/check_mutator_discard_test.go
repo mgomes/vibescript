@@ -264,6 +264,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "unseeded reduce on a singleton is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].reduce { puts row; 0 } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "rescue binding is not an observation of the mutated parameter",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); begin; raise \"x\"; rescue => row; puts row; end }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -737,6 +742,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "zero-count shift does not write a temporary",
 			source: "[1].shift(0)\nputs \"done\"",
+		},
+		{
+			name:   "array map extra args still observe the rebound parameter",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].map(1) { puts row } }\nputs \"done\"",
+		},
+		{
+			name:   "unseeded reduce over two elements still observes in the block",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1, 2].reduce { puts row; 0 } }\nputs \"done\"",
 		},
 		{
 			name:   "raise before try overwrite still observes later",
