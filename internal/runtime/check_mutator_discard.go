@@ -201,7 +201,7 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 	return true
 }
 
-func staticIteratorCallMayComplete(property string, call *CallExpr) bool {
+func (c *scriptChecker) staticIteratorCallMayComplete(receiver Expression, property string, call *CallExpr) bool {
 	if call == nil {
 		return true
 	}
@@ -209,7 +209,15 @@ func staticIteratorCallMayComplete(property string, call *CallExpr) bool {
 		call = expanded
 	}
 	switch property {
-	case "each", "each_key", "each_value", "each_pair", "reverse_each", "map",
+	case "each":
+		if c.receiverIsArrayLike(receiver) {
+			return true
+		}
+		if c.receiverIsHashLike(receiver) {
+			return len(call.Args) == 0 && len(call.KwArgs) == 0
+		}
+		return true
+	case "each_key", "each_value", "each_pair", "reverse_each", "map",
 		"select", "reject", "filter":
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
 	case "cycle":
@@ -1355,7 +1363,11 @@ func (c *scriptChecker) tryStmtObservesName(stmt *TryStmt, names map[string]stru
 			if !rescueClauseMayMatch(clause, raisedName, knownRaise) {
 				continue
 			}
-			if c.statementsObserveNameExcept(clause.Body, live, except) {
+			clauseNames := copyNameSet(live)
+			if clause.Binding != "" {
+				delete(clauseNames, clause.Binding)
+			}
+			if c.statementsObserveNameExcept(clause.Body, clauseNames, except) {
 				return true
 			}
 		}
@@ -1577,7 +1589,7 @@ func (c *scriptChecker) expressionObservesName(expr Expression, names map[string
 				return false
 			}
 			if c.receiverOwnsBuiltinIterator(member.Object, member.Property) &&
-				(!staticIteratorCallMayComplete(member.Property, typed) ||
+				(!c.staticIteratorCallMayComplete(member.Object, member.Property, typed) ||
 					!staticIteratorMayYield(member.Property, member.Object, typed)) {
 				return false
 			}
@@ -2087,6 +2099,15 @@ func (c *scriptChecker) receiverIsHashLike(expr Expression) bool {
 	}
 	return typeExprArmsAll(c.inferExpressionType(expr), func(arm *TypeExpr) bool {
 		return arm.Kind == TypeHash || arm.Kind == TypeShape
+	})
+}
+
+func (c *scriptChecker) receiverIsArrayLike(expr Expression) bool {
+	if _, ok := expr.(*ArrayLiteral); ok {
+		return true
+	}
+	return typeExprArmsAll(c.inferExpressionType(expr), func(arm *TypeExpr) bool {
+		return arm.Kind == TypeArray
 	})
 }
 

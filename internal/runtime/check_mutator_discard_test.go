@@ -264,6 +264,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "rescue binding is not an observation of the mutated parameter",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); begin; raise \"x\"; rescue => row; puts row; end }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "later grep without a pattern is not an observation",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].grep { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -704,6 +709,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "empty splat iterator still observes in the block",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.each(*[]) { puts row } }\nputs \"done\"",
+		},
+		{
+			name:   "array each extra args still observe the rebound parameter",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].each(1) { puts row } }\nputs \"done\"",
 		},
 		{
 			name:   "raise before try overwrite still observes later",
