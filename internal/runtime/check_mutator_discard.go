@@ -2295,8 +2295,15 @@ func (c *scriptChecker) ifStmtFallsThrough(stmt *IfStmt) bool {
 		return true
 	}
 	for _, branch := range stmt.ElseIf {
+		t, k := staticExpressionTruthiness(branch.Condition)
+		if k && !t {
+			continue
+		}
 		if c.statementsMayCompleteNormally(branch.Consequent) {
 			return true
+		}
+		if k && t {
+			return false
 		}
 	}
 	if len(stmt.Alternate) == 0 {
