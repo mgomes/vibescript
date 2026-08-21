@@ -565,6 +565,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "hash compact ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.compact { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "hash except ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.except { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "fill start past the end does not yield its block",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].fill(2) { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -923,6 +933,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "delete miss does not write a temporary",
 			source: "[1].delete(2)\nputs \"done\"",
+		},
+		{
+			name:   "delete of a range uses equality not case membership",
+			source: "[1].delete(1..2)\nputs \"done\"",
+		},
+		{
+			name:   "delete miss block of a range still observes",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].delete(1..2) { puts row } }\nputs \"done\"",
 		},
 		{
 			name:   "raising prefix still observes in rescue",

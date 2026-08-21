@@ -213,7 +213,8 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		return staticFillMayYield(receiver, call)
 	case "zip", "join", "transpose", "length", "size", "empty?",
 		"first", "last", "inspect", "to_s", "to_a", "hash", "itself",
-		"union", "difference", "intersection", "keys", "values", "slice":
+		"union", "difference", "intersection", "keys", "values", "slice",
+		"compact", "except":
 		return false
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
@@ -281,6 +282,8 @@ func (c *scriptChecker) staticIteratorCallMayComplete(receiver Expression, prope
 		return len(call.Args) >= 1 && len(call.KwArgs) == 0
 	case "fill":
 		return len(call.Args) <= 3 && len(call.KwArgs) == 0
+	case "delete":
+		return len(call.Args) == 1 && len(call.KwArgs) == 0
 	default:
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
 	}
@@ -2533,20 +2536,8 @@ func staticDeleteIsMiss(receiver Expression, call *CallExpr) bool {
 	}
 	switch recv := receiver.(type) {
 	case *ArrayLiteral:
-		for _, element := range recv.Elements {
-			value, ok := staticLiteralValue(element)
-			if !ok {
-				return false
-			}
-			matched, err := caseCandidateMatches(nil, value, target)
-			if err != nil {
-				return false
-			}
-			if matched {
-				return false
-			}
-		}
-		return true
+		contains, ok := staticArrayContainsEqualLiteral(recv, target)
+		return ok && !contains
 	case *HashLiteral:
 		key, err := hashKeyString(target)
 		if err != nil {
@@ -2567,6 +2558,22 @@ func staticDeleteIsMiss(receiver Expression, call *CallExpr) bool {
 	}
 }
 
+func staticArrayContainsEqualLiteral(arr *ArrayLiteral, target Value) (contains, ok bool) {
+	if arr == nil {
+		return false, false
+	}
+	for _, element := range arr.Elements {
+		value, ok := staticLiteralValue(element)
+		if !ok {
+			return false, false
+		}
+		if value.Equal(target) {
+			return true, true
+		}
+	}
+	return false, true
+}
+
 func staticDeleteMissBlockUnreachable(receiver Expression, call *CallExpr) bool {
 	if call == nil || len(call.Args) != 1 {
 		return false
@@ -2577,20 +2584,8 @@ func staticDeleteMissBlockUnreachable(receiver Expression, call *CallExpr) bool 
 	}
 	switch recv := receiver.(type) {
 	case *ArrayLiteral:
-		for _, element := range recv.Elements {
-			value, ok := staticLiteralValue(element)
-			if !ok {
-				return false
-			}
-			matched, err := caseCandidateMatches(nil, value, target)
-			if err != nil {
-				return false
-			}
-			if matched {
-				return true
-			}
-		}
-		return false
+		contains, ok := staticArrayContainsEqualLiteral(recv, target)
+		return ok && contains
 	case *HashLiteral:
 		key, err := hashKeyString(target)
 		if err != nil {
