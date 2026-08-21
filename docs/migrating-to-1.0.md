@@ -788,7 +788,7 @@ a block that compared a yielded key against a symbol.
 ```
 counts[id] = 1                 # 1.0: unsupported hash key type
 { name: 1, "name": 2 }         # 1.0: one entry, later write wins
-Hash.new(0)[:missing]          # 1.0: compile error
+Hash.new(0)[:missing]          # 1.0: runtime error: Hash.new takes no default
 words.group_by { |w| w.size }  # 1.0: integer keys rejected
 ```
 
