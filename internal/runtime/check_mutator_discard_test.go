@@ -84,6 +84,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "union of hash value array arms",
+			source: "def f(h: hash<string, array<int>> | hash<string, array<string>>)\n  h.each_value { |v| v.clear }\n  nil\nend\nf({a: [1]})\nputs \"done\"",
+			want:   "mutating block parameter v",
+		},
+		{
 			name:   "hash each rest then value",
 			source: "h = {a: [1]}\nh.each { |(*, value)| value.push(2) }\nputs \"done\"",
 			want:   "mutating block parameter value",
@@ -274,6 +279,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "ensure observes the rebound parameter",
 			source: "rows = [[1], [2]]\nrows.each do |row|\n  begin\n    row.push(0)\n  ensure\n    puts row\n  end\nend\nputs \"done\"",
+		},
+		{
+			name:   "else observes the rebound parameter",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  begin\n    row.push(0)\n  rescue\n    nil\n  else\n    puts row\n  end\nend\nputs \"done\"",
 		},
 		{
 			name:   "while condition observes the rebound parameter",

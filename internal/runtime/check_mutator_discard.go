@@ -378,41 +378,67 @@ func collectionIteratorElementType(recv *TypeExpr) *TypeExpr {
 }
 
 func collectionIteratorValueType(recv *TypeExpr) *TypeExpr {
-	if recv == nil {
+	arms, ok := typeExprArms(recv, 0)
+	if !ok || len(arms) == 0 {
 		return nil
 	}
-	switch recv.Kind {
-	case TypeHash:
-		if len(recv.TypeArgs) == 2 {
-			return recv.TypeArgs[1]
-		}
-	case TypeShape:
-		if len(recv.Shape) == 0 {
+	vals := make([]*TypeExpr, 0, len(arms))
+	for _, arm := range arms {
+		v := collectionIteratorValueTypeArm(arm)
+		if v == nil {
 			return nil
 		}
-		arms := make([]*TypeExpr, 0, len(recv.Shape))
-		for _, field := range recv.Shape {
-			arms = append(arms, shapeFieldValueType(field))
+		vals = append(vals, v)
+	}
+	return unionTypeExprs(vals...)
+}
+
+func collectionIteratorValueTypeArm(arm *TypeExpr) *TypeExpr {
+	switch arm.Kind {
+	case TypeHash:
+		if len(arm.TypeArgs) == 2 {
+			return arm.TypeArgs[1]
 		}
-		return unionTypeExprs(arms...)
+	case TypeShape:
+		if len(arm.Shape) == 0 {
+			return nil
+		}
+		vals := make([]*TypeExpr, 0, len(arm.Shape))
+		for _, field := range arm.Shape {
+			vals = append(vals, shapeFieldValueType(field))
+		}
+		return unionTypeExprs(vals...)
 	}
 	return nil
 }
 
 func collectionIteratorKeyType(recv *TypeExpr) *TypeExpr {
-	if recv == nil {
+	arms, ok := typeExprArms(recv, 0)
+	if !ok || len(arms) == 0 {
 		return nil
 	}
-	switch recv.Kind {
+	keys := make([]*TypeExpr, 0, len(arms))
+	for _, arm := range arms {
+		k := collectionIteratorKeyTypeArm(arm)
+		if k == nil {
+			return nil
+		}
+		keys = append(keys, k)
+	}
+	return unionTypeExprs(keys...)
+}
+
+func collectionIteratorKeyTypeArm(arm *TypeExpr) *TypeExpr {
+	switch arm.Kind {
 	case TypeHash:
-		if len(recv.TypeArgs) == 2 {
-			return recv.TypeArgs[0]
+		if len(arm.TypeArgs) == 2 {
+			return arm.TypeArgs[0]
 		}
 	case TypeShape:
-		if recv.Name == shapeKeysStringMarker {
+		if arm.Name == shapeKeysStringMarker {
 			return checkTypeString
 		}
-		if recv.Name == shapeKeysSymbolMarker {
+		if arm.Name == shapeKeysSymbolMarker {
 			return checkTypeSymbol
 		}
 	}
@@ -655,6 +681,9 @@ func statementsAfterObserveName(body []Statement, stmt *ExprStmt, names map[stri
 					inEnsure = search(typed.Ensure)
 				}
 				if inBody || inElse || inRescue || inEnsure {
+					if inBody && statementsObserveName(typed.Else, names) {
+						observes = true
+					}
 					if (inBody || inElse || inRescue) &&
 						statementsObserveName(typed.Ensure, names) {
 						observes = true
