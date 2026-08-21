@@ -221,7 +221,8 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		"union", "difference", "intersection", "keys", "values", "slice",
 		"compact", "except", "flatten", "values_at",
 		"include?", "member?", "key?", "has_key?", "value?", "has_value?",
-		"shuffle", "reverse", "rotate", "product", "sample", "permutation":
+		"shuffle", "reverse", "rotate", "product", "sample", "permutation",
+		"min", "max", "minmax":
 		return false
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
@@ -1744,6 +1745,16 @@ func remainderContainsNext(stmts []Statement) bool {
 			}
 			for _, branch := range typed.ElseIf {
 				if remainderContainsNext(branch.Consequent) {
+					return true
+				}
+			}
+		case *TryStmt:
+			if remainderContainsNext(typed.Body) || remainderContainsNext(typed.Else) ||
+				remainderContainsNext(typed.Ensure) {
+				return true
+			}
+			for _, clause := range typed.Rescues {
+				if remainderContainsNext(clause.Body) {
 					return true
 				}
 			}
