@@ -213,7 +213,7 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		return staticFillMayYield(receiver, call)
 	case "zip", "join", "transpose", "length", "size", "empty?",
 		"first", "last", "inspect", "to_s", "to_a", "hash", "itself",
-		"union", "difference", "intersection", "keys", "values":
+		"union", "difference", "intersection", "keys", "values", "slice":
 		return false
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
@@ -373,6 +373,21 @@ func staticFillSelectorsExpand(selectors []Expression, length int) bool {
 	return begin > length
 }
 
+func staticFillResolvedStart(expr Expression, length int) (int, bool) {
+	start, ok := integerLiteralValue(expr)
+	if !ok || start.IsBigInt() {
+		return 0, false
+	}
+	begin := int(start.Int())
+	if begin < 0 {
+		begin += length
+		if begin < 0 {
+			begin = 0
+		}
+	}
+	return begin, true
+}
+
 func staticFillSelectorsActive(selectors []Expression, length int) bool {
 	switch len(selectors) {
 	case 0:
@@ -381,7 +396,11 @@ func staticFillSelectorsActive(selectors []Expression, length int) bool {
 		if staticExclusiveEmptyRange(selectors[0]) {
 			return false
 		}
-		return true
+		begin, ok := staticFillResolvedStart(selectors[0], length)
+		if !ok {
+			return true
+		}
+		return begin < length
 	case 2:
 		if staticExclusiveEmptyRange(selectors[0]) {
 			return false
@@ -393,6 +412,28 @@ func staticFillSelectorsActive(selectors []Expression, length int) bool {
 		return count.Int() > 0
 	default:
 		return true
+	}
+}
+
+func staticFilterRetainsAll(property string, call *CallExpr) bool {
+	if call == nil || call.Block == nil || len(call.Block.Body) != 1 {
+		return false
+	}
+	stmt, ok := call.Block.Body[0].(*ExprStmt)
+	if !ok {
+		return false
+	}
+	lit, ok := stmt.Expr.(*BoolLiteral)
+	if !ok {
+		return false
+	}
+	switch property {
+	case "delete_if":
+		return !lit.Value
+	case "keep_if":
+		return lit.Value
+	default:
+		return false
 	}
 }
 
@@ -423,6 +464,13 @@ func staticFillMayYield(receiver Expression, call *CallExpr) bool {
 	}
 	if len(selectors) == 0 {
 		return length > 0
+	}
+	if len(selectors) == 1 {
+		begin, ok := staticFillResolvedStart(selectors[0], length)
+		if !ok {
+			return true
+		}
+		return begin < length
 	}
 	if len(selectors) != 2 {
 		return true
@@ -996,6 +1044,9 @@ func collectionMutatorCallActuallyWrites(property string, call *CallExpr, receiv
 		return staticFillWrites(receiver, call)
 	case "clear", "delete_if", "keep_if":
 		if length, ok := staticCollectionLength(receiver); ok && length == 0 {
+			return false
+		}
+		if property != "clear" && staticFilterRetainsAll(property, call) {
 			return false
 		}
 		return true

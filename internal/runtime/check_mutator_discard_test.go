@@ -559,6 +559,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.values { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
 		},
+		{
+			name:   "hash slice ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.slice { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "fill start past the end does not yield its block",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].fill(2) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
 	}
 
 	for _, tc := range tests {
@@ -996,6 +1006,18 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "empty hash clear does not write a temporary",
 			source: "{}.clear\nputs \"done\"",
+		},
+		{
+			name:   "bare fill start past the end does not write a temporary",
+			source: "[1].fill(9, 2)\nputs \"done\"",
+		},
+		{
+			name:   "delete_if false retains every element",
+			source: "[1].delete_if { false }\nputs \"done\"",
+		},
+		{
+			name:   "keep_if true retains every element",
+			source: "{a: 1}.keep_if { true }\nputs \"done\"",
 		},
 	}
 
