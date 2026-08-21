@@ -683,6 +683,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); for row in []; nil; end; puts row }\nputs \"done\"",
 		},
 		{
+			name:   "empty for iterable variable still observes the mutated binding",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); values = []; for row in values; nil; end; puts row }\nputs \"done\"",
+		},
+		{
 			name:   "empty splat iterator still observes in the block",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.each(*[]) { puts row } }\nputs \"done\"",
 		},

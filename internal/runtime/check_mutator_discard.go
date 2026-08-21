@@ -1219,7 +1219,14 @@ func (c *scriptChecker) tryStmtFallsThrough(stmt *TryStmt) bool {
 		return c.statementsMayCompleteNormally(stmt.Else) &&
 			c.statementsMayCompleteNormally(stmt.Ensure)
 	}
+	if statementsProvenNonRaising(stmt.Body) {
+		return false
+	}
+	raisedName, knownRaise := statementsRaisedTypeName(stmt.Body)
 	for _, clause := range stmt.Rescues {
+		if !rescueClauseMayMatch(clause, raisedName, knownRaise) {
+			continue
+		}
 		if c.statementsMayCompleteNormally(clause.Body) &&
 			c.statementsMayCompleteNormally(stmt.Ensure) {
 			return true
@@ -1495,10 +1502,16 @@ func (c *scriptChecker) expressionObservesName(expr Expression, names map[string
 			if c.expressionObservesName(arg, names) {
 				return true
 			}
+			if !c.expressionProvablyCompletes(arg) {
+				return false
+			}
 		}
 		for _, kwarg := range typed.KwArgs {
 			if c.expressionObservesName(kwarg.Value, names) {
 				return true
+			}
+			if !c.expressionProvablyCompletes(kwarg.Value) {
+				return false
 			}
 		}
 		if typed.Block == nil {
@@ -1591,10 +1604,8 @@ func assignmentCompoundReadsName(target Expression, names map[string]struct{}) b
 }
 
 func staticForLoopMayIterate(stmt *ForStmt) bool {
-	if length, ok := staticCollectionLength(stmt.Iterable); ok {
-		return length > 0
-	}
-	return true
+	length, ok := staticCollectionLength(stmt.Iterable)
+	return ok && length > 0
 }
 
 func assignmentTargetObservesName(target Expression, names map[string]struct{}) bool {
