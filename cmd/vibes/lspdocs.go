@@ -309,7 +309,7 @@ func hoverMarkdown(catalog builtinCatalog, program *ast.Program, lines []string,
 			if word != "include" && word != "extend" {
 				return fmt.Sprintf("`%s`\n\n%s", word, doc)
 			}
-			if mixinDirectiveContext(lines, line, character) {
+			if mixinDirectiveContext(program, lines, line, character, word) {
 				return fmt.Sprintf("`%s`\n\n%s", word, doc)
 			}
 		}
@@ -1010,11 +1010,15 @@ func assignmentFollowsWord(lines []string, line, character int) bool {
 }
 
 // mixinDirectiveContext reports whether include/extend at this position is
-// written as a mixin directive (`include SomeModule`) rather than as an
-// ordinary identifier. Assignment (`include = 1`), parenthesized calls
-// (`include()`), and a bare word are not directives; the parser keeps those
-// as normal statements so the names stay usable.
-func mixinDirectiveContext(lines []string, line, character int) bool {
+// a mixin directive in the same cases the parser recognizes
+// (startsMixinDirective): only in a class or module body, and then when
+// followed on the same line by a name, `(`, or `self`, or when it stands
+// alone and is not a local. Assignment (`include = 1`) and uses outside
+// those containers stay ordinary identifiers.
+func mixinDirectiveContext(program *ast.Program, lines []string, line, character int, word string) bool {
+	if !inClassOrModuleBody(program, lines, line+1) {
+		return false
+	}
 	runes, _, end, ok := wordSpanAtPosition(lines, line, character)
 	if !ok {
 		return false
@@ -1024,14 +1028,58 @@ func mixinDirectiveContext(lines []string, line, character int) bool {
 		i++
 	}
 	if i >= len(runes) {
-		return false
+		return userSymbolHover(program, lines, word, line, character) == ""
 	}
 	switch runes[i] {
-	case '=', '(':
+	case '=':
 		return false
+	case '(':
+		return true
 	default:
 		return isWordRune(runes[i])
 	}
+}
+
+func inClassOrModuleBody(program *ast.Program, lines []string, hoverLine int) bool {
+	if program == nil {
+		return false
+	}
+	fileEnd := len(lines) + 1
+	var covers func(st *ast.ClassStmt, start, end int) bool
+	covers = func(st *ast.ClassStmt, start, end int) bool {
+		if hoverLine > start && hoverLine <= end {
+			return true
+		}
+		siblingStarts := classChildStarts(st)
+		for _, nested := range st.Modules {
+			nestedEnd := end
+			for _, sibling := range siblingStarts {
+				if sibling > nested.Position.Line && sibling-1 < nestedEnd {
+					nestedEnd = sibling - 1
+				}
+			}
+			if covers(nested, nested.Position.Line, nestedEnd) {
+				return true
+			}
+		}
+		return false
+	}
+	for i, stmt := range program.Statements {
+		st, ok := stmt.(*ast.ClassStmt)
+		if !ok {
+			continue
+		}
+		nextStart := fileEnd
+		if i+1 < len(program.Statements) {
+			if pos := program.Statements[i+1].Pos(); pos.Line > 0 {
+				nextStart = pos.Line
+			}
+		}
+		if covers(st, st.Position.Line, nextStart-1) {
+			return true
+		}
+	}
+	return false
 }
 
 // userSymbolCandidate is one declaration matching the hovered word.
