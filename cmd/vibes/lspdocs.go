@@ -1711,6 +1711,7 @@ type sourceScan struct {
 	inParams           bool
 	paramDepth         int
 	inPipes            bool
+	inParamDefault     bool
 	afterBrace         bool
 	interpPercentOpen  byte
 	interpPercentClose byte
@@ -1745,6 +1746,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	inParams := sc.inParams
 	paramDepth := sc.paramDepth
 	inPipes := sc.inPipes
+	inParamDefault := sc.inParamDefault
 	afterBrace := sc.afterBrace
 	interpPercentOpen := sc.interpPercentOpen
 	interpPercentClose := sc.interpPercentClose
@@ -1769,6 +1771,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			inParams = false
 			paramDepth = 0
 			inPipes = false
+			inParamDefault = false
 			openers = append(openers, "def")
 			atStmtStart = false
 			inLoopHeader = false
@@ -1822,6 +1825,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					inParams = false
 					paramDepth = 0
 					inPipes = false
+					inParamDefault = false
 				}
 			}
 			atStmtStart = false
@@ -1855,7 +1859,9 @@ func (sc *sourceScan) tokens(s string) []string {
 			afterDot = false
 			lastIdent = tok
 			if (inParams || inPipes) && identCanBeLocal(strings.TrimSuffix(tok, ":")) {
-				if len(tokens) >= 2 && strings.HasSuffix(tokens[len(tokens)-2], ":") {
+				if inParamDefault {
+					// Default expression, not a binding.
+				} else if len(tokens) >= 2 && strings.HasSuffix(tokens[len(tokens)-2], ":") {
 					// Type annotation, not a binding.
 				} else {
 					locals[strings.TrimSuffix(tok, ":")] = struct{}{}
@@ -2396,6 +2402,13 @@ func (sc *sourceScan) tokens(s string) []string {
 				continue
 			}
 			flush(i)
+			if inParams || inPipes {
+				inParamDefault = true
+				tokens = append(tokens, "=")
+				afterValue = false
+				afterDot = false
+				continue
+			}
 			bracketDepth := 0
 			skipMember := false
 			for j := len(tokens) - 1; j >= 0; j-- {
@@ -2469,7 +2482,8 @@ func (sc *sourceScan) tokens(s string) []string {
 				inParams = true
 				afterDef = false
 				paramDepth = 1
-			} else if inParams {
+				inParamDefault = false
+			} else if inParams || inPipes {
 				paramDepth++
 			}
 		case ')':
@@ -2477,12 +2491,19 @@ func (sc *sourceScan) tokens(s string) []string {
 				paramDepth--
 				if paramDepth <= 0 {
 					inParams = false
+					inParamDefault = false
 				}
+			} else if inPipes && paramDepth > 0 {
+				paramDepth--
 			}
 			afterValue = true
 			afterDot = false
 			afterBrace = false
 			continue
+		case ',':
+			if (inParams && paramDepth <= 1) || (inPipes && paramDepth == 0) {
+				inParamDefault = false
+			}
 		case ']':
 			afterValue = true
 			afterDot = false
@@ -2502,6 +2523,8 @@ func (sc *sourceScan) tokens(s string) []string {
 					}
 					delete(locals, name)
 				}
+			} else {
+				inParamDefault = false
 			}
 			inPipes = !inPipes
 			afterBrace = false
@@ -2556,6 +2579,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.inParams = inParams
 	sc.paramDepth = paramDepth
 	sc.inPipes = inPipes
+	sc.inParamDefault = inParamDefault
 	sc.afterBrace = afterBrace
 	sc.interpPercentOpen = interpPercentOpen
 	sc.interpPercentClose = interpPercentClose
