@@ -168,17 +168,18 @@ func staticCycleMayYield(call *CallExpr) bool {
 	if len(call.Args) != 1 {
 		return false
 	}
-	switch typed := call.Args[0].(type) {
-	case *NilLiteral:
-		return true
-	case *IntegerLiteral:
-		if typed.Big != nil {
-			return typed.Big.Sign() > 0
-		}
-		return typed.Value > 0
-	default:
+	if _, ok := call.Args[0].(*NilLiteral); ok {
 		return true
 	}
+	value, exact := integerLiteralValue(call.Args[0])
+	if !exact {
+		return true
+	}
+	if value.IsBigInt() {
+		n := value.BigInt()
+		return n != nil && n.Sign() > 0
+	}
+	return value.Int() > 0
 }
 
 // receiverOwnsBuiltinIterator reports whether every inferred arm of
@@ -900,16 +901,8 @@ func statementsObserveNameExcept(statements []Statement, names map[string]struct
 				return true
 			}
 		case *IfStmt:
-			if expressionObservesName(typed.Condition, names) ||
-				statementsObserveNameExcept(typed.Consequent, names, except) ||
-				statementsObserveNameExcept(typed.Alternate, names, except) {
+			if ifStmtObservesName(typed, names, except) {
 				return true
-			}
-			for _, branch := range typed.ElseIf {
-				if expressionObservesName(branch.Condition, names) ||
-					statementsObserveNameExcept(branch.Consequent, names, except) {
-					return true
-				}
 			}
 		case *ReturnStmt:
 			if expressionObservesName(typed.Value, names) {
@@ -927,6 +920,66 @@ func statementsObserveNameExcept(statements []Statement, names map[string]struct
 		}
 	}
 	return false
+}
+
+func ifStmtObservesName(stmt *IfStmt, names map[string]struct{}, except *ExprStmt) bool {
+	if expressionObservesName(stmt.Condition, names) {
+		return true
+	}
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if !known || truthy {
+		if statementsObserveNameExcept(stmt.Consequent, names, except) {
+			return true
+		}
+	}
+	if known && truthy {
+		return false
+	}
+	for _, branch := range stmt.ElseIf {
+		if expressionObservesName(branch.Condition, names) {
+			return true
+		}
+		truthy, known = staticExpressionTruthiness(branch.Condition)
+		if !known || truthy {
+			if statementsObserveNameExcept(branch.Consequent, names, except) {
+				return true
+			}
+		}
+		if known && truthy {
+			return false
+		}
+	}
+	return statementsObserveNameExcept(stmt.Alternate, names, except)
+}
+
+func ifExprObservesName(expr *IfExpr, names map[string]struct{}) bool {
+	if expressionObservesName(expr.Condition, names) {
+		return true
+	}
+	truthy, known := staticExpressionTruthiness(expr.Condition)
+	if !known || truthy {
+		if expressionObservesName(expr.Consequent, names) {
+			return true
+		}
+	}
+	if known && truthy {
+		return false
+	}
+	for _, branch := range expr.ElseIf {
+		if expressionObservesName(branch.Condition, names) {
+			return true
+		}
+		truthy, known = staticExpressionTruthiness(branch.Condition)
+		if !known || truthy {
+			if expressionObservesName(branch.Result, names) {
+				return true
+			}
+		}
+		if known && truthy {
+			return false
+		}
+	}
+	return expressionObservesName(expr.Alternate, names)
 }
 
 func withoutBlockParamNames(names map[string]struct{}, block *BlockLiteral) map[string]struct{} {
@@ -1001,25 +1054,19 @@ func expressionObservesName(expr Expression, names map[string]struct{}) bool {
 		}
 		return statementsObserveName(typed.Body, withoutBlockParamNames(names, typed))
 	case *ConditionalExpr:
-		return expressionObservesName(typed.Condition, names) ||
-			expressionObservesName(typed.Consequent, names) ||
+		if expressionObservesName(typed.Condition, names) {
+			return true
+		}
+		if branch, known := staticConditionalExpressionBranch(typed); known {
+			return expressionObservesName(branch, names)
+		}
+		return expressionObservesName(typed.Consequent, names) ||
 			expressionObservesName(typed.Alternate, names)
 	case *RescueExpr:
 		return expressionObservesName(typed.Body, names) ||
 			expressionObservesName(typed.Fallback, names)
 	case *IfExpr:
-		if expressionObservesName(typed.Condition, names) ||
-			expressionObservesName(typed.Consequent, names) ||
-			expressionObservesName(typed.Alternate, names) {
-			return true
-		}
-		for _, branch := range typed.ElseIf {
-			if expressionObservesName(branch.Condition, names) ||
-				expressionObservesName(branch.Result, names) {
-				return true
-			}
-		}
-		return false
+		return ifExprObservesName(typed, names)
 	case *CaseExpr:
 		if expressionObservesName(typed.Target, names) {
 			return true

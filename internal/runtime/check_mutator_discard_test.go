@@ -114,6 +114,21 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later read in a statically false if is not an observation",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  if false\n    puts row\n  end\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later read in a statically false ternary is not an observation",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  false ? puts(row) : nil\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later read in a statically skipped else is not an observation",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  if true\n    nil\n  else\n    puts row\n  end\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "union of shape collection fields",
 			source: "def f(rows: array<{items: array<int>}> | array<{items: array<string>}>)\n  rows.each { |row| row.items.clear }\n  nil\nend\nf([{items: [1]}])\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -428,6 +443,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "cycle zero never runs the block",
 			source: "[[]].cycle(0) { |row| row.push(1) }\nputs \"done\"",
+		},
+		{
+			name:   "cycle negative never runs the block",
+			source: "[[]].cycle(-1) { |row| row.push(1) }\nputs \"done\"",
 		},
 		{
 			name:   "case later clause after aborting match",
