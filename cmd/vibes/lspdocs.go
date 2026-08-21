@@ -1716,6 +1716,7 @@ type sourceScan struct {
 	paramDepth          int
 	inPipes             bool
 	inParamDefault      bool
+	fromEqualsDefault   bool
 	genericDepth        int
 	collectionDepth     int
 	inForTargets        bool
@@ -1774,6 +1775,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	paramDepth := sc.paramDepth
 	inPipes := sc.inPipes
 	inParamDefault := sc.inParamDefault
+	fromEqualsDefault := sc.fromEqualsDefault
 	genericDepth := sc.genericDepth
 	collectionDepth := sc.collectionDepth
 	inForTargets := sc.inForTargets
@@ -2268,7 +2270,7 @@ func (sc *sourceScan) tokens(s string) []string {
 		}
 		if c == '%' && i+1 < len(s) {
 			kind := s[i+1]
-			if strings.ContainsRune("wWiI", rune(kind)) && i+2 < len(s) {
+			if !afterValue && strings.ContainsRune("wWiI", rune(kind)) && i+2 < len(s) {
 				open := s[i+2]
 				close := percentLiteralCloser(open)
 				flush(i)
@@ -2513,6 +2515,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			flush(i)
 			if inParams || inPipes {
 				inParamDefault = true
+				fromEqualsDefault = true
 				tokens = append(tokens, "=")
 				afterValue = false
 				afterDot = false
@@ -2571,6 +2574,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			afterValue = false
 			afterDot = false
 			afterBlockPipes = false
+			lastIdent = ""
 			continue
 		}
 		r, size := utf8.DecodeRuneInString(s[i:])
@@ -2609,6 +2613,7 @@ func (sc *sourceScan) tokens(s string) []string {
 				if paramDepth <= 0 {
 					inParams = false
 					inParamDefault = false
+					fromEqualsDefault = false
 					genericDepth = 0
 					collectionDepth = 0
 				}
@@ -2620,7 +2625,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			afterBrace = false
 			continue
 		case '<':
-			if inParams || inParamDefault {
+			if inParams && inParamDefault && !fromEqualsDefault {
 				genericDepth++
 			}
 		case '>':
@@ -2631,6 +2636,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			if genericDepth == 0 && collectionDepth == 0 &&
 				((inParams && paramDepth <= 1) || (inPipes && paramDepth == 0)) {
 				inParamDefault = false
+				fromEqualsDefault = false
 			}
 		case '[':
 			if inParams || inPipes || inParamDefault {
@@ -2730,6 +2736,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.paramDepth = paramDepth
 	sc.inPipes = inPipes
 	sc.inParamDefault = inParamDefault
+	sc.fromEqualsDefault = fromEqualsDefault
 	sc.genericDepth = genericDepth
 	sc.collectionDepth = collectionDepth
 	sc.inForTargets = inForTargets
