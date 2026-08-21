@@ -549,6 +549,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 				"apply(Widget.new)\napply([[1]])\nputs \"done\"",
 			want: "mutating block parameter row",
 		},
+		{
+			name:   "hash keys ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.keys { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "hash values ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.values { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
 	}
 
 	for _, tc := range tests {
@@ -974,6 +984,18 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			source: "class Widget\n  def push(x)\n    @seen = x\n  end\nend\n" +
 				"def pass(v: any) -> any\n  v\nend\n" +
 				"pass(Widget.new).push(1)\nputs \"done\"",
+		},
+		{
+			name:   "negative fill length still completes later reads",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].fill(9, 2, -1); puts row }\nputs \"done\"",
+		},
+		{
+			name:   "empty array clear does not write a temporary",
+			source: "[].clear\nputs \"done\"",
+		},
+		{
+			name:   "empty hash clear does not write a temporary",
+			source: "{}.clear\nputs \"done\"",
 		},
 	}
 
