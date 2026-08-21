@@ -1024,6 +1024,9 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 	if st == nil {
 		return false
 	}
+	if sourceInsideLiteral(lines, line+1, start+1) {
+		return false
+	}
 	if classControlFlowContains(st, lines, line+1, start+1) {
 		return false
 	}
@@ -1262,7 +1265,7 @@ func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
 				atStmtStart = false
 				inLoopHeader = false
 			case "for", "while", "until":
-				if atStmtStart {
+				if atStmtStart || prev == "=" {
 					depth++
 					inLoopHeader = true
 				}
@@ -1340,6 +1343,7 @@ func sourceClosedBeforeColumn(lines []string, start ast.Position, hoverLine, hov
 	scan := sourceScan{}
 	depth := 0
 	atStmtStart := true
+	inLoopHeader := false
 	prev := ""
 	seenDef := false
 	for _, tok := range scan.tokens(line[:limit]) {
@@ -1356,22 +1360,38 @@ func sourceClosedBeforeColumn(lines []string, start ast.Position, hoverLine, hov
 		case "def", "class", "module", "begin", "case":
 			depth++
 			atStmtStart = false
+			inLoopHeader = false
+		case "for", "while", "until":
+			if atStmtStart || prev == "=" {
+				depth++
+				inLoopHeader = true
+			}
+			atStmtStart = false
 		case "if", "unless":
 			if atStmtStart || prev == "=" {
 				depth++
 			}
 			atStmtStart = false
+			inLoopHeader = false
 		case "do":
-			depth++
+			if inLoopHeader {
+				inLoopHeader = false
+			} else {
+				depth++
+			}
 			atStmtStart = false
 		case "end":
 			depth--
+			inLoopHeader = false
 			if depth <= 0 {
 				return true
 			}
 			atStmtStart = false
 		default:
 			atStmtStart = tok == ";"
+			if tok == ";" {
+				inLoopHeader = false
+			}
 		}
 		if tok != ";" {
 			prev = tok
@@ -1388,6 +1408,7 @@ type sourceScan struct {
 	escape       bool
 	afterValue   bool
 	afterDot     bool
+	inRegex      bool
 }
 
 func (sc *sourceScan) tokens(s string) []string {
@@ -1400,6 +1421,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	escape := sc.escape
 	afterValue := sc.afterValue
 	afterDot := sc.afterDot
+	inRegex := sc.inRegex
 	afterSpace := false
 	flush := func(i int) {
 		if start >= 0 {
@@ -1446,6 +1468,21 @@ func (sc *sourceScan) tokens(s string) []string {
 					percentDepth = 0
 					afterValue = true
 				}
+			}
+			continue
+		}
+		if inRegex {
+			if escape {
+				escape = false
+				continue
+			}
+			if c == '\\' {
+				escape = true
+				continue
+			}
+			if c == '/' {
+				inRegex = false
+				afterValue = true
 			}
 			continue
 		}
@@ -1519,6 +1556,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			flush(i)
 			i++
 			escape = false
+			closed := false
 			for i < len(s) {
 				ch := s[i]
 				if escape {
@@ -1532,6 +1570,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				if ch == '/' {
+					closed = true
 					i++
 					for i < len(s) && (s[i] == 'i' || s[i] == 'm' || s[i] == 'x' || s[i] == 'o' || s[i] == 'u' || s[i] == 'n') {
 						i++
@@ -1539,6 +1578,9 @@ func (sc *sourceScan) tokens(s string) []string {
 					break
 				}
 				i++
+			}
+			if !closed {
+				inRegex = true
 			}
 			i--
 			afterValue = true
@@ -1591,7 +1633,35 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.escape = escape
 	sc.afterValue = afterValue
 	sc.afterDot = afterDot
+	sc.inRegex = inRegex
 	return tokens
+}
+
+func sourceInsideLiteral(lines []string, hoverLine, hoverColumn int) bool {
+	if hoverLine < 1 {
+		return false
+	}
+	scan := sourceScan{}
+	for line := 1; line < hoverLine && line <= len(lines); line++ {
+		scan.afterValue = false
+		scan.afterDot = false
+		scan.tokens(lineAt(lines, line-1))
+	}
+	if hoverLine > len(lines) {
+		return scan.inStr != 0 || scan.percentClose != 0 || scan.inRegex
+	}
+	text := lineAt(lines, hoverLine-1)
+	idx := hoverColumn - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx > len(text) {
+		idx = len(text)
+	}
+	scan.afterValue = false
+	scan.afterDot = false
+	scan.tokens(text[:idx])
+	return scan.inStr != 0 || scan.percentClose != 0 || scan.inRegex
 }
 
 func percentLiteralCloser(open byte) byte {
