@@ -189,6 +189,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later read after overwriting the parameter is not an observation",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  row = []\n  puts row\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "union of shape collection fields",
 			source: "def f(rows: array<{items: array<int>}> | array<{items: array<string>}>)\n  rows.each { |row| row.items.clear }\n  nil\nend\nf([{items: [1]}])\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -569,6 +574,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "hash delete with an unsupported key cannot update",
 			source: "{a: 1}.delete([1])\nputs \"done\"",
+		},
+		{
+			name:   "fill without a value or block cannot update",
+			source: "[1].fill()\nputs \"done\"",
 		},
 		{
 			name:   "case later clause after aborting match",

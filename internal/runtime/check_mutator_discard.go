@@ -672,6 +672,8 @@ func (c *scriptChecker) collectionMutatorCallShapeMayComplete(receiver Expressio
 		return n >= 1 && !kwargs
 	case "delete_if", "keep_if":
 		return n == 0 && !kwargs && block
+	case "fill":
+		return !kwargs && (n >= 1 || block)
 	default:
 		return true
 	}
@@ -917,9 +919,16 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 				}
 				if inBody || inElse || inRescue || inEnsure {
 					if inBody && statementsAfterMayRaise(typed.Body, stmt) {
+						stringRaise := remainderIsStringRaise(typed.Body, stmt)
 						for _, clause := range typed.Rescues {
+							if stringRaise && clause.Ty != nil {
+								continue
+							}
 							if c.statementsObserveName(clause.Body, names) {
 								observes = true
+							}
+							if clause.Ty == nil {
+								break
 							}
 						}
 					}
@@ -977,6 +986,7 @@ func (c *scriptChecker) loopBackEdgeObservesName(condition Expression, body []St
 }
 
 func (c *scriptChecker) statementsObserveNameExcept(statements []Statement, names map[string]struct{}, except *ExprStmt) bool {
+	names = copyNameSet(names)
 	for _, statement := range statements {
 		if except != nil && statement == Statement(except) {
 			continue
@@ -986,6 +996,9 @@ func (c *scriptChecker) statementsObserveNameExcept(statements []Statement, name
 		case *AssignStmt:
 			observed = assignmentTargetObservesName(typed.Target, names) ||
 				c.expressionObservesName(typed.Value, names)
+			if !observed {
+				removeBindingTargetNames(typed.Target, names)
+			}
 		case *ExprStmt:
 			observed = c.expressionObservesName(typed.Expr, names)
 		case *IfStmt:
@@ -1010,6 +1023,46 @@ func (c *scriptChecker) statementsObserveNameExcept(statements []Statement, name
 		}
 	}
 	return false
+}
+
+func copyNameSet(names map[string]struct{}) map[string]struct{} {
+	out := make(map[string]struct{}, len(names))
+	for name := range names {
+		out[name] = struct{}{}
+	}
+	return out
+}
+
+func remainderIsStringRaise(body []Statement, stmt *ExprStmt) bool {
+	rest, ok := statementsAfter(body, stmt)
+	if !ok || len(rest) != 1 {
+		return false
+	}
+	raise, ok := rest[0].(*RaiseStmt)
+	if !ok {
+		return false
+	}
+	_, isString := raise.Value.(*StringLiteral)
+	return isString
+}
+
+func statementsAfter(body []Statement, stmt *ExprStmt) ([]Statement, bool) {
+	for i, s := range body {
+		if s == Statement(stmt) {
+			return body[i+1:], true
+		}
+		if inner, ok := statementBodyContaining(s, stmt); ok {
+			innerRest, found := statementsAfter(inner, stmt)
+			if !found {
+				return nil, false
+			}
+			if len(innerRest) > 0 {
+				return innerRest, true
+			}
+			return body[i+1:], true
+		}
+	}
+	return nil, false
 }
 
 func statementFallsThrough(stmt Statement) bool {
