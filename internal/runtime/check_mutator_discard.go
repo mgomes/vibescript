@@ -219,7 +219,7 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 	case "zip", "join", "transpose", "length", "size", "empty?",
 		"first", "last", "inspect", "to_s", "to_a", "hash", "itself",
 		"union", "difference", "intersection", "keys", "values", "slice",
-		"compact", "except":
+		"compact", "except", "flatten":
 		return false
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
@@ -1463,7 +1463,24 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 						mutationPathContinues = pathContinues &&
 							c.statementsMayCompleteNormally(typed.Ensure)
 					} else if inBody {
-						mutationPathContinues = c.tryStmtFallsThrough(typed) || pathContinues
+						mutationPathContinues = pathContinues &&
+							c.statementsMayCompleteNormally(typed.Else) &&
+							c.statementsMayCompleteNormally(typed.Ensure)
+						if statementsAfterMayRaise(typed.Body, stmt) {
+							raisedName, knownRaise := remainderRaisedTypeName(typed.Body, stmt)
+							for _, clause := range typed.Rescues {
+								if !rescueClauseMayMatch(clause, raisedName, knownRaise) {
+									continue
+								}
+								if c.statementsMayCompleteNormally(clause.Body) &&
+									c.statementsMayCompleteNormally(typed.Ensure) {
+									mutationPathContinues = true
+								}
+								if knownRaise {
+									break
+								}
+							}
+						}
 					}
 					if mutationPathContinues {
 						if c.statementsObserveName(stmts[i+1:], names) {
@@ -1477,9 +1494,12 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 				}
 			case *WhileStmt:
 				if search(typed.Body) {
-					if pathContinues &&
-						(c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) ||
-							c.statementsObserveName(stmts[i+1:], names)) {
+					reachesBackEdge := pathContinues || remainderIsNext(typed.Body, stmt)
+					if reachesBackEdge &&
+						c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) {
+						observes = true
+					}
+					if pathContinues && c.statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
 					if pathContinues {
@@ -1489,9 +1509,12 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 				}
 			case *UntilStmt:
 				if search(typed.Body) {
-					if pathContinues &&
-						(c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) ||
-							c.statementsObserveName(stmts[i+1:], names)) {
+					reachesBackEdge := pathContinues || remainderIsNext(typed.Body, stmt)
+					if reachesBackEdge &&
+						c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) {
+						observes = true
+					}
+					if pathContinues && c.statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
 					if pathContinues {
@@ -1669,6 +1692,21 @@ func rescueClauseMayMatch(clause RescueClause, raisedName string, known bool) bo
 		kind = raisedName
 	}
 	return rescueTypeMatchesErrorKind(clause.Ty, kind)
+}
+
+func remainderIsNext(body []Statement, stmt *ExprStmt) bool {
+	rest, ok := statementsAfter(body, stmt)
+	if !ok {
+		return false
+	}
+	for _, s := range rest {
+		if s == nil {
+			continue
+		}
+		_, isNext := s.(*NextStmt)
+		return isNext
+	}
+	return false
 }
 
 func statementsAfter(body []Statement, stmt *ExprStmt) ([]Statement, bool) {

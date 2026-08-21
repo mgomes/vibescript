@@ -575,6 +575,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "flatten ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].flatten { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "raising if in try body is not an observation of the suffix",
+			source: "rows = [[1], [2]]\nrows.each { |row| begin; if true; row.push(0); raise \"x\"; end; rescue; raise \"y\"; end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "fill start past the end does not yield its block",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].fill(2) { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -963,6 +973,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "nil fill length past the end does not write a temporary",
 			source: "[1].fill(9, 2, nil)\nputs \"done\"",
+		},
+		{
+			name:   "next still observes the loop condition",
+			source: "rows = [[1], [2]]\nrows.each { |row| while row.length < 3; row.push(0); next; end }\nputs \"done\"",
 		},
 		{
 			name:   "raising prefix still observes in rescue",
