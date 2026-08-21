@@ -2025,7 +2025,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				afterSpace = false
-				if !afterValue && c == '%' && i+2 < len(s) && strings.ContainsRune("wWiIqQ", rune(s[i+1])) {
+				if !afterValue && c == '%' && i+2 < len(s) && strings.ContainsRune("wWiI", rune(s[i+1])) {
 					open := s[i+2]
 					close := percentLiteralCloser(open)
 					end, depth, closed := skipPercentArrayFrom(s, i+3, open, close, 1)
@@ -2143,7 +2143,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				afterSpace = false
-				if !afterValue && c == '%' && i+2 < len(s) && strings.ContainsRune("wWiIqQ", rune(s[i+1])) {
+				if !afterValue && c == '%' && i+2 < len(s) && strings.ContainsRune("wWiI", rune(s[i+1])) {
 					open := s[i+2]
 					close := percentLiteralCloser(open)
 					end, depth, closed := skipPercentArrayFrom(s, i+3, open, close, 1)
@@ -2268,7 +2268,7 @@ func (sc *sourceScan) tokens(s string) []string {
 		}
 		if c == '%' && i+1 < len(s) {
 			kind := s[i+1]
-			if strings.ContainsRune("wWiIqQ", rune(kind)) && i+2 < len(s) {
+			if strings.ContainsRune("wWiI", rune(kind)) && i+2 < len(s) {
 				open := s[i+2]
 				close := percentLiteralCloser(open)
 				flush(i)
