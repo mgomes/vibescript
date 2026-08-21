@@ -975,6 +975,47 @@ func TestAssignThroughACallFormAccessorReachesNothing(t *testing.T) {
 	}
 }
 
+// TestCallRootedIndexAssignChargesTailExpressionSteps pins that a write
+// through a call-rooted path still pays exec.step for every MemberExpr and
+// IndexExpr hop after the call. The new route evaluates the call once and
+// walks the tail in readPathTailOrdinarily; without a step per hop,
+// factory().a.a.a.a[0] = 9 would succeed under a quota the equivalent
+// ordinary read already exhausts.
+func TestCallRootedIndexAssignChargesTailExpressionSteps(t *testing.T) {
+	t.Parallel()
+
+	const factory = `def factory()
+  {a: {a: {a: {a: [1]}}}}
+end
+`
+	readQuota := minSuccessfulStepQuota(t, factory+`def run()
+  factory().a.a.a.a[0]
+end
+`)
+	writeQuota := minSuccessfulStepQuota(t, factory+`def run()
+  factory().a.a.a.a[0] = 9
+end
+`)
+	if writeQuota < readQuota {
+		t.Fatalf("call-rooted assign min step quota = %d, ordinary read of the same path needed %d",
+			writeQuota, readQuota)
+	}
+}
+
+func minSuccessfulStepQuota(t *testing.T, source string) int {
+	t.Helper()
+	const maxQuota = 200
+	for quota := 1; quota <= maxQuota; quota++ {
+		script := compileScriptWithConfig(t, Config{StepQuota: quota, MemoryQuotaBytes: Unlimited}, source)
+		_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+		if err == nil {
+			return quota
+		}
+	}
+	t.Fatalf("source never succeeded under step quotas 1..%d", maxQuota)
+	return 0
+}
+
 // TestAssignThroughAGetterCallLeavesTheIvarIntact pins the issue's second
 // reproduction (#1221) in every spelling: a getter reached as an explicit
 // call (`geta()[0]`), a bare parenless name (`geta[0]`), or parenless
