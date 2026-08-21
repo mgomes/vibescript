@@ -1070,6 +1070,9 @@ func mixinContainer(program *ast.Program, lines []string, hoverLine int) *ast.Cl
 					nestedEnd = sibling - 1
 				}
 			}
+			if sourceEnd := sourceBlockEndLine(lines, nested.Position, nestedEnd); sourceEnd < nestedEnd {
+				nestedEnd = sourceEnd
+			}
 			walk(nested, nested.Position.Line, nestedEnd)
 			if found != nil {
 				return
@@ -1197,25 +1200,32 @@ func statementsBindLocalOne(stmt ast.Statement, word string, hoverLine, hoverCol
 }
 
 func methodSourceEndLine(lines []string, m *ast.FunctionStmt, classEnd int) int {
-	if m == nil || m.Position.Line < 1 {
+	if m == nil {
 		return classEnd
 	}
-	defIdx := m.Position.Line - 1
-	if defIdx >= len(lines) {
+	return sourceBlockEndLine(lines, m.Position, classEnd)
+}
+
+func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
+	if start.Line < 1 {
 		return classEnd
 	}
-	defLine := lineAt(lines, defIdx)
-	if methodClosesOnDefLine(defLine) {
-		return m.Position.Line
+	idx := start.Line - 1
+	if idx >= len(lines) {
+		return classEnd
 	}
-	indent := leadingIndent(defLine)
+	openLine := lineAt(lines, idx)
+	if sourceBlockClosesOnLine(openLine) {
+		return start.Line
+	}
+	indent := leadingIndent(openLine)
 	last := classEnd
 	if last > len(lines) {
 		last = len(lines)
 	}
-	for line := m.Position.Line + 1; line <= last; line++ {
+	for line := start.Line + 1; line <= last; line++ {
 		text := lineAt(lines, line-1)
-		if strings.TrimSpace(text) != "end" {
+		if !isClosingEndLine(text) {
 			continue
 		}
 		if leadingIndent(text) <= indent {
@@ -1225,12 +1235,23 @@ func methodSourceEndLine(lines []string, m *ast.FunctionStmt, classEnd int) int 
 	return classEnd
 }
 
-func methodClosesOnDefLine(defLine string) bool {
-	trimmed := strings.TrimSpace(defLine)
-	if !strings.HasPrefix(trimmed, "def") {
+func sourceBlockClosesOnLine(openLine string) bool {
+	trimmed := strings.TrimSpace(openLine)
+	semi := strings.LastIndex(trimmed, ";")
+	if semi < 0 {
 		return false
 	}
-	return strings.Contains(trimmed, ";") && strings.HasSuffix(trimmed, "end")
+	return isClosingEndLine(trimmed[semi+1:])
+}
+
+func isClosingEndLine(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	rest, ok := strings.CutPrefix(trimmed, "end")
+	if !ok {
+		return false
+	}
+	rest = strings.TrimLeft(rest, " \t")
+	return rest == "" || strings.HasPrefix(rest, "#") || strings.HasPrefix(rest, ";")
 }
 
 func leadingIndent(s string) int {
