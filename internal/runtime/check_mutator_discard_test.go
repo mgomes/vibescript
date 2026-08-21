@@ -114,6 +114,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "fill block read is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.fill { |i| puts row; i } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "hash each rest then value",
 			source: "h = {a: [1]}\nh.each { |(*, value)| value.push(2) }\nputs \"done\"",
 			want:   "mutating block parameter value",
@@ -399,8 +404,12 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 				"f(true)\nputs \"done\"",
 		},
 		{
-			name:   "mutator block reads the parameter",
-			source: "rows = [[1], [2]]\nrows.each { |row| row.fill { |i| puts row; i } }\nputs \"done\"",
+			name:   "elsif condition that cannot complete",
+			source: "def f(flag)\n  if flag\n    nil\n  elsif [1].clear(2)\n    [2].push(3)\n  end\n  nil\nend\nf(true)\nputs \"done\"",
+		},
+		{
+			name:   "case later clause after aborting match",
+			source: "def f(x)\n  case x\n  when 1, [1].clear(2)\n    nil\n  when 2\n    [2].push(3)\n  end\n  nil\nend\nf(1)\nputs \"done\"",
 		},
 		{
 			name: "conditional uppercase local is addressable",

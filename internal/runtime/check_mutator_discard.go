@@ -685,8 +685,14 @@ func (c *scriptChecker) discardedMutatorCalls(expr Expression) []discardedMutato
 				walk(branch)
 				return
 			}
+			if !c.expressionProvablyCompletes(typed.Condition) {
+				return
+			}
 			walk(typed.Consequent)
 			for _, branch := range typed.ElseIf {
+				if !c.expressionProvablyCompletes(branch.Condition) {
+					return
+				}
 				walk(branch.Result)
 			}
 			walk(typed.Alternate)
@@ -695,12 +701,26 @@ func (c *scriptChecker) discardedMutatorCalls(expr Expression) []discardedMutato
 				walk(result)
 				return
 			}
+			laterReachable := true
 			for _, clause := range typed.Clauses {
-				if c.caseClauseMatchesMayComplete(clause) {
+				if !laterReachable {
+					break
+				}
+				clauseMayRun := false
+				for _, candidate := range clause.Values {
+					if !c.expressionProvablyCompletes(candidate.Expr) {
+						laterReachable = false
+						break
+					}
+					clauseMayRun = true
+				}
+				if clauseMayRun {
 					walk(clause.Result)
 				}
 			}
-			walk(typed.ElseExpr)
+			if laterReachable {
+				walk(typed.ElseExpr)
+			}
 		case *BinaryExpr:
 			if typed.Operator == tokenAnd || typed.Operator == tokenOr {
 				if binaryRightMayEvaluate(typed) && !c.binaryRightUnreachable(typed) {
@@ -716,15 +736,6 @@ func (c *scriptChecker) discardedMutatorCalls(expr Expression) []discardedMutato
 // discardedMemberCall unwraps a statement expression into the member call it
 // dispatches: a call through a member callee, or a bare member read the
 // runtime auto-invokes (`f().clear`). The call is nil for the bare form.
-func (c *scriptChecker) caseClauseMatchesMayComplete(clause CaseWhenClause) bool {
-	for _, candidate := range clause.Values {
-		if !c.expressionProvablyCompletes(candidate.Expr) {
-			return false
-		}
-	}
-	return true
-}
-
 func (c *scriptChecker) expressionProvablyCompletes(expr Expression) bool {
 	if expr == nil {
 		return true
@@ -1184,7 +1195,7 @@ func typeAlongPathFromRoot(expr Expression, root string, rootType *TypeExpr) *Ty
 
 func filterMutatorWritesAfterBlock(property string) bool {
 	switch property {
-	case "delete_if", "keep_if":
+	case "delete_if", "keep_if", "fill":
 		return true
 	default:
 		return false
