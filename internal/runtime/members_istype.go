@@ -12,7 +12,7 @@ import (
 // and `"5".is_type?(:int)` is false even though the string converts. The atom
 // is a symbol or string naming a type — a primitive (`:int`, `:string`,
 // `:bool`, `:symbol`, `:nil`, `:number`, `:duration`, `:time`, `:money`), a
-// bare container (`:array`, `:hash`, `:range`, `:function`), a class or enum
+// bare container (`:array`, `:hash`, `:range`), a class or enum
 // name (`:User`, `:Status`, matched by exact name), or any of these with a
 // trailing `?` for its nullable form (`:int?` is int or nil). Parameterized
 // spellings such as `array<int>` are rejected: the atom vocabulary stays

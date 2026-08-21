@@ -1027,35 +1027,29 @@ func (v Value) Eql(other Value) bool {
 	return ctx.Eql(v, other)
 }
 
-// Identical reports whether v and other refer to the same object, backing the
-// Ruby-style `equal?` predicate. Immutable value kinds (nil, bool, int, float,
-// string, symbol, money, duration, time, range) are identical when they share
-// the same kind and value, since the language exposes no distinct identities
-// for equal immutables. Integers outside the int64 range are the exception:
-// they are heap objects and compare by payload identity, matching Ruby, where
-// bignums are separate objects. Mutable composites (array, hash, object) and
-// runtime-only kinds (function, builtin, block, class, instance, enum, enum
-// value) are identical only when they share the same backing storage, so two
-// independently constructed composites with equal contents are not identical.
+// Identical reports whether v and other are the same value, backing the
+// Ruby-style `equal?` predicate.
+//
+// Immutable scalars (nil, bool, int, float, string, symbol, money, duration,
+// time, range) are identical when they share kind and value. Integers outside
+// the int64 range are the exception: they are heap objects and compare by
+// payload identity, matching Ruby, where bignums are separate objects.
+//
+// Arrays, hashes, and objects are values (ADR-006 item 2): Identical asks
+// about contents, the same question as Equal, because collections carry no
+// identity. Two independently constructed arrays with the same elements are
+// identical, and every empty array is identical to every other empty array
+// (the same for hashes and objects).
+//
+// Runtime-only kinds (function, builtin, block, class, instance) and enum
+// values that hold distinct storage are not identical even when they compare
+// Equal — for example an enum value cloned out to the host and handed back.
 //
 // NaN floats are the one immutable case where value equality is not enough:
 // IEEE NaN != NaN, so deferring to Equal would make x.equal?(x) false for a NaN
 // receiver and break reflexivity. Identity treats any two NaN floats as
 // identical, keeping equal? reflexive while matching the value-identity model
 // floats already follow.
-//
-// Empty arrays are the one principled exception: any two empty arrays report
-// identical regardless of their backing storage. This is harmless because an
-// empty array has no element storage to alias — appending to one never affects
-// another — so they behave as a single value-like empty rather than as distinct
-// mutable objects. Backing pointers alone cannot establish this, because an
-// empty result preallocated with spare capacity (for example array.select
-// starting from make([]Value, 0, len(arr))) carries its own non-zerobase pointer
-// and a different capacity than a literal []; only a length check captures the
-// contract. Empty hashes and objects stay distinct because every hash carries
-// its own hashData wrapper (NewHash allocates a fresh one per call) and NewObject
-// allocates a fresh backing map for nil input, so each empty composite has a
-// distinct identity rather than collapsing onto a shared zero pointer.
 func (v Value) Identical(other Value) bool {
 	if v.kind != other.kind {
 		return false

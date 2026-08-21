@@ -10,7 +10,7 @@ Even in these constrained environments, non-technical users still need a way to 
 
 **Key Features**
 
-- Ruby-like syntax: blocks, ranges, zero-paren defs, symbol hashes.
+- Ruby-like syntax: blocks, ranges, zero-paren defs, string-keyed hashes.
 - Gradual typing: optional annotations, nullable `?`, enums, positional/keyword args, return checks.
 - Time & Duration helpers: literals, math, offsets (`ago`/`after`), Go-layout `format`.
 - Money type and helpers.
@@ -155,7 +155,7 @@ Representative `.vibe` programs are grouped under `examples/`:
 - `examples/enums/` – nominal enum values, typed coercion, and serialization.
 - `examples/strings/` – string normalization, predicates, and splitting helpers.
 - `examples/blocks/` – block-friendly transformations (map/select/reduce) over collections.
-- `examples/hashes/` – symbol-keyed hash manipulation, merging, and reporting helpers.
+- `examples/hashes/` – hash manipulation, merging, and reporting helpers.
 - `examples/loops/` – range iteration, collection loops, and accumulation helpers.
 - `examples/ranges/` – range literals, ascending/descending iteration, and filtered collection helpers.
 - `examples/money/` – exercises for the `money` and `money_cents` built-ins.
@@ -173,7 +173,7 @@ Long-form guides live in `docs/`:
 - `docs/introduction.md` – overview and table of contents.
 - `docs/arrays.md` – array helpers including map/select/reduce, first/last, push/pop, sum, and set-like operations.
 - `docs/strings.md` – string helpers like strip/upcase/downcase/split and related utilities.
-- `docs/hashes.md` – symbol-keyed hashes, merge, and iteration helpers.
+- `docs/hashes.md` – hashes with one string keyspace, merge, and iteration helpers.
 - `docs/stdlib_core_utilities.md` – complete method reference for strings, arrays, hashes, numerics, money, durations, times, and builtin functions.
 - `docs/errors.md` – parse/runtime error formatting and debugging patterns.
 - `docs/control-flow.md` – conditionals, loops, and ranges.

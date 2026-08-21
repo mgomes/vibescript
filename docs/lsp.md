@@ -34,8 +34,9 @@ Hovering a builtin function shows its signature and description from the
 embedded [builtins reference](builtins.md). A word directly following a
 namespace receiver resolves to the qualified entry first, so hovering
 `parse_as` in `JSON.parse_as(...)` shows the `JSON.parse_as` documentation;
-`Math`, `Time`, `Duration`, `Regexp`, `Hash`, and `Proc` members resolve the
-same way. Reserved keywords and contextual declaration words
+`Math`, `Time`, `Duration`, `Regexp`, and `Hash` members resolve the
+same way. Hovering `Proc` explains that callable constructors were removed.
+Reserved keywords and contextual declaration words
 (`module`, `alias`, `private`, ...) show a one-line description. Any other
 identifier falls back to being classified as a plain symbol. UTF-16 positions
 (the LSP wire encoding) are translated correctly for documents containing

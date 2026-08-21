@@ -15,8 +15,9 @@ import (
 //     frozen? reports true because Vibescript does not model mutable freeze state.
 //   - nil? — true only for the nil receiver and false for every other value
 //     (Ruby's Object#nil?).
-//   - eql?/equal? — the equality predicates: `eql?` reports hash-key equality and
-//     `equal?` reports object identity.
+//   - eql?/equal? — the equality predicates: `eql?` reports hash-key equality;
+//     `equal?` reports value identity for scalars, backing identity for runtime
+//     objects, and content equality for collections (ADR-006 item 2).
 //   - send/public_send — dynamic dispatch helpers that invoke a method named by
 //     a symbol or string.
 //   - tap/yield_self — the block helpers: `tap` yields the receiver to its block
@@ -35,7 +36,7 @@ import (
 // Object-level helpers. Resolving them here rather than on selected per-kind
 // tables means every receiver answers them uniformly — including the kinds whose
 // members resolve only through the universal fallback (instances, classes,
-// functions, enum values) — instead of raising "unknown member". Editor
+// enum values) — instead of raising "unknown member". Editor
 // completion surfaces them on every receiver via withUniversalMembers.
 var universalMemberNames = []string{
 	"itself",

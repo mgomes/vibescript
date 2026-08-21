@@ -62,14 +62,16 @@ override them with its own methods of the same name.
 - `eql?(other) -> bool` – hash-key equality. True only when both operands share
   a kind and compare equal, so `1.eql?(1.0)` is `false` even though both are
   numerically one. Composites (arrays, hashes) compare by content.
-- `equal?(other) -> bool` – object identity. Immutable scalars (`nil`, `bool`,
-  `int`, `float`, `string`, `symbol`, money, duration, time, range) are
-  identical when they share a kind and value, so `1.equal?(1)` is `true`.
-  Mutable composites (arrays, hashes), script instances, enums, and enum values
-  are identical only when they refer to the same backing object. Two enum values
-  that compare `==` (and `eql?`) because they share an owner and member name are
-  still not `equal?` when they hold distinct storage — for example, a value
-  cloned out to the host and handed back by a capability.
+- `equal?(other) -> bool` – identity for values that have it, content equality
+  for collections. Immutable scalars (`nil`, `bool`, `int`, `float`, `string`,
+  `symbol`, money, duration, time, range) are identical when they share a kind
+  and value, so `1.equal?(1)` is `true`. Arrays and hashes are values: `equal?`
+  asks about contents, the same question as `==`, because collections carry no
+  identity. Script instances, enums, and enum values are identical only when
+  they refer to the same backing object. Two enum values that compare `==` (and
+  `eql?`) because they share an owner and member name are still not `equal?`
+  when they hold distinct storage — for example, a value cloned out to the host
+  and handed back by a capability.
 
 ```vibe
 1 == 1        # true
@@ -81,14 +83,17 @@ a = [1, 2, 3]
 b = a
 c = [1, 2, 3]
 a.eql?(c)     # true  (same contents)
-a.equal?(b)   # true  (same object)
-a.equal?(c)   # false (distinct objects)
+a.equal?(b)   # true  (same contents; collections have no identity)
+a.equal?(c)   # true  (same contents)
+[].equal?([]) # true
+{}.equal?({}) # true
+a[0] = 9
+a.equal?(b)   # false (b is still [1, 2, 3])
 ```
 
-Emptiness grants no identity exception: every array or hash construction —
-including an empty literal — produces a distinct object, so `[].equal?([])`
-and `{}.equal?({})` are both `false`. Only aliases of one collection (bindings
-that observe each other's in-place mutations) are `equal?`.
+Binding one collection to two names still produces two values. They compare
+`equal?` when their contents match, and an update through one binding is never
+visible through the other.
 
 A NaN float is `equal?` to itself even though `==` never holds for NaN. Because
 floats carry no distinct identity, any two NaN floats are also `equal?`, keeping
@@ -144,7 +149,7 @@ quota error instead of allocating an oversized result.
 ## Universal Methods
 
 Every value responds to `nil?`, including script class instances, classes,
-function values, and enum values:
+and enum values:
 
 - `nil? -> bool` – `true` only for `nil`, `false` for every other value
   (Ruby's `Object#nil?`). Takes no arguments. It resolves through the same
@@ -228,8 +233,8 @@ predicate — `{ "respond_to?": 1 }.respond_to?(:keys)` still calls the predicat
 - `is_type?(atom) -> bool` – tests the receiver against a type atom without
   coercion. The atom is a symbol or string naming a primitive (`:int`,
   `:float`, `:number`, `:string`, `:bool`, `:symbol`, `:nil`, `:duration`,
-  `:time`, `:money`), a bare container (`:array`, `:hash`/`:object`, `:range`,
-  `:function`), or a class or enum name matched by exact name. A module alias
+  `:time`, `:money`), a bare container (`:array`, `:hash`/`:object`, `:range`),
+  or a class or enum name matched by exact name. A module alias
   qualifies a name the way
   annotations do: `v.is_type?("lv.Level")` tests against the enum the
   required module exports, and an unknown qualified name is an error. A trailing `?` tests the nullable form:
@@ -763,10 +768,11 @@ methods.
 
 ## Integers
 
-Integers are arbitrary precision: arithmetic, literals, comparisons, hash
-keys, string conversion, and JSON promote transparently past the signed
+Integers are arbitrary precision: arithmetic, literals, comparisons,
+string conversion, and JSON promote transparently past the signed
 64-bit range, and results that fit again return to the compact 64-bit
-representation. Two values of the same integer are always `==` and `eql?`;
+representation. Integers are not hash keys — convert with `to_s` first.
+Two values of the same integer are always `==` and `eql?`;
 `equal?` follows Ruby's object model, where small (64-bit) integers are
 value-identical but two separately produced big integers are distinct
 objects. The deliberate 64-bit boundaries — each raising a clear error for a

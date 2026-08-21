@@ -223,9 +223,10 @@ func (v Value) AppendArrayElemNoEpoch(elem Value) {
 // stack growth then relocates it, changing the identity of a still-live array.
 // The runtime only compares identities captured within a single traversal of a
 // heap-reachable graph, where this cannot happen. It is intended for the
-// interpreter's internal use; hosts should use Value.Identical, which compares
-// live wrapper pointers, and it carries no compatibility promise (see
-// docs/embedding-api-stability.md).
+// interpreter's internal use and carries no compatibility promise (see
+// docs/embedding-api-stability.md). Wrapper identity is not part of the
+// supported host API: Value.Identical compares collection contents, not
+// wrappers. Hosts that need provenance must track it outside Value.
 func ArrayIdentity(v Value) uintptr {
 	if v.kind != KindArray {
 		return 0
@@ -363,9 +364,9 @@ func NewHashWithCapacity(capacity int) Value {
 //
 // Like ArrayIdentity, the identity is a bare uintptr wrapper address and is
 // only meaningful between captures taken while the address cannot move (see
-// ArrayIdentity for the stack-allocation caveat). It is intended for the
-// interpreter's internal use; hosts should use Value.Identical, and it carries
-// no compatibility promise (see docs/embedding-api-stability.md).
+// ArrayIdentity for the stack-allocation caveat and host guidance). It is
+// intended for the interpreter's internal use and carries no compatibility
+// promise (see docs/embedding-api-stability.md).
 func HashIdentity(v Value) uintptr {
 	if v.kind != KindHash {
 		return 0
@@ -381,8 +382,9 @@ func HashIdentity(v Value) uintptr {
 // allocation even when several share one entry map, so the sandbox's memory
 // accounting deduplicates on this rather than on the map.
 //
-// It is intended for the interpreter's internal use; hosts should not call
-// it, and it carries no compatibility promise (see
+// Like ArrayIdentity, it is a bare uintptr wrapper address (see ArrayIdentity
+// for the stack-allocation caveat and host guidance). It is intended for the
+// interpreter's internal use and carries no compatibility promise (see
 // docs/embedding-api-stability.md).
 func ObjectIdentity(v Value) uintptr {
 	if v.kind != KindObject {

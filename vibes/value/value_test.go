@@ -1880,27 +1880,19 @@ func TestValueEql(t *testing.T) {
 	}
 }
 
-// TestValueIdentical checks the identity predicate: immutable scalars are
-// identical when they share a kind and value, while mutable composites are
-// identical only when they share the same backing storage.
+// TestValueIdentical checks the identity predicate: immutable scalars and
+// collections are identical when they share a kind and value, while
+// runtime-only values retain the identity defined by their payload kind.
 func TestValueIdentical(t *testing.T) {
 	t.Parallel()
 
 	sharedSlice := []value.Value{value.NewInt(1)}
-	// A hash's identity is its hashData wrapper, not its entry map. Aliasing a
-	// hash Value (the way `b = a` copies the struct, including its wrapper
-	// pointer) preserves identity, so sharedHash compared against itself is
-	// identical. Two distinct NewHash calls that merely share an entry map are
-	// not, because each call allocates its own wrapper.
+	// These shared values keep the cases that compare one Value to itself
+	// explicit, while independently constructed collections below verify that
+	// Identical does not expose wrapper identity.
 	sharedHash := value.NewHash(map[string]value.Value{"a": value.NewInt(1)})
 	sharedMap := map[string]value.Value{"a": value.NewInt(1)}
-	// A single empty hash must remain identical to itself even though its
-	// backing map is allocated from nil input; the fix must not break self
-	// identity while making independent empties distinct.
 	sameEmptyHash := value.NewHash(nil)
-	// An array's identity is likewise its arrayData wrapper, not its element
-	// backing, so a single array (even an empty one) stays identical to itself
-	// while independent constructions are distinct objects.
 	sharedArray := value.NewArray(sharedSlice)
 	sameEmptyArray := value.NewArray(nil)
 
