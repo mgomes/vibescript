@@ -326,3 +326,19 @@ func TestDiscardedMutatorMessagesTeachTheFix(t *testing.T) {
 		})
 	}
 }
+
+// A CheckWarningsWithOptions / CheckWarningsForCall host global with an
+// uppercase name remains an addressable Env binding; ROWS.push rebinds it
+// so a later read observes the update, unlike a class-self constant.
+func TestHostUppercaseArrayGlobalIsNotADiscardedMutator(t *testing.T) {
+	t.Parallel()
+
+	script := mutatorDiscardScript(t, "def run()\n  ROWS.push(1)\n  ROWS\nend\n")
+	opts := CallOptions{Globals: map[string]Value{"ROWS": NewArray([]Value{NewInt(1)})}}
+	for _, warning := range script.CheckWarningsWithOptions(opts) {
+		if strings.Contains(warning.Message, "updates a temporary") ||
+			strings.Contains(warning.Message, "mutating block parameter") {
+			t.Fatalf("ROWS.push with host global: unexpected discarded-mutator diagnostic: %v", warning)
+		}
+	}
+}

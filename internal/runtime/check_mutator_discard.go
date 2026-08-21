@@ -472,9 +472,15 @@ func (c *scriptChecker) mutatorReceiverShape(expr Expression) (temporary bool, r
 			// mutablePathFor rejects constant roots where self is a class,
 			// and elsewhere a constant is no local either, so the write
 			// lands on a detached copy both ways (verified for static and
-			// instance methods alike). Class and namespace references keep
-			// their own member dispatch and stay out of scope.
+			// instance methods alike). A host option global of the same
+			// name stays an addressable Env binding (Env.Assign rebinds
+			// it), so it is not a temporary. Class and namespace
+			// references keep their own member dispatch and stay out of
+			// scope.
 			if isConstantIdentifier(typed.Name) && !c.scopeHas(typed.Name) {
+				if c.optionGlobalSeeded(typed.Name) {
+					return false, typed.Name
+				}
 				if c.script.classes[typed.Name] != nil ||
 					c.recordedNamespaceMemberPrefix(typed.Name+".") {
 					return false, ""
