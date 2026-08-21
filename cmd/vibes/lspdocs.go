@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"unicode"
 
 	vibescript "github.com/mgomes/vibescript"
 	"github.com/mgomes/vibescript/internal/ast"
@@ -1021,7 +1020,7 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 	if st == nil {
 		return false
 	}
-	runes, _, end, ok := wordSpanAtPosition(lines, line, character)
+	runes, start, end, ok := wordSpanAtPosition(lines, line, character)
 	if !ok {
 		return false
 	}
@@ -1030,7 +1029,7 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 		i++
 	}
 	if i >= len(runes) || runes[i] == '#' || runes[i] == ';' {
-		return !classBodyHasLocal(st, word, line+1)
+		return !classBodyHasLocal(st, word, line+1, start+1)
 	}
 	switch runes[i] {
 	case '=':
@@ -1038,7 +1037,20 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 	case '(':
 		return true
 	default:
-		return unicode.IsLetter(runes[i]) || runes[i] == '_'
+		if !ast.IsIdentifierStart(runes[i]) {
+			return false
+		}
+		identStart := i
+		i++
+		for i < len(runes) && ast.IsIdentifierRune(runes[i]) {
+			i++
+		}
+		switch ast.LookupIdent(string(runes[identStart:i])) {
+		case ast.TokenIdent, ast.TokenSelf:
+			return true
+		default:
+			return false
+		}
 	}
 }
 
@@ -1117,56 +1129,66 @@ func classMethodBodyContains(st *ast.ClassStmt, hoverLine, classEnd int) bool {
 	return false
 }
 
-func classBodyHasLocal(st *ast.ClassStmt, word string, hoverLine int) bool {
+func classBodyHasLocal(st *ast.ClassStmt, word string, hoverLine, hoverColumn int) bool {
 	if st == nil {
 		return false
 	}
-	return statementsBindLocal(st.Body, word, hoverLine)
+	return statementsBindLocal(st.Body, word, hoverLine, hoverColumn)
 }
 
-func statementsBindLocal(stmts []ast.Statement, word string, hoverLine int) bool {
+func statementsBindLocal(stmts []ast.Statement, word string, hoverLine, hoverColumn int) bool {
 	for _, stmt := range stmts {
-		if statementsBindLocalOne(stmt, word, hoverLine) {
+		if statementsBindLocalOne(stmt, word, hoverLine, hoverColumn) {
 			return true
 		}
 	}
 	return false
 }
 
-func statementsBindLocalOne(stmt ast.Statement, word string, hoverLine int) bool {
+func posBeforeHover(pos ast.Position, hoverLine, hoverColumn int) bool {
+	if pos.Line < hoverLine {
+		return true
+	}
+	return pos.Line == hoverLine && pos.Column < hoverColumn
+}
+
+func statementsBindLocalOne(stmt ast.Statement, word string, hoverLine, hoverColumn int) bool {
 	if stmt == nil || stmt.Pos().Line > hoverLine {
 		return false
 	}
 	switch s := stmt.(type) {
 	case *ast.AssignStmt:
-		return stmt.Pos().Line < hoverLine && assignmentBindsName(s.Target, word)
+		return posBeforeHover(stmt.Pos(), hoverLine, hoverColumn) && assignmentBindsName(s.Target, word)
 	case *ast.ForStmt:
-		if stmt.Pos().Line < hoverLine && assignmentBindsName(s.Target, word) {
+		if posBeforeHover(stmt.Pos(), hoverLine, hoverColumn) && assignmentBindsName(s.Target, word) {
 			return true
 		}
-		return statementsBindLocal(s.Body, word, hoverLine)
+		return statementsBindLocal(s.Body, word, hoverLine, hoverColumn)
 	case *ast.IfStmt:
-		if statementsBindLocal(s.Consequent, word, hoverLine) ||
-			statementsBindLocal(s.Alternate, word, hoverLine) {
+		if statementsBindLocal(s.Consequent, word, hoverLine, hoverColumn) ||
+			statementsBindLocal(s.Alternate, word, hoverLine, hoverColumn) {
 			return true
 		}
 		for _, branch := range s.ElseIf {
-			if statementsBindLocalOne(branch, word, hoverLine) {
+			if statementsBindLocalOne(branch, word, hoverLine, hoverColumn) {
 				return true
 			}
 		}
 	case *ast.WhileStmt:
-		return statementsBindLocal(s.Body, word, hoverLine)
+		return statementsBindLocal(s.Body, word, hoverLine, hoverColumn)
 	case *ast.UntilStmt:
-		return statementsBindLocal(s.Body, word, hoverLine)
+		return statementsBindLocal(s.Body, word, hoverLine, hoverColumn)
 	case *ast.TryStmt:
-		if statementsBindLocal(s.Body, word, hoverLine) ||
-			statementsBindLocal(s.Else, word, hoverLine) ||
-			statementsBindLocal(s.Ensure, word, hoverLine) {
+		if statementsBindLocal(s.Body, word, hoverLine, hoverColumn) ||
+			statementsBindLocal(s.Else, word, hoverLine, hoverColumn) ||
+			statementsBindLocal(s.Ensure, word, hoverLine, hoverColumn) {
 			return true
 		}
 		for _, clause := range s.Rescues {
-			if statementsBindLocal(clause.Body, word, hoverLine) {
+			if posBeforeHover(clause.Position, hoverLine, hoverColumn) && clause.Binding == word {
+				return true
+			}
+			if statementsBindLocal(clause.Body, word, hoverLine, hoverColumn) {
 				return true
 			}
 		}
