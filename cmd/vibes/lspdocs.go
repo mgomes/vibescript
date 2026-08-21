@@ -1645,22 +1645,36 @@ func (sc *sourceScan) tokens(s string) []string {
 					}
 					continue
 				}
-				if c == '/' && slashStartsRegex(false, true, s, i) {
-					inRegex = true
+				if c == ' ' || c == '\t' {
+					afterSpace = true
 					continue
 				}
+				if c == '/' && slashStartsRegex(afterValue, afterSpace, s, i) {
+					inRegex = true
+					afterSpace = false
+					continue
+				}
+				afterSpace = false
 				if c == '"' || c == '\'' {
 					innerStr = c
+					afterValue = true
 					continue
 				}
 				if c == '{' {
 					interpDepth++
+					afterValue = false
 					continue
 				}
 				if c == '}' {
 					interpDepth--
+					afterValue = true
 					continue
 				}
+				if ast.IsIdentifierStart(rune(c)) || c >= '0' && c <= '9' {
+					afterValue = true
+					continue
+				}
+				afterValue = false
 				continue
 			}
 			if escape {
@@ -1713,22 +1727,36 @@ func (sc *sourceScan) tokens(s string) []string {
 					}
 					continue
 				}
-				if c == '/' && slashStartsRegex(false, true, s, i) {
-					inRegex = true
+				if c == ' ' || c == '\t' {
+					afterSpace = true
 					continue
 				}
+				if c == '/' && slashStartsRegex(afterValue, afterSpace, s, i) {
+					inRegex = true
+					afterSpace = false
+					continue
+				}
+				afterSpace = false
 				if c == '"' || c == '\'' {
 					innerStr = c
+					afterValue = true
 					continue
 				}
 				if c == '{' {
 					interpDepth++
+					afterValue = false
 					continue
 				}
 				if c == '}' {
 					interpDepth--
+					afterValue = true
 					continue
 				}
+				if ast.IsIdentifierStart(rune(c)) || c >= '0' && c <= '9' {
+					afterValue = true
+					continue
+				}
+				afterValue = false
 				continue
 			}
 			if c == '#' && i+1 < len(s) && s[i+1] == '{' {
