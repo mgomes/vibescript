@@ -385,6 +385,9 @@ func staticFillSelectorsExpand(selectors []Expression, length int) bool {
 }
 
 func staticFillResolvedStart(expr Expression, length int) (int, bool) {
+	if _, isNil := expr.(*NilLiteral); isNil {
+		return 0, true
+	}
 	start, ok := integerLiteralValue(expr)
 	if !ok || start.IsBigInt() {
 		return 0, false
@@ -1781,6 +1784,22 @@ func ensurePathMayComplete(stmts []Statement) bool {
 						}
 						break
 					}
+				}
+			}
+		case *TryStmt:
+			if !ensurePathMayComplete(typed.Ensure) {
+				return false
+			}
+			if !ensurePathMayComplete(typed.Body) {
+				rescued := false
+				for _, clause := range typed.Rescues {
+					if ensurePathMayComplete(clause.Body) {
+						rescued = true
+						break
+					}
+				}
+				if !rescued {
+					return false
 				}
 			}
 		}

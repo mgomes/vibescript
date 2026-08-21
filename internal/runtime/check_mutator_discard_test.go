@@ -625,6 +625,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "nested begin raise in ensure after break is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| while true; row.push(0); begin; break; ensure; begin; raise \"x\"; end; end; end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "ensure raise after next is not an observation of the loop condition",
 			source: "rows = [[1], [2]]\nrows.each { |row| while row.length < 3; row.push(0); begin; next; ensure; raise \"x\"; end; end }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -1023,6 +1028,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "nil fill length past the end does not write a temporary",
 			source: "[1].fill(9, 2, nil)\nputs \"done\"",
+		},
+		{
+			name:   "nil fill start on empty does not write a temporary",
+			source: "[].fill(9, nil)\nputs \"done\"",
 		},
 		{
 			name:   "next still observes the loop condition",
