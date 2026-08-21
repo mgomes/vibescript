@@ -1036,6 +1036,33 @@ end
 	requireErrorContains(t, err, "quota exceeded")
 }
 
+// TestCallRootedRangeIndexChargesReceiverWithSlice pins that a range index
+// on a call-rooted path charges the original receiver together with the
+// fresh slice, matching evalIndexExpr's checkMemoryWith(obj, idx, result).
+func TestCallRootedRangeIndexChargesReceiverWithSlice(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 240 << 10, StepQuota: Unlimited}, `
+def factory()
+  a = []
+  i = 0
+  while i < 2000
+    a.push("xxxxxxxxxxxxxxxx")
+    i += 1
+  end
+  a
+end
+def run()
+  factory()[0..1999][0] = 9
+end
+`)
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatal("factory()[0..1999][0] = 9 under a quota that cannot hold the array and its slice together must error")
+	}
+	requireErrorContains(t, err, "quota exceeded")
+}
+
 func minSuccessfulStepQuota(t *testing.T, source string) int {
 	t.Helper()
 	const maxQuota = 200

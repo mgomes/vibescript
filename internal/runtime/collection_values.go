@@ -1814,10 +1814,20 @@ func (exec *Execution) readPathTailOrdinarily(current Value, steps []mutablePath
 		if err != nil {
 			return NewNil(), err
 		}
-		current, err = exec.evalIndexValue(step.expr, current, indices)
+		result, err := exec.evalIndexValue(step.expr, current, indices)
 		if err != nil {
 			return NewNil(), err
 		}
+		if exec.memoryQuota > 0 {
+			chargeable := make([]Value, 0, len(indices)+2)
+			chargeable = append(chargeable, current)
+			chargeable = append(chargeable, indices...)
+			chargeable = append(chargeable, result)
+			if err := exec.checkMemoryWith(chargeable...); err != nil {
+				return NewNil(), err
+			}
+		}
+		current = result
 	}
 	return current, nil
 }
