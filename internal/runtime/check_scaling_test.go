@@ -1014,3 +1014,125 @@ end
 		t.Fatalf("a reassigned namespace member left the callee decided: %v", warnings)
 	}
 }
+
+func selfCallSiteSource(sites int) string {
+	var body strings.Builder
+	body.WriteString("def f(n: int)\n  if n < 1\n    return 0\n  end\n")
+	for range sites {
+		body.WriteString("  f(n - 1)\n")
+	}
+	body.WriteString("  n\nend\n")
+	return body.String()
+}
+
+// Every statically resolved call site asks for the callee's transitive
+// namespace and ivar effects, and each ask walked the callee's whole body, so
+// a function holding N calls to itself cost N full walks of a body that is
+// itself N sites long (#1223). The effect scan is now memoized per function
+// and call context, which this measures in allocated bytes because the
+// repeated walks are the allocation.
+func TestCheckSelfCallEffectScansStayLinear(t *testing.T) {
+	small := measureCheckAllocation(t, selfCallSiteSource(200))
+	large := measureCheckAllocation(t, selfCallSiteSource(400))
+
+	// Measured 28MB then 55MB, a 2.0x step for doubled self-call sites.
+	// Before, the same pair allocated 1.7GB and 6.6GB, a 4.0x step. The
+	// assertion allows up to 3x so it states the complexity rather than
+	// pinning byte counts that ordinary checker changes would shift.
+	if large > small*3 {
+		t.Fatalf("doubling the self-call sites allocated %d bytes against %d -- over 3x,"+
+			" so the per-site effect scan is superlinear in the body again", large, small)
+	}
+}
+
+// The memo must not blur call contexts together: the two consume calls below
+// share a callee and differ only in an argument fact, and only the second can
+// reach the yield that reassigns JSON.stringify. The call before it stays
+// decided against the builtin; the call after it must not.
+func TestCachedEffectScansSeparateCallContexts(t *testing.T) {
+	script := compileScript(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def consume(flag: bool)
+  if flag
+    raise "stop"
+  else
+    nil
+  end
+  yield
+end
+
+def run()
+  begin
+    consume(true) { JSON.stringify = replacement }
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+  begin
+    consume(false) { JSON.stringify = replacement }
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end
+`)
+	warnings := script.CheckWarnings()
+	requireCheckWarning(t, warnings,
+		"call to takes_int argument value expected int, got string")
+	if len(warnings) != 1 {
+		t.Fatalf("only the call before the reachable reassignment is decided, got %v", warnings)
+	}
+}
+
+// A memoized scan still has to union the writes reached only through the
+// callee's own recursion: the reassignment below sits behind two self-calls,
+// and callers after the call must lose the builtin binding while callers
+// before it keep it.
+func TestCachedEffectScansPropagateRecursiveWrites(t *testing.T) {
+	const callee = `
+def take(v: int)
+  v
+end
+
+def stringified()
+  JSON.stringify(1)
+end
+
+def mutate(n: int)
+  if n > 0
+    mutate(n - 1)
+    mutate(n - 2)
+  end
+  JSON.stringify = 1
+end
+`
+	before := compileScript(t, callee+`
+def f()
+  take(stringified())
+  mutate(3)
+  take(stringified())
+end
+`)
+	warnings := before.CheckWarnings()
+	requireCheckWarning(t, warnings, "call to take argument v expected int, got string")
+	if len(warnings) != 1 {
+		t.Fatalf("only the call before the recursive writer is decided, got %v", warnings)
+	}
+
+	after := compileScript(t, callee+`
+def f()
+  mutate(3)
+  take(stringified())
+end
+`)
+	if warnings := after.CheckWarnings(); len(warnings) != 0 {
+		t.Fatalf("a write behind the callee's recursion left the caller decided: %v", warnings)
+	}
+}

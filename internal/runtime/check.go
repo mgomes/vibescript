@@ -168,6 +168,9 @@ type scriptChecker struct {
 	memberFreeReturnAnalyzes   map[returnSummaryCacheKey]functionReturnAnalysis
 	namespaceMemberReads       uint64
 	summaryInProgress          map[returnSummaryCacheKey]struct{}
+	effectScans                map[returnSummaryCacheKey]*scriptFunctionEffects
+	effectScanContextBytes     int
+	memberFreeEffectScans      map[returnSummaryCacheKey]*scriptFunctionEffects
 	bindingCompletionProbes    map[Expression]struct{}
 	returnCollector            *returnSummaryCollector
 	blockResultCollector       *returnSummaryCollector
@@ -6812,7 +6815,7 @@ func (c *scriptChecker) scriptDispatchIvarEffects(
 
 func mergeScriptFunctionDirectIvarEffects(
 	effects *regionIvarEffects,
-	scan *namespaceMutationScan,
+	scan *scriptFunctionEffects,
 	fn *ScriptFunction,
 ) {
 	if effects == nil || scan == nil || fn == nil {
@@ -16071,29 +16074,252 @@ func (c *scriptChecker) scriptFunctionNamespaceMutations(
 	call *CallExpr,
 	target staticCallable,
 ) map[string]struct{} {
-	scan := c.scriptFunctionEffectScan(call, target)
-	if scan == nil {
+	effects := c.scriptFunctionEffectScan(call, target)
+	if effects == nil {
 		return nil
 	}
-	return scan.out
+	return effects.out
 }
 
+// scriptFunctionEffects is the caller-visible outcome of a namespace
+// mutation scan: the members a call may reassign and the receiver-side ivar
+// effects the dispatch can reach. Results are memoized per function and call
+// shape, so callers must treat every field as read-only.
+type scriptFunctionEffects struct {
+	out                      map[string]struct{}
+	invokedSelfFunctions     map[*ScriptFunction]struct{}
+	invokedUnknownCallable   bool
+	directIvarWrites         map[*ScriptFunction]map[string]struct{}
+	unknownDirectIvarEffects map[*ScriptFunction]struct{}
+}
+
+// scriptFunctionEffectScan resolves the effects a statically dispatched
+// script call may have. A function holding N calls to itself paid for N full
+// body walks -- one per call site -- so the walk's outcome is memoized the
+// way return summaries are: keyed by everything the walk can observe that
+// varies between call sites (the binding plan, the argument facts, the
+// callable self bindings, and the checker's binding context), with walks
+// that read the recorded namespace members re-keyed under the member set
+// they read. The walk itself runs with the per-call argument capture state
+// walled off, so its only caller-context inputs are the ones the key names.
 func (c *scriptChecker) scriptFunctionEffectScan(
 	call *CallExpr,
 	target staticCallable,
-) *namespaceMutationScan {
+) *scriptFunctionEffects {
 	fn := target.fn
 	if fn == nil || fn.owner != c.script {
 		return nil
 	}
 	scan := c.newNamespaceMutationScan()
+	var ctx effectScanCallContext
+	if call != nil {
+		var starts bool
+		ctx, starts = scan.functionCallScanContext(fn, call, target)
+		if !starts {
+			return &scriptFunctionEffects{}
+		}
+	}
+	key := c.effectScanCacheKey(fn, call == nil, ctx)
+	if effects, ok := c.cachedEffectScan(key); ok {
+		return effects
+	}
+	memberReads := c.namespaceMemberReads
+	restore := c.withIsolatedCallArgumentState()
 	if call == nil {
 		scan.active[fn] = struct{}{}
 		scan.function(fn)
 	} else {
-		scan.scanFunctionCall(fn, call, target)
+		scan.scanFunctionCallWithContext(fn, ctx)
 	}
-	return scan
+	restore()
+	effects := &scriptFunctionEffects{
+		out:                      scan.out,
+		invokedSelfFunctions:     scan.invokedSelfFunctions,
+		invokedUnknownCallable:   scan.invokedUnknownCallable,
+		directIvarWrites:         scan.directIvarWrites,
+		unknownDirectIvarEffects: scan.unknownDirectIvarEffects,
+	}
+	c.retainEffectScan(key, memberReads, effects)
+	return effects
+}
+
+// effectScanCacheKey names one effect-scan outcome. The recorded namespace
+// members are deliberately absent: a walk that never read them answers under
+// every member set, and a walk that did is re-keyed under them at retain
+// time, mirroring the return-summary memo.
+func (c *scriptChecker) effectScanCacheKey(
+	fn *ScriptFunction,
+	bare bool,
+	ctx effectScanCallContext,
+) returnSummaryCacheKey {
+	var context strings.Builder
+	context.WriteString(c.runtimeBindingContextKey())
+	// The scan attributes receiver-side effects against the checker's
+	// current self class, so scans seeded from different class contexts
+	// cannot share an entry.
+	fmt.Fprintf(&context, "\x01self:%p:%t", c.selfClass, c.selfClassContext)
+	if bare {
+		context.WriteString("\x01bare")
+		return returnSummaryCacheKey{fn: fn, context: context.String()}
+	}
+	fmt.Fprintf(
+		&context,
+		"\x01plan:%v:%d:%t:%t",
+		ctx.plan.defaultParams,
+		ctx.plan.boundParamCount,
+		ctx.plan.exactBindings,
+		ctx.plan.bodyMayEnter,
+	)
+	context.WriteString("\x01facts:")
+	context.WriteString(reachableParamFactsKey(ctx.facts))
+	writeParamExpressionsKey(&context, "\x01lambdas:", ctx.lambdas)
+	writeParamFunctionsKey(&context, "\x01selffns:", ctx.selfBindings.functions)
+	writeNameSetKey(&context, "\x01ambiguous:", ctx.selfBindings.ambiguous)
+	return returnSummaryCacheKey{fn: fn, context: context.String()}
+}
+
+func writeParamExpressionsKey(
+	key *strings.Builder,
+	label string,
+	byParam map[string][]Expression,
+) {
+	if len(byParam) == 0 {
+		return
+	}
+	key.WriteString(label)
+	for _, name := range slices.Sorted(maps.Keys(byParam)) {
+		key.WriteString(name)
+		key.WriteByte('=')
+		for _, expr := range byParam[name] {
+			fmt.Fprintf(key, "%p,", expr)
+		}
+		key.WriteByte(';')
+	}
+}
+
+func writeParamFunctionsKey(
+	key *strings.Builder,
+	label string,
+	byParam map[string][]*ScriptFunction,
+) {
+	if len(byParam) == 0 {
+		return
+	}
+	key.WriteString(label)
+	for _, name := range slices.Sorted(maps.Keys(byParam)) {
+		key.WriteString(name)
+		key.WriteByte('=')
+		for _, fn := range byParam[name] {
+			fmt.Fprintf(key, "%p,", fn)
+		}
+		key.WriteByte(';')
+	}
+}
+
+func writeNameSetKey(key *strings.Builder, label string, names map[string]struct{}) {
+	if len(names) == 0 {
+		return
+	}
+	key.WriteString(label)
+	for _, name := range slices.Sorted(maps.Keys(names)) {
+		key.WriteString(name)
+		key.WriteByte(',')
+	}
+}
+
+func (c *scriptChecker) cachedEffectScan(
+	key returnSummaryCacheKey,
+) (*scriptFunctionEffects, bool) {
+	if effects, ok := c.memberFreeEffectScans[key]; ok {
+		return effects, true
+	}
+	if len(c.effectScans) == 0 {
+		return nil, false
+	}
+	memberKey := key
+	memberKey.context = c.runtimeNamespaceMembersKey() + "\x01" + key.context
+	if effects, ok := c.effectScans[memberKey]; ok {
+		// This scan was computed by a walk that read the recorded members,
+		// so the caller reusing it inherits that dependence.
+		c.namespaceMemberReads++
+		return effects, true
+	}
+	return nil, false
+}
+
+// retainEffectScan memos a computed effect scan. A walk that never read the
+// recorded namespace members cannot have depended on them, so its outcome
+// answers under every member set; a walk that did is keyed under the members
+// it read, with the same retained-bytes cap the return-summary memo applies.
+func (c *scriptChecker) retainEffectScan(
+	key returnSummaryCacheKey,
+	memberReadsBefore uint64,
+	effects *scriptFunctionEffects,
+) {
+	if c.namespaceMemberReads == memberReadsBefore {
+		if c.memberFreeEffectScans == nil {
+			c.memberFreeEffectScans = make(map[returnSummaryCacheKey]*scriptFunctionEffects)
+		}
+		c.memberFreeEffectScans[key] = effects
+		return
+	}
+	key.context = c.runtimeNamespaceMembersKey() + "\x01" + key.context
+	if c.effectScans == nil {
+		c.effectScans = make(map[returnSummaryCacheKey]*scriptFunctionEffects)
+	}
+	if c.effectScanContextBytes+len(key.context) > maxRetainedSummaryContextBytes {
+		clear(c.effectScans)
+		c.effectScanContextBytes = 0
+	}
+	c.effectScanContextBytes += len(key.context)
+	c.effectScans[key] = effects
+}
+
+// withIsolatedCallArgumentState walls off the per-call argument capture and
+// bypass state so a memoized walk cannot read the argument facts of whatever
+// call check is in flight. The walk's own call context arrives through its
+// scan inputs, which the effect-scan cache key names in full.
+func (c *scriptChecker) withIsolatedCallArgumentState() func() {
+	previousFacts := c.callArgumentFacts
+	previousHints := c.callArgumentHints
+	previousClassValues := c.callArgumentClassValues
+	previousCallables := c.callArgumentCallables
+	previousSelfBindings := c.callArgumentSelfBindings
+	previousStaticValues := c.callArgumentStaticValues
+	previousStaticChoices := c.callArgumentStaticChoices
+	previousSplatSources := c.callArgumentSplatSources
+	previousReceiverLength := c.callArrayReceiverLength
+	previousBypass := c.localCallBypassScopes
+	previousEvaluatedFacts := c.evaluatedDestructureFacts
+	previousProjectionFacts := c.destructureProjectionFacts
+	c.callArgumentFacts = nil
+	c.callArgumentHints = nil
+	c.callArgumentClassValues = nil
+	c.callArgumentCallables = nil
+	c.callArgumentSelfBindings = nil
+	c.callArgumentStaticValues = nil
+	c.callArgumentStaticChoices = nil
+	c.callArgumentSplatSources = nil
+	c.callArrayReceiverLength = checkArrayReceiverLength{}
+	c.localCallBypassScopes = nil
+	// A fresh non-nil map keeps the walk's own capture-then-read pattern
+	// working while hiding the facts the enclosing walk captured.
+	c.evaluatedDestructureFacts = make(map[Expression]capturedDestructureValueFact)
+	c.destructureProjectionFacts = nil
+	return func() {
+		c.callArgumentFacts = previousFacts
+		c.callArgumentHints = previousHints
+		c.callArgumentClassValues = previousClassValues
+		c.callArgumentCallables = previousCallables
+		c.callArgumentSelfBindings = previousSelfBindings
+		c.callArgumentStaticValues = previousStaticValues
+		c.callArgumentStaticChoices = previousStaticChoices
+		c.callArgumentSplatSources = previousSplatSources
+		c.callArrayReceiverLength = previousReceiverLength
+		c.localCallBypassScopes = previousBypass
+		c.evaluatedDestructureFacts = previousEvaluatedFacts
+		c.destructureProjectionFacts = previousProjectionFacts
+	}
 }
 
 // callMayEvaluateParamDefault mirrors the runtime's binding bookkeeping
@@ -17000,14 +17226,22 @@ func (s *namespaceMutationScan) function(fn *ScriptFunction) {
 	})
 }
 
-func (s *namespaceMutationScan) scanFunctionCall(
+// effectScanCallContext carries the caller-context inputs a function-call
+// scan depends on. They are computed against the call site's inference state
+// before the walk starts, so together with the checker's binding context
+// they name everything that can distinguish two scans of the same function.
+type effectScanCallContext struct {
+	plan         scriptCallBindingPlan
+	facts        map[string]checkReachableParamFact
+	lambdas      map[string][]Expression
+	selfBindings callableSelfBindings
+}
+
+func (s *namespaceMutationScan) functionCallScanContext(
 	fn *ScriptFunction,
 	call *CallExpr,
 	target staticCallable,
-) {
-	if fn == nil || fn.owner != s.checker.script {
-		return
-	}
+) (effectScanCallContext, bool) {
 	if call == nil {
 		call = &CallExpr{}
 	}
@@ -17016,7 +17250,7 @@ func (s *namespaceMutationScan) scanFunctionCall(
 	}
 	plan := s.checker.scriptCallBindingPlan(call, target)
 	if !plan.bindingStarts {
-		return
+		return effectScanCallContext{}, false
 	}
 	facts := s.checker.reachableCallParamFacts(call, target)
 	lambdas := callableParamLambdaArguments(call, target, facts)
@@ -17024,35 +17258,62 @@ func (s *namespaceMutationScan) scanFunctionCall(
 		callableParamArgumentExpressions(call, target, facts, false, false),
 	)
 	selfBindings = capturedCallableParamSelfBindings(selfBindings, facts)
+	return effectScanCallContext{
+		plan:         plan,
+		facts:        facts,
+		lambdas:      lambdas,
+		selfBindings: selfBindings,
+	}, true
+}
+
+func (s *namespaceMutationScan) scanFunctionCall(
+	fn *ScriptFunction,
+	call *CallExpr,
+	target staticCallable,
+) {
+	if fn == nil || fn.owner != s.checker.script {
+		return
+	}
+	ctx, starts := s.functionCallScanContext(fn, call, target)
+	if !starts {
+		return
+	}
+	s.scanFunctionCallWithContext(fn, ctx)
+}
+
+func (s *namespaceMutationScan) scanFunctionCallWithContext(
+	fn *ScriptFunction,
+	ctx effectScanCallContext,
+) {
 	if _, active := s.active[fn]; active {
-		s.withFunctionContext(fn, facts, lambdas, selfBindings, func() {
+		s.withFunctionContext(fn, ctx.facts, ctx.lambdas, ctx.selfBindings, func() {
 			s.scanFunctionBindings(
 				fn,
-				plan.defaultParams,
-				plan.boundParamCount,
-				facts,
-				lambdas,
-				selfBindings,
-				plan.exactBindings,
+				ctx.plan.defaultParams,
+				ctx.plan.boundParamCount,
+				ctx.facts,
+				ctx.lambdas,
+				ctx.selfBindings,
+				ctx.plan.exactBindings,
 			)
 		})
 		return
 	}
 	s.active[fn] = struct{}{}
 	defer delete(s.active, fn)
-	s.withFunctionContext(fn, facts, lambdas, selfBindings, func() {
+	s.withFunctionContext(fn, ctx.facts, ctx.lambdas, ctx.selfBindings, func() {
 		if !s.scanFunctionBindings(
 			fn,
-			plan.defaultParams,
-			plan.boundParamCount,
-			facts,
-			lambdas,
-			selfBindings,
-			plan.exactBindings,
+			ctx.plan.defaultParams,
+			ctx.plan.boundParamCount,
+			ctx.facts,
+			ctx.lambdas,
+			ctx.selfBindings,
+			ctx.plan.exactBindings,
 		) {
 			return
 		}
-		if plan.bodyMayEnter {
+		if ctx.plan.bodyMayEnter {
 			if fn.Accessor == functionAccessorSetter {
 				s.recordDirectIvarWrite(fn.AccessorName)
 			}
