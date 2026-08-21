@@ -1761,7 +1761,7 @@ func tryEnsureAborts(stmts []Statement) bool {
 func ensurePathMayComplete(stmts []Statement) bool {
 	for _, stmt := range stmts {
 		switch typed := stmt.(type) {
-		case *RaiseStmt, *ReturnStmt, *BreakStmt, *RetryStmt:
+		case *RaiseStmt, *ReturnStmt, *BreakStmt, *RetryStmt, *NextStmt:
 			return false
 		case *IfStmt:
 			truthy, known := staticExpressionTruthiness(typed.Condition)
@@ -1770,20 +1770,17 @@ func ensurePathMayComplete(stmts []Statement) bool {
 					return false
 				}
 			} else if known && !truthy {
-				if !ensurePathMayComplete(typed.Alternate) {
-					return false
-				}
 				for _, branch := range typed.ElseIf {
 					t, k := staticExpressionTruthiness(branch.Condition)
 					if !k {
-						continue
+						return true
 					}
 					if t {
-						if !ensurePathMayComplete(branch.Consequent) {
-							return false
-						}
-						break
+						return ensurePathMayComplete(branch.Consequent)
 					}
+				}
+				if !ensurePathMayComplete(typed.Alternate) {
+					return false
 				}
 			}
 		case *TryStmt:
