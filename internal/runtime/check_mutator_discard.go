@@ -623,6 +623,7 @@ func (c *scriptChecker) blockParamMutatorDiscardVerdict(function string, stmt *E
 		return nil
 	}
 	if call != nil && call.Block != nil &&
+		mutatorInvokesSuppliedBlock(member.Property) &&
 		!filterMutatorWritesAfterBlock(member.Property) &&
 		statementsObserveName(call.Block.Body, names) {
 		return nil
@@ -695,7 +696,9 @@ func (c *scriptChecker) discardedMutatorCalls(expr Expression) []discardedMutato
 				return
 			}
 			for _, clause := range typed.Clauses {
-				walk(clause.Result)
+				if c.caseClauseMatchesMayComplete(clause) {
+					walk(clause.Result)
+				}
 			}
 			walk(typed.ElseExpr)
 		case *BinaryExpr:
@@ -713,6 +716,29 @@ func (c *scriptChecker) discardedMutatorCalls(expr Expression) []discardedMutato
 // discardedMemberCall unwraps a statement expression into the member call it
 // dispatches: a call through a member callee, or a bare member read the
 // runtime auto-invokes (`f().clear`). The call is nil for the bare form.
+func (c *scriptChecker) caseClauseMatchesMayComplete(clause CaseWhenClause) bool {
+	for _, candidate := range clause.Values {
+		if !c.expressionProvablyCompletes(candidate.Expr) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *scriptChecker) expressionProvablyCompletes(expr Expression) bool {
+	if expr == nil {
+		return true
+	}
+	if !c.expressionMayCompleteForBinding(expr) {
+		return false
+	}
+	member, call := discardedMemberCall(expr)
+	if member != nil && isCollectionMutator(member.Property) {
+		return collectionMutatorCallShapeMayComplete(member.Property, call)
+	}
+	return true
+}
+
 func discardedMemberCall(expr Expression) (*MemberExpr, *CallExpr) {
 	switch typed := expr.(type) {
 	case *MemberExpr:
@@ -829,32 +855,32 @@ func statementsObserveNameExcept(statements []Statement, names map[string]struct
 		switch typed := statement.(type) {
 		case *AssignStmt:
 			if assignmentTargetObservesName(typed.Target, names) ||
-				expressionReferencesAnyName(typed.Value, names) {
+				expressionObservesName(typed.Value, names) {
 				return true
 			}
 		case *ExprStmt:
-			if expressionReferencesAnyName(typed.Expr, names) {
+			if expressionObservesName(typed.Expr, names) {
 				return true
 			}
 		case *IfStmt:
-			if expressionReferencesAnyName(typed.Condition, names) ||
+			if expressionObservesName(typed.Condition, names) ||
 				statementsObserveNameExcept(typed.Consequent, names, except) ||
 				statementsObserveNameExcept(typed.Alternate, names, except) {
 				return true
 			}
 			for _, branch := range typed.ElseIf {
-				if expressionReferencesAnyName(branch.Condition, names) ||
+				if expressionObservesName(branch.Condition, names) ||
 					statementsObserveNameExcept(branch.Consequent, names, except) {
 					return true
 				}
 			}
 		case *ReturnStmt:
-			if expressionReferencesAnyName(typed.Value, names) {
+			if expressionObservesName(typed.Value, names) {
 				return true
 			}
 		case *RaiseStmt:
-			if expressionReferencesAnyName(typed.Value, names) ||
-				expressionReferencesAnyName(typed.Message, names) {
+			if expressionObservesName(typed.Value, names) ||
+				expressionObservesName(typed.Message, names) {
 				return true
 			}
 		default:
@@ -864,6 +890,108 @@ func statementsObserveNameExcept(statements []Statement, names map[string]struct
 		}
 	}
 	return false
+}
+
+func withoutBlockParamNames(names map[string]struct{}, block *BlockLiteral) map[string]struct{} {
+	if block == nil || len(names) == 0 {
+		return names
+	}
+	out := make(map[string]struct{}, len(names))
+	for name := range names {
+		out[name] = struct{}{}
+	}
+	for _, param := range block.Params {
+		if param.Name != "" {
+			delete(out, param.Name)
+		}
+		removeBindingTargetNames(param.Target, out)
+	}
+	for _, name := range block.ImplicitParams {
+		delete(out, name)
+	}
+	return out
+}
+
+func removeBindingTargetNames(target Expression, names map[string]struct{}) {
+	switch typed := target.(type) {
+	case *Identifier:
+		delete(names, typed.Name)
+	case *DestructureTarget:
+		for _, el := range typed.Elements {
+			removeBindingTargetNames(el.Target, names)
+		}
+	}
+}
+
+func expressionObservesName(expr Expression, names map[string]struct{}) bool {
+	if expr == nil || len(names) == 0 {
+		return false
+	}
+	switch typed := expr.(type) {
+	case *CallExpr:
+		if expressionObservesName(typed.Callee, names) {
+			return true
+		}
+		for _, arg := range typed.Args {
+			if expressionObservesName(arg, names) {
+				return true
+			}
+		}
+		for _, kwarg := range typed.KwArgs {
+			if expressionObservesName(kwarg.Value, names) {
+				return true
+			}
+		}
+		if typed.Block == nil {
+			return false
+		}
+		for _, param := range typed.Block.Params {
+			if expressionObservesName(param.DefaultVal, names) {
+				return true
+			}
+		}
+		return statementsObserveName(typed.Block.Body, withoutBlockParamNames(names, typed.Block))
+	case *ConditionalExpr:
+		return expressionObservesName(typed.Condition, names) ||
+			expressionObservesName(typed.Consequent, names) ||
+			expressionObservesName(typed.Alternate, names)
+	case *RescueExpr:
+		return expressionObservesName(typed.Body, names) ||
+			expressionObservesName(typed.Fallback, names)
+	case *IfExpr:
+		if expressionObservesName(typed.Condition, names) ||
+			expressionObservesName(typed.Consequent, names) ||
+			expressionObservesName(typed.Alternate, names) {
+			return true
+		}
+		for _, branch := range typed.ElseIf {
+			if expressionObservesName(branch.Condition, names) ||
+				expressionObservesName(branch.Result, names) {
+				return true
+			}
+		}
+		return false
+	case *CaseExpr:
+		if expressionObservesName(typed.Target, names) {
+			return true
+		}
+		for _, clause := range typed.Clauses {
+			for _, candidate := range clause.Values {
+				if expressionObservesName(candidate.Expr, names) {
+					return true
+				}
+			}
+			if expressionObservesName(clause.Result, names) {
+				return true
+			}
+		}
+		return expressionObservesName(typed.ElseExpr, names)
+	case *BinaryExpr:
+		return expressionObservesName(typed.Left, names) ||
+			expressionObservesName(typed.Right, names)
+	default:
+		return expressionReferencesAnyName(expr, names)
+	}
 }
 
 // assignmentTargetObservesName reports a later use of names in an assignment
@@ -1057,6 +1185,15 @@ func typeAlongPathFromRoot(expr Expression, root string, rootType *TypeExpr) *Ty
 func filterMutatorWritesAfterBlock(property string) bool {
 	switch property {
 	case "delete_if", "keep_if":
+		return true
+	default:
+		return false
+	}
+}
+
+func mutatorInvokesSuppliedBlock(property string) bool {
+	switch property {
+	case "fill", "delete_if", "keep_if":
 		return true
 	default:
 		return false

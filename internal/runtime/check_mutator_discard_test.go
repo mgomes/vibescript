@@ -104,6 +104,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "push block is ignored so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(1) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "nested block parameter shadows later read",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  [1].each { |row| puts row }\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "hash each rest then value",
 			source: "h = {a: [1]}\nh.each { |(*, value)| value.push(2) }\nputs \"done\"",
 			want:   "mutating block parameter value",
@@ -307,6 +317,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "non-completing pop arity is not reported",
 			source: "def f(flag)\n  flag ? [1].pop(1, 2) : nil\n  nil\nend\nf(true)\nputs \"done\"",
+		},
+		{
+			name:   "case when match that cannot complete",
+			source: "def f(x)\n  case x\n  when 1\n    0\n  when [1].clear(2)\n    [2].push(3)\n  end\n  nil\nend\nf(1)\nputs \"done\"",
 		},
 		{
 			name:   "unreachable rescue fallback",
