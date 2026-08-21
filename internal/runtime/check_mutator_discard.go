@@ -152,9 +152,32 @@ func (c *scriptChecker) mutatorDiscardCallFacts(call *CallExpr, target staticCal
 	if !c.receiverOwnsBuiltinIterator(member.Object, member.Property) {
 		return mutatorDiscardCall{}
 	}
+	if member.Property == "cycle" && !staticCycleMayYield(call) {
+		return mutatorDiscardCall{}
+	}
 	return mutatorDiscardCall{
 		discardsResults: true,
 		yieldTypes:      c.iteratorYieldTypes(member.Object, member.Property, call.Block),
+	}
+}
+
+func staticCycleMayYield(call *CallExpr) bool {
+	if call == nil || len(call.Args) == 0 {
+		return true
+	}
+	if len(call.Args) != 1 {
+		return false
+	}
+	switch typed := call.Args[0].(type) {
+	case *NilLiteral:
+		return true
+	case *IntegerLiteral:
+		if typed.Big != nil {
+			return typed.Big.Sign() > 0
+		}
+		return typed.Value > 0
+	default:
+		return true
 	}
 }
 
@@ -959,6 +982,11 @@ func expressionObservesName(expr Expression, names map[string]struct{}) bool {
 		if typed.Block == nil {
 			return false
 		}
+		if member, ok := typed.Callee.(*MemberExpr); ok &&
+			isCollectionMutator(member.Property) &&
+			!mutatorInvokesSuppliedBlock(member.Property) {
+			return false
+		}
 		for _, param := range typed.Block.Params {
 			if expressionObservesName(param.DefaultVal, names) {
 				return true
@@ -1268,14 +1296,22 @@ func indexCollectionElementTypeArm(obj *TypeExpr, expr *IndexExpr) *TypeExpr {
 }
 
 func memberCollectionEntryType(obj *TypeExpr, property string) *TypeExpr {
-	if obj == nil || obj.Kind != TypeShape {
+	arms, ok := typeExprArms(obj, 0)
+	if !ok || len(arms) == 0 {
 		return nil
 	}
-	field, present := obj.Shape[property]
-	if !present {
-		return nil
+	fields := make([]*TypeExpr, 0, len(arms))
+	for _, arm := range arms {
+		if arm.Kind != TypeShape {
+			return nil
+		}
+		field, present := arm.Shape[property]
+		if !present {
+			return nil
+		}
+		fields = append(fields, shapeFieldValueType(field))
 	}
-	return shapeFieldValueType(field)
+	return unionTypeExprs(fields...)
 }
 
 // provablyLeavesCollectionStorage reports whether a member hop off expr

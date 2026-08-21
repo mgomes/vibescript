@@ -109,6 +109,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later ignored push block is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].push(2) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "union of shape collection fields",
+			source: "def f(rows: array<{items: array<int>}> | array<{items: array<string>}>)\n  rows.each { |row| row.items.clear }\n  nil\nend\nf([{items: [1]}])\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "nested block parameter shadows later read",
 			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  [1].each { |row| puts row }\nend\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -414,6 +424,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "elsif condition that cannot complete",
 			source: "def f(flag)\n  if flag\n    nil\n  elsif [1].clear(2)\n    [2].push(3)\n  end\n  nil\nend\nf(true)\nputs \"done\"",
+		},
+		{
+			name:   "cycle zero never runs the block",
+			source: "[[]].cycle(0) { |row| row.push(1) }\nputs \"done\"",
 		},
 		{
 			name:   "case later clause after aborting match",
