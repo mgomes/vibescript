@@ -2302,6 +2302,14 @@ func (sc *sourceScan) tokens(s string) []string {
 					interpHandlePipe()
 					continue
 				}
+				if c == ':' && i+1 < len(s) && s[i+1] != ':' {
+					if extra, ok := symbolLiteralExtra(s, i+1); ok {
+						i += extra
+						afterValue = true
+						lastIdent = ""
+						continue
+					}
+				}
 				if name, extra, ok := interpIdentSkip(s, i); ok {
 					interpHandleIdent(name)
 					i += extra
@@ -2329,7 +2337,7 @@ func (sc *sourceScan) tokens(s string) []string {
 				escape = true
 				continue
 			}
-			if c == '#' && i+1 < len(s) && s[i+1] == '{' {
+			if inStr == '"' && c == '#' && i+1 < len(s) && s[i+1] == '{' {
 				interpDepth = 1
 				afterValue = false
 				afterSpace = false
@@ -2442,6 +2450,14 @@ func (sc *sourceScan) tokens(s string) []string {
 				if c == '|' {
 					interpHandlePipe()
 					continue
+				}
+				if c == ':' && i+1 < len(s) && s[i+1] != ':' {
+					if extra, ok := symbolLiteralExtra(s, i+1); ok {
+						i += extra
+						afterValue = true
+						lastIdent = ""
+						continue
+					}
 				}
 				if name, extra, ok := interpIdentSkip(s, i); ok {
 					interpHandleIdent(name)
@@ -2629,6 +2645,14 @@ func (sc *sourceScan) tokens(s string) []string {
 							interpHandlePipe()
 							i++
 							continue
+						}
+						if ch == ':' && i+1 < len(s) && s[i+1] != ':' {
+							if extra, ok := symbolLiteralExtra(s, i+1); ok {
+								i += extra + 1
+								afterValue = true
+								lastIdent = ""
+								continue
+							}
 						}
 						if name, extra, ok := interpIdentSkip(s, i); ok {
 							interpHandleIdent(name)
