@@ -1693,6 +1693,7 @@ type sourceScan struct {
 	inParams           bool
 	paramDepth         int
 	inPipes            bool
+	afterBrace         bool
 	interpPercentOpen  byte
 	interpPercentClose byte
 	interpPercentDepth int
@@ -1726,6 +1727,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	inParams := sc.inParams
 	paramDepth := sc.paramDepth
 	inPipes := sc.inPipes
+	afterBrace := sc.afterBrace
 	interpPercentOpen := sc.interpPercentOpen
 	interpPercentClose := sc.interpPercentClose
 	interpPercentDepth := sc.interpPercentDepth
@@ -1782,7 +1784,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			if n := len(openers); n > 0 {
 				top := openers[n-1]
 				openers = openers[:n-1]
-				if (top == "def" || top == "do") && len(localsStack) > 0 {
+				if (top == "def" || top == "do" || top == "brace") && len(localsStack) > 0 {
 					locals = localsStack[len(localsStack)-1]
 					localsStack = localsStack[:len(localsStack)-1]
 					afterDef = false
@@ -2372,9 +2374,33 @@ func (sc *sourceScan) tokens(s string) []string {
 				}
 			}
 		case '|':
+			if afterBrace && !inPipes {
+				openers = append(openers, "brace")
+				localsStack = append(localsStack, locals)
+				cloned := make(map[string]struct{}, len(locals))
+				for name := range locals {
+					cloned[name] = struct{}{}
+				}
+				locals = cloned
+			}
 			inPipes = !inPipes
-		case ';', '{':
+			afterBrace = false
+		case '{':
 			afterDef = false
+			afterBrace = true
+		case '}':
+			afterBrace = false
+			if n := len(openers); n > 0 && openers[n-1] == "brace" {
+				openers = openers[:n-1]
+				if len(localsStack) > 0 {
+					locals = localsStack[len(localsStack)-1]
+					localsStack = localsStack[:len(localsStack)-1]
+				}
+				inPipes = false
+			}
+		case ';':
+			afterDef = false
+			afterBrace = false
 		}
 		afterValue = false
 		afterDot = false
@@ -2400,6 +2426,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.inParams = inParams
 	sc.paramDepth = paramDepth
 	sc.inPipes = inPipes
+	sc.afterBrace = afterBrace
 	sc.interpPercentOpen = interpPercentOpen
 	sc.interpPercentClose = interpPercentClose
 	sc.interpPercentDepth = interpPercentDepth
