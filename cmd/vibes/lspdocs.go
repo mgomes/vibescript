@@ -1025,7 +1025,8 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 	if st == nil {
 		return false
 	}
-	if sourceInsideLiteral(lines, line+1, start+1) {
+	if sourceInsideLiteral(lines, line+1, start+1) ||
+		sourceInsideBlockComment(lines, line+1) {
 		return false
 	}
 	if classControlFlowContains(st, lines, line+1, start+1) {
@@ -1091,11 +1092,11 @@ func mixinContainer(program *ast.Program, lines []string, hoverLine, hoverColumn
 			if found != nil {
 				return
 			}
-			if hoverInsideRange(hoverLine, hoverColumn, nested.Position, nestedEnd) {
+			if hoverInsideRange(lines, hoverLine, hoverColumn, nested.Position, nestedEnd) {
 				return
 			}
 		}
-		if !hoverInsideRange(hoverLine, hoverColumn, st.Position, end) {
+		if !hoverInsideRange(lines, hoverLine, hoverColumn, st.Position, end) {
 			return
 		}
 		if classMethodBodyContains(st, lines, hoverLine, hoverColumn, end) {
@@ -1122,14 +1123,78 @@ func mixinContainer(program *ast.Program, lines []string, hoverLine, hoverColumn
 	return nil
 }
 
-func hoverInsideRange(hoverLine, hoverColumn int, start ast.Position, endLine int) bool {
+func hoverInsideRange(lines []string, hoverLine, hoverColumn int, start ast.Position, endLine int) bool {
 	if hoverLine < start.Line || hoverLine > endLine {
 		return false
 	}
 	if hoverLine == start.Line && hoverColumn > 0 && hoverColumn <= start.Column {
 		return false
 	}
+	if hoverLine == endLine && hoverColumn > 0 &&
+		sourceBlockClosedBeforeColumn(lines, start, hoverLine, hoverColumn) {
+		return false
+	}
 	return true
+}
+
+func sourceBlockClosedBeforeColumn(lines []string, start ast.Position, hoverLine, hoverColumn int) bool {
+	if start.Line != hoverLine || hoverColumn <= start.Column {
+		return false
+	}
+	line := lineAt(lines, hoverLine-1)
+	limit := min(len(line), hoverColumn-1)
+	if limit < 0 {
+		return false
+	}
+	text := lineFromColumn(line[:limit], start.Column)
+	depth := 0
+	atStmtStart := true
+	inLoopHeader := false
+	prev := ""
+	scan := sourceScan{}
+	for _, tok := range scan.tokens(text) {
+		switch tok {
+		case "def", "class", "module", "begin", "case":
+			depth++
+			atStmtStart = false
+			inLoopHeader = false
+		case "for", "while", "until":
+			if atStmtStart || prefixControlOpens(prev) {
+				depth++
+				inLoopHeader = true
+			}
+			atStmtStart = false
+		case "if", "unless":
+			if atStmtStart || prefixControlOpens(prev) {
+				depth++
+			}
+			atStmtStart = false
+			inLoopHeader = false
+		case "do":
+			if inLoopHeader {
+				inLoopHeader = false
+			} else {
+				depth++
+			}
+			atStmtStart = false
+		case "end":
+			depth--
+			inLoopHeader = false
+			if depth == 0 {
+				return true
+			}
+			atStmtStart = false
+		default:
+			atStmtStart = tok == ";"
+			if tok == ";" {
+				inLoopHeader = false
+			}
+		}
+		if tok != ";" {
+			prev = tok
+		}
+	}
+	return false
 }
 
 func classMethodBodyContains(st *ast.ClassStmt, lines []string, hoverLine, hoverColumn, classEnd int) bool {
@@ -1289,6 +1354,7 @@ func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
 	}
 	depth := 0
 	inLoopHeader := false
+	inBlockComment := false
 	scan := sourceScan{}
 	for line := start.Line; line <= last; line++ {
 		atStmtStart := true
@@ -1296,6 +1362,16 @@ func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
 		scan.afterDot = false
 		prev := ""
 		text := lineAt(lines, line-1)
+		if inBlockComment {
+			if isBlockCommentEnd(text) {
+				inBlockComment = false
+			}
+			continue
+		}
+		if isBlockCommentBegin(text) {
+			inBlockComment = true
+			continue
+		}
 		if line == start.Line {
 			text = lineFromColumn(text, start.Column)
 		}
@@ -1794,6 +1870,47 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.hitComment = hitComment
 	sc.inCharClass = inCharClass
 	return tokens
+}
+
+func isBlockCommentBegin(line string) bool {
+	trimmed := strings.TrimLeft(line, " \t")
+	if !strings.HasPrefix(trimmed, "=begin") {
+		return false
+	}
+	rest := trimmed[len("=begin"):]
+	return rest == "" || rest[0] == ' ' || rest[0] == '\t'
+}
+
+func isBlockCommentEnd(line string) bool {
+	trimmed := strings.TrimLeft(line, " \t")
+	if !strings.HasPrefix(trimmed, "=end") {
+		return false
+	}
+	rest := trimmed[len("=end"):]
+	return rest == "" || rest[0] == ' ' || rest[0] == '\t'
+}
+
+func sourceInsideBlockComment(lines []string, hoverLine int) bool {
+	in := false
+	for line := 1; line <= hoverLine && line <= len(lines); line++ {
+		text := lineAt(lines, line-1)
+		if in {
+			if line == hoverLine {
+				return true
+			}
+			if isBlockCommentEnd(text) {
+				in = false
+			}
+			continue
+		}
+		if isBlockCommentBegin(text) {
+			in = true
+			if line == hoverLine {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func sourceInsideLiteral(lines []string, hoverLine, hoverColumn int) bool {
