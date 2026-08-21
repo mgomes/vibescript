@@ -219,7 +219,7 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 	case "zip", "join", "transpose", "length", "size", "empty?",
 		"first", "last", "inspect", "to_s", "to_a", "hash", "itself",
 		"union", "difference", "intersection", "keys", "values", "slice",
-		"compact", "except", "flatten":
+		"compact", "except", "flatten", "values_at":
 		return false
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
@@ -1495,14 +1495,15 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 			case *WhileStmt:
 				if search(typed.Body) {
 					reachesBackEdge := pathContinues || remainderIsNext(typed.Body, stmt)
+					exitsLoop := remainderIsBreak(typed.Body, stmt)
 					if reachesBackEdge &&
 						c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) {
 						observes = true
 					}
-					if pathContinues && c.statementsObserveName(stmts[i+1:], names) {
+					if (pathContinues || exitsLoop) && c.statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
-					if pathContinues {
+					if pathContinues || exitsLoop {
 						pathContinues = c.statementsMayCompleteNormally(stmts[i+1:])
 					}
 					return true
@@ -1510,26 +1511,32 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 			case *UntilStmt:
 				if search(typed.Body) {
 					reachesBackEdge := pathContinues || remainderIsNext(typed.Body, stmt)
+					exitsLoop := remainderIsBreak(typed.Body, stmt)
 					if reachesBackEdge &&
 						c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) {
 						observes = true
 					}
-					if pathContinues && c.statementsObserveName(stmts[i+1:], names) {
+					if (pathContinues || exitsLoop) && c.statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
-					if pathContinues {
+					if pathContinues || exitsLoop {
 						pathContinues = c.statementsMayCompleteNormally(stmts[i+1:])
 					}
 					return true
 				}
 			case *ForStmt:
 				if search(typed.Body) {
-					if pathContinues &&
-						(c.statementsObserveNameExcept(typed.Body, names, stmt) ||
-							c.statementsObserveName(stmts[i+1:], names)) {
+					reachesBackEdge := pathContinues || remainderIsNext(typed.Body, stmt)
+					exitsLoop := remainderIsBreak(typed.Body, stmt)
+					if reachesBackEdge &&
+						(c.expressionObservesName(typed.Iterable, names) ||
+							c.statementsObserveNameExcept(typed.Body, names, stmt)) {
 						observes = true
 					}
-					if pathContinues {
+					if (pathContinues || exitsLoop) && c.statementsObserveName(stmts[i+1:], names) {
+						observes = true
+					}
+					if pathContinues || exitsLoop {
 						pathContinues = c.statementsMayCompleteNormally(stmts[i+1:])
 					}
 					return true
@@ -1695,6 +1702,20 @@ func rescueClauseMayMatch(clause RescueClause, raisedName string, known bool) bo
 }
 
 func remainderIsNext(body []Statement, stmt *ExprStmt) bool {
+	return remainderIsControl(body, stmt, func(s Statement) bool {
+		_, ok := s.(*NextStmt)
+		return ok
+	})
+}
+
+func remainderIsBreak(body []Statement, stmt *ExprStmt) bool {
+	return remainderIsControl(body, stmt, func(s Statement) bool {
+		_, ok := s.(*BreakStmt)
+		return ok
+	})
+}
+
+func remainderIsControl(body []Statement, stmt *ExprStmt, match func(Statement) bool) bool {
 	rest, ok := statementsAfter(body, stmt)
 	if !ok {
 		return false
@@ -1703,8 +1724,7 @@ func remainderIsNext(body []Statement, stmt *ExprStmt) bool {
 		if s == nil {
 			continue
 		}
-		_, isNext := s.(*NextStmt)
-		return isNext
+		return match(s)
 	}
 	return false
 }

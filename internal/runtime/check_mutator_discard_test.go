@@ -580,6 +580,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "values_at ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.values_at { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "raising if in try body is not an observation of the suffix",
 			source: "rows = [[1], [2]]\nrows.each { |row| begin; if true; row.push(0); raise \"x\"; end; rescue; raise \"y\"; end; puts row }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -977,6 +982,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "next still observes the loop condition",
 			source: "rows = [[1], [2]]\nrows.each { |row| while row.length < 3; row.push(0); next; end }\nputs \"done\"",
+		},
+		{
+			name:   "break still observes statements after the loop",
+			source: "rows = [[1], [2]]\nrows.each { |row| while true; row.push(0); break; end; puts row }\nputs \"done\"",
+		},
+		{
+			name:   "for next still observes the iterable",
+			source: "rows = [[1], [2]]\nrows.each { |row| for i in row; row.push(0); next; end }\nputs \"done\"",
 		},
 		{
 			name:   "raising prefix still observes in rescue",
