@@ -2713,6 +2713,10 @@ func (sc *sourceScan) tokens(s string) []string {
 					localsStack = localsStack[:len(localsStack)-1]
 				}
 				inPipes = false
+				afterValue = true
+				afterDot = false
+				lastIdent = ""
+				continue
 			}
 		case ';':
 			afterDef = false
