@@ -168,21 +168,49 @@ func (c *scriptChecker) iteratorYieldTypes(receiver Expression, property string,
 	if len(names) == 0 {
 		return nil
 	}
-	yielded := c.builtinIteratorYieldedValue(receiver, property)
+	recv := c.inferExpressionType(receiver)
+	hashLike := typeExprHashLikeOnly(recv)
 	out := make(map[string]*TypeExpr, len(names))
-	if property == "each_with_index" {
-		if yielded != nil {
+	switch property {
+	case "each":
+		if hashLike {
+			if len(names) >= 2 {
+				if key := collectionIteratorKeyType(recv); key != nil {
+					out[names[0]] = key
+				}
+				if val := collectionIteratorValueType(recv); val != nil {
+					out[names[1]] = val
+				}
+				return out
+			}
+			out[names[0]] = checkTypeArray
+			return out
+		}
+		if yielded := collectionIteratorElementType(recv); yielded != nil {
+			out[names[0]] = yielded
+		}
+		return out
+	case "each_with_index":
+		if hashLike {
+			out[names[0]] = checkTypeArray
+			if len(names) > 1 {
+				out[names[1]] = checkTypeInt
+			}
+			return out
+		}
+		if yielded := collectionIteratorElementType(recv); yielded != nil {
 			out[names[0]] = yielded
 		}
 		if len(names) > 1 {
 			out[names[1]] = checkTypeInt
 		}
 		return out
+	default:
+		if yielded := c.builtinIteratorYieldedValue(receiver, property); yielded != nil {
+			out[names[0]] = yielded
+		}
+		return out
 	}
-	if yielded != nil {
-		out[names[0]] = yielded
-	}
-	return out
 }
 
 func blockParamNameList(block *BlockLiteral) []string {
@@ -223,6 +251,21 @@ func (c *scriptChecker) builtinIteratorYieldedValue(receiver Expression, propert
 	default:
 		return collectionIteratorElementType(recv)
 	}
+}
+
+// temporaryMutatorDiscardApplies is the temporary-arm receiver-type gate:
+// untyped receivers keep the name-based warning unless they are proven not
+// to be collections, but a known type must be collection-only so a union
+// with a named instance cannot claim that Widget#push reaches nothing.
+func (c *scriptChecker) temporaryMutatorDiscardApplies(recv Expression) bool {
+	if c.provablyNotCollection(recv) {
+		return false
+	}
+	ty := c.inferExpressionType(recv)
+	if ty == nil || ty.Kind == TypeUnknown || ty.Kind == TypeAny {
+		return true
+	}
+	return typeExprIsCollection(ty)
 }
 
 func collectionIteratorElementType(recv *TypeExpr) *TypeExpr {
@@ -317,7 +360,10 @@ func (c *scriptChecker) mutatorDiscardVerdict(function string, stmt *ExprStmt) f
 		// Dispatch is untyped, so the mutator NAME is what classified the
 		// call; a receiver whose type rules the collection kinds out (a
 		// string's non-mutating delete) is not a collection mutation.
-		if c.provablyNotCollection(member.Object) {
+		// A proven union that includes a named instance (flag ? [] :
+		// Widget.new) may dispatch a user method, so it stays silent
+		// unless every arm is a collection.
+		if !c.temporaryMutatorDiscardApplies(member.Object) {
 			return nil
 		}
 		return func() {

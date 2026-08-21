@@ -95,6 +95,21 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			source: "h = {a: [1]}\nh.each_value { |v| v.push(2) }\nputs \"done\"",
 			want:   "mutating block parameter v",
 		},
+		{
+			name:   "hash each value parameter",
+			source: "h = {a: [1]}\nh.each { |k, v| v.push(2) }\nputs \"done\"",
+			want:   "mutating block parameter v",
+		},
+		{
+			name:   "hash each collapsed pair",
+			source: "h = {a: [1]}\nh.each { |pair| pair.push(2) }\nputs \"done\"",
+			want:   "mutating block parameter pair",
+		},
+		{
+			name:   "hash each_with_index pair",
+			source: "h = {a: [1]}\nh.each_with_index { |pair, i| pair.push(i) }\nputs \"done\"",
+			want:   "mutating block parameter pair",
+		},
 	}
 
 	for _, tc := range tests {
@@ -221,6 +236,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			name: "user push on each-yielded instance",
 			source: "class Widget\n  def push(x)\n    @seen = x\n  end\nend\n" +
 				"[Widget.new].each { |w| w.push(1) }\nputs \"done\"",
+		},
+		{
+			// A union that includes a named instance may dispatch Widget#push,
+			// so the temporary arm must not claim the update reaches nothing.
+			name: "union of array and instance",
+			source: "class Widget\n  def push(x)\n    @seen = x\n  end\nend\n" +
+				"def f(flag)\n  (flag ? [] : Widget.new).push(1)\nend\n" +
+				"f(true)\nputs \"done\"",
 		},
 	}
 
