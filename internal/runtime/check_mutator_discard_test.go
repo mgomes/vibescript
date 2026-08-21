@@ -794,6 +794,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			source: "rows = [[1], [2]]\nrows.each { |row| begin; raise \"x\"; rescue; row.push(0); raise \"y\"; end; puts row }\nputs \"done\"",
 			want:   "mutating block parameter row",
 		},
+		{
+			name:   "unknown if true elsif raise shadows else break in ensure",
+			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each { |row| while true; row.push(0); begin; break; ensure; while true; if flag; nil; elsif true; raise \"x\"; else; break; end; end; end; end; puts row }\nend\nf(true)\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "unknown if true elsif raise shadows else next",
+			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each { |row| while row.length < 3; row.push(0); if flag; raise \"x\"; elsif true; raise \"y\"; else; next; end; end }\nend\nf(true)\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
 	}
 
 	for _, tc := range tests {
@@ -1311,6 +1321,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "for next still observes the suffix",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); for x in [1]; next; end; puts row }\nputs \"done\"",
+		},
+		{
+			name:   "true elsif shadows unreachable if-expression else mutator",
+			source: "def f(flag)\n  if flag then nil elsif true then nil else [1].push(2) end\n  nil\nend\nf(true)\nputs \"done\"",
 		},
 	}
 

@@ -1333,7 +1333,14 @@ func (c *scriptChecker) discardedMutatorCalls(expr Expression) []discardedMutato
 				if !c.expressionProvablyCompletes(branch.Condition) {
 					return
 				}
+				truthy, known := c.inferredConditionTruthiness(branch.Condition)
+				if known && !truthy {
+					continue
+				}
 				walk(branch.Result)
+				if known && truthy {
+					return
+				}
 			}
 			walk(typed.Alternate)
 		case *CaseExpr:
@@ -1877,13 +1884,25 @@ func ensureContainsBreak(stmts []Statement) bool {
 				}
 				continue
 			}
-			if ensureContainsBreak(typed.Consequent) || ensureContainsBreak(typed.Alternate) {
+			if ensureContainsBreak(typed.Consequent) {
 				return true
 			}
+			taken := false
 			for _, branch := range typed.ElseIf {
+				t, k := staticExpressionTruthiness(branch.Condition)
+				if k && !t {
+					continue
+				}
 				if ensureContainsBreak(branch.Consequent) {
 					return true
 				}
+				if k && t {
+					taken = true
+					break
+				}
+			}
+			if !taken && ensureContainsBreak(typed.Alternate) {
+				return true
 			}
 		case *WhileStmt:
 			truthy, known := staticExpressionTruthiness(typed.Condition)
@@ -2065,15 +2084,22 @@ func remainderContainsRetryIf(stmt *IfStmt) bool {
 		}
 		return remainderContainsRetry(stmt.Alternate)
 	}
-	if remainderContainsRetry(stmt.Consequent) || remainderContainsRetry(stmt.Alternate) {
+	if remainderContainsRetry(stmt.Consequent) {
 		return true
 	}
 	for _, branch := range stmt.ElseIf {
+		t, k := staticExpressionTruthiness(branch.Condition)
+		if k && !t {
+			continue
+		}
 		if remainderContainsRetry(branch.Consequent) {
 			return true
 		}
+		if k && t {
+			return false
+		}
 	}
-	return false
+	return remainderContainsRetry(stmt.Alternate)
 }
 
 func remainderContainsNextIf(stmt *IfStmt) bool {
@@ -2096,15 +2122,22 @@ func remainderContainsNextIf(stmt *IfStmt) bool {
 		}
 		return remainderContainsNext(stmt.Alternate)
 	}
-	if remainderContainsNext(stmt.Consequent) || remainderContainsNext(stmt.Alternate) {
+	if remainderContainsNext(stmt.Consequent) {
 		return true
 	}
 	for _, branch := range stmt.ElseIf {
+		t, k := staticExpressionTruthiness(branch.Condition)
+		if k && !t {
+			continue
+		}
 		if remainderContainsNext(branch.Consequent) {
 			return true
 		}
+		if k && t {
+			return false
+		}
 	}
-	return false
+	return remainderContainsNext(stmt.Alternate)
 }
 
 func remainderIsControl(body []Statement, stmt *ExprStmt, match func(Statement) bool) bool {
