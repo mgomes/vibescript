@@ -1603,6 +1603,9 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 			case *ForStmt:
 				if search(typed.Body) {
 					reachesBackEdge := pathContinues || remainderIsNext(typed.Body, stmt) || c.remainderMayNext(typed.Body, stmt)
+					if length, ok := staticCollectionLength(typed.Iterable); ok && length <= 1 {
+						reachesBackEdge = false
+					}
 					exitsLoop := remainderIsBreak(typed.Body, stmt) || c.remainderMayBreak(typed.Body, stmt)
 					if reachesBackEdge &&
 						(c.expressionObservesName(typed.Iterable, names) ||
@@ -1859,17 +1862,27 @@ func ensurePathMayComplete(stmts []Statement) bool {
 			}
 			bodyCompletes := ensurePathMayComplete(typed.Body)
 			elseCompletes := ensurePathMayComplete(typed.Else)
+			if bodyCompletes && elseCompletes {
+				break
+			}
+			if statementsProvenNonRaising(typed.Body) {
+				return false
+			}
+			raisedName, knownRaise := statementsRaisedTypeName(typed.Body)
 			rescueCompletes := false
 			for _, clause := range typed.Rescues {
+				if !rescueClauseMayMatch(clause, raisedName, knownRaise) {
+					continue
+				}
 				if ensurePathMayComplete(clause.Body) {
 					rescueCompletes = true
 					break
 				}
+				if knownRaise {
+					return false
+				}
 			}
-			if bodyCompletes && elseCompletes {
-				break
-			}
-			if rescueCompletes && !statementsProvenNonRaising(typed.Body) {
+			if rescueCompletes {
 				break
 			}
 			return false
@@ -2249,7 +2262,7 @@ func (c *scriptChecker) forStmtFallsThrough(stmt *ForStmt) bool {
 	if stmt == nil {
 		return true
 	}
-	length, ok := staticCollectionLength(stmt.Iterable)
+	length, ok := c.staticReceiverCollectionLength(stmt.Iterable)
 	if ok && length > 0 && !c.statementsMayCompleteNormally(stmt.Body) &&
 		!c.statementsMayBreak(stmt.Body) && !remainderContainsNext(stmt.Body) {
 		return false
