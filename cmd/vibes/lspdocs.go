@@ -2952,7 +2952,7 @@ func (sc *sourceScan) tokens(s string) []string {
 				fromEqualsDefault = false
 			}
 		case '[':
-			if inParams || inPipes || inParamDefault {
+			if inParams || inParamDefault {
 				collectionDepth++
 			}
 		case ']':
@@ -2966,8 +2966,10 @@ func (sc *sourceScan) tokens(s string) []string {
 			continue
 		case '|':
 			if inPipes {
-				inParamDefault = false
-				inPipes = false
+				if !inParamDefault || !pipeContinuesUnion(s, i) {
+					inParamDefault = false
+					inPipes = false
+				}
 			} else if afterBlockPipes {
 				var parent map[string]struct{}
 				if n := len(localsStack); n > 0 {
@@ -3269,6 +3271,56 @@ func skipInterpolationExpr(s string, i int) int {
 		i++
 	}
 	return i
+}
+
+func pipeContinuesUnion(s string, i int) bool {
+	j := i + 1
+	for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+		j++
+	}
+	if j >= len(s) {
+		return false
+	}
+	r, size := utf8.DecodeRuneInString(s[j:])
+	if size < 1 || !ast.IsIdentifierStart(r) {
+		return false
+	}
+	j += size
+	for j < len(s) {
+		r, size = utf8.DecodeRuneInString(s[j:])
+		if size < 1 || !ast.IsIdentifierRune(r) {
+			break
+		}
+		j += size
+	}
+	for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+		j++
+	}
+	if j < len(s) && s[j] == '<' {
+		depth := 1
+		j++
+		for j < len(s) && depth > 0 {
+			switch s[j] {
+			case '<':
+				depth++
+			case '>':
+				depth--
+			}
+			j++
+		}
+		for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+			j++
+		}
+	}
+	if j >= len(s) {
+		return false
+	}
+	switch s[j] {
+	case ',', '|', ')', ']':
+		return true
+	default:
+		return false
+	}
 }
 
 func isPercentArrayDelimiter(c byte) bool {
