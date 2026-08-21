@@ -720,6 +720,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "ensure true elsif raise is not a loop exit via else",
+			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each { |row| while true; row.push(0); begin; break; ensure; if flag; raise \"x\"; elsif true; raise \"y\"; else; nil; end; end; end; puts row }\nend\nf(true)\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "nested endless while then break is not a loop exit",
+			source: "rows = [[1], [2]]\nrows.each { |row| while true; row.push(0); while true; raise \"x\"; end; break; end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "min ignores its block so it is not an observation",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].min { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",

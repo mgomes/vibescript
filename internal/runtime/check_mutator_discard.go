@@ -1885,6 +1885,22 @@ func ensureContainsBreak(stmts []Statement) bool {
 					return true
 				}
 			}
+		case *WhileStmt:
+			truthy, known := staticExpressionTruthiness(typed.Condition)
+			if known && truthy && !ensureContainsBreak(typed.Body) {
+				return false
+			}
+		case *UntilStmt:
+			truthy, known := staticExpressionTruthiness(typed.Condition)
+			if known && !truthy && !ensureContainsBreak(typed.Body) {
+				return false
+			}
+		case *ForStmt:
+			if length, ok := staticCollectionLength(typed.Iterable); ok && length > 0 &&
+				!ensurePathMayComplete(typed.Body) && !ensureContainsBreak(typed.Body) &&
+				!remainderContainsNext(typed.Body) {
+				return false
+			}
 		case *TryStmt:
 			if tryEnsureAborts(typed.Ensure) {
 				return ensureContainsBreak(typed.Ensure)
@@ -1934,8 +1950,15 @@ func ensureIfMayComplete(stmt *IfStmt) bool {
 		return true
 	}
 	for _, branch := range stmt.ElseIf {
+		t, k := staticExpressionTruthiness(branch.Condition)
+		if k && !t {
+			continue
+		}
 		if ensurePathMayComplete(branch.Consequent) {
 			return true
+		}
+		if k && t {
+			return false
 		}
 	}
 	if len(stmt.Alternate) == 0 {
@@ -2186,6 +2209,18 @@ func (c *scriptChecker) statementsMayBreak(stmts []Statement) bool {
 			if !c.ifStmtFallsThrough(typed) {
 				return false
 			}
+		case *WhileStmt:
+			if !c.whileStmtFallsThrough(typed) {
+				return false
+			}
+		case *UntilStmt:
+			if !c.untilStmtFallsThrough(typed) {
+				return false
+			}
+		case *ForStmt:
+			if !c.forStmtFallsThrough(typed) {
+				return false
+			}
 		case *TryStmt:
 			if tryEnsureAborts(typed.Ensure) {
 				return c.statementsMayBreak(typed.Ensure)
@@ -2269,6 +2304,9 @@ func (c *scriptChecker) tryStmtFallsThrough(stmt *TryStmt) bool {
 		if c.statementsMayCompleteNormally(clause.Body) &&
 			c.statementsMayCompleteNormally(stmt.Ensure) {
 			return true
+		}
+		if knownRaise {
+			break
 		}
 	}
 	return false
