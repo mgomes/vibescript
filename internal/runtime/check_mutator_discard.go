@@ -211,7 +211,7 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		return staticFetchValuesMayMiss(receiver, call)
 	case "fill":
 		return staticFillMayYield(receiver, call)
-	case "zip":
+	case "zip", "join":
 		return false
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
@@ -328,6 +328,19 @@ func staticMergeMayConflict(receiver Expression, call *CallExpr) bool {
 		}
 	}
 	return false
+}
+
+func staticFillWrites(receiver Expression, call *CallExpr) bool {
+	return staticFillMayYield(receiver, fillSelectorCall(call))
+}
+
+func fillSelectorCall(call *CallExpr) *CallExpr {
+	if call == nil || call.Block != nil || len(call.Args) == 0 {
+		return call
+	}
+	out := *call
+	out.Args = call.Args[1:]
+	return &out
 }
 
 func staticFillMayYield(receiver Expression, call *CallExpr) bool {
@@ -899,6 +912,8 @@ func collectionMutatorCallActuallyWrites(property string, call *CallExpr, receiv
 			expanded = got
 		}
 		return len(expanded.Args) >= 2
+	case "fill":
+		return staticFillWrites(receiver, call)
 	case "delete":
 		return !staticDeleteIsMiss(receiver, call)
 	default:

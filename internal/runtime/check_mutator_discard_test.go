@@ -329,6 +329,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "join ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].join { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "zip ignores its block so it is not an observation",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].zip { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -869,6 +874,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "expanding fill on empty still observes",
 			source: "xs = []\nrows = [[1], [2]]\nrows.each { |row| row.push(0); xs.fill(0, 2) { puts row; 9 } }\nputs xs",
+		},
+		{
+			name:   "empty fill window does not write a temporary",
+			source: "[1].fill(0, 0) { 9 }\nputs \"done\"",
 		},
 		{
 			name:   "raise before try overwrite still observes later",
