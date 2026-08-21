@@ -1813,7 +1813,8 @@ func ensurePathMayComplete(stmts []Statement) bool {
 			}
 		case *ForStmt:
 			if length, ok := staticCollectionLength(typed.Iterable); ok && length > 0 &&
-				!ensurePathMayComplete(typed.Body) && !ensureContainsBreak(typed.Body) {
+				!ensurePathMayComplete(typed.Body) && !ensureContainsBreak(typed.Body) &&
+				!remainderContainsNext(typed.Body) {
 				return false
 			}
 		case *TryStmt:
@@ -2149,7 +2150,7 @@ func (c *scriptChecker) forStmtFallsThrough(stmt *ForStmt) bool {
 	}
 	length, ok := staticCollectionLength(stmt.Iterable)
 	if ok && length > 0 && !c.statementsMayCompleteNormally(stmt.Body) &&
-		!c.statementsMayBreak(stmt.Body) {
+		!c.statementsMayBreak(stmt.Body) && !remainderContainsNext(stmt.Body) {
 		return false
 	}
 	return true

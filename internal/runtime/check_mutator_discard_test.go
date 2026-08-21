@@ -1278,6 +1278,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			name:   "ensure while with conditional break observes the suffix",
 			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each { |row| while true; row.push(0); begin; break; ensure; while true; if flag; break; end; end; end; end; puts row }\nend\nf(true)\nputs \"done\"",
 		},
+		{
+			name:   "for next still observes the suffix",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); for x in [1]; next; end; puts row }\nputs \"done\"",
+		},
 	}
 
 	for _, tc := range tests {
