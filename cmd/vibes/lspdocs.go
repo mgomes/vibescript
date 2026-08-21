@@ -1266,6 +1266,7 @@ func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
 				}
 			}
 		}
+		inLoopHeader = false
 	}
 	return classEnd
 }
@@ -1309,6 +1310,26 @@ func identifierTokensSkippingStrings(s string) []string {
 		}
 		if c == '#' {
 			break
+		}
+		if c == ':' && i+1 < len(s) && (s[i+1] == '_' ||
+			s[i+1] >= 'A' && s[i+1] <= 'Z' ||
+			s[i+1] >= 'a' && s[i+1] <= 'z') {
+			flush(i)
+			i++
+			start = i
+			i++
+			for i < len(s) {
+				ch := s[i]
+				if ch == '_' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' {
+					i++
+					continue
+				}
+				break
+			}
+			start = -1
+			afterValue = true
+			i--
+			continue
 		}
 		if c == '"' || c == '\'' {
 			flush(i)
