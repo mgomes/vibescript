@@ -1712,12 +1712,31 @@ type sourceScan struct {
 	paramDepth         int
 	inPipes            bool
 	inParamDefault     bool
+	inForTargets       bool
+	inRescueHeader     bool
+	pendingRescueBind  bool
+	rescueBinds        []sourceRescueBind
 	afterBrace         bool
 	interpPercentOpen  byte
 	interpPercentClose byte
 	interpPercentDepth int
 	openers            []string
 	localsStack        []map[string]struct{}
+}
+
+type sourceRescueBind struct {
+	name    string
+	existed bool
+}
+
+func restoreSourceRescueBind(bind *sourceRescueBind, locals map[string]struct{}) {
+	if bind == nil || bind.name == "" {
+		return
+	}
+	if !bind.existed {
+		delete(locals, bind.name)
+	}
+	*bind = sourceRescueBind{}
 }
 
 func (sc *sourceScan) tokens(s string) []string {
@@ -1747,6 +1766,10 @@ func (sc *sourceScan) tokens(s string) []string {
 	paramDepth := sc.paramDepth
 	inPipes := sc.inPipes
 	inParamDefault := sc.inParamDefault
+	inForTargets := sc.inForTargets
+	inRescueHeader := sc.inRescueHeader
+	pendingRescueBind := sc.pendingRescueBind
+	rescueBinds := sc.rescueBinds
 	afterBrace := sc.afterBrace
 	interpPercentOpen := sc.interpPercentOpen
 	interpPercentClose := sc.interpPercentClose
@@ -1784,6 +1807,9 @@ func (sc *sourceScan) tokens(s string) []string {
 			afterDef = false
 		case "begin", "case":
 			openers = append(openers, tok)
+			if tok == "begin" {
+				rescueBinds = append(rescueBinds, sourceRescueBind{})
+			}
 			atStmtStart = false
 			inLoopHeader = false
 			afterDef = false
@@ -1791,8 +1817,38 @@ func (sc *sourceScan) tokens(s string) []string {
 			if atStmtStart || prefixControlOpens(prevTok) {
 				openers = append(openers, tok)
 				inLoopHeader = true
+				inForTargets = tok == "for"
 			}
 			atStmtStart = false
+		case "rescue":
+			if n := len(rescueBinds); n > 0 {
+				restoreSourceRescueBind(&rescueBinds[n-1], locals)
+			}
+			inRescueHeader = true
+			pendingRescueBind = false
+			atStmtStart = false
+			inLoopHeader = false
+			afterDef = false
+		case "ensure":
+			if n := len(rescueBinds); n > 0 {
+				restoreSourceRescueBind(&rescueBinds[n-1], locals)
+			}
+			inRescueHeader = false
+			pendingRescueBind = false
+			atStmtStart = false
+			inLoopHeader = false
+			afterDef = false
+		case "else":
+			if n := len(openers); n > 0 && openers[n-1] == "begin" {
+				if m := len(rescueBinds); m > 0 {
+					restoreSourceRescueBind(&rescueBinds[m-1], locals)
+				}
+				inRescueHeader = false
+				pendingRescueBind = false
+			}
+			atStmtStart = false
+			inLoopHeader = false
+			afterDef = false
 		case "if", "unless":
 			if atStmtStart || prefixControlOpens(prevTok) {
 				openers = append(openers, tok)
@@ -1817,6 +1873,12 @@ func (sc *sourceScan) tokens(s string) []string {
 			if n := len(openers); n > 0 {
 				top := openers[n-1]
 				openers = openers[:n-1]
+				if top == "begin" && len(rescueBinds) > 0 {
+					restoreSourceRescueBind(&rescueBinds[len(rescueBinds)-1], locals)
+					rescueBinds = rescueBinds[:len(rescueBinds)-1]
+					inRescueHeader = false
+					pendingRescueBind = false
+				}
 				if (top == "def" || top == "do" || top == "brace" || top == "class" || top == "module") && len(localsStack) > 0 {
 					locals = localsStack[len(localsStack)-1]
 					localsStack = localsStack[:len(localsStack)-1]
@@ -1830,6 +1892,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			}
 			atStmtStart = false
 			inLoopHeader = false
+			inForTargets = false
 		default:
 			atStmtStart = tok == ";"
 			if tok == ";" {
@@ -1867,12 +1930,25 @@ func (sc *sourceScan) tokens(s string) []string {
 						inParamDefault = true
 					}
 				}
+			} else if pendingRescueBind && identCanBeLocal(tok) {
+				if n := len(rescueBinds); n > 0 {
+					_, existed := locals[tok]
+					rescueBinds[n-1] = sourceRescueBind{name: tok, existed: existed}
+					locals[tok] = struct{}{}
+				}
+				pendingRescueBind = false
+				inRescueHeader = false
+			} else if inForTargets && identCanBeLocal(tok) && tok != "in" && !isControlKeyword(tok) {
+				locals[tok] = struct{}{}
 			} else if afterDef && !inParams && identCanBeLocal(tok) && !isControlKeyword(tok) {
 				if afterDefName {
 					locals[tok] = struct{}{}
 				} else {
 					afterDefName = true
 				}
+			}
+			if tok == "in" && inForTargets {
+				inForTargets = false
 			}
 			applyOpener(tok)
 		}
@@ -2400,6 +2476,9 @@ func (sc *sourceScan) tokens(s string) []string {
 		if c == '=' {
 			if i+1 < len(s) && (s[i+1] == '=' || s[i+1] == '~' || s[i+1] == '>') {
 				flush(i)
+				if inRescueHeader && s[i+1] == '>' {
+					pendingRescueBind = true
+				}
 				i++
 				afterValue = false
 				afterDot = false
@@ -2588,6 +2667,10 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.paramDepth = paramDepth
 	sc.inPipes = inPipes
 	sc.inParamDefault = inParamDefault
+	sc.inForTargets = inForTargets
+	sc.inRescueHeader = inRescueHeader
+	sc.pendingRescueBind = pendingRescueBind
+	sc.rescueBinds = rescueBinds
 	sc.afterBrace = afterBrace
 	sc.interpPercentOpen = interpPercentOpen
 	sc.interpPercentClose = interpPercentClose
