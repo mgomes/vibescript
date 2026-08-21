@@ -1478,20 +1478,45 @@ func tokenIsValue(tok string) bool {
 	return ast.IsIdentifierStart(r) || r >= '0' && r <= '9'
 }
 
-func interpIdentSkip(s string, i int) (afterValue bool, extra int) {
+func interpIdentSkip(s string, i int) (name string, extra int, ok bool) {
 	r, size := utf8.DecodeRuneInString(s[i:])
 	if size < 1 {
 		size = 1
 	}
-	if ast.IsIdentifierStart(r) || r >= '0' && r <= '9' {
-		return true, size - 1
+	if !ast.IsIdentifierStart(r) && (r < '0' || r > '9') {
+		return "", 0, false
 	}
-	return false, 0
+	start := i
+	i += size
+	for i < len(s) {
+		r, size = utf8.DecodeRuneInString(s[i:])
+		if size < 1 {
+			size = 1
+		}
+		if !ast.IsIdentifierRune(r) {
+			break
+		}
+		i += size
+	}
+	return s[start:i], i - start - 1, true
 }
 
-func slashStartsRegex(afterValue, afterSpace bool, s string, i int) bool {
+func identCanBeLocal(tok string) bool {
+	if tok == "" || strings.HasPrefix(tok, ".") || strings.HasSuffix(tok, ":") {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(tok)
+	return ast.IsIdentifierStart(r)
+}
+
+func slashStartsRegex(afterValue, afterSpace bool, s string, i int, lastIdent string, locals map[string]struct{}) bool {
 	if !afterValue {
 		return true
+	}
+	if lastIdent != "" {
+		if _, ok := locals[lastIdent]; ok {
+			return false
+		}
 	}
 	if !afterSpace || i+1 >= len(s) {
 		return false
@@ -1502,6 +1527,46 @@ func slashStartsRegex(afterValue, afterSpace bool, s string, i int) bool {
 	default:
 		return true
 	}
+}
+
+func interpRegexConsume(s string, i int, c byte, escape, inCharClass, inCharClassStart bool) (
+	nextEscape, closed, nextClass, nextClassStart bool, extra int,
+) {
+	if escape {
+		return false, false, inCharClass, inCharClassStart, 0
+	}
+	if c == '\\' {
+		return true, false, inCharClass, inCharClassStart, 0
+	}
+	if inCharClass {
+		if inCharClassStart && c == '^' {
+			return false, false, true, true, 0
+		}
+		if inCharClassStart && c == ']' {
+			return false, false, true, false, 0
+		}
+		if c == '[' && i+1 < len(s) && s[i+1] == ':' {
+			j := i + 2
+			for j+1 < len(s) && (s[j] != ':' || s[j+1] != ']') {
+				j++
+			}
+			if j+1 < len(s) {
+				j++
+			}
+			return false, false, true, false, j - i
+		}
+		if c == ']' {
+			return false, false, false, false, 0
+		}
+		return false, false, true, false, 0
+	}
+	if c == '[' {
+		return false, false, true, true, 0
+	}
+	if c == '/' {
+		return false, true, false, false, 0
+	}
+	return false, false, false, false, 0
 }
 
 func sourceClosedBeforeColumn(lines []string, start ast.Position, hoverLine, hoverColumn int) bool {
@@ -1587,6 +1652,8 @@ type sourceScan struct {
 	innerStr         byte
 	inCharClass      bool
 	inCharClassStart bool
+	lastIdent        string
+	locals           map[string]struct{}
 }
 
 func (sc *sourceScan) tokens(s string) []string {
@@ -1605,6 +1672,11 @@ func (sc *sourceScan) tokens(s string) []string {
 	hitComment := false
 	inCharClass := sc.inCharClass
 	inCharClassStart := sc.inCharClassStart
+	lastIdent := sc.lastIdent
+	locals := sc.locals
+	if locals == nil {
+		locals = map[string]struct{}{}
+	}
 	afterSpace := false
 	flush := func(i int) {
 		if start >= 0 {
@@ -1622,6 +1694,10 @@ func (sc *sourceScan) tokens(s string) []string {
 			start = -1
 			afterValue = true
 			afterDot = false
+			lastIdent = tok
+			if tok == "def" {
+				locals = map[string]struct{}{}
+			}
 		}
 	}
 	for i := 0; i < len(s); i++ {
@@ -1643,25 +1719,25 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				if inRegex {
-					if escape {
-						escape = false
-						continue
-					}
-					if c == '\\' {
-						escape = true
-						continue
-					}
-					if c == '/' {
+					var extra int
+					var closed bool
+					escape, closed, inCharClass, inCharClassStart, extra = interpRegexConsume(
+						s, i, c, escape, inCharClass, inCharClassStart)
+					if closed {
 						inRegex = false
+						afterValue = true
 					}
+					i += extra
 					continue
 				}
 				if c == ' ' || c == '\t' {
 					afterSpace = true
 					continue
 				}
-				if c == '/' && slashStartsRegex(afterValue, afterSpace, s, i) {
+				if c == '/' && slashStartsRegex(afterValue, afterSpace, s, i, lastIdent, locals) {
 					inRegex = true
+					inCharClass = false
+					inCharClassStart = false
 					afterSpace = false
 					continue
 				}
@@ -1674,6 +1750,7 @@ func (sc *sourceScan) tokens(s string) []string {
 				if c == '{' {
 					interpDepth++
 					afterValue = false
+					lastIdent = ""
 					continue
 				}
 				if c == '}' {
@@ -1681,12 +1758,14 @@ func (sc *sourceScan) tokens(s string) []string {
 					afterValue = true
 					continue
 				}
-				if after, extra := interpIdentSkip(s, i); after {
+				if name, extra, ok := interpIdentSkip(s, i); ok {
 					afterValue = true
+					lastIdent = name
 					i += extra
 					continue
 				}
 				afterValue = false
+				lastIdent = ""
 				continue
 			}
 			if escape {
@@ -1699,6 +1778,9 @@ func (sc *sourceScan) tokens(s string) []string {
 			}
 			if c == '#' && i+1 < len(s) && s[i+1] == '{' {
 				interpDepth = 1
+				afterValue = false
+				afterSpace = false
+				lastIdent = ""
 				i++
 				continue
 			}
@@ -1726,25 +1808,25 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				if inRegex {
-					if escape {
-						escape = false
-						continue
-					}
-					if c == '\\' {
-						escape = true
-						continue
-					}
-					if c == '/' {
+					var extra int
+					var closed bool
+					escape, closed, inCharClass, inCharClassStart, extra = interpRegexConsume(
+						s, i, c, escape, inCharClass, inCharClassStart)
+					if closed {
 						inRegex = false
+						afterValue = true
 					}
+					i += extra
 					continue
 				}
 				if c == ' ' || c == '\t' {
 					afterSpace = true
 					continue
 				}
-				if c == '/' && slashStartsRegex(afterValue, afterSpace, s, i) {
+				if c == '/' && slashStartsRegex(afterValue, afterSpace, s, i, lastIdent, locals) {
 					inRegex = true
+					inCharClass = false
+					inCharClassStart = false
 					afterSpace = false
 					continue
 				}
@@ -1757,6 +1839,7 @@ func (sc *sourceScan) tokens(s string) []string {
 				if c == '{' {
 					interpDepth++
 					afterValue = false
+					lastIdent = ""
 					continue
 				}
 				if c == '}' {
@@ -1764,16 +1847,21 @@ func (sc *sourceScan) tokens(s string) []string {
 					afterValue = true
 					continue
 				}
-				if after, extra := interpIdentSkip(s, i); after {
+				if name, extra, ok := interpIdentSkip(s, i); ok {
 					afterValue = true
+					lastIdent = name
 					i += extra
 					continue
 				}
 				afterValue = false
+				lastIdent = ""
 				continue
 			}
 			if c == '#' && i+1 < len(s) && s[i+1] == '{' {
 				interpDepth = 1
+				afterValue = false
+				afterSpace = false
+				lastIdent = ""
 				i++
 				continue
 			}
@@ -1900,6 +1988,8 @@ func (sc *sourceScan) tokens(s string) []string {
 					}
 					if s[i] == '#' && i+1 < len(s) && s[i+1] == '{' {
 						interpDepth = 1
+						afterValue = false
+						lastIdent = ""
 						i += 2
 						continue
 					}
@@ -1959,7 +2049,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			afterSpace = true
 			continue
 		}
-		if c == '/' && slashStartsRegex(afterValue, afterSpace, s, i) {
+		if c == '/' && slashStartsRegex(afterValue, afterSpace, s, i, lastIdent, locals) {
 			flush(i)
 			i++
 			escape = false
@@ -2046,6 +2136,9 @@ func (sc *sourceScan) tokens(s string) []string {
 				continue
 			}
 			flush(i)
+			if identCanBeLocal(lastIdent) {
+				locals[lastIdent] = struct{}{}
+			}
 			tokens = append(tokens, "=")
 			afterValue = false
 			afterDot = false
@@ -2094,6 +2187,8 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.hitComment = hitComment
 	sc.inCharClass = inCharClass
 	sc.inCharClassStart = inCharClassStart
+	sc.lastIdent = lastIdent
+	sc.locals = locals
 	return tokens
 }
 
