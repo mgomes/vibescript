@@ -1832,14 +1832,14 @@ func remainderContainsNext(stmts []Statement) bool {
 		switch typed := stmt.(type) {
 		case *NextStmt:
 			return true
+		case *RaiseStmt, *ReturnStmt, *BreakStmt, *RetryStmt:
+			return false
 		case *IfStmt:
-			if remainderContainsNext(typed.Consequent) || remainderContainsNext(typed.Alternate) {
+			if remainderContainsNextIf(typed) {
 				return true
 			}
-			for _, branch := range typed.ElseIf {
-				if remainderContainsNext(branch.Consequent) {
-					return true
-				}
+			if !ensureIfMayComplete(typed) {
+				return false
 			}
 		case *TryStmt:
 			if tryEnsureAborts(typed.Ensure) {
@@ -1854,6 +1854,37 @@ func remainderContainsNext(stmts []Statement) bool {
 					return true
 				}
 			}
+		}
+	}
+	return false
+}
+
+func remainderContainsNextIf(stmt *IfStmt) bool {
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if known && truthy {
+		return remainderContainsNext(stmt.Consequent)
+	}
+	if known && !truthy {
+		for _, branch := range stmt.ElseIf {
+			t, k := staticExpressionTruthiness(branch.Condition)
+			if k && t {
+				return remainderContainsNext(branch.Consequent)
+			}
+			if !k {
+				if remainderContainsNext(branch.Consequent) {
+					return true
+				}
+				continue
+			}
+		}
+		return remainderContainsNext(stmt.Alternate)
+	}
+	if remainderContainsNext(stmt.Consequent) || remainderContainsNext(stmt.Alternate) {
+		return true
+	}
+	for _, branch := range stmt.ElseIf {
+		if remainderContainsNext(branch.Consequent) {
+			return true
 		}
 	}
 	return false
