@@ -219,6 +219,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later aborting mutator block is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].delete_if(1) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "later read after an aborting expression is not an observation",
 			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  [1].clear(2)\n  puts row\nend\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -569,6 +574,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			source: "[1].pop(-1)\nputs \"done\"",
 		},
 		{
+			name:   "fill with too many selectors cannot update",
+			source: "[1].fill(0, 0, 1, 2)\nputs \"done\"",
+		},
+		{
+			name:   "insert with a non-integer index cannot update",
+			source: "[1].insert(\"x\", 2)\nputs \"done\"",
+		},
+		{
 			name:   "shift with a non-integer count cannot update",
 			source: "[1].shift(\"x\")\nputs \"done\"",
 		},
@@ -675,6 +688,11 @@ func TestDiscardedMutatorMessagesTeachTheFix(t *testing.T) {
 			name:   "element-returning mutator binds the receiver",
 			source: "[1, 2].pop\nputs \"done\"",
 			want:   "pop updates a temporary; the update reaches nothing. Bind the receiver first, as in `xs = [...]; xs.pop`",
+		},
+		{
+			name:   "hash store binds the receiver",
+			source: "{a: 1}.store(:b, 2)\nputs \"done\"",
+			want:   "store updates a temporary; the update reaches nothing. Bind the receiver first, as in `xs = {...}; xs.store(...)`",
 		},
 		{
 			name:   "bare member call keeps its own spelling",

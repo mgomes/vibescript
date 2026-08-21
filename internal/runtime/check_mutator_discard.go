@@ -677,11 +677,17 @@ func (c *scriptChecker) collectionMutatorCallShapeMayComplete(receiver Expressio
 		}
 		return staticHashReplaceArgMayComplete(call.Args[0])
 	case "insert":
-		return n >= 1 && !kwargs
+		if n < 1 || kwargs {
+			return false
+		}
+		return staticInsertIndexMayComplete(call.Args[0])
 	case "delete_if", "keep_if":
 		return n == 0 && !kwargs && block
 	case "fill":
-		return !kwargs && (n >= 1 || block)
+		if kwargs {
+			return false
+		}
+		return staticFillCallMayComplete(call)
 	default:
 		return true
 	}
@@ -1344,6 +1350,9 @@ func (c *scriptChecker) expressionObservesName(expr Expression, names map[string
 			if member.Property == "delete" && staticDeleteMissBlockUnreachable(member.Object, typed) {
 				return false
 			}
+			if !c.expressionProvablyCompletes(typed) {
+				return false
+			}
 		}
 		for _, param := range typed.Block.Params {
 			if c.expressionObservesName(param.DefaultVal, names) {
@@ -1848,6 +1857,81 @@ func staticHashReplaceArgMayComplete(expr Expression) bool {
 	return kind == KindHash || kind == KindObject
 }
 
+func staticInsertIndexMayComplete(expr Expression) bool {
+	val, ok := staticLiteralValue(expr)
+	if !ok {
+		return true
+	}
+	if val.Kind() != KindInt && val.Kind() != KindFloat {
+		return false
+	}
+	_, err := valueToInt(val)
+	return err == nil
+}
+
+func staticFillCallMayComplete(call *CallExpr) bool {
+	if call.Block != nil {
+		return staticFillSelectorsMayComplete(call.Args)
+	}
+	if len(call.Args) < 1 {
+		return false
+	}
+	return staticFillSelectorsMayComplete(call.Args[1:])
+}
+
+func staticFillSelectorsMayComplete(selectors []Expression) bool {
+	switch len(selectors) {
+	case 0:
+		return true
+	case 1:
+		return staticFillStartOrRangeMayComplete(selectors[0])
+	case 2:
+		if _, isRange := selectors[0].(*RangeExpr); isRange {
+			return false
+		}
+		return staticFillIndexMayComplete(selectors[0]) && staticFillLengthMayComplete(selectors[1])
+	default:
+		return false
+	}
+}
+
+func staticFillStartOrRangeMayComplete(expr Expression) bool {
+	if _, isRange := expr.(*RangeExpr); isRange {
+		return true
+	}
+	return staticFillIndexMayComplete(expr)
+}
+
+func staticFillIndexMayComplete(expr Expression) bool {
+	val, ok := staticLiteralValue(expr)
+	if !ok {
+		return true
+	}
+	if val.Kind() == KindNil {
+		return true
+	}
+	if val.Kind() != KindInt && val.Kind() != KindFloat {
+		return false
+	}
+	_, err := valueToInt(val)
+	return err == nil
+}
+
+func staticFillLengthMayComplete(expr Expression) bool {
+	val, ok := staticLiteralValue(expr)
+	if !ok {
+		return true
+	}
+	if val.Kind() == KindNil {
+		return true
+	}
+	if val.Kind() != KindInt && val.Kind() != KindFloat {
+		return false
+	}
+	n, err := valueToInt(val)
+	return err == nil && n >= 0
+}
+
 func staticNonNegativeCountMayComplete(expr Expression) bool {
 	if value, exact := integerLiteralValue(expr); exact {
 		if value.IsBigInt() {
@@ -1970,7 +2054,7 @@ func typeExprLeavesCollectionStorage(ty *TypeExpr) bool {
 
 func elementReturningCollectionMutator(property string) bool {
 	switch property {
-	case "pop", "shift", "delete":
+	case "pop", "shift", "delete", "store":
 		return true
 	default:
 		return false
