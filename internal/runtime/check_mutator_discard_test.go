@@ -804,6 +804,21 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each { |row| while row.length < 3; row.push(0); if flag; raise \"x\"; elsif true; raise \"y\"; else; next; end; end }\nend\nf(true)\nputs \"done\"",
 			want:   "mutating block parameter row",
 		},
+		{
+			name:   "try else overrides the body as a discarded result",
+			source: "def f\n  begin\n    [1].push(2)\n  rescue\n    nil\n  else\n    nil\n  end\nend\nf()\nputs \"done\"",
+			want:   "push updates a temporary",
+		},
+		{
+			name:   "map try else still discards the body mutator",
+			source: "[1].map { begin; [1].push(2); rescue; nil; else; nil; end }\nputs \"done\"",
+			want:   "push updates a temporary",
+		},
+		{
+			name:   "returning ensure overrides the try body result",
+			source: "def f\n  begin\n    [1].push(2)\n  ensure\n    return nil\n  end\nend\nf()\nputs \"done\"",
+			want:   "push updates a temporary",
+		},
 	}
 
 	for _, tc := range tests {
@@ -1325,6 +1340,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "true elsif shadows unreachable if-expression else mutator",
 			source: "def f(flag)\n  if flag then nil elsif true then nil else [1].push(2) end\n  nil\nend\nf(true)\nputs \"done\"",
+		},
+		{
+			name:   "begin without else still yields the body",
+			source: "def f\n  begin\n    [1].push(2)\n  rescue\n    nil\n  end\nend\ny = f()\nputs y",
 		},
 	}
 

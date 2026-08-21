@@ -4382,8 +4382,16 @@ func collectImplicitReturnLeafStatement(stmt Statement, out map[Statement]struct
 		}
 		collectImplicitReturnLeaves(typed.Alternate, out)
 	case *TryStmt:
-		collectImplicitReturnLeaves(typed.Body, out)
-		collectImplicitReturnLeaves(typed.Else, out)
+		if tryEnsureAborts(typed.Ensure) {
+			return
+		}
+		bodyMayComplete := ensurePathMayComplete(typed.Body)
+		if len(typed.Else) == 0 || !bodyMayComplete {
+			collectImplicitReturnLeaves(typed.Body, out)
+		}
+		if len(typed.Else) > 0 && bodyMayComplete {
+			collectImplicitReturnLeaves(typed.Else, out)
+		}
 		for i := range typed.Rescues {
 			collectImplicitReturnLeaves(typed.Rescues[i].Body, out)
 		}
