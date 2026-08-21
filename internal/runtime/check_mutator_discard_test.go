@@ -569,6 +569,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].fill(2) { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
 		},
+		{
+			name:   "exclusive range past the end still writes a temporary",
+			source: "[1].fill(9, 2...2)\nputs \"done\"",
+			want:   "fill updates a temporary",
+		},
+		{
+			name:   "normalized empty fill range is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].fill(-1...0) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
 	}
 
 	for _, tc := range tests {

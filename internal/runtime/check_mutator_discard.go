@@ -388,11 +388,56 @@ func staticFillResolvedStart(expr Expression, length int) (int, bool) {
 	return begin, true
 }
 
+func staticFillResolvedRange(expr Expression, length int) (begin, end, finalLength int, ok bool) {
+	rng, isRange := expr.(*RangeExpr)
+	if !isRange {
+		return 0, 0, 0, false
+	}
+	start, okStart := integerLiteralValue(rng.Start)
+	endLit, okEnd := integerLiteralValue(rng.End)
+	if !okStart || !okEnd || start.IsBigInt() || endLit.IsBigInt() {
+		return 0, 0, 0, false
+	}
+	begin64 := start.Int()
+	if begin64 < 0 {
+		begin64 += int64(length)
+		if begin64 < 0 {
+			return 0, 0, 0, false
+		}
+	}
+	end64 := endLit.Int()
+	if end64 < 0 {
+		end64 += int64(length)
+	}
+	if !rng.Exclusive {
+		end64++
+	}
+	if end64 < begin64 {
+		end64 = begin64
+	}
+	final := int(end64)
+	if final < length {
+		final = length
+	}
+	return int(begin64), int(end64), final, true
+}
+
+func staticFillRangeWrites(expr Expression, length int) (writes, ok bool) {
+	begin, end, finalLength, ok := staticFillResolvedRange(expr, length)
+	if !ok {
+		return false, false
+	}
+	return begin < end || finalLength > length, true
+}
+
 func staticFillSelectorsActive(selectors []Expression, length int) bool {
 	switch len(selectors) {
 	case 0:
 		return length > 0
 	case 1:
+		if writes, ok := staticFillRangeWrites(selectors[0], length); ok {
+			return writes
+		}
 		if staticExclusiveEmptyRange(selectors[0]) {
 			return false
 		}
@@ -402,6 +447,9 @@ func staticFillSelectorsActive(selectors []Expression, length int) bool {
 		}
 		return begin < length
 	case 2:
+		if writes, ok := staticFillRangeWrites(selectors[0], length); ok {
+			return writes
+		}
 		if staticExclusiveEmptyRange(selectors[0]) {
 			return false
 		}
@@ -459,6 +507,9 @@ func staticFillMayYield(receiver Expression, call *CallExpr) bool {
 		return true
 	}
 	selectors := fillSelectors(call)
+	if begin, end, _, ok := staticFillResolvedRange(firstFillSelector(selectors), length); ok {
+		return begin < end
+	}
 	if staticExclusiveEmptyRange(firstFillSelector(selectors)) {
 		return false
 	}
