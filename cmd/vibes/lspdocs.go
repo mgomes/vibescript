@@ -1066,7 +1066,13 @@ func mixinContainer(program *ast.Program, lines []string, hoverLine int) *ast.Cl
 	var walk func(st *ast.ClassStmt, start, end int)
 	walk = func(st *ast.ClassStmt, start, end int) {
 		siblingStarts := classChildStarts(st)
-		for _, nested := range st.Modules {
+		nestedClasses := append([]*ast.ClassStmt(nil), st.Modules...)
+		for _, stmt := range st.Body {
+			if nested, ok := stmt.(*ast.ClassStmt); ok {
+				nestedClasses = append(nestedClasses, nested)
+			}
+		}
+		for _, nested := range nestedClasses {
 			nestedEnd := end
 			for _, sibling := range siblingStarts {
 				if sibling > nested.Position.Line && sibling-1 < nestedEnd {
@@ -1261,7 +1267,15 @@ func identifierTokensSkippingStrings(s string) []string {
 	afterValue := false
 	flush := func(i int) {
 		if start >= 0 {
-			tokens = append(tokens, s[start:i])
+			tok := s[start:i]
+			j := i
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+				j++
+			}
+			if j < len(s) && s[j] == ':' {
+				tok += ":"
+			}
+			tokens = append(tokens, tok)
 			start = -1
 			afterValue = true
 		}
