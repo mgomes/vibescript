@@ -1814,12 +1814,9 @@ func (sc *sourceScan) tokens(s string) []string {
 	applyOpener := func(tok string) {
 		switch tok {
 		case "def":
+			inherited := enclosingClassLocals(openers, localsStack, locals)
 			localsStack = append(localsStack, locals)
-			cloned := make(map[string]struct{}, len(locals))
-			for name := range locals {
-				cloned[name] = struct{}{}
-			}
-			locals = cloned
+			locals = inherited
 			afterDef = true
 			afterDefName = false
 			inParams = false
@@ -3000,15 +2997,49 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.interpPercentDepth = interpPercentDepth
 	sc.openers = openers
 	sc.localsStack = localsStack
-	out := tokens
+	continued := func(toks []string) []string {
+		if n := len(toks); n > 0 {
+			switch toks[n-1] {
+			case ",", "(":
+				return toks
+			}
+		}
+		return nil
+	}
 	for i := len(tokens) - 1; i >= 0; i-- {
 		if tokens[i] == ";" {
-			sc.pendingTokens = tokens[i+1:]
+			sc.pendingTokens = continued(tokens[i+1:])
 			return tokens
 		}
 	}
-	sc.pendingTokens = append(pendingTokens, out...)
+	if rest := continued(tokens); rest != nil {
+		sc.pendingTokens = append(pendingTokens, rest...)
+		return tokens
+	}
+	sc.pendingTokens = nil
 	return tokens
+}
+
+func enclosingClassLocals(openers []string, stack []map[string]struct{}, current map[string]struct{}) map[string]struct{} {
+	cloned := func(src map[string]struct{}) map[string]struct{} {
+		out := make(map[string]struct{}, len(src))
+		for name := range src {
+			out[name] = struct{}{}
+		}
+		return out
+	}
+	for i := len(openers) - 1; i >= 0; i-- {
+		switch openers[i] {
+		case "class", "module":
+			return cloned(current)
+		case "def":
+			if i < len(stack) {
+				return cloned(stack[i])
+			}
+			return map[string]struct{}{}
+		}
+	}
+	return map[string]struct{}{}
 }
 
 func isBlockCommentBegin(line string) bool {
