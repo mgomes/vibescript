@@ -1878,6 +1878,19 @@ func ensureContainsBreak(stmts []Statement) bool {
 					return true
 				}
 			}
+		case *TryStmt:
+			if tryEnsureAborts(typed.Ensure) {
+				return ensureContainsBreak(typed.Ensure)
+			}
+			if ensureContainsBreak(typed.Body) || ensureContainsBreak(typed.Else) ||
+				ensureContainsBreak(typed.Ensure) {
+				return true
+			}
+			for _, clause := range typed.Rescues {
+				if ensureContainsBreak(clause.Body) {
+					return true
+				}
+			}
 		}
 	}
 	return false
