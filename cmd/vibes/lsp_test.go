@@ -3439,6 +3439,25 @@ func TestHoverQualifiedNestedModuleReference(t *testing.T) {
 	}
 }
 
+func TestHoverIncludeExtendDirectiveIsContextual(t *testing.T) {
+	t.Parallel()
+	assigned := "include = 1\ninclude\n"
+	if got := hoverValue(t, assigned, 0, 0); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include =) = %q, must not serve mixin-removal docs", got)
+	}
+	if got := hoverValue(t, assigned, 1, 0); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include read) = %q, must not serve mixin-removal docs", got)
+	}
+	called := "def include()\n  1\nend\ninclude()\n"
+	if got := hoverValue(t, called, 3, 0); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include()) = %q, must not serve mixin-removal docs", got)
+	}
+	directive := "class C\n  include Naming\nend\n"
+	if got := hoverValue(t, directive, 1, 2); !strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include Naming) = %q, want mixin-removal docs", got)
+	}
+}
+
 func TestHoverBareAssignmentIsNotASetterCall(t *testing.T) {
 	t.Parallel()
 	source := "class Counter\n" +

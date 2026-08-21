@@ -306,7 +306,12 @@ func hoverMarkdown(catalog builtinCatalog, program *ast.Program, lines []string,
 			return md
 		}
 		if doc, ok := keywordDocs[word]; ok {
-			return fmt.Sprintf("`%s`\n\n%s", word, doc)
+			if word != "include" && word != "extend" {
+				return fmt.Sprintf("`%s`\n\n%s", word, doc)
+			}
+			if mixinDirectiveContext(lines, line, character) {
+				return fmt.Sprintf("`%s`\n\n%s", word, doc)
+			}
 		}
 	}
 	if md := userSymbolHover(program, lines, word, line, character); md != "" {
@@ -1002,6 +1007,31 @@ func assignmentFollowsWord(lines []string, line, character int) bool {
 		return false
 	}
 	return i+1 >= len(runes) || (runes[i+1] != '=' && runes[i+1] != '~')
+}
+
+// mixinDirectiveContext reports whether include/extend at this position is
+// written as a mixin directive (`include SomeModule`) rather than as an
+// ordinary identifier. Assignment (`include = 1`), parenthesized calls
+// (`include()`), and a bare word are not directives; the parser keeps those
+// as normal statements so the names stay usable.
+func mixinDirectiveContext(lines []string, line, character int) bool {
+	runes, _, end, ok := wordSpanAtPosition(lines, line, character)
+	if !ok {
+		return false
+	}
+	i := end
+	for i < len(runes) && (runes[i] == ' ' || runes[i] == '\t') {
+		i++
+	}
+	if i >= len(runes) {
+		return false
+	}
+	switch runes[i] {
+	case '=', '(':
+		return false
+	default:
+		return isWordRune(runes[i])
+	}
 }
 
 // userSymbolCandidate is one declaration matching the hovered word.
