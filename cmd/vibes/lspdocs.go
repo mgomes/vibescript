@@ -1998,6 +1998,80 @@ func (sc *sourceScan) tokens(s string) []string {
 			}
 		}
 	}
+	pushInterpBlock := func(kind string) {
+		openers = append(openers, kind)
+		localsStack = append(localsStack, locals)
+		cloned := make(map[string]struct{}, len(locals))
+		for name := range locals {
+			cloned[name] = struct{}{}
+		}
+		seedImplicitBlockLocals(cloned)
+		locals = cloned
+		afterBlockPipes = true
+		inPipes = false
+		inParamDefault = false
+		afterValue = false
+		lastIdent = ""
+	}
+	popInterpBlock := func() bool {
+		n := len(openers)
+		if n == 0 {
+			return false
+		}
+		top := openers[n-1]
+		if top != "brace" && top != "do" {
+			return false
+		}
+		openers = openers[:n-1]
+		if len(localsStack) > 0 {
+			locals = localsStack[len(localsStack)-1]
+			localsStack = localsStack[:len(localsStack)-1]
+		}
+		inPipes = false
+		afterBlockPipes = false
+		inParamDefault = false
+		afterValue = true
+		lastIdent = ""
+		return true
+	}
+	interpHandlePipe := func() {
+		if inPipes {
+			inParamDefault = false
+			inPipes = false
+		} else if afterBlockPipes {
+			var parent map[string]struct{}
+			if n := len(localsStack); n > 0 {
+				parent = localsStack[n-1]
+			}
+			for _, name := range []string{"it", "_1", "_2", "_3", "_4", "_5", "_6", "_7", "_8", "_9"} {
+				if parent != nil {
+					if _, ok := parent[name]; ok {
+						continue
+					}
+				}
+				delete(locals, name)
+			}
+			inPipes = true
+		}
+		afterBlockPipes = false
+	}
+	interpHandleIdent := func(name string) {
+		switch name {
+		case "do":
+			pushInterpBlock("do")
+		case "end":
+			if !popInterpBlock() {
+				afterValue = true
+				lastIdent = name
+			}
+		default:
+			if inPipes && identCanBeLocal(name) && !inParamDefault {
+				locals[name] = struct{}{}
+			}
+			afterValue = true
+			lastIdent = name
+		}
+	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		if inStr != 0 {
@@ -2076,19 +2150,29 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				if c == '{' {
+					if afterValue {
+						pushInterpBlock("brace")
+						continue
+					}
 					interpDepth++
 					afterValue = false
 					lastIdent = ""
 					continue
 				}
 				if c == '}' {
+					if popInterpBlock() {
+						continue
+					}
 					interpDepth--
 					afterValue = true
 					continue
 				}
+				if c == '|' {
+					interpHandlePipe()
+					continue
+				}
 				if name, extra, ok := interpIdentSkip(s, i); ok {
-					afterValue = true
-					lastIdent = name
+					interpHandleIdent(name)
 					i += extra
 					continue
 				}
@@ -2201,19 +2285,29 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				if c == '{' {
+					if afterValue {
+						pushInterpBlock("brace")
+						continue
+					}
 					interpDepth++
 					afterValue = false
 					lastIdent = ""
 					continue
 				}
 				if c == '}' {
+					if popInterpBlock() {
+						continue
+					}
 					interpDepth--
 					afterValue = true
 					continue
 				}
+				if c == '|' {
+					interpHandlePipe()
+					continue
+				}
 				if name, extra, ok := interpIdentSkip(s, i); ok {
-					afterValue = true
-					lastIdent = name
+					interpHandleIdent(name)
 					i += extra
 					continue
 				}
@@ -2367,6 +2461,11 @@ func (sc *sourceScan) tokens(s string) []string {
 							continue
 						}
 						if ch == '{' {
+							if afterValue {
+								pushInterpBlock("brace")
+								i++
+								continue
+							}
 							interpDepth++
 							afterValue = false
 							lastIdent = ""
@@ -2374,14 +2473,22 @@ func (sc *sourceScan) tokens(s string) []string {
 							continue
 						}
 						if ch == '}' {
+							if popInterpBlock() {
+								i++
+								continue
+							}
 							interpDepth--
 							afterValue = true
 							i++
 							continue
 						}
+						if ch == '|' {
+							interpHandlePipe()
+							i++
+							continue
+						}
 						if name, extra, ok := interpIdentSkip(s, i); ok {
-							afterValue = true
-							lastIdent = name
+							interpHandleIdent(name)
 							i += extra + 1
 							continue
 						}
