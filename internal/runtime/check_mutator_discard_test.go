@@ -354,6 +354,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "union ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].union { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "descending fill range is not an observation",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1, 2].fill(1...0) { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -908,6 +913,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "empty fill window does not write a temporary",
 			source: "[1].fill(0, 0) { 9 }\nputs \"done\"",
+		},
+		{
+			name:   "empty delete_if does not write a temporary",
+			source: "[].delete_if { true }\nputs \"done\"",
+		},
+		{
+			name:   "empty keep_if does not write a temporary",
+			source: "[].keep_if { false }\nputs \"done\"",
 		},
 		{
 			name:   "handled raise still observes after the try",

@@ -212,7 +212,8 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 	case "fill":
 		return staticFillMayYield(receiver, call)
 	case "zip", "join", "transpose", "length", "size", "empty?",
-		"first", "last", "inspect", "to_s", "to_a", "hash", "itself":
+		"first", "last", "inspect", "to_s", "to_a", "hash", "itself",
+		"union", "difference", "intersection":
 		return false
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
@@ -993,6 +994,11 @@ func collectionMutatorCallActuallyWrites(property string, call *CallExpr, receiv
 		return len(expanded.Args) >= 2
 	case "fill":
 		return staticFillWrites(receiver, call)
+	case "delete_if", "keep_if":
+		if length, ok := staticCollectionLength(receiver); ok && length == 0 {
+			return false
+		}
+		return true
 	case "delete":
 		return !staticDeleteIsMiss(receiver, call)
 	default:
