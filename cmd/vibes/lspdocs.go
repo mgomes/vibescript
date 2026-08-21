@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
 	vibescript "github.com/mgomes/vibescript"
 	"github.com/mgomes/vibescript/internal/ast"
@@ -1037,7 +1038,7 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 	case '(':
 		return true
 	default:
-		return isWordRune(runes[i])
+		return unicode.IsLetter(runes[i]) || runes[i] == '_'
 	}
 }
 
@@ -1120,16 +1121,54 @@ func classBodyHasLocal(st *ast.ClassStmt, word string, hoverLine int) bool {
 	if st == nil {
 		return false
 	}
-	for _, stmt := range st.Body {
-		if stmt.Pos().Line >= hoverLine {
-			continue
-		}
-		as, ok := stmt.(*ast.AssignStmt)
-		if !ok {
-			continue
-		}
-		if assignmentBindsName(as.Target, word) {
+	return statementsBindLocal(st.Body, word, hoverLine)
+}
+
+func statementsBindLocal(stmts []ast.Statement, word string, hoverLine int) bool {
+	for _, stmt := range stmts {
+		if statementsBindLocalOne(stmt, word, hoverLine) {
 			return true
+		}
+	}
+	return false
+}
+
+func statementsBindLocalOne(stmt ast.Statement, word string, hoverLine int) bool {
+	if stmt == nil || stmt.Pos().Line > hoverLine {
+		return false
+	}
+	switch s := stmt.(type) {
+	case *ast.AssignStmt:
+		return stmt.Pos().Line < hoverLine && assignmentBindsName(s.Target, word)
+	case *ast.ForStmt:
+		if stmt.Pos().Line < hoverLine && assignmentBindsName(s.Target, word) {
+			return true
+		}
+		return statementsBindLocal(s.Body, word, hoverLine)
+	case *ast.IfStmt:
+		if statementsBindLocal(s.Consequent, word, hoverLine) ||
+			statementsBindLocal(s.Alternate, word, hoverLine) {
+			return true
+		}
+		for _, branch := range s.ElseIf {
+			if statementsBindLocalOne(branch, word, hoverLine) {
+				return true
+			}
+		}
+	case *ast.WhileStmt:
+		return statementsBindLocal(s.Body, word, hoverLine)
+	case *ast.UntilStmt:
+		return statementsBindLocal(s.Body, word, hoverLine)
+	case *ast.TryStmt:
+		if statementsBindLocal(s.Body, word, hoverLine) ||
+			statementsBindLocal(s.Else, word, hoverLine) ||
+			statementsBindLocal(s.Ensure, word, hoverLine) {
+			return true
+		}
+		for _, clause := range s.Rescues {
+			if statementsBindLocal(clause.Body, word, hoverLine) {
+				return true
+			}
 		}
 	}
 	return false
