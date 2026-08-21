@@ -222,6 +222,7 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		"compact", "except", "flatten", "values_at",
 		"include?", "member?", "key?", "has_key?", "value?", "has_value?",
 		"shuffle", "reverse", "rotate", "product", "sample", "permutation",
+		"combination", "repeated_combination", "repeated_permutation",
 		"min", "max", "minmax", "at":
 		return false
 	}
@@ -1764,24 +1765,8 @@ func ensurePathMayComplete(stmts []Statement) bool {
 		case *RaiseStmt, *ReturnStmt, *BreakStmt, *RetryStmt, *NextStmt:
 			return false
 		case *IfStmt:
-			truthy, known := staticExpressionTruthiness(typed.Condition)
-			if known && truthy {
-				if !ensurePathMayComplete(typed.Consequent) {
-					return false
-				}
-			} else if known && !truthy {
-				for _, branch := range typed.ElseIf {
-					t, k := staticExpressionTruthiness(branch.Condition)
-					if !k {
-						return true
-					}
-					if t {
-						return ensurePathMayComplete(branch.Consequent)
-					}
-				}
-				if !ensurePathMayComplete(typed.Alternate) {
-					return false
-				}
+			if !ensureIfMayComplete(typed) {
+				return false
 			}
 		case *TryStmt:
 			if !ensurePathMayComplete(typed.Ensure) {
@@ -1802,6 +1787,40 @@ func ensurePathMayComplete(stmts []Statement) bool {
 		}
 	}
 	return true
+}
+
+func ensureIfMayComplete(stmt *IfStmt) bool {
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if known && truthy {
+		return ensurePathMayComplete(stmt.Consequent)
+	}
+	if known && !truthy {
+		for _, branch := range stmt.ElseIf {
+			t, k := staticExpressionTruthiness(branch.Condition)
+			if k && t {
+				return ensurePathMayComplete(branch.Consequent)
+			}
+			if !k {
+				if ensurePathMayComplete(branch.Consequent) {
+					return true
+				}
+				continue
+			}
+		}
+		return ensurePathMayComplete(stmt.Alternate)
+	}
+	if ensurePathMayComplete(stmt.Consequent) {
+		return true
+	}
+	for _, branch := range stmt.ElseIf {
+		if ensurePathMayComplete(branch.Consequent) {
+			return true
+		}
+	}
+	if len(stmt.Alternate) == 0 {
+		return true
+	}
+	return ensurePathMayComplete(stmt.Alternate)
 }
 
 func remainderContainsNext(stmts []Statement) bool {
