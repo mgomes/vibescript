@@ -1730,6 +1730,7 @@ type sourceScan struct {
 	interpPercentDepth  int
 	openers             []string
 	localsStack         []map[string]struct{}
+	pendingTokens       []string
 }
 
 type sourceRescueBind struct {
@@ -1789,6 +1790,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	interpPercentDepth := sc.interpPercentDepth
 	openers := sc.openers
 	localsStack := sc.localsStack
+	pendingTokens := append([]string(nil), sc.pendingTokens...)
 	afterSpace := false
 	atStmtStart := true
 	inLoopHeader := false
@@ -2095,6 +2097,7 @@ func (sc *sourceScan) tokens(s string) []string {
 				inStr = 0
 				tokens = append(tokens, `""`)
 				afterValue = true
+				lastIdent = ""
 			}
 			continue
 		}
@@ -2224,6 +2227,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					percentDepth = 0
 					percentInterpolates = false
 					afterValue = true
+					lastIdent = ""
 					tokens = append(tokens, "%")
 				}
 			}
@@ -2270,6 +2274,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			if c == '/' {
 				inRegex = false
 				afterValue = true
+				lastIdent = ""
 				tokens = append(tokens, "//")
 			}
 			continue
@@ -2412,6 +2417,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			start = -1
 			afterValue = true
 			afterSpace = false
+			lastIdent = ""
 			i--
 			continue
 		}
@@ -2492,6 +2498,7 @@ func (sc *sourceScan) tokens(s string) []string {
 						i++
 					}
 					tokens = append(tokens, "//")
+					lastIdent = ""
 					break
 				}
 				i++
@@ -2534,8 +2541,9 @@ func (sc *sourceScan) tokens(s string) []string {
 			bracketDepth := 0
 			skipMember := false
 			skipIndexReceiver := false
-			for j := len(tokens) - 1; j >= 0; j-- {
-				tok := tokens[j]
+			assignToks := append(append([]string{}, pendingTokens...), tokens...)
+			for j := len(assignToks) - 1; j >= 0; j-- {
+				tok := assignToks[j]
 				if tok == ";" || tok == "=" || isControlKeyword(tok) {
 					break
 				}
@@ -2766,6 +2774,14 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.interpPercentDepth = interpPercentDepth
 	sc.openers = openers
 	sc.localsStack = localsStack
+	out := tokens
+	for i := len(tokens) - 1; i >= 0; i-- {
+		if tokens[i] == ";" {
+			sc.pendingTokens = tokens[i+1:]
+			return tokens
+		}
+	}
+	sc.pendingTokens = append(pendingTokens, out...)
 	return tokens
 }
 
