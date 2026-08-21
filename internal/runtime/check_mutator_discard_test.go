@@ -259,6 +259,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later invalid map iterator block is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.map(1) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "later mismatched try rescue is not an observation",
 			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  begin\n    raise TypeError, \"x\"\n  rescue ArgumentError\n    puts row\n  end\nend\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -598,6 +603,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "cycle zero never runs the block",
 			source: "[[]].cycle(0) { |row| row.push(1) }\nputs \"done\"",
+		},
+		{
+			name:   "cycle splatted zero never runs the block",
+			source: "[[]].cycle(*[0]) { |row| row.push(1) }\nputs \"done\"",
 		},
 		{
 			name:   "cycle negative never runs the block",

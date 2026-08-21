@@ -171,6 +171,9 @@ func (c *scriptChecker) mutatorDiscardCallFacts(call *CallExpr, target staticCal
 // each_slice error or yield nothing when the window cannot run; an empty
 // literal receiver never yields.
 func staticIteratorMayYield(property string, receiver Expression, call *CallExpr) bool {
+	if expanded, ok := staticExpandedCall(call); ok {
+		call = expanded
+	}
 	switch property {
 	case "cycle":
 		if !staticCycleMayYield(call) {
@@ -206,14 +209,15 @@ func staticIteratorCallMayComplete(property string, call *CallExpr) bool {
 		call = expanded
 	}
 	switch property {
-	case "each", "each_key", "each_value", "reverse_each":
+	case "each", "each_key", "each_value", "each_pair", "reverse_each", "map",
+		"select", "reject", "filter":
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
 	case "each_with_index", "cycle":
 		return len(call.Args) <= 1 && len(call.KwArgs) == 0
 	case "each_cons", "each_slice":
 		return staticWindowSizeMayRun(call) && len(call.KwArgs) == 0
 	default:
-		return true
+		return len(call.Args) == 0 && len(call.KwArgs) == 0
 	}
 }
 
