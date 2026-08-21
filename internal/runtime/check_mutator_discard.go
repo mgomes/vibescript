@@ -1857,13 +1857,22 @@ func ensureContainsBreak(stmts []Statement) bool {
 				continue
 			}
 			if known && !truthy {
-				if ensureContainsBreak(typed.Alternate) {
-					return true
-				}
+				taken := false
 				for _, branch := range typed.ElseIf {
-					if ensureContainsBreak(branch.Consequent) {
+					t, k := staticExpressionTruthiness(branch.Condition)
+					if k && t {
+						if ensureContainsBreak(branch.Consequent) {
+							return true
+						}
+						taken = true
+						break
+					}
+					if !k && ensureContainsBreak(branch.Consequent) {
 						return true
 					}
+				}
+				if !taken && ensureContainsBreak(typed.Alternate) {
+					return true
 				}
 				continue
 			}
@@ -1879,8 +1888,13 @@ func ensureContainsBreak(stmts []Statement) bool {
 			if tryEnsureAborts(typed.Ensure) {
 				return ensureContainsBreak(typed.Ensure)
 			}
-			if ensureContainsBreak(typed.Body) || ensureContainsBreak(typed.Else) ||
-				ensureContainsBreak(typed.Ensure) {
+			if ensureContainsBreak(typed.Body) {
+				return true
+			}
+			if ensurePathMayComplete(typed.Body) && ensureContainsBreak(typed.Else) {
+				return true
+			}
+			if ensureContainsBreak(typed.Ensure) {
 				return true
 			}
 			for _, clause := range typed.Rescues {
@@ -2159,8 +2173,13 @@ func (c *scriptChecker) statementsMayBreak(stmts []Statement) bool {
 			if tryEnsureAborts(typed.Ensure) {
 				return c.statementsMayBreak(typed.Ensure)
 			}
-			if c.statementsMayBreak(typed.Body) || c.statementsMayBreak(typed.Else) ||
-				c.statementsMayBreak(typed.Ensure) {
+			if c.statementsMayBreak(typed.Body) {
+				return true
+			}
+			if c.statementsMayCompleteNormally(typed.Body) && c.statementsMayBreak(typed.Else) {
+				return true
+			}
+			if c.statementsMayBreak(typed.Ensure) {
 				return true
 			}
 			for _, clause := range typed.Rescues {

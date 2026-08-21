@@ -690,6 +690,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "unreachable elsif-else break is not a loop exit",
+			source: "rows = [[1], [2]]\nrows.each { |row| while true; row.push(0); begin; break; ensure; while true; if false; elsif true; raise \"x\"; else; break; end; end; end; end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "unreachable try else break is not a loop exit",
+			source: "rows = [[1], [2]]\nrows.each { |row| while true; row.push(0); begin; raise \"x\"; rescue; nil; else; break; end; end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "min ignores its block so it is not an observation",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].min { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
