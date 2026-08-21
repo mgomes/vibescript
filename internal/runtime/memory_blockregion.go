@@ -218,7 +218,8 @@ func (exec *Execution) beginRegionBaseWalk(est *memoryEstimator, scalars int) ba
 				got, ref, c.graphBytes, freshPrefix, c.outputBytes, freshOutputs, suffix, freshSuffix,
 				freshPrefix+freshOutputs+freshSuffix,
 				len(exec.envStack), boundary, exec.builtinDepth,
-				exec.blockRegionBuiltinDepth))
+				exec.blockRegionBuiltinDepth,
+			))
 		}
 	}
 

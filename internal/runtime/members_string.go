@@ -3518,7 +3518,8 @@ func stringTemplateRenderedLen(
 		if retained := cache.retainedBytes(); retained-checkedScratch >= templateScratchCheckBytes {
 			if exec != nil {
 				if err := exec.checkProjectedStringBytesWithCallRoots(
-					retained, receiver, args, kwargs, block); err != nil {
+					retained, receiver, args, kwargs, block,
+				); err != nil {
 					return false, 0, cache, err
 				}
 			}
@@ -3547,7 +3548,8 @@ func stringTemplateWithExecution(exec *Execution, text string, context Value, st
 	// converted twice -- once to size it and once to write it -- so a large
 	// regex or big integer did its conversion twice for one charge.
 	rendered, renderedLen, cache, err := stringTemplateRenderedLen(
-		exec, text, context, strict, receiver, args, kwargs, block)
+		exec, text, context, strict, receiver, args, kwargs, block,
+	)
 	if err != nil {
 		return "", err
 	}
@@ -4469,7 +4471,8 @@ func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]in
 			return NewNil(), err
 		}
 		copyDelta, err := exec.reserveYieldedCopy(
-			projectedRegexElementPayloadBytes(text, loc, groups), receiver, args, kwargs, block)
+			projectedRegexElementPayloadBytes(text, loc, groups), receiver, args, kwargs, block,
+		)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -4833,7 +4836,8 @@ func (exec *Execution) checkProjectedScanOutputBytes(text string, allMatches [][
 	return exec.checkProjectedArrayBytesWithCallRoots(
 		projectedScanResultSlots(allMatches), payload,
 		actualRegexSubmatchIndexBytes(allMatches, groups),
-		receiver, args, kwargs, block)
+		receiver, args, kwargs, block,
+	)
 }
 
 // reserveYieldedCopy reserves payload for a copy a block iterator is about to
@@ -5118,7 +5122,8 @@ func stringMemberTextOps(property string) (Value, error) {
 				// deferred release, which cost more than the check it guards
 				// when a document yields thousands of short lines.
 				copyDelta, err := exec.reserveYieldedCopy(
-					detachedWindowPayloadBytes(text, line), receiver, args, kwargs, block)
+					detachedWindowPayloadBytes(text, line), receiver, args, kwargs, block,
+				)
 				if err != nil {
 					return err
 				}

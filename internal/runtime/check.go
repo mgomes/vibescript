@@ -163,6 +163,17 @@ type scriptChecker struct {
 	retryExitSites             *[]checkStateSnapshot
 	implicitReturnLeaves       map[Statement]struct{}
 	implicitReturnStates       map[Statement]checkStateSnapshot
+	// resultCarryingStatements marks the statements whose value survives the
+	// statement boundary (result-position leaves of function and
+	// value-carrying block bodies), so the discarded-mutator check knows a
+	// statement position from a result position. The marking is syntactic
+	// and stable, so it accumulates across walks; resultBodiesMarked keys
+	// the bodies already collected so a re-walk skips the traversal.
+	resultCarryingStatements map[Statement]struct{}
+	resultBodiesMarked       map[any]struct{}
+	// mutatorDiscardBlocks is the stack of block-literal walks in progress,
+	// innermost last, for the discarded-mutator check's block-parameter arm.
+	mutatorDiscardBlocks       []mutatorDiscardBlock
 	returnAnalyzes             map[returnSummaryCacheKey]functionReturnAnalysis
 	returnAnalysisContextBytes int
 	memberFreeReturnAnalyzes   map[returnSummaryCacheKey]functionReturnAnalysis
@@ -1703,6 +1714,7 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 	}
 	defer c.withFreshLocalInferenceScope()()
 	defer c.withImplicitReturnCapture(fn)()
+	defer c.enterMutatorDiscardFunctionBody(fn)()
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
 	popNameScope := c.pushFunctionNameScope(fn)
@@ -2956,6 +2968,7 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 	}
 	c.withFreshLocalInference(func() {
 		defer c.withImplicitReturnCapture(fn)()
+		defer c.enterMutatorDiscardFunctionBody(fn)()
 		popScope := c.pushScope(make(map[string]struct{}))
 		defer popScope()
 		popNameScope := c.pushFunctionNameScope(fn)
@@ -3617,6 +3630,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.recordBindingTarget(typed.Target)
 		c.captureImplicitReturnState(typed)
 	case *ExprStmt:
+		// The discarded-mutator verdict reads the receiver's structural
+		// facts, which the statement's own walk is about to poison, so it is
+		// decided here and reported only if the walk proves the call runs.
+		reportMutatorDiscard := c.mutatorDiscardVerdict(function, typed)
 		// A statement-level expression discards its value, so a mutator
 		// call's returned receiver cannot escape through it; array mutator
 		// fact preservation keys on this root.
@@ -3628,6 +3645,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if !completed {
 			c.recordNonCompletingExpression()
 			return
+		}
+		if reportMutatorDiscard != nil {
+			reportMutatorDiscard()
 		}
 		c.captureImplicitReturnState(typed)
 	case *ClassStmt:
@@ -4365,8 +4385,16 @@ func collectImplicitReturnLeafStatement(stmt Statement, out map[Statement]struct
 		}
 		collectImplicitReturnLeaves(typed.Alternate, out)
 	case *TryStmt:
-		collectImplicitReturnLeaves(typed.Body, out)
-		collectImplicitReturnLeaves(typed.Else, out)
+		if tryEnsureAborts(typed.Ensure) {
+			return
+		}
+		bodyMayComplete := ensurePathMayComplete(typed.Body)
+		if len(typed.Else) == 0 || !bodyMayComplete {
+			collectImplicitReturnLeaves(typed.Body, out)
+		}
+		if len(typed.Else) > 0 && bodyMayComplete {
+			collectImplicitReturnLeaves(typed.Else, out)
+		}
 		for i := range typed.Rescues {
 			collectImplicitReturnLeaves(typed.Rescues[i].Body, out)
 		}
@@ -5225,7 +5253,12 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				}
 				blockResult = checkBlockResult{exact: true}
 			} else {
-				blockResult = c.checkBlockLiteral(function, typed.Block, false)
+				blockResult = c.checkBlockLiteral(
+					function,
+					typed.Block,
+					false,
+					c.mutatorDiscardCallFacts(typed, target, targetResolved),
+				)
 			}
 		}
 		// A body proved never to complete leaves the fill reachable only where it
@@ -8414,6 +8447,7 @@ func (c *scriptChecker) checkBlockLiteral(
 	function string,
 	block *BlockLiteral,
 	localReturns bool,
+	discard mutatorDiscardCall,
 ) checkBlockResult {
 	return c.checkBlockLiteralWithIvarWidening(
 		function,
@@ -8421,6 +8455,7 @@ func (c *scriptChecker) checkBlockLiteral(
 		localReturns,
 		true,
 		!localReturns,
+		discard,
 	)
 }
 
@@ -8430,10 +8465,12 @@ func (c *scriptChecker) checkBlockLiteralWithIvarWidening(
 	localReturns bool,
 	widenIvars bool,
 	preserveNamespaceWrites bool,
+	discard mutatorDiscardCall,
 ) checkBlockResult {
 	if block == nil {
 		return checkBlockResult{}
 	}
+	defer c.enterMutatorDiscardBlock(block, discard)()
 	previousSummaryYieldsActive := c.summaryYieldsActive
 	if localReturns {
 		c.summaryYieldsActive = false

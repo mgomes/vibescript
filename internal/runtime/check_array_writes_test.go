@@ -1604,7 +1604,7 @@ def takes_int(value: int)
 end
 
 def run()
-  [].fill do
+  filled = [].fill do
     raise "skipped"
   end
   takes_int("reachable")
@@ -3711,6 +3711,12 @@ end
 def run()
   parenless_mutation()
 end`,
+			// The shift lands on the shovel's temporary, which the
+			// discarded-mutator check now reports; the subject here is that
+			// the forwarded-name fact still clears, so exactly that one
+			// warning means the send dispatch stayed unproven.
+			want:         "shift updates a temporary",
+			wantFunction: "parenless_mutation",
 		},
 	}
 	for _, tc := range tests {
