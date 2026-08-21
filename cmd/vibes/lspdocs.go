@@ -1225,9 +1225,12 @@ func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
 	}
 	depth := 0
 	inLoopHeader := false
+	scan := sourceScan{}
 	for line := start.Line; line <= last; line++ {
 		atStmtStart := true
-		for _, tok := range identifierTokensSkippingStrings(lineAt(lines, line-1)) {
+		scan.afterValue = false
+		scan.afterDot = false
+		for _, tok := range scan.tokens(lineAt(lines, line-1)) {
 			switch tok {
 			case "def", "class", "module", "begin", "case":
 				depth++
@@ -1271,13 +1274,22 @@ func sourceBlockEndLine(lines []string, start ast.Position, classEnd int) int {
 	return classEnd
 }
 
-func identifierTokensSkippingStrings(s string) []string {
+type sourceScan struct {
+	inStr        byte
+	percentClose byte
+	escape       bool
+	afterValue   bool
+	afterDot     bool
+}
+
+func (sc *sourceScan) tokens(s string) []string {
 	var tokens []string
 	start := -1
-	inStr := byte(0)
-	escape := false
-	afterValue := false
-	afterDot := false
+	inStr := sc.inStr
+	percentClose := sc.percentClose
+	escape := sc.escape
+	afterValue := sc.afterValue
+	afterDot := sc.afterDot
 	flush := func(i int) {
 		if start >= 0 {
 			tok := s[start:i]
@@ -1312,6 +1324,13 @@ func identifierTokensSkippingStrings(s string) []string {
 			}
 			continue
 		}
+		if percentClose != 0 {
+			if c == percentClose {
+				percentClose = 0
+				afterValue = true
+			}
+			continue
+		}
 		if c == '#' {
 			break
 		}
@@ -1324,6 +1343,9 @@ func identifierTokensSkippingStrings(s string) []string {
 				i += 3
 				for i < len(s) && s[i] != close {
 					i++
+				}
+				if i >= len(s) {
+					percentClose = close
 				}
 				afterValue = true
 				afterDot = false
@@ -1411,6 +1433,11 @@ func identifierTokensSkippingStrings(s string) []string {
 		}
 	}
 	flush(len(s))
+	sc.inStr = inStr
+	sc.percentClose = percentClose
+	sc.escape = escape
+	sc.afterValue = afterValue
+	sc.afterDot = afterDot
 	return tokens
 }
 
@@ -1505,6 +1532,23 @@ func expressionContainsHover(expr ast.Expression, hoverLine int) bool {
 		}
 	case *ast.BlockLiteral:
 		return lineInStatements(e.Body, nil, hoverLine, 0)
+	case *ast.CaseExpr:
+		if expressionContainsHover(e.Target, hoverLine) {
+			return true
+		}
+		for _, clause := range e.Clauses {
+			if expressionContainsHover(clause.Result, hoverLine) {
+				return true
+			}
+			for _, value := range clause.Values {
+				if expressionContainsHover(value.Expr, hoverLine) {
+					return true
+				}
+			}
+		}
+		return expressionContainsHover(e.ElseExpr, hoverLine)
+	case *ast.Identifier:
+		return e.Pos().Line == hoverLine
 	}
 	return false
 }
