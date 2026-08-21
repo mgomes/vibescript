@@ -345,6 +345,29 @@ func (c *scriptChecker) builtinIteratorYieldedValue(receiver Expression, propert
 	}
 }
 
+// receiverOwnsCollectionMutator reports whether every inferred arm of recv
+// dispatches property as that kind's collection mutator. An untyped
+// receiver keeps the name-based classification; a known hash or shape
+// that only has a stored field of the same name is not a mutator.
+func (c *scriptChecker) receiverOwnsCollectionMutator(recv Expression, property string) bool {
+	ty := c.inferExpressionType(recv)
+	if ty == nil || ty.Kind == TypeUnknown {
+		return true
+	}
+	return typeExprArmsAll(ty, func(arm *TypeExpr) bool {
+		var kind string
+		switch arm.Kind {
+		case TypeArray:
+			kind = "array"
+		case TypeHash, TypeShape:
+			kind = "hash"
+		default:
+			return false
+		}
+		return memberKindOwns(kind, property)
+	})
+}
+
 // temporaryMutatorDiscardApplies is the temporary-arm receiver-type gate:
 // untyped receivers keep the name-based warning unless they are proven not
 // to be collections, but a known type (including any) must be
@@ -497,6 +520,9 @@ func (c *scriptChecker) mutatorDiscardVerdict(function string, stmt *ExprStmt) f
 
 func (c *scriptChecker) oneMutatorDiscardVerdict(function string, stmt *ExprStmt, member *MemberExpr, call *CallExpr) func() {
 	if member == nil || !isCollectionMutator(member.Property) {
+		return nil
+	}
+	if !c.receiverOwnsCollectionMutator(member.Object, member.Property) {
 		return nil
 	}
 	temporary, root := c.mutatorReceiverShape(member.Object)
@@ -791,11 +817,19 @@ func statementsObserveNameExcept(statements []Statement, names map[string]struct
 }
 
 // assignmentTargetObservesName reports a later use of names in an assignment
-// target. A bare identifier is the slot being overwritten, not a read; an
-// index or member target still reads the receiver.
+// target. A bare identifier or destructure leaf is the slot being
+// overwritten, not a read; an index or member target still reads the
+// receiver.
 func assignmentTargetObservesName(target Expression, names map[string]struct{}) bool {
 	switch typed := target.(type) {
 	case *Identifier:
+		return false
+	case *DestructureTarget:
+		for _, el := range typed.Elements {
+			if assignmentTargetObservesName(el.Target, names) {
+				return true
+			}
+		}
 		return false
 	case *IndexExpr:
 		if expressionReferencesAnyName(typed.Object, names) {

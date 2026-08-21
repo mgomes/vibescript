@@ -109,6 +109,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later destructure overwrite is not a read",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  row, ignored = [[], nil]\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			// mutablePathFor rejects constant roots, so the write lands on
 			// a detached copy in static and instance methods alike.
 			name:   "class constant in a static method",
@@ -248,6 +253,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "addressable local",
 			source: "a = [1]\na.push(2)\nputs a",
+		},
+		{
+			name:   "shape stored push is not a collection mutator",
+			source: "{push: 1}.push(1)\nputs \"done\"",
 		},
 		{
 			name:   "addressable instance variable",
