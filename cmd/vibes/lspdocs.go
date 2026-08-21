@@ -1772,7 +1772,14 @@ func (sc *sourceScan) tokens(s string) []string {
 			openers = append(openers, "def")
 			atStmtStart = false
 			inLoopHeader = false
-		case "class", "module", "begin", "case":
+		case "class", "module":
+			openers = append(openers, tok)
+			localsStack = append(localsStack, locals)
+			locals = map[string]struct{}{}
+			atStmtStart = false
+			inLoopHeader = false
+			afterDef = false
+		case "begin", "case":
 			openers = append(openers, tok)
 			atStmtStart = false
 			inLoopHeader = false
@@ -1807,7 +1814,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			if n := len(openers); n > 0 {
 				top := openers[n-1]
 				openers = openers[:n-1]
-				if (top == "def" || top == "do" || top == "brace") && len(localsStack) > 0 {
+				if (top == "def" || top == "do" || top == "brace" || top == "class" || top == "module") && len(localsStack) > 0 {
 					locals = localsStack[len(localsStack)-1]
 					localsStack = localsStack[:len(localsStack)-1]
 					afterDef = false
@@ -1847,8 +1854,12 @@ func (sc *sourceScan) tokens(s string) []string {
 			afterValue = true
 			afterDot = false
 			lastIdent = tok
-			if (inParams || inPipes) && identCanBeLocal(tok) {
-				locals[tok] = struct{}{}
+			if (inParams || inPipes) && identCanBeLocal(strings.TrimSuffix(tok, ":")) {
+				if len(tokens) >= 2 && strings.HasSuffix(tokens[len(tokens)-2], ":") {
+					// Type annotation, not a binding.
+				} else {
+					locals[strings.TrimSuffix(tok, ":")] = struct{}{}
+				}
 			} else if afterDef && !inParams && identCanBeLocal(tok) && !isControlKeyword(tok) {
 				if afterDefName {
 					locals[tok] = struct{}{}
