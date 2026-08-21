@@ -1258,10 +1258,12 @@ func identifierTokensSkippingStrings(s string) []string {
 	start := -1
 	inStr := byte(0)
 	escape := false
+	afterValue := false
 	flush := func(i int) {
 		if start >= 0 {
 			tokens = append(tokens, s[start:i])
 			start = -1
+			afterValue = true
 		}
 	}
 	for i := 0; i < len(s); i++ {
@@ -1286,11 +1288,42 @@ func identifierTokensSkippingStrings(s string) []string {
 		if c == '"' || c == '\'' {
 			flush(i)
 			inStr = c
+			afterValue = true
+			continue
+		}
+		if c == '/' && !afterValue {
+			flush(i)
+			i++
+			escape = false
+			for i < len(s) {
+				ch := s[i]
+				if escape {
+					escape = false
+					i++
+					continue
+				}
+				if ch == '\\' {
+					escape = true
+					i++
+					continue
+				}
+				if ch == '/' {
+					i++
+					for i < len(s) && (s[i] == 'i' || s[i] == 'm' || s[i] == 'x' || s[i] == 'o' || s[i] == 'u' || s[i] == 'n') {
+						i++
+					}
+					break
+				}
+				i++
+			}
+			i--
+			afterValue = true
 			continue
 		}
 		if c == ';' {
 			flush(i)
 			tokens = append(tokens, ";")
+			afterValue = false
 			continue
 		}
 		if c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' {
@@ -1300,6 +1333,9 @@ func identifierTokensSkippingStrings(s string) []string {
 			continue
 		}
 		flush(i)
+		if c != ' ' && c != '\t' {
+			afterValue = false
+		}
 	}
 	flush(len(s))
 	return tokens
@@ -1315,6 +1351,10 @@ func classControlFlowContains(st *ast.ClassStmt, hoverLine int) bool {
 func nestedControlContains(stmts []ast.Statement, hoverLine int) bool {
 	for _, stmt := range stmts {
 		switch s := stmt.(type) {
+		case *ast.ExprStmt:
+			if expressionContainsHover(s.Expr, hoverLine) {
+				return true
+			}
 		case *ast.IfStmt:
 			if lineInStatements(s.Consequent, hoverLine) ||
 				lineInStatements(s.Alternate, hoverLine) {
@@ -1349,6 +1389,34 @@ func nestedControlContains(stmts []ast.Statement, hoverLine int) bool {
 				}
 			}
 		}
+	}
+	return false
+}
+
+func expressionContainsHover(expr ast.Expression, hoverLine int) bool {
+	if expr == nil {
+		return false
+	}
+	switch e := expr.(type) {
+	case *ast.CallExpr:
+		if e.Block != nil && lineInStatements(e.Block.Body, hoverLine) {
+			return true
+		}
+		if expressionContainsHover(e.Callee, hoverLine) {
+			return true
+		}
+		for _, arg := range e.Args {
+			if expressionContainsHover(arg, hoverLine) {
+				return true
+			}
+		}
+		for _, kwarg := range e.KwArgs {
+			if expressionContainsHover(kwarg.Value, hoverLine) {
+				return true
+			}
+		}
+	case *ast.BlockLiteral:
+		return lineInStatements(e.Body, hoverLine)
 	}
 	return false
 }
