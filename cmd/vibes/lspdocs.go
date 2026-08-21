@@ -1861,10 +1861,11 @@ func (sc *sourceScan) tokens(s string) []string {
 			if (inParams || inPipes) && identCanBeLocal(strings.TrimSuffix(tok, ":")) {
 				if inParamDefault {
 					// Default expression, not a binding.
-				} else if len(tokens) >= 2 && strings.HasSuffix(tokens[len(tokens)-2], ":") {
-					// Type annotation, not a binding.
 				} else {
 					locals[strings.TrimSuffix(tok, ":")] = struct{}{}
+					if strings.HasSuffix(tok, ":") {
+						inParamDefault = true
+					}
 				}
 			} else if afterDef && !inParams && identCanBeLocal(tok) && !isControlKeyword(tok) {
 				if afterDefName {
@@ -1898,7 +1899,8 @@ func (sc *sourceScan) tokens(s string) []string {
 					var extra int
 					var closed bool
 					escape, closed, inCharClass, inCharClassStart, extra = interpRegexConsume(
-						s, i, c, escape, inCharClass, inCharClassStart)
+						s, i, c, escape, inCharClass, inCharClassStart,
+					)
 					if closed {
 						inRegex = false
 						afterValue = true
@@ -2015,7 +2017,8 @@ func (sc *sourceScan) tokens(s string) []string {
 					var extra int
 					var closed bool
 					escape, closed, inCharClass, inCharClassStart, extra = interpRegexConsume(
-						s, i, c, escape, inCharClass, inCharClassStart)
+						s, i, c, escape, inCharClass, inCharClassStart,
+					)
 					if closed {
 						inRegex = false
 						afterValue = true
@@ -2200,7 +2203,8 @@ func (sc *sourceScan) tokens(s string) []string {
 							var extra int
 							var closed bool
 							escape, closed, inCharClass, inCharClassStart, extra = interpRegexConsume(
-								s, i, ch, escape, inCharClass, inCharClassStart)
+								s, i, ch, escape, inCharClass, inCharClassStart,
+							)
 							if closed {
 								inRegex = false
 								afterValue = true
@@ -2559,6 +2563,10 @@ func (sc *sourceScan) tokens(s string) []string {
 		afterDot = false
 	}
 	flush(len(s))
+	if afterDef && !inParams {
+		afterDef = false
+		afterDefName = false
+	}
 	sc.inStr = inStr
 	sc.percentOpen = percentOpen
 	sc.percentClose = percentClose
