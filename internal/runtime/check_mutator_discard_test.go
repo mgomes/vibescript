@@ -269,6 +269,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later fetch hit is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].fetch(0) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later endless while is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); while true; nil; end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "rescue binding is not an observation of the mutated parameter",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); begin; raise \"x\"; rescue => row; puts row; end }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -750,6 +760,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "unseeded reduce over two elements still observes in the block",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1, 2].reduce { puts row; 0 } }\nputs \"done\"",
+		},
+		{
+			name:   "fetch miss fallback still observes in the block",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].fetch(2) { puts row } }\nputs \"done\"",
+		},
+		{
+			name:   "insert without values does not write a temporary",
+			source: "[1].insert(0)\nputs \"done\"",
 		},
 		{
 			name:   "raise before try overwrite still observes later",

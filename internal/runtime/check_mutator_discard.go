@@ -203,6 +203,8 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 			return length > 0
 		}
 		return length >= 2
+	case "fetch":
+		return staticFetchFallbackMayRun(receiver, call)
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
 		return length > 0
@@ -260,9 +262,31 @@ func (c *scriptChecker) staticIteratorCallMayComplete(receiver Expression, prope
 		default:
 			return false
 		}
+	case "fetch":
+		n := len(call.Args)
+		return (n == 1 || n == 2) && len(call.KwArgs) == 0
 	default:
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
 	}
+}
+
+func staticFetchFallbackMayRun(receiver Expression, call *CallExpr) bool {
+	if call == nil || len(call.Args) < 1 || len(call.Args) > 2 {
+		return false
+	}
+	length, okLen := staticCollectionLength(receiver)
+	if !okLen {
+		return true
+	}
+	value, exact := integerLiteralValue(call.Args[0])
+	if !exact || value.IsBigInt() {
+		return true
+	}
+	index := int(value.Int())
+	if index < 0 {
+		index += length
+	}
+	return index < 0 || index >= length
 }
 
 func staticWindowSizeMayRun(call *CallExpr) bool {
@@ -736,6 +760,15 @@ func collectionMutatorCallActuallyWrites(property string, call *CallExpr) bool {
 			return false
 		}
 		return true
+	case "insert":
+		if call == nil {
+			return false
+		}
+		expanded := call
+		if got, ok := staticExpandedCall(call); ok {
+			expanded = got
+		}
+		return len(expanded.Args) >= 2
 	default:
 		return true
 	}
@@ -1295,9 +1328,64 @@ func (c *scriptChecker) statementFallsThrough(stmt Statement) bool {
 		return c.ifStmtFallsThrough(typed)
 	case *TryStmt:
 		return c.tryStmtFallsThrough(typed)
+	case *WhileStmt:
+		return c.whileStmtFallsThrough(typed)
+	case *UntilStmt:
+		return c.untilStmtFallsThrough(typed)
 	default:
 		return true
 	}
+}
+
+func (c *scriptChecker) whileStmtFallsThrough(stmt *WhileStmt) bool {
+	if stmt == nil {
+		return true
+	}
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if known && truthy && !statementsMayBreak(stmt.Body) {
+		return false
+	}
+	return true
+}
+
+func (c *scriptChecker) untilStmtFallsThrough(stmt *UntilStmt) bool {
+	if stmt == nil {
+		return true
+	}
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if known && !truthy && !statementsMayBreak(stmt.Body) {
+		return false
+	}
+	return true
+}
+
+func statementsMayBreak(stmts []Statement) bool {
+	for _, stmt := range stmts {
+		switch typed := stmt.(type) {
+		case *BreakStmt:
+			return true
+		case *IfStmt:
+			if statementsMayBreak(typed.Consequent) || statementsMayBreak(typed.Alternate) {
+				return true
+			}
+			for _, branch := range typed.ElseIf {
+				if statementsMayBreak(branch.Consequent) {
+					return true
+				}
+			}
+		case *TryStmt:
+			if statementsMayBreak(typed.Body) || statementsMayBreak(typed.Else) ||
+				statementsMayBreak(typed.Ensure) {
+				return true
+			}
+			for _, clause := range typed.Rescues {
+				if statementsMayBreak(clause.Body) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (c *scriptChecker) tryStmtFallsThrough(stmt *TryStmt) bool {
