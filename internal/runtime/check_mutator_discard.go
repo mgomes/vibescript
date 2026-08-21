@@ -1898,9 +1898,11 @@ func ensureContainsBreak(stmts []Statement) bool {
 			if ensureContainsBreak(typed.Ensure) {
 				return true
 			}
-			for _, clause := range typed.Rescues {
-				if ensureContainsBreak(clause.Body) {
-					return true
+			if !statementsProvenNonRaising(typed.Body) {
+				for _, clause := range typed.Rescues {
+					if ensureContainsBreak(clause.Body) {
+						return true
+					}
 				}
 			}
 		}
@@ -1960,13 +1962,20 @@ func remainderContainsNext(stmts []Statement) bool {
 			if tryEnsureAborts(typed.Ensure) {
 				return remainderContainsNext(typed.Ensure)
 			}
-			if remainderContainsNext(typed.Body) || remainderContainsNext(typed.Else) ||
-				remainderContainsNext(typed.Ensure) {
+			if remainderContainsNext(typed.Body) {
 				return true
 			}
-			for _, clause := range typed.Rescues {
-				if remainderContainsNext(clause.Body) {
-					return true
+			if ensurePathMayComplete(typed.Body) && remainderContainsNext(typed.Else) {
+				return true
+			}
+			if remainderContainsNext(typed.Ensure) {
+				return true
+			}
+			if !statementsProvenNonRaising(typed.Body) {
+				for _, clause := range typed.Rescues {
+					if remainderContainsNext(clause.Body) {
+						return true
+					}
 				}
 			}
 		}
@@ -1992,13 +2001,20 @@ func remainderContainsRetry(stmts []Statement) bool {
 			if tryEnsureAborts(typed.Ensure) {
 				return remainderContainsRetry(typed.Ensure)
 			}
-			if remainderContainsRetry(typed.Body) || remainderContainsRetry(typed.Else) ||
-				remainderContainsRetry(typed.Ensure) {
+			if remainderContainsRetry(typed.Body) {
 				return true
 			}
-			for _, clause := range typed.Rescues {
-				if remainderContainsRetry(clause.Body) {
-					return true
+			if ensurePathMayComplete(typed.Body) && remainderContainsRetry(typed.Else) {
+				return true
+			}
+			if remainderContainsRetry(typed.Ensure) {
+				return true
+			}
+			if !statementsProvenNonRaising(typed.Body) {
+				for _, clause := range typed.Rescues {
+					if remainderContainsRetry(clause.Body) {
+						return true
+					}
 				}
 			}
 		}
@@ -2183,9 +2199,11 @@ func (c *scriptChecker) statementsMayBreak(stmts []Statement) bool {
 			if c.statementsMayBreak(typed.Ensure) {
 				return true
 			}
-			for _, clause := range typed.Rescues {
-				if c.statementsMayBreak(clause.Body) {
-					return true
+			if !statementsProvenNonRaising(typed.Body) {
+				for _, clause := range typed.Rescues {
+					if c.statementsMayBreak(clause.Body) {
+						return true
+					}
 				}
 			}
 			if !c.tryStmtFallsThrough(typed) {

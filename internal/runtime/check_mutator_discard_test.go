@@ -700,6 +700,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "unreachable try else next is not a back edge",
+			source: "rows = [[1], [2]]\nrows.each { |row| while row.length < 3; row.push(0); begin; raise \"x\"; rescue; raise \"y\"; else; next; end; end }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "non-raising body rescue break is not a loop exit",
+			source: "rows = [[1], [2]]\nrows.each { |row| while true; row.push(0); begin; nil; rescue; break; end; end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "min ignores its block so it is not an observation",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].min { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
