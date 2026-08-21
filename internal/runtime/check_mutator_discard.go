@@ -163,16 +163,7 @@ func (c *scriptChecker) mutatorDiscardCallFacts(call *CallExpr, target staticCal
 // named user method cannot be the callee.
 func (c *scriptChecker) receiverOwnsBuiltinIterator(receiver Expression, property string) bool {
 	return typeExprArmsAll(c.inferExpressionType(receiver), func(arm *TypeExpr) bool {
-		var kind string
-		switch arm.Kind {
-		case TypeArray:
-			kind = "array"
-		case TypeHash, TypeShape:
-			kind = "hash"
-		default:
-			return false
-		}
-		return memberKindOwns(kind, property)
+		return collectionKindOwnsProperty(arm, property)
 	})
 }
 
@@ -355,17 +346,29 @@ func (c *scriptChecker) receiverOwnsCollectionMutator(recv Expression, property 
 		return true
 	}
 	return typeExprArmsAll(ty, func(arm *TypeExpr) bool {
-		var kind string
-		switch arm.Kind {
-		case TypeArray:
-			kind = "array"
-		case TypeHash, TypeShape:
-			kind = "hash"
-		default:
-			return false
-		}
-		return memberKindOwns(kind, property)
+		return collectionKindOwnsProperty(arm, property)
 	})
+}
+
+func collectionKindOwnsProperty(arm *TypeExpr, property string) bool {
+	switch arm.Kind {
+	case TypeArray:
+		return memberKindOwns("array", property)
+	case TypeHash:
+		return memberKindOwns("hash", property)
+	case TypeShape:
+		if arm.Name == "" {
+			if _, present := arm.Shape[property]; present {
+				return false
+			}
+			if arm.Open {
+				return false
+			}
+		}
+		return memberKindOwns("hash", property)
+	default:
+		return false
+	}
 }
 
 // temporaryMutatorDiscardApplies is the temporary-arm receiver-type gate:
@@ -962,6 +965,13 @@ func expressionObservesName(expr Expression, names map[string]struct{}) bool {
 			}
 		}
 		return statementsObserveName(typed.Block.Body, withoutBlockParamNames(names, typed.Block))
+	case *BlockLiteral:
+		for _, param := range typed.Params {
+			if expressionObservesName(param.DefaultVal, names) {
+				return true
+			}
+		}
+		return statementsObserveName(typed.Body, withoutBlockParamNames(names, typed))
 	case *ConditionalExpr:
 		return expressionObservesName(typed.Condition, names) ||
 			expressionObservesName(typed.Consequent, names) ||

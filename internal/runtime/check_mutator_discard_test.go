@@ -284,6 +284,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			source: "{push: 1}.push(1)\nputs \"done\"",
 		},
 		{
+			name:   "shape stored clear is not a hash mutator",
+			source: "def f(s: {clear: int})\n  s.clear\n  nil\nend\nf({clear: 1})\nputs \"done\"",
+		},
+		{
+			name:   "shape stored each is not a hash iterator",
+			source: "def f(s: {each: int})\n  s.each { |row| row.push(0) }\n  nil\nend\nf({each: 1})\nputs \"done\"",
+		},
+		{
 			name:   "addressable instance variable",
 			source: "class C\n  def initialize()\n    @rows = [1]\n  end\n  def wipe()\n    @rows.clear\n  end\nend\nc = C.new\nc.wipe()\nputs \"done\"",
 		},
