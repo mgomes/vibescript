@@ -205,6 +205,10 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		return length >= 2
 	case "fetch":
 		return staticFetchFallbackMayRun(receiver, call)
+	case "fetch_values":
+		return call != nil && len(call.Args) > 0
+	case "merge":
+		return call != nil && len(call.Args) > 0
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
 		return length > 0
@@ -265,6 +269,10 @@ func (c *scriptChecker) staticIteratorCallMayComplete(receiver Expression, prope
 	case "fetch":
 		n := len(call.Args)
 		return (n == 1 || n == 2) && len(call.KwArgs) == 0
+	case "fetch_values":
+		return len(call.KwArgs) == 0
+	case "merge":
+		return len(call.Args) >= 1 && len(call.KwArgs) == 0
 	default:
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
 	}
@@ -772,6 +780,8 @@ func collectionMutatorCallActuallyWrites(property string, call *CallExpr, receiv
 			expanded = got
 		}
 		return len(expanded.Args) >= 2
+	case "delete":
+		return !staticDeleteIsMiss(receiver, call)
 	default:
 		return true
 	}
@@ -1162,7 +1172,7 @@ func (c *scriptChecker) statementsObserveName(statements []Statement, names map[
 }
 
 func (c *scriptChecker) loopBackEdgeObservesName(condition Expression, body []Statement, stmt *ExprStmt, names map[string]struct{}) bool {
-	return expressionReferencesAnyName(condition, names) ||
+	return c.expressionObservesName(condition, names) ||
 		c.statementsObserveNameExcept(body, names, stmt)
 }
 
@@ -1574,6 +1584,20 @@ func (c *scriptChecker) applyDefiniteBindingKills(statements []Statement, names 
 		if !c.statementFallsThrough(statement) {
 			return
 		}
+		if !statementProvenNonRaising(statement) {
+			return
+		}
+	}
+}
+
+func statementProvenNonRaising(stmt Statement) bool {
+	switch typed := stmt.(type) {
+	case *AssignStmt:
+		return expressionProvenNonRaising(typed.Value)
+	case *ExprStmt:
+		return expressionProvenNonRaising(typed.Expr)
+	default:
+		return false
 	}
 }
 
@@ -2154,6 +2178,50 @@ func staticExpandedKeywordArg(kwarg KeywordArg) ([]KeywordArg, bool) {
 		out = append(out, KeywordArg{Name: name, Value: pair.Value})
 	}
 	return out, true
+}
+
+func staticDeleteIsMiss(receiver Expression, call *CallExpr) bool {
+	if call == nil || len(call.Args) != 1 {
+		return false
+	}
+	target, ok := staticLiteralValue(call.Args[0])
+	if !ok {
+		return false
+	}
+	switch recv := receiver.(type) {
+	case *ArrayLiteral:
+		for _, element := range recv.Elements {
+			value, ok := staticLiteralValue(element)
+			if !ok {
+				return false
+			}
+			matched, err := caseCandidateMatches(nil, value, target)
+			if err != nil {
+				return false
+			}
+			if matched {
+				return false
+			}
+		}
+		return true
+	case *HashLiteral:
+		key, err := hashKeyString(target)
+		if err != nil {
+			return false
+		}
+		for _, pair := range recv.Pairs {
+			pairKey, ok := staticLiteralHashKey(pair.Key)
+			if !ok {
+				return false
+			}
+			if pairKey == key {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 func staticDeleteMissBlockUnreachable(receiver Expression, call *CallExpr) bool {

@@ -299,6 +299,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "fetch_values without keys is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.fetch_values { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later aborting loop condition is not an observation",
+			source: "first = true\nrows = [[1], [2]]\nrows.each { |row| row.push(0); while first || [[1].clear(2), row]; first = false; end }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "rescue binding is not an observation of the mutated parameter",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); begin; raise \"x\"; rescue => row; puts row; end }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -800,6 +810,18 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "empty shift does not write a temporary",
 			source: "[].shift\nputs \"done\"",
+		},
+		{
+			name:   "hash merge conflict block still observes",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.merge({a: 2}) { puts row; 2 } }\nputs \"done\"",
+		},
+		{
+			name:   "delete miss does not write a temporary",
+			source: "[1].delete(2)\nputs \"done\"",
+		},
+		{
+			name:   "raising prefix still observes in rescue",
+			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each do |row|\n    begin\n      row.push(0)\n      if flag\n        raise \"x\"\n      end\n      row = []\n    rescue\n      puts row\n    end\n  end\nend\nf(true)\nputs \"done\"",
 		},
 		{
 			name:   "raise before try overwrite still observes later",
