@@ -1765,6 +1765,11 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				afterSpace = false
+				if end, ok := skipPercentArrayLiteral(s, i); ok {
+					afterValue = true
+					i = end
+					continue
+				}
 				if c == '"' || c == '\'' {
 					innerStr = c
 					afterValue = true
@@ -1854,6 +1859,11 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				afterSpace = false
+				if end, ok := skipPercentArrayLiteral(s, i); ok {
+					afterValue = true
+					i = end
+					continue
+				}
 				if c == '"' || c == '\'' {
 					innerStr = c
 					afterValue = true
@@ -2294,6 +2304,36 @@ func sourceInsideLiteral(lines []string, hoverLine, hoverColumn int) bool {
 	scan.tokens(text[:idx])
 	return scan.inStr != 0 || scan.percentClose != 0 || scan.inRegex ||
 		scan.hitComment || scan.interpDepth > 0
+}
+
+func skipPercentArrayLiteral(s string, i int) (end int, ok bool) {
+	if i < 0 || i+2 >= len(s) || s[i] != '%' {
+		return i, false
+	}
+	kind := s[i+1]
+	if !strings.ContainsRune("wWiIqQ", rune(kind)) {
+		return i, false
+	}
+	open := s[i+2]
+	close := percentLiteralCloser(open)
+	i += 3
+	depth := 1
+	for i < len(s) && depth > 0 {
+		if s[i] == '\\' && i+1 < len(s) {
+			i += 2
+			continue
+		}
+		if open != close && s[i] == open {
+			depth++
+		} else if s[i] == close {
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+		i++
+	}
+	return i, false
 }
 
 func percentLiteralCloser(open byte) byte {
