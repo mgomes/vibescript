@@ -279,6 +279,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "ensure after a body overwrite is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| begin; row.push(0); row = []; ensure; puts row; end }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "unreachable break does not make an endless while an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); while true; if false; break; end; end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "rescue binding is not an observation of the mutated parameter",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); begin; raise \"x\"; rescue => row; puts row; end }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -768,6 +778,18 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "insert without values does not write a temporary",
 			source: "[1].insert(0)\nputs \"done\"",
+		},
+		{
+			name:   "empty pop does not write a temporary",
+			source: "[].pop\nputs \"done\"",
+		},
+		{
+			name:   "empty pop with count does not write a temporary",
+			source: "[].pop(1)\nputs \"done\"",
+		},
+		{
+			name:   "empty shift does not write a temporary",
+			source: "[].shift\nputs \"done\"",
 		},
 		{
 			name:   "raise before try overwrite still observes later",

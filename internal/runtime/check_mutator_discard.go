@@ -725,15 +725,15 @@ func (c *scriptChecker) discardedMutatorSiteMayComplete(site discardedMutatorSit
 		return false
 	}
 	if site.call == nil || site.member == nil {
-		return collectionMutatorCallActuallyWrites(site.member.Property, site.call)
+		return collectionMutatorCallActuallyWrites(site.member.Property, site.call, site.member.Object)
 	}
 	if !c.collectionMutatorCallShapeMayComplete(site.member.Object, site.member.Property, site.call) {
 		return false
 	}
-	return collectionMutatorCallActuallyWrites(site.member.Property, site.call)
+	return collectionMutatorCallActuallyWrites(site.member.Property, site.call, site.member.Object)
 }
 
-func collectionMutatorCallActuallyWrites(property string, call *CallExpr) bool {
+func collectionMutatorCallActuallyWrites(property string, call *CallExpr, receiver Expression) bool {
 	switch property {
 	case "push", "append", "prepend", "unshift":
 		if call == nil {
@@ -745,6 +745,9 @@ func collectionMutatorCallActuallyWrites(property string, call *CallExpr) bool {
 		}
 		return len(expanded.Args) >= 1
 	case "pop", "shift":
+		if length, ok := staticCollectionLength(receiver); ok && length == 0 {
+			return false
+		}
 		if call == nil {
 			return true
 		}
@@ -1091,9 +1094,16 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 						c.statementsObserveName(typed.Else, names) {
 						observes = true
 					}
-					if (inBody || inElse || inRescue) &&
-						c.statementsObserveName(typed.Ensure, names) {
-						observes = true
+					if inBody || inElse || inRescue {
+						ensureNames := copyNameSet(names)
+						if inBody {
+							if rest, ok := statementsAfter(typed.Body, stmt); ok {
+								c.applyDefiniteBindingKills(rest, ensureNames)
+							}
+						}
+						if c.statementsObserveName(typed.Ensure, ensureNames) {
+							observes = true
+						}
 					}
 					if pathContinues && c.statementsObserveName(stmts[i+1:], names) {
 						observes = true
@@ -1365,13 +1375,8 @@ func statementsMayBreak(stmts []Statement) bool {
 		case *BreakStmt:
 			return true
 		case *IfStmt:
-			if statementsMayBreak(typed.Consequent) || statementsMayBreak(typed.Alternate) {
+			if ifStmtMayBreak(typed) {
 				return true
-			}
-			for _, branch := range typed.ElseIf {
-				if statementsMayBreak(branch.Consequent) {
-					return true
-				}
 			}
 		case *TryStmt:
 			if statementsMayBreak(typed.Body) || statementsMayBreak(typed.Else) ||
@@ -1383,6 +1388,37 @@ func statementsMayBreak(stmts []Statement) bool {
 					return true
 				}
 			}
+		}
+	}
+	return false
+}
+
+func ifStmtMayBreak(stmt *IfStmt) bool {
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if known && truthy {
+		return statementsMayBreak(stmt.Consequent)
+	}
+	if known && !truthy {
+		for _, branch := range stmt.ElseIf {
+			t, k := staticExpressionTruthiness(branch.Condition)
+			if !k {
+				if statementsMayBreak(branch.Consequent) {
+					return true
+				}
+				continue
+			}
+			if t {
+				return statementsMayBreak(branch.Consequent)
+			}
+		}
+		return statementsMayBreak(stmt.Alternate)
+	}
+	if statementsMayBreak(stmt.Consequent) || statementsMayBreak(stmt.Alternate) {
+		return true
+	}
+	for _, branch := range stmt.ElseIf {
+		if statementsMayBreak(branch.Consequent) {
+			return true
 		}
 	}
 	return false
