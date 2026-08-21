@@ -1998,6 +1998,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			}
 		}
 	}
+	var interpAssignToks []string
 	pushInterpBlock := func(kind string) {
 		openers = append(openers, kind)
 		localsStack = append(localsStack, locals)
@@ -2012,6 +2013,7 @@ func (sc *sourceScan) tokens(s string) []string {
 		inParamDefault = false
 		afterValue = false
 		lastIdent = ""
+		interpAssignToks = interpAssignToks[:0]
 	}
 	popInterpBlock := func() bool {
 		n := len(openers)
@@ -2032,6 +2034,7 @@ func (sc *sourceScan) tokens(s string) []string {
 		inParamDefault = false
 		afterValue = true
 		lastIdent = ""
+		interpAssignToks = interpAssignToks[:0]
 		return true
 	}
 	interpHandlePipe := func() {
@@ -2055,11 +2058,57 @@ func (sc *sourceScan) tokens(s string) []string {
 		}
 		afterBlockPipes = false
 	}
+	interpBindAssignTargets := func() {
+		skipMember := false
+		skipIndexReceiver := false
+		bracketDepth := 0
+		for j := len(interpAssignToks) - 1; j >= 0; j-- {
+			tok := interpAssignToks[j]
+			if tok == ";" {
+				break
+			}
+			if tok == "]" {
+				bracketDepth++
+				continue
+			}
+			if tok == "[" {
+				if bracketDepth > 0 {
+					bracketDepth--
+				}
+				if bracketDepth == 0 {
+					skipIndexReceiver = true
+				}
+				continue
+			}
+			if bracketDepth > 0 {
+				continue
+			}
+			if tok == "." {
+				skipMember = true
+				skipIndexReceiver = false
+				continue
+			}
+			if skipMember || skipIndexReceiver {
+				skipMember = false
+				skipIndexReceiver = false
+				continue
+			}
+			if tok == "," || tok == "(" || tok == ")" {
+				continue
+			}
+			if identCanBeLocal(tok) {
+				locals[tok] = struct{}{}
+			}
+		}
+		interpAssignToks = interpAssignToks[:0]
+	}
 	interpHandleIdent := func(name string) {
 		switch name {
 		case "do":
+			interpAssignToks = interpAssignToks[:0]
 			pushInterpBlock("do")
 		case "end":
+			interpAssignToks = interpAssignToks[:0]
 			if !popInterpBlock() {
 				afterValue = true
 				lastIdent = name
@@ -2070,6 +2119,36 @@ func (sc *sourceScan) tokens(s string) []string {
 			}
 			afterValue = true
 			lastIdent = name
+			if identCanBeLocal(name) {
+				interpAssignToks = append(interpAssignToks, name)
+			}
+		}
+	}
+	interpHandlePunct := func(ch byte, at int) (handled bool, extra int) {
+		switch ch {
+		case '=':
+			if at+1 < len(s) && (s[at+1] == '=' || s[at+1] == '~' || s[at+1] == '>') {
+				afterValue = false
+				lastIdent = ""
+				interpAssignToks = interpAssignToks[:0]
+				return true, 1
+			}
+			interpBindAssignTargets()
+			afterValue = false
+			lastIdent = ""
+			return true, 0
+		case '.', ',', '[', '(':
+			interpAssignToks = append(interpAssignToks, string(ch))
+			afterValue = false
+			lastIdent = ""
+			return true, 0
+		case ';':
+			interpAssignToks = interpAssignToks[:0]
+			afterValue = false
+			lastIdent = ""
+			return true, 0
+		default:
+			return false, 0
 		}
 	}
 	for i := 0; i < len(s); i++ {
@@ -2176,7 +2255,12 @@ func (sc *sourceScan) tokens(s string) []string {
 					i += extra
 					continue
 				}
+				if handled, extra := interpHandlePunct(c, i); handled {
+					i += extra
+					continue
+				}
 				if c == ')' || c == ']' {
+					interpAssignToks = append(interpAssignToks, string(c))
 					afterValue = true
 					lastIdent = ""
 					continue
@@ -2311,7 +2395,12 @@ func (sc *sourceScan) tokens(s string) []string {
 					i += extra
 					continue
 				}
+				if handled, extra := interpHandlePunct(c, i); handled {
+					i += extra
+					continue
+				}
 				if c == ')' || c == ']' {
+					interpAssignToks = append(interpAssignToks, string(c))
 					afterValue = true
 					lastIdent = ""
 					continue
@@ -2489,6 +2578,10 @@ func (sc *sourceScan) tokens(s string) []string {
 						}
 						if name, extra, ok := interpIdentSkip(s, i); ok {
 							interpHandleIdent(name)
+							i += extra + 1
+							continue
+						}
+						if handled, extra := interpHandlePunct(ch, i); handled {
 							i += extra + 1
 							continue
 						}
