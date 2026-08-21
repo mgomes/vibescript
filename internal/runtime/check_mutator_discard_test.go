@@ -723,6 +723,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].reduce(0) { puts row; 0 } }\nputs \"done\"",
 		},
 		{
+			name:   "seeded sum still observes in the block",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].sum(0) { puts row; 0 } }\nputs \"done\"",
+		},
+		{
 			name:   "raise before try overwrite still observes later",
 			source: "def risky\n  raise \"x\"\nend\nrows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  begin\n    risky()\n    row = []\n  rescue\n    nil\n  end\n  puts row\nend\nputs \"done\"",
 		},

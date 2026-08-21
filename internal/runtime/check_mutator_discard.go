@@ -228,7 +228,7 @@ func (c *scriptChecker) staticIteratorCallMayComplete(receiver Expression, prope
 		return staticWindowSizeMayRun(call) && len(call.KwArgs) == 0
 	case "grep", "grep_v":
 		return len(call.Args) == 1 && len(call.KwArgs) == 0
-	case "reduce":
+	case "reduce", "sum":
 		return len(call.Args) <= 1 && len(call.KwArgs) == 0
 	default:
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
