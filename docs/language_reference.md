@@ -125,7 +125,7 @@ A leading `*` discards the values before the named targets:
 *, last = [1, 2, 3]
 ```
 
-Index assignment is supported for mutable collections. Array targets accept a
+Index assignment is supported for arrays and hashes. Array targets accept a
 negative index, which counts back from the end:
 
 ```vibe
@@ -344,9 +344,8 @@ parameter declares `{ retry: bool, limit: int }`.
 Constructor calls (`Klass.new(...)`) and method calls (`receiver.method(...)`)
 keep strict parenthesized keyword binding: a parenthesized keyword that has no
 matching keyword parameter does not collapse into a positional options hash.
-This includes an instance method named `call`, which stays distinct from a
-function value's `call` alias. Their parenless forms still pass the options
-hash, mirroring the historical behavior.
+An instance method named `call` is an ordinary method under that rule. Their
+parenless forms still pass the options hash, mirroring the historical behavior.
 
 Positional arguments must come before keyword labels. A positional argument that
 follows a keyword label, such as `collect(first: 1, "tail")`, is a parse error in

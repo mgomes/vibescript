@@ -586,8 +586,8 @@ JSON.parse("[9223372036854775808]")[0]   # exact int (previously 9.2233720368547
 
 There is still a single `int` type: values fitting 64 bits keep the compact
 representation, larger values carry an arbitrary-precision payload, and any
-result that fits 64 bits again returns to the compact form, so equality, hash
-keys, and `case`/`when` behave uniformly. Comparisons between huge integers
+result that fits 64 bits again returns to the compact form, so equality and
+`case`/`when` behave uniformly. Comparisons between huge integers
 and floats are exact (`(10 ** 20 + 1) > 1e20` is `true`; float conversion
 would have called them equal). `equal?` follows Ruby's object model: 64-bit
 integers stay value-identical, while two separately computed big integers are
@@ -764,3 +764,72 @@ numbers.reduce { |total, n| total + n }
 A method that forwarded its caller's block runs it in place with `yield` and
 asks `block_given?` when the block is optional. See
 [Blocks and Enumerables](blocks.md#blocks-do-not-escape).
+
+## 25. Hashes use one string keyspace
+
+**What changed.** Strings and symbols are the only accepted hash keys, and a
+symbol normalizes to its string. `hash["name"]`, `hash[:name]`, and the label
+`name:` address one entry; `keys` returns strings. Every other key type is
+rejected. Per-hash defaults are gone: `Hash.new` takes no argument and no
+block, and `hash.default` / `hash.default_proc` were removed.
+
+**Why.** Arbitrary keys made the memory boundary a graph problem — recursive
+canonicalization, cycle detection, and per-occurrence accounting for composite
+keys — while separate string and symbol keyspaces made JSON-shaped data
+behave differently depending on which spelling built it. A default stored on
+a hash made every missing-key read a potential script callback. See
+[ADR-006](adr/006-slim-language-for-predictable-sandboxing.md).
+
+**What breaks.** Integer, array, or other non-string keys; code that treated
+`:name` and `"name"` as different entries; `Hash.new(0)` / `Hash.new { ... }`
+defaults; `group_by` / `tally` that used a non-string grouping value as a key;
+a block that compared a yielded key against a symbol.
+
+```
+counts[id] = 1                 # 1.0: unsupported hash key type
+{ name: 1, "name": 2 }         # 1.0: one entry, later write wins
+Hash.new(0)[:missing]          # 1.0: compile error
+words.group_by { |w| w.size }  # 1.0: integer keys rejected
+```
+
+**Fix.** Convert a computed key with `to_s`, compare yielded keys as strings,
+and supply a fallback per lookup:
+
+```vibe
+id = 7
+counts = {}
+counts[id.to_s] = 1
+{ name: 1, "name": 2 }                    # {"name": 2}
+{}.fetch(:missing, 0)                     # 0
+["ab", "cd"].group_by { |w| w.size.to_s } # {"2": ["ab", "cd"]}
+```
+
+`hash<symbol, V>` keeps working and describes the same hash as
+`hash<string, V>`. Missing `[]` lookups still return `nil`.
+
+## 26. Tasks and `sleep` were removed
+
+**What changed.** The `Tasks` namespace, task managers and handles,
+`Tasks.run`, `Tasks.map`, `tasks.spawn`, `tasks.wait`, and `task.value` are
+gone, as is script-visible `sleep`. Host config fields dedicated to tasks and
+sleeping (`Config.DefaultTaskConcurrency`, `Config.MaxTaskConcurrency`,
+`Config.MaxSleepDuration`, `QuotaProfile.MaxSleepDuration`) are compile
+errors rather than silent no-ops.
+
+**Why.** Hosts own concurrency and delay. A script-visible scheduler needs
+hidden execution state, a second quota family, and cancellation that the
+sandbox already provides per `Script.Call`. See
+[ADR-006](adr/006-slim-language-for-predictable-sandboxing.md).
+
+**What breaks.** Any script that fanned out with `Tasks.map` / `Tasks.run`,
+or delayed with `sleep`, and any host that set the removed config fields.
+
+```
+scores = Tasks.map(users, with: :score_user)
+sleep(5.seconds)
+```
+
+**Fix.** Move the loop to the host, which runs independent `Script.Call`
+invocations concurrently, or expose a bounded batch operation as a
+capability. Move a delayed workflow step to the host's timer or job system.
+Step, memory, and recursion remain the sandbox budgets.

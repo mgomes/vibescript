@@ -240,8 +240,7 @@ end
   receiver in place and returns the removed value, matching Ruby's mutating
   `delete`. On a miss it returns `nil` — or, with a block, the block's result
   for the requested key — and leaves the receiver untouched.
-- `clear` empties the receiver in place and returns it, keeping its object
-  identity.
+- `clear` empties the receiver it names and returns it.
 - `delete_if { |key, value| }` removes every entry the block accepts and
   returns the receiver; `keep_if { |key, value| }` keeps only accepted entries.
   The block sees a snapshot of the entries, so the receiver is pruned only

@@ -216,6 +216,8 @@ func addDocEntries(entries map[string]builtinDocEntry, refs []builtinDocRef, sig
 var lspContextualWords = []string{
 	"alias",
 	"alias_method",
+	"extend",
+	"include",
 	"module",
 	"protected",
 	"public",
@@ -264,6 +266,8 @@ var keywordDocs = map[string]string{
 
 	"alias":        "Declares an alternate name for a method: `alias new_name old_name`.",
 	"alias_method": "Declares an alternate method name: `alias_method :new_name, :old_name`.",
+	"extend":       "Removed mixin directive; modules are namespaces. Call `SomeModule.fn(receiver)` instead of `extend SomeModule`.",
+	"include":      "Removed mixin directive; modules are namespaces. Call `SomeModule.fn(receiver)` instead of `include SomeModule`.",
 	"module":       "Declares a namespace of `def self.` functions, constants, and nested modules; contextual — it only opens a declaration before a constant name.",
 	"protected":    "Marks subsequent methods callable only within the class family.",
 	"public":       "Restores public visibility for subsequent method declarations.",
@@ -743,8 +747,8 @@ var runtimeMemberIndex = func() map[string]map[string]bool {
 	return index
 }()
 
-// bangVariantEntries composes documentation for an in-place bang
-// variant (strip!, sort!) from its base member's entries, restricted
+// bangVariantEntries composes documentation for a string bang
+// variant (strip!, gsub!) from its base member's entries, restricted
 // to receivers where the runtime actually dispatches the bang name.
 // The result convention comes from the stdlib reference's Bang
 // Variants section: transformed value, or nil when nothing changed —
