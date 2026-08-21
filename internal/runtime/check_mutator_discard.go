@@ -262,19 +262,21 @@ func projectHashPairOntoDestructure(out map[string]*TypeExpr, target *Destructur
 	}
 	key := collectionIteratorKeyType(recv)
 	val := collectionIteratorValueType(recv)
-	idx := 0
+	pair := []*TypeExpr{key, val}
+	var pre, post []DestructureElement
+	sawRest := false
 	for _, el := range target.Elements {
 		if el.Rest {
+			sawRest = true
 			continue
 		}
-		var elType *TypeExpr
-		switch idx {
-		case 0:
-			elType = key
-		case 1:
-			elType = val
+		if sawRest {
+			post = append(post, el)
+		} else {
+			pre = append(pre, el)
 		}
-		idx++
+	}
+	bind := func(el DestructureElement, elType *TypeExpr) {
 		switch nested := el.Target.(type) {
 		case *Identifier:
 			if nested.Name != "" && elType != nil {
@@ -282,6 +284,17 @@ func projectHashPairOntoDestructure(out map[string]*TypeExpr, target *Destructur
 			}
 		case *DestructureTarget:
 			projectYieldOntoDestructure(out, nested, elType)
+		}
+	}
+	for i, el := range pre {
+		if i < len(pair) {
+			bind(el, pair[i])
+		}
+	}
+	for i, el := range post {
+		pairIdx := len(pair) - len(post) + i
+		if pairIdx >= 0 && pairIdx < len(pair) {
+			bind(el, pair[pairIdx])
 		}
 	}
 }
@@ -349,11 +362,19 @@ func (c *scriptChecker) temporaryMutatorDiscardApplies(recv Expression) bool {
 }
 
 func collectionIteratorElementType(recv *TypeExpr) *TypeExpr {
-	if recv == nil || recv.Kind != TypeArray || len(recv.TypeArgs) != 1 ||
-		literalArrayElementsPartial(recv) {
+	arms, ok := typeExprArms(recv, 0)
+	if !ok || len(arms) == 0 {
 		return nil
 	}
-	return recv.TypeArgs[0]
+	elems := make([]*TypeExpr, 0, len(arms))
+	for _, arm := range arms {
+		if arm.Kind != TypeArray || len(arm.TypeArgs) != 1 ||
+			literalArrayElementsPartial(arm) {
+			return nil
+		}
+		elems = append(elems, arm.TypeArgs[0])
+	}
+	return unionTypeExprs(elems...)
 }
 
 func collectionIteratorValueType(recv *TypeExpr) *TypeExpr {
@@ -432,18 +453,28 @@ func (c *scriptChecker) mutatorDiscardVerdict(function string, stmt *ExprStmt) f
 		!c.currentBlockDiscardsStatement(stmt) {
 		return nil
 	}
-	member, call := discardedMemberCall(stmt.Expr)
+	var reports []func()
+	for _, site := range discardedMutatorCalls(stmt.Expr) {
+		if report := c.oneMutatorDiscardVerdict(function, stmt, site.member, site.call); report != nil {
+			reports = append(reports, report)
+		}
+	}
+	if len(reports) == 0 {
+		return nil
+	}
+	return func() {
+		for _, report := range reports {
+			report()
+		}
+	}
+}
+
+func (c *scriptChecker) oneMutatorDiscardVerdict(function string, stmt *ExprStmt, member *MemberExpr, call *CallExpr) func() {
 	if member == nil || !isCollectionMutator(member.Property) {
 		return nil
 	}
 	temporary, root := c.mutatorReceiverShape(member.Object)
 	if temporary {
-		// Dispatch is untyped, so the mutator NAME is what classified the
-		// call; a receiver whose type rules the collection kinds out (a
-		// string's non-mutating delete) is not a collection mutation.
-		// A proven union that includes a named instance (flag ? [] :
-		// Widget.new) may dispatch a user method, so it stays silent
-		// unless every arm is a collection.
 		if !c.temporaryMutatorDiscardApplies(member.Object) {
 			return nil
 		}
@@ -460,7 +491,7 @@ func (c *scriptChecker) mutatorDiscardVerdict(function string, stmt *ExprStmt) f
 	if root == "" {
 		return nil
 	}
-	return c.blockParamMutatorDiscardVerdict(function, stmt, member, root)
+	return c.blockParamMutatorDiscardVerdict(function, stmt, member, call, root)
 }
 
 // blockParamMutatorDiscardVerdict is the block-parameter arm: the
@@ -469,10 +500,10 @@ func (c *scriptChecker) mutatorDiscardVerdict(function string, stmt *ExprStmt) f
 // block body reads the parameter again. Only the innermost block's
 // parameters qualify: an outer parameter mutated inside a nested block
 // interleaves with that block's iterations, and a read the source places
-// earlier can then run after the write. The statement must also sit
-// directly in the block body's own statement list, so "later" has a
-// provable meaning.
-func (c *scriptChecker) blockParamMutatorDiscardVerdict(function string, stmt *ExprStmt, member *MemberExpr, root string) func() {
+// earlier can then run after the write. Nested statements still qualify:
+// "later" is any statement that runs after the write in the same block,
+// including after a nested if or loop that contained it.
+func (c *scriptChecker) blockParamMutatorDiscardVerdict(function string, stmt *ExprStmt, member *MemberExpr, call *CallExpr, root string) func() {
 	if len(c.mutatorDiscardBlocks) == 0 {
 		return nil
 	}
@@ -483,23 +514,15 @@ func (c *scriptChecker) blockParamMutatorDiscardVerdict(function string, stmt *E
 	if _, isParam := enclosing.params[root]; !isParam {
 		return nil
 	}
-	body := enclosing.block.Body
-	index := -1
-	for i, bodyStmt := range body {
-		if bodyStmt == Statement(stmt) {
-			index = i
-			break
-		}
-	}
-	if index < 0 {
-		return nil
-	}
 	names := map[string]struct{}{root: {}}
-	if statementsReferenceAnyName(body[index+1:], names) {
+	found, laterObserves := statementsAfterObserveName(enclosing.block.Body, stmt, names)
+	if !found {
 		return nil
 	}
-	_, call := discardedMemberCall(stmt.Expr)
-	if call != nil && call.Block != nil && statementsReferenceAnyName(call.Block.Body, names) {
+	if laterObserves {
+		return nil
+	}
+	if call != nil && call.Block != nil && statementsObserveName(call.Block.Body, names) {
 		return nil
 	}
 	if c.provablyNotCollection(member.Object) {
@@ -515,6 +538,48 @@ func (c *scriptChecker) blockParamMutatorDiscardVerdict(function string, stmt *E
 	}
 }
 
+type discardedMutatorSite struct {
+	member *MemberExpr
+	call   *CallExpr
+}
+
+// discardedMutatorCalls collects mutator sites in a statement expression,
+// including discarded arms of a ternary, if, case, or rescue expression.
+func discardedMutatorCalls(expr Expression) []discardedMutatorSite {
+	var sites []discardedMutatorSite
+	var walk func(Expression)
+	walk = func(e Expression) {
+		if e == nil {
+			return
+		}
+		if member, call := discardedMemberCall(e); member != nil {
+			sites = append(sites, discardedMutatorSite{member: member, call: call})
+			return
+		}
+		switch typed := e.(type) {
+		case *ConditionalExpr:
+			walk(typed.Consequent)
+			walk(typed.Alternate)
+		case *RescueExpr:
+			walk(typed.Body)
+			walk(typed.Fallback)
+		case *IfExpr:
+			walk(typed.Consequent)
+			for _, branch := range typed.ElseIf {
+				walk(branch.Result)
+			}
+			walk(typed.Alternate)
+		case *CaseExpr:
+			for _, clause := range typed.Clauses {
+				walk(clause.Result)
+			}
+			walk(typed.ElseExpr)
+		}
+	}
+	walk(expr)
+	return sites
+}
+
 // discardedMemberCall unwraps a statement expression into the member call it
 // dispatches: a call through a member callee, or a bare member read the
 // runtime auto-invokes (`f().clear`). The call is nil for the bare form.
@@ -528,6 +593,135 @@ func discardedMemberCall(expr Expression) (*MemberExpr, *CallExpr) {
 		}
 	}
 	return nil, nil
+}
+
+func statementsAfterObserveName(body []Statement, stmt *ExprStmt, names map[string]struct{}) (found, observes bool) {
+	var search func([]Statement) bool
+	search = func(stmts []Statement) bool {
+		for i, s := range stmts {
+			if s == Statement(stmt) {
+				if statementsObserveName(stmts[i+1:], names) {
+					observes = true
+				}
+				return true
+			}
+			switch typed := s.(type) {
+			case *IfStmt:
+				nested := search(typed.Consequent)
+				for _, branch := range typed.ElseIf {
+					nested = search(branch.Consequent) || nested
+				}
+				nested = search(typed.Alternate) || nested
+				if nested {
+					if statementsObserveName(stmts[i+1:], names) {
+						observes = true
+					}
+					return true
+				}
+			case *TryStmt:
+				nested := search(typed.Body) || search(typed.Else) || search(typed.Ensure)
+				for _, clause := range typed.Rescues {
+					nested = search(clause.Body) || nested
+				}
+				if nested {
+					if statementsObserveName(stmts[i+1:], names) {
+						observes = true
+					}
+					return true
+				}
+			case *WhileStmt:
+				if search(typed.Body) {
+					if statementsObserveName(stmts[i+1:], names) {
+						observes = true
+					}
+					return true
+				}
+			case *UntilStmt:
+				if search(typed.Body) {
+					if statementsObserveName(stmts[i+1:], names) {
+						observes = true
+					}
+					return true
+				}
+			case *ForStmt:
+				if search(typed.Body) {
+					if statementsObserveName(stmts[i+1:], names) {
+						observes = true
+					}
+					return true
+				}
+			}
+		}
+		return false
+	}
+	found = search(body)
+	return found, observes
+}
+
+func statementsObserveName(statements []Statement, names map[string]struct{}) bool {
+	for _, statement := range statements {
+		switch typed := statement.(type) {
+		case *AssignStmt:
+			if assignmentTargetObservesName(typed.Target, names) ||
+				expressionReferencesAnyName(typed.Value, names) {
+				return true
+			}
+		case *ExprStmt:
+			if expressionReferencesAnyName(typed.Expr, names) {
+				return true
+			}
+		case *IfStmt:
+			if expressionReferencesAnyName(typed.Condition, names) ||
+				statementsObserveName(typed.Consequent, names) ||
+				statementsObserveName(typed.Alternate, names) {
+				return true
+			}
+			for _, branch := range typed.ElseIf {
+				if expressionReferencesAnyName(branch.Condition, names) ||
+					statementsObserveName(branch.Consequent, names) {
+					return true
+				}
+			}
+		case *ReturnStmt:
+			if expressionReferencesAnyName(typed.Value, names) {
+				return true
+			}
+		case *RaiseStmt:
+			if expressionReferencesAnyName(typed.Value, names) ||
+				expressionReferencesAnyName(typed.Message, names) {
+				return true
+			}
+		default:
+			if statementsReferenceAnyName([]Statement{statement}, names) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// assignmentTargetObservesName reports a later use of names in an assignment
+// target. A bare identifier is the slot being overwritten, not a read; an
+// index or member target still reads the receiver.
+func assignmentTargetObservesName(target Expression, names map[string]struct{}) bool {
+	switch typed := target.(type) {
+	case *Identifier:
+		return false
+	case *IndexExpr:
+		if expressionReferencesAnyName(typed.Object, names) {
+			return true
+		}
+		for _, index := range typed.Indices {
+			if expressionReferencesAnyName(index, names) {
+				return true
+			}
+		}
+		return false
+	case *MemberExpr:
+		return expressionReferencesAnyName(typed.Object, names)
+	default:
+		return expressionReferencesAnyName(target, names)
+	}
 }
 
 // mutatorReceiverShape mirrors mutablePathFor syntactically: a local,
@@ -616,7 +810,10 @@ func (c *scriptChecker) identifierIsAutoInvokedTemporary(name string) bool {
 	if fn, ok := c.typeRootFunction(name); ok {
 		return len(fn.Params) == 0
 	}
-	return false
+	if spec, ok := c.defaultBuiltinCallSpec(name); ok {
+		return spec.autoInvoke
+	}
+	return c.script.engine != nil && c.script.engine.builtinAutoInvokes(name)
 }
 
 // provablyNotCollection reports whether expr's inferred type excludes every

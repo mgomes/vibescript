@@ -64,6 +64,31 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "push updates a temporary",
 		},
 		{
+			name:   "discarded ternary mutators",
+			source: "def f(flag)\n  flag ? [1].push(2) : [3].clear\n  nil\nend\nf(true)\nputs \"done\"",
+			want:   "push updates a temporary",
+		},
+		{
+			name:   "union of array-of-array arms",
+			source: "def f(rows: array<array<int>> | array<array<string>>)\n  rows.each { |row| row.clear }\n  nil\nend\nf([[1]])\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "hash each rest then value",
+			source: "h = {a: [1]}\nh.each { |(*, value)| value.push(2) }\nputs \"done\"",
+			want:   "mutating block parameter value",
+		},
+		{
+			name:   "block-param mutator nested in if",
+			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each do |row|\n    if flag\n      row.push(0)\n    end\n  end\nend\nf(true)\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later overwrite is not a read",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  row = []\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			// mutablePathFor rejects constant roots, so the write lands on
 			// a detached copy in static and instance methods alike.
 			name:   "class constant in a static method",
@@ -389,5 +414,28 @@ func TestHostUppercaseArrayGlobalIsNotADiscardedMutator(t *testing.T) {
 			strings.Contains(warning.Message, "mutating block parameter") {
 			t.Fatalf("ROWS.push with host global: unexpected discarded-mutator diagnostic: %v", warning)
 		}
+	}
+}
+
+func TestZeroArgHostBuiltinReceiverIsTemporary(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{StepQuota: Unlimited, MemoryQuotaBytes: Unlimited, RecursionLimit: 10_000})
+	engine.RegisterZeroArgBuiltin("rows", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewArray([]Value{NewInt(1)}), nil
+	})
+	script, err := engine.CompileSnippet("rows.push(2)\nputs \"done\"", "__main__")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	found := false
+	for _, warning := range script.CheckWarnings() {
+		if strings.Contains(warning.Message, "updates a temporary") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("rows.push host builtin: no temporary warning in %v", script.CheckWarnings())
 	}
 }
