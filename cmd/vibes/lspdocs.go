@@ -1020,11 +1020,11 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 	if st == nil {
 		return false
 	}
-	if classControlFlowContains(st, line+1) {
-		return false
-	}
 	runes, start, end, ok := wordSpanAtPosition(lines, line, character)
 	if !ok {
+		return false
+	}
+	if classControlFlowContains(st, lines, line+1, start+1) {
 		return false
 	}
 	i := end
@@ -1315,6 +1315,21 @@ func identifierTokensSkippingStrings(s string) []string {
 		if c == '#' {
 			break
 		}
+		if c == '%' && i+1 < len(s) {
+			kind := s[i+1]
+			if strings.ContainsRune("wWiIqQ", rune(kind)) && i+2 < len(s) {
+				open := s[i+2]
+				close := percentLiteralCloser(open)
+				flush(i)
+				i += 3
+				for i < len(s) && s[i] != close {
+					i++
+				}
+				afterValue = true
+				afterDot = false
+				continue
+			}
+		}
 		if c == ':' && i+1 < len(s) && (s[i+1] == '_' ||
 			s[i+1] >= 'A' && s[i+1] <= 'Z' ||
 			s[i+1] >= 'a' && s[i+1] <= 'z') {
@@ -1399,14 +1414,29 @@ func identifierTokensSkippingStrings(s string) []string {
 	return tokens
 }
 
-func classControlFlowContains(st *ast.ClassStmt, hoverLine int) bool {
+func percentLiteralCloser(open byte) byte {
+	switch open {
+	case '[':
+		return ']'
+	case '(':
+		return ')'
+	case '{':
+		return '}'
+	case '<':
+		return '>'
+	default:
+		return open
+	}
+}
+
+func classControlFlowContains(st *ast.ClassStmt, lines []string, hoverLine, hoverColumn int) bool {
 	if st == nil {
 		return false
 	}
-	return nestedControlContains(st.Body, hoverLine)
+	return nestedControlContains(st.Body, lines, hoverLine, hoverColumn)
 }
 
-func nestedControlContains(stmts []ast.Statement, hoverLine int) bool {
+func nestedControlContains(stmts []ast.Statement, lines []string, hoverLine, hoverColumn int) bool {
 	for _, stmt := range stmts {
 		switch s := stmt.(type) {
 		case *ast.ExprStmt:
@@ -1414,35 +1444,35 @@ func nestedControlContains(stmts []ast.Statement, hoverLine int) bool {
 				return true
 			}
 		case *ast.IfStmt:
-			if lineInStatements(s.Consequent, hoverLine) ||
-				lineInStatements(s.Alternate, hoverLine) {
+			if lineInStatements(s.Consequent, lines, hoverLine, hoverColumn) ||
+				lineInStatements(s.Alternate, lines, hoverLine, hoverColumn) {
 				return true
 			}
 			for _, branch := range s.ElseIf {
-				if nestedControlContains([]ast.Statement{branch}, hoverLine) {
+				if nestedControlContains([]ast.Statement{branch}, lines, hoverLine, hoverColumn) {
 					return true
 				}
 			}
 		case *ast.ForStmt:
-			if lineInStatements(s.Body, hoverLine) {
+			if lineInStatements(s.Body, lines, hoverLine, hoverColumn) {
 				return true
 			}
 		case *ast.WhileStmt:
-			if lineInStatements(s.Body, hoverLine) {
+			if lineInStatements(s.Body, lines, hoverLine, hoverColumn) {
 				return true
 			}
 		case *ast.UntilStmt:
-			if lineInStatements(s.Body, hoverLine) {
+			if lineInStatements(s.Body, lines, hoverLine, hoverColumn) {
 				return true
 			}
 		case *ast.TryStmt:
-			if lineInStatements(s.Body, hoverLine) ||
-				lineInStatements(s.Else, hoverLine) ||
-				lineInStatements(s.Ensure, hoverLine) {
+			if lineInStatements(s.Body, lines, hoverLine, hoverColumn) ||
+				lineInStatements(s.Else, lines, hoverLine, hoverColumn) ||
+				lineInStatements(s.Ensure, lines, hoverLine, hoverColumn) {
 				return true
 			}
 			for _, clause := range s.Rescues {
-				if lineInStatements(clause.Body, hoverLine) {
+				if lineInStatements(clause.Body, lines, hoverLine, hoverColumn) {
 					return true
 				}
 			}
@@ -1457,7 +1487,7 @@ func expressionContainsHover(expr ast.Expression, hoverLine int) bool {
 	}
 	switch e := expr.(type) {
 	case *ast.CallExpr:
-		if e.Block != nil && lineInStatements(e.Block.Body, hoverLine) {
+		if e.Block != nil && lineInStatements(e.Block.Body, nil, hoverLine, 0) {
 			return true
 		}
 		if expressionContainsHover(e.Callee, hoverLine) {
@@ -1474,24 +1504,53 @@ func expressionContainsHover(expr ast.Expression, hoverLine int) bool {
 			}
 		}
 	case *ast.BlockLiteral:
-		return lineInStatements(e.Body, hoverLine)
+		return lineInStatements(e.Body, nil, hoverLine, 0)
 	}
 	return false
 }
 
-func lineInStatements(stmts []ast.Statement, hoverLine int) bool {
-	if nestedControlContains(stmts, hoverLine) {
+func lineInStatements(stmts []ast.Statement, lines []string, hoverLine, hoverColumn int) bool {
+	if nestedControlContains(stmts, lines, hoverLine, hoverColumn) {
 		return true
 	}
 	for _, stmt := range stmts {
 		if stmt == nil {
 			continue
 		}
-		if hoverLine >= stmt.Pos().Line && hoverLine <= statementLastLine(stmt) {
+		if hoverInsideStatement(stmt, lines, hoverLine, hoverColumn) {
 			return true
 		}
 	}
 	return false
+}
+
+func hoverInsideStatement(stmt ast.Statement, lines []string, hoverLine, hoverColumn int) bool {
+	start := stmt.Pos()
+	endLine := statementLastLine(stmt)
+	if hoverLine < start.Line || hoverLine > endLine {
+		return false
+	}
+	if hoverLine == start.Line && hoverColumn > 0 && hoverColumn < start.Column {
+		return false
+	}
+	if hoverLine == endLine && hoverColumn > 0 && len(lines) > 0 {
+		line := lineAt(lines, hoverLine-1)
+		from := 0
+		if hoverLine == start.Line && start.Column > 0 {
+			from = min(len(line), start.Column-1)
+		}
+		to := min(len(line), hoverColumn)
+		if from < to {
+			segment := line[from:to]
+			if i := strings.LastIndex(segment, "end"); i >= 0 {
+				rest := strings.TrimSpace(segment[i+3:])
+				if rest == "" || strings.HasPrefix(rest, ";") || strings.HasPrefix(rest, "#") {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 func rescueBindingCovers(clause ast.RescueClause, hoverLine, hoverColumn int) bool {
