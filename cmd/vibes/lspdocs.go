@@ -2391,10 +2391,36 @@ func (sc *sourceScan) tokens(s string) []string {
 				continue
 			}
 			flush(i)
+			bracketDepth := 0
+			skipMember := false
 			for j := len(tokens) - 1; j >= 0; j-- {
 				tok := tokens[j]
 				if tok == ";" || tok == "=" || isControlKeyword(tok) {
 					break
+				}
+				if tok == "]" {
+					bracketDepth++
+					continue
+				}
+				if tok == "[" {
+					if bracketDepth > 0 {
+						bracketDepth--
+					}
+					continue
+				}
+				if bracketDepth > 0 {
+					continue
+				}
+				if tok == "." || strings.HasPrefix(tok, ".") {
+					skipMember = true
+					continue
+				}
+				if skipMember {
+					skipMember = false
+					continue
+				}
+				if tok == "," || tok == "(" || tok == ")" {
+					continue
 				}
 				if identCanBeLocal(tok) {
 					locals[tok] = struct{}{}
