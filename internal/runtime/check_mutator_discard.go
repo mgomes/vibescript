@@ -221,7 +221,7 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		"union", "difference", "intersection", "keys", "values", "slice",
 		"compact", "except", "flatten", "values_at",
 		"include?", "member?", "key?", "has_key?", "value?", "has_value?",
-		"shuffle", "reverse", "rotate", "product":
+		"shuffle", "reverse", "rotate", "product", "sample", "permutation":
 		return false
 	}
 	if length, ok := staticCollectionLength(receiver); ok {

@@ -595,6 +595,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "sample ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].sample { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "permutation ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].permutation { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "raising if in try body is not an observation of the suffix",
 			source: "rows = [[1], [2]]\nrows.each { |row| begin; if true; row.push(0); raise \"x\"; end; rescue; raise \"y\"; end; puts row }\nputs \"done\"",
 			want:   "mutating block parameter row",
