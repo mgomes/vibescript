@@ -1782,15 +1782,23 @@ func (exec *Execution) readTailMemberHop(current Value, step *mutablePathStep) (
 
 // readPathTailOrdinarily reads remaining hops on a temporary, each exactly as
 // evaluating the expression would. It runs once, in the reading pass, so a
-// getter it invokes runs once. Each hop charges exec.step the way the
-// corresponding MemberExpr or IndexExpr node would under ordinary
-// evaluation, so a long tail after a call root cannot skip the step quota.
+// getter it invokes runs once. Each hop charges exec.step and the
+// receiver's memory the way the corresponding MemberExpr or IndexExpr
+// node would under ordinary evaluation, so a long tail after a call
+// root cannot skip the step or memory quota.
 // The caller has already withdrawn the addressability permission, so a
 // mutator hop writes the temporary, never a value an enclosing mutator's
 // record still vouches for.
 func (exec *Execution) readPathTailOrdinarily(current Value, steps []mutablePathStep, env *Env) (Value, error) {
 	for i := range steps {
 		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		// Ordinary MemberExpr/IndexExpr evaluation charges the receiver
+		// before the hop (finishMemberExpr, evalIndexExpr). Do the same
+		// here so a large intermediate after a call root cannot vanish
+		// from the live-base walk before the next hop selects a small leaf.
+		if err := exec.checkMemoryValue(current); err != nil {
 			return NewNil(), err
 		}
 		step := &steps[i]

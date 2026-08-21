@@ -1002,6 +1002,40 @@ end
 	}
 }
 
+// TestCallRootedAssignChecksIntermediateReceiverMemory pins that a
+// parenless getter in a call-rooted tail still charges its oversized
+// result before the next hop. factory().large.small[0] = 9 must not
+// skip the huge hash large() returns, the way ordinary finishMemberExpr
+// would have called checkMemoryValue on that receiver.
+func TestCallRootedAssignChecksIntermediateReceiverMemory(t *testing.T) {
+	t.Parallel()
+
+	source := `class Box
+  def large()
+    a = []
+    i = 0
+    while i < 2000
+      a.push("xxxxxxxxxxxxxxxx")
+      i += 1
+    end
+    {small: [1], pad: a}
+  end
+end
+def factory()
+  Box.new
+end
+def run()
+  factory().large.small[0] = 9
+end
+`
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 64 << 10, StepQuota: Unlimited}, source)
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatal("factory().large.small[0] = 9 under a quota that cannot hold large()'s hash must error")
+	}
+	requireErrorContains(t, err, "quota exceeded")
+}
+
 func minSuccessfulStepQuota(t *testing.T, source string) int {
 	t.Helper()
 	const maxQuota = 200
