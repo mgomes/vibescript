@@ -1277,6 +1277,7 @@ func identifierTokensSkippingStrings(s string) []string {
 	inStr := byte(0)
 	escape := false
 	afterValue := false
+	afterDot := false
 	flush := func(i int) {
 		if start >= 0 {
 			tok := s[start:i]
@@ -1286,10 +1287,13 @@ func identifierTokensSkippingStrings(s string) []string {
 			}
 			if j < len(s) && s[j] == ':' {
 				tok += ":"
+			} else if afterDot {
+				tok = "." + tok
 			}
 			tokens = append(tokens, tok)
 			start = -1
 			afterValue = true
+			afterDot = false
 		}
 	}
 	for i := 0; i < len(s); i++ {
@@ -1366,10 +1370,17 @@ func identifierTokensSkippingStrings(s string) []string {
 			afterValue = true
 			continue
 		}
+		if c == '.' {
+			flush(i)
+			afterDot = true
+			afterValue = false
+			continue
+		}
 		if c == ';' {
 			flush(i)
 			tokens = append(tokens, ";")
 			afterValue = false
+			afterDot = false
 			continue
 		}
 		if c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' {
@@ -1381,6 +1392,7 @@ func identifierTokensSkippingStrings(s string) []string {
 		flush(i)
 		if c != ' ' && c != '\t' {
 			afterValue = false
+			afterDot = false
 		}
 	}
 	flush(len(s))
