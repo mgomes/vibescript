@@ -595,6 +595,13 @@ func (c *scriptChecker) discardedMutatorCalls(expr Expression) []discardedMutato
 			}
 		case *RescueExpr:
 			walk(typed.Body)
+			if expressionProvenNonRaising(typed.Body) {
+				return
+			}
+			if errorKind, exact := c.staticallyRaisedExpressionErrorKind(typed.Body); exact &&
+				!staticErrorKindMatchesRescue(errorKind, nil) {
+				return
+			}
 			walk(typed.Fallback)
 		case *IfExpr:
 			if branch, ok := c.inferredIfExpressionBranch(typed); ok {
@@ -607,6 +614,10 @@ func (c *scriptChecker) discardedMutatorCalls(expr Expression) []discardedMutato
 			}
 			walk(typed.Alternate)
 		case *CaseExpr:
+			if result, known := c.inferredCaseExpressionResult(typed); known {
+				walk(result)
+				return
+			}
 			for _, clause := range typed.Clauses {
 				walk(clause.Result)
 			}

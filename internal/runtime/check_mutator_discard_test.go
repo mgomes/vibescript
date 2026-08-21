@@ -79,6 +79,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "push updates a temporary",
 		},
 		{
+			name:   "reachable case else mutator",
+			source: "case 2\nwhen 1\n  0\nelse\n  [1].push(2)\nend\nputs \"done\"",
+			want:   "push updates a temporary",
+		},
+		{
 			name:   "union of array-of-array arms",
 			source: "def f(rows: array<array<int>> | array<array<string>>)\n  rows.each { |row| row.clear }\n  nil\nend\nf([[1]])\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -275,6 +280,14 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "unreachable ternary alternate",
 			source: "true ? 1 : [3].clear\nputs \"done\"",
+		},
+		{
+			name:   "unreachable rescue fallback",
+			source: "1 rescue [1].push(2)\nputs \"done\"",
+		},
+		{
+			name:   "unreachable case else",
+			source: "case 1\nwhen 1\n  0\nelse\n  [1].push(2)\nend\nputs \"done\"",
 		},
 		{
 			name:   "ensure observes the rebound parameter",
