@@ -1513,11 +1513,6 @@ func slashStartsRegex(afterValue, afterSpace bool, s string, i int, lastIdent st
 	if !afterValue {
 		return true
 	}
-	if lastIdent != "" {
-		if _, ok := locals[lastIdent]; ok {
-			return false
-		}
-	}
 	if !afterSpace || i+1 >= len(s) {
 		return false
 	}
@@ -1525,8 +1520,36 @@ func slashStartsRegex(afterValue, afterSpace bool, s string, i int, lastIdent st
 	case ' ', '\t', '\r', '\n':
 		return false
 	default:
+		if !identCanBeLocal(lastIdent) {
+			return false
+		}
+		if _, ok := locals[lastIdent]; ok {
+			return false
+		}
 		return true
 	}
+}
+
+func posixClassAt(s string, i int) bool {
+	if i < 0 || i+3 >= len(s) || s[i] != '[' || s[i+1] != ':' {
+		return false
+	}
+	j := i + 2
+	if j < len(s) && s[j] == '^' {
+		j++
+	}
+	nameStart := j
+	for j < len(s) {
+		c := s[j]
+		if c == ':' {
+			return j > nameStart && j+1 < len(s) && s[j+1] == ']'
+		}
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			return false
+		}
+		j++
+	}
+	return false
 }
 
 func interpRegexConsume(s string, i int, c byte, escape, inCharClass, inCharClassStart bool) (
@@ -1545,7 +1568,7 @@ func interpRegexConsume(s string, i int, c byte, escape, inCharClass, inCharClas
 		if inCharClassStart && c == ']' {
 			return false, false, true, false, 0
 		}
-		if c == '[' && i+1 < len(s) && s[i+1] == ':' {
+		if posixClassAt(s, i) {
 			j := i + 2
 			for j+1 < len(s) && (s[j] != ':' || s[j+1] != ']') {
 				j++
@@ -1905,7 +1928,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					continue
 				}
 				inCharClassStart = false
-				if c == '[' && i+1 < len(s) && s[i+1] == ':' {
+				if posixClassAt(s, i) {
 					i += 2
 					for i+1 < len(s) && (s[i] != ':' || s[i+1] != ']') {
 						i++
@@ -2078,7 +2101,7 @@ func (sc *sourceScan) tokens(s string) []string {
 						continue
 					}
 					inCharClassStart = false
-					if ch == '[' && i+1 < len(s) && s[i+1] == ':' {
+					if posixClassAt(s, i) {
 						i += 2
 						for i+1 < len(s) && (s[i] != ':' || s[i+1] != ']') {
 							i++
