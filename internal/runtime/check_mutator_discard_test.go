@@ -110,6 +110,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			source: "h = {a: [1]}\nh.each_with_index { |pair, i| pair.push(i) }\nputs \"done\"",
 			want:   "mutating block parameter pair",
 		},
+		{
+			name:   "destructured each parameter",
+			source: "rows = [[[1], [2]], [[3], [4]]]\nrows.each { |(head, tail)| tail.push(1) }\nputs \"done\"",
+			want:   "mutating block parameter tail",
+		},
 	}
 
 	for _, tc := range tests {
@@ -244,6 +249,12 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			source: "class Widget\n  def push(x)\n    @seen = x\n  end\nend\n" +
 				"def f(flag)\n  (flag ? [] : Widget.new).push(1)\nend\n" +
 				"f(true)\nputs \"done\"",
+		},
+		{
+			name: "any-typed temporary may be a user push",
+			source: "class Widget\n  def push(x)\n    @seen = x\n  end\nend\n" +
+				"def pass(v: any) -> any\n  v\nend\n" +
+				"pass(Widget.new).push(1)\nputs \"done\"",
 		},
 	}
 

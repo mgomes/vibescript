@@ -164,75 +164,87 @@ func (c *scriptChecker) iteratorYieldTypes(receiver Expression, property string,
 	if block == nil {
 		return nil
 	}
-	names := blockParamNameList(block)
-	if len(names) == 0 {
-		return nil
-	}
 	recv := c.inferExpressionType(receiver)
 	hashLike := typeExprHashLikeOnly(recv)
-	out := make(map[string]*TypeExpr, len(names))
+	var paramYields []*TypeExpr
 	switch property {
 	case "each":
 		if hashLike {
-			if len(names) >= 2 {
-				if key := collectionIteratorKeyType(recv); key != nil {
-					out[names[0]] = key
+			if len(block.Params)+len(block.ImplicitParams) >= 2 {
+				paramYields = []*TypeExpr{
+					collectionIteratorKeyType(recv),
+					collectionIteratorValueType(recv),
 				}
-				if val := collectionIteratorValueType(recv); val != nil {
-					out[names[1]] = val
-				}
-				return out
+			} else {
+				paramYields = []*TypeExpr{checkTypeArray}
 			}
-			out[names[0]] = checkTypeArray
-			return out
+		} else {
+			paramYields = []*TypeExpr{collectionIteratorElementType(recv)}
 		}
-		if yielded := collectionIteratorElementType(recv); yielded != nil {
-			out[names[0]] = yielded
-		}
-		return out
 	case "each_with_index":
 		if hashLike {
-			out[names[0]] = checkTypeArray
-			if len(names) > 1 {
-				out[names[1]] = checkTypeInt
-			}
-			return out
+			paramYields = []*TypeExpr{checkTypeArray, checkTypeInt}
+		} else {
+			paramYields = []*TypeExpr{collectionIteratorElementType(recv), checkTypeInt}
 		}
-		if yielded := collectionIteratorElementType(recv); yielded != nil {
-			out[names[0]] = yielded
-		}
-		if len(names) > 1 {
-			out[names[1]] = checkTypeInt
-		}
-		return out
 	default:
-		if yielded := c.builtinIteratorYieldedValue(receiver, property); yielded != nil {
-			out[names[0]] = yielded
+		paramYields = []*TypeExpr{c.builtinIteratorYieldedValue(receiver, property)}
+	}
+	out := make(map[string]*TypeExpr)
+	for i, param := range block.Params {
+		var yield *TypeExpr
+		if i < len(paramYields) {
+			yield = paramYields[i]
 		}
-		return out
+		projectYieldOntoParam(out, param, yield)
+	}
+	for i, name := range block.ImplicitParams {
+		if name == "" || i >= len(paramYields) || paramYields[i] == nil {
+			continue
+		}
+		out[name] = paramYields[i]
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func projectYieldOntoParam(out map[string]*TypeExpr, param Param, yield *TypeExpr) {
+	if param.Name != "" && yield != nil {
+		out[param.Name] = yield
+	}
+	if target, ok := param.Target.(*DestructureTarget); ok {
+		projectYieldOntoDestructure(out, target, yield)
 	}
 }
 
-func blockParamNameList(block *BlockLiteral) []string {
-	var names []string
-	seen := make(map[string]struct{})
-	add := func(name string) {
-		if name == "" {
-			return
+func projectYieldOntoDestructure(out map[string]*TypeExpr, target *DestructureTarget, yield *TypeExpr) {
+	if target == nil {
+		return
+	}
+	var slot *TypeExpr
+	if yield != nil && yield.Kind == TypeArray && len(yield.TypeArgs) == 1 {
+		slot = yield.TypeArgs[0]
+	}
+	for _, el := range target.Elements {
+		elType := el.Type
+		if elType == nil {
+			if el.Rest {
+				elType = checkTypeArray
+			} else {
+				elType = slot
+			}
 		}
-		if _, dup := seen[name]; dup {
-			return
+		switch nested := el.Target.(type) {
+		case *Identifier:
+			if nested.Name != "" && elType != nil {
+				out[nested.Name] = elType
+			}
+		case *DestructureTarget:
+			projectYieldOntoDestructure(out, nested, elType)
 		}
-		seen[name] = struct{}{}
-		names = append(names, name)
 	}
-	for _, param := range block.Params {
-		add(param.Name)
-	}
-	for _, name := range block.ImplicitParams {
-		add(name)
-	}
-	return names
 }
 
 // builtinIteratorYieldedValue is the value the named builtin iterator
@@ -255,14 +267,15 @@ func (c *scriptChecker) builtinIteratorYieldedValue(receiver Expression, propert
 
 // temporaryMutatorDiscardApplies is the temporary-arm receiver-type gate:
 // untyped receivers keep the name-based warning unless they are proven not
-// to be collections, but a known type must be collection-only so a union
-// with a named instance cannot claim that Widget#push reaches nothing.
+// to be collections, but a known type (including any) must be
+// collection-only so a union or any-typed Widget#push cannot claim the
+// update reaches nothing.
 func (c *scriptChecker) temporaryMutatorDiscardApplies(recv Expression) bool {
 	if c.provablyNotCollection(recv) {
 		return false
 	}
 	ty := c.inferExpressionType(recv)
-	if ty == nil || ty.Kind == TypeUnknown || ty.Kind == TypeAny {
+	if ty == nil || ty.Kind == TypeUnknown {
 		return true
 	}
 	return typeExprIsCollection(ty)
