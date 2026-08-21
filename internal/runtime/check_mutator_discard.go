@@ -211,7 +211,8 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		return staticFetchValuesMayMiss(receiver, call)
 	case "fill":
 		return staticFillMayYield(receiver, call)
-	case "zip", "join", "transpose":
+	case "zip", "join", "transpose", "length", "size", "empty?",
+		"first", "last", "inspect", "to_s", "to_a", "hash", "itself":
 		return false
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
@@ -278,7 +279,7 @@ func (c *scriptChecker) staticIteratorCallMayComplete(receiver Expression, prope
 	case "merge":
 		return len(call.Args) >= 1 && len(call.KwArgs) == 0
 	case "fill":
-		return len(call.Args) <= 2 && len(call.KwArgs) == 0
+		return len(call.Args) <= 3 && len(call.KwArgs) == 0
 	default:
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
 	}
@@ -361,6 +362,9 @@ func staticFillSelectorsExpand(selectors []Expression, length int) bool {
 	if !okStart || !okCount || start.IsBigInt() || count.IsBigInt() {
 		return false
 	}
+	if count.Int() < 0 {
+		return false
+	}
 	begin := int(start.Int())
 	if begin < 0 {
 		begin += length
@@ -393,7 +397,7 @@ func staticFillSelectorsActive(selectors []Expression, length int) bool {
 
 func staticExclusiveEmptyRange(expr Expression) bool {
 	rng, ok := expr.(*RangeExpr)
-	if !ok || !rng.Exclusive {
+	if !ok {
 		return false
 	}
 	start, okStart := integerLiteralValue(rng.Start)
@@ -401,7 +405,10 @@ func staticExclusiveEmptyRange(expr Expression) bool {
 	if !okStart || !okEnd || start.IsBigInt() || end.IsBigInt() {
 		return false
 	}
-	return start.Int() == end.Int()
+	if rng.Exclusive {
+		return start.Int() >= end.Int()
+	}
+	return start.Int() > end.Int()
 }
 
 func staticFillMayYield(receiver Expression, call *CallExpr) bool {
@@ -1590,6 +1597,8 @@ func statementsMayBreak(stmts []Statement) bool {
 		switch typed := stmt.(type) {
 		case *BreakStmt:
 			return true
+		case *RaiseStmt, *ReturnStmt, *NextStmt, *RetryStmt:
+			return false
 		case *IfStmt:
 			if ifStmtMayBreak(typed) {
 				return true

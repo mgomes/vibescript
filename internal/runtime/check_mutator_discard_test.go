@@ -349,6 +349,21 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "length ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].length { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "descending fill range is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1, 2].fill(1...0) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "raise before break does not make an endless while an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); while true; raise \"x\"; break; end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "zip ignores its block so it is not an observation",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].zip { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
