@@ -217,7 +217,7 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		}
 		return true
 	case "zip", "join", "transpose", "length", "size", "empty?",
-		"first", "last", "inspect", "to_s", "to_a", "hash", "itself",
+		"first", "last", "inspect", "to_s", "string", "to_a", "hash", "itself",
 		"union", "difference", "intersection", "keys", "values", "slice",
 		"compact", "except", "flatten", "values_at",
 		"include?", "member?", "key?", "has_key?", "value?", "has_value?",
@@ -1534,11 +1534,14 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 						c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) {
 						observes = true
 					}
-					if (pathContinues || exitsLoop) && c.statementsObserveName(stmts[i+1:], names) {
+					canExit := exitsLoop || c.whileStmtFallsThrough(typed)
+					if canExit && c.statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
-					if pathContinues || exitsLoop {
+					if canExit {
 						pathContinues = c.statementsMayCompleteNormally(stmts[i+1:])
+					} else {
+						pathContinues = false
 					}
 					return true
 				}
@@ -1550,11 +1553,14 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 						c.loopBackEdgeObservesName(typed.Condition, typed.Body, stmt, names) {
 						observes = true
 					}
-					if (pathContinues || exitsLoop) && c.statementsObserveName(stmts[i+1:], names) {
+					canExit := exitsLoop || c.untilStmtFallsThrough(typed)
+					if canExit && c.statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
-					if pathContinues || exitsLoop {
+					if canExit {
 						pathContinues = c.statementsMayCompleteNormally(stmts[i+1:])
+					} else {
+						pathContinues = false
 					}
 					return true
 				}
@@ -1567,11 +1573,14 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 							c.statementsObserveNameExcept(typed.Body, names, stmt)) {
 						observes = true
 					}
-					if (pathContinues || exitsLoop) && c.statementsObserveName(stmts[i+1:], names) {
+					canExit := exitsLoop || c.forStmtFallsThrough(typed)
+					if canExit && c.statementsObserveName(stmts[i+1:], names) {
 						observes = true
 					}
-					if pathContinues || exitsLoop {
+					if canExit {
 						pathContinues = c.statementsMayCompleteNormally(stmts[i+1:])
+					} else {
+						pathContinues = false
 					}
 					return true
 				}
@@ -1800,6 +1809,11 @@ func ensurePathMayComplete(stmts []Statement) bool {
 				break
 			}
 			if known && !truthy && !ensureContainsBreak(typed.Body) {
+				return false
+			}
+		case *ForStmt:
+			if length, ok := staticCollectionLength(typed.Iterable); ok && length > 0 &&
+				!ensurePathMayComplete(typed.Body) && !ensureContainsBreak(typed.Body) {
 				return false
 			}
 		case *TryStmt:
@@ -2076,6 +2090,8 @@ func (c *scriptChecker) statementFallsThrough(stmt Statement) bool {
 		return c.whileStmtFallsThrough(typed)
 	case *UntilStmt:
 		return c.untilStmtFallsThrough(typed)
+	case *ForStmt:
+		return c.forStmtFallsThrough(typed)
 	default:
 		return true
 	}
@@ -2098,6 +2114,18 @@ func (c *scriptChecker) untilStmtFallsThrough(stmt *UntilStmt) bool {
 	}
 	truthy, known := staticExpressionTruthiness(stmt.Condition)
 	if known && !truthy && !c.statementsMayBreak(stmt.Body) {
+		return false
+	}
+	return true
+}
+
+func (c *scriptChecker) forStmtFallsThrough(stmt *ForStmt) bool {
+	if stmt == nil {
+		return true
+	}
+	length, ok := staticCollectionLength(stmt.Iterable)
+	if ok && length > 0 && !c.statementsMayCompleteNormally(stmt.Body) &&
+		!c.statementsMayBreak(stmt.Body) {
 		return false
 	}
 	return true
