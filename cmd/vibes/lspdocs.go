@@ -1552,6 +1552,9 @@ func slashStartsRegex(afterValue, afterSpace bool, s string, i int, lastIdent st
 		if !identCanBeLocal(lastIdent) {
 			return false
 		}
+		if lastIdent == "self" || lastIdent == "nil" || lastIdent == "true" || lastIdent == "false" {
+			return false
+		}
 		if _, ok := locals[lastIdent]; ok {
 			return false
 		}
