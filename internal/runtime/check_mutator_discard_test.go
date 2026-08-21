@@ -174,6 +174,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later read in a zero-yield map block is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [].map { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "same-call delete miss block does not observe the write",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.delete(1) { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -665,6 +670,11 @@ func TestDiscardedMutatorMessagesTeachTheFix(t *testing.T) {
 			name:   "temporary arm spells the assignment",
 			source: "a = [1, 2]\na.dup.push(3)\nputs \"done\"",
 			want:   "push updates a temporary; the update reaches nothing. Assign the result, as in `x = a.dup.push(...)`",
+		},
+		{
+			name:   "element-returning mutator binds the receiver",
+			source: "[1, 2].pop\nputs \"done\"",
+			want:   "pop updates a temporary; the update reaches nothing. Bind the receiver first, as in `xs = [...]; xs.pop`",
 		},
 		{
 			name:   "bare member call keeps its own spelling",

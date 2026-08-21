@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/mgomes/vibescript/internal/ast"
@@ -699,13 +700,7 @@ func (c *scriptChecker) oneMutatorDiscardVerdict(function string, stmt *ExprStmt
 			return nil
 		}
 		return func() {
-			c.add(function, member.Pos(),
-				"%s updates a temporary; the update reaches nothing. Assign the result, as in `x = %s.%s%s`",
-				member.Property,
-				mutatorDiscardReceiverSource(member.Object),
-				member.Property,
-				mutatorDiscardCallSuffix(call),
-			)
+			c.add(function, member.Pos(), "%s", temporaryMutatorDiscardAdvice(member, call))
 		}
 	}
 	if root == "" {
@@ -1342,7 +1337,7 @@ func (c *scriptChecker) expressionObservesName(expr Expression, names map[string
 				c.receiverOwnsBuiltinIterator(member.Object, member.Property) {
 				return false
 			}
-			if blockResultDiscardingIterator(member.Property) &&
+			if c.receiverOwnsBuiltinIterator(member.Object, member.Property) &&
 				!staticIteratorMayYield(member.Property, member.Object, typed) {
 				return false
 			}
@@ -1971,6 +1966,36 @@ func typeExprLeavesCollectionStorage(ty *TypeExpr) bool {
 			return false
 		}
 	})
+}
+
+func elementReturningCollectionMutator(property string) bool {
+	switch property {
+	case "pop", "shift", "delete":
+		return true
+	default:
+		return false
+	}
+}
+
+func temporaryMutatorDiscardAdvice(member *MemberExpr, call *CallExpr) string {
+	recv := mutatorDiscardReceiverSource(member.Object)
+	suffix := mutatorDiscardCallSuffix(call)
+	if elementReturningCollectionMutator(member.Property) {
+		return fmt.Sprintf(
+			"%s updates a temporary; the update reaches nothing. Bind the receiver first, as in `xs = %s; xs.%s%s`",
+			member.Property,
+			recv,
+			member.Property,
+			suffix,
+		)
+	}
+	return fmt.Sprintf(
+		"%s updates a temporary; the update reaches nothing. Assign the result, as in `x = %s.%s%s`",
+		member.Property,
+		recv,
+		member.Property,
+		suffix,
+	)
 }
 
 // mutatorDiscardCallSuffix renders the call tail of the teaching example:
