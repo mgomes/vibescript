@@ -94,6 +94,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter v",
 		},
 		{
+			name:   "indexed union of nested arrays",
+			source: "def f(rows: array<array<array<int>>> | array<array<array<string>>>)\n  rows.each { |row| row[0].clear }\n  nil\nend\nf([[[1]]])\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "delete_if block read is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.delete_if { |x| puts row; true } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "hash each rest then value",
 			source: "h = {a: [1]}\nh.each { |(*, value)| value.push(2) }\nputs \"done\"",
 			want:   "mutating block parameter value",
@@ -293,6 +303,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "non-completing ternary arm is not reported",
 			source: "def f(flag)\n  flag ? [1].clear(2) : nil\n  nil\nend\nf(true)\nputs \"done\"",
+		},
+		{
+			name:   "non-completing pop arity is not reported",
+			source: "def f(flag)\n  flag ? [1].pop(1, 2) : nil\n  nil\nend\nf(true)\nputs \"done\"",
 		},
 		{
 			name:   "unreachable rescue fallback",

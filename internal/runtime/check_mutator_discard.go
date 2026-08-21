@@ -536,11 +536,34 @@ func (c *scriptChecker) discardedMutatorSiteMayComplete(site discardedMutatorSit
 	if site.call == nil || site.member == nil {
 		return true
 	}
-	if site.member.Property == "clear" {
-		return len(site.call.Args) == 0 && len(site.call.KwArgs) == 0 &&
-			site.call.Block == nil
+	return collectionMutatorCallShapeMayComplete(site.member.Property, site.call)
+}
+
+func collectionMutatorCallShapeMayComplete(property string, call *CallExpr) bool {
+	if call == nil {
+		return true
 	}
-	return true
+	n := len(call.Args)
+	kwargs := len(call.KwArgs) > 0
+	block := call.Block != nil
+	switch property {
+	case "clear":
+		return n == 0 && !kwargs && !block
+	case "pop", "shift":
+		return n <= 1 && !kwargs
+	case "delete":
+		return n == 1 && !kwargs
+	case "store":
+		return n == 2 && !kwargs
+	case "replace":
+		return n == 1 && !kwargs
+	case "insert":
+		return n >= 1 && !kwargs
+	case "delete_if", "keep_if":
+		return n == 0 && !kwargs
+	default:
+		return true
+	}
 }
 
 func (c *scriptChecker) oneMutatorDiscardVerdict(function string, stmt *ExprStmt, member *MemberExpr, call *CallExpr) func() {
@@ -599,7 +622,9 @@ func (c *scriptChecker) blockParamMutatorDiscardVerdict(function string, stmt *E
 	if laterObserves {
 		return nil
 	}
-	if call != nil && call.Block != nil && statementsObserveName(call.Block.Body, names) {
+	if call != nil && call.Block != nil &&
+		!filterMutatorWritesAfterBlock(member.Property) &&
+		statementsObserveName(call.Block.Body, names) {
 		return nil
 	}
 	if c.provablyNotCollection(member.Object) {
@@ -1029,6 +1054,15 @@ func typeAlongPathFromRoot(expr Expression, root string, rootType *TypeExpr) *Ty
 	return nil
 }
 
+func filterMutatorWritesAfterBlock(property string) bool {
+	switch property {
+	case "delete_if", "keep_if":
+		return true
+	default:
+		return false
+	}
+}
+
 func indexCollectionElementType(obj *TypeExpr, expr *IndexExpr) *TypeExpr {
 	if obj == nil || expr == nil || len(expr.Indices) != 1 {
 		return nil
@@ -1036,6 +1070,22 @@ func indexCollectionElementType(obj *TypeExpr, expr *IndexExpr) *TypeExpr {
 	if _, isRange := expr.Indices[0].(*RangeExpr); isRange {
 		return nil
 	}
+	arms, ok := typeExprArms(obj, 0)
+	if !ok || len(arms) == 0 {
+		return nil
+	}
+	elems := make([]*TypeExpr, 0, len(arms))
+	for _, arm := range arms {
+		el := indexCollectionElementTypeArm(arm, expr)
+		if el == nil {
+			return nil
+		}
+		elems = append(elems, el)
+	}
+	return unionTypeExprs(elems...)
+}
+
+func indexCollectionElementTypeArm(obj *TypeExpr, expr *IndexExpr) *TypeExpr {
 	switch obj.Kind {
 	case TypeArray:
 		if len(obj.TypeArgs) == 1 {
