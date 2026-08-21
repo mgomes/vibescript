@@ -120,6 +120,18 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			source: "rows = [[[1], [2]], [[3], [4]]]\nrows.each { |(head, tail)| tail.push(1) }\nputs \"done\"",
 			want:   "mutating block parameter tail",
 		},
+		{
+			name:   "hash each collapsed pair destructure",
+			source: "h = {a: [1]}\nh.each { |(k, v)| v.push(2) }\nputs \"done\"",
+			want:   "mutating block parameter v",
+		},
+		{
+			name: "builtin each after a user each of the same body",
+			source: "class Widget\n  def each()\n    @saved = yield [1]\n    @saved\n  end\nend\n" +
+				"def apply(x)\n  x.each { |row| row.push(0) }\nend\n" +
+				"apply(Widget.new)\napply([[1]])\nputs \"done\"",
+			want: "mutating block parameter row",
+		},
 	}
 
 	for _, tc := range tests {
@@ -253,6 +265,12 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			name: "union of array and instance",
 			source: "class Widget\n  def push(x)\n    @seen = x\n  end\nend\n" +
 				"def f(flag)\n  (flag ? [] : Widget.new).push(1)\nend\n" +
+				"f(true)\nputs \"done\"",
+		},
+		{
+			name: "conditional local shadows auto-invoked function",
+			source: "def rows()\n  [1]\nend\n" +
+				"def f(flag)\n  if flag\n    rows = []\n  end\n  rows.push(2)\nend\n" +
 				"f(true)\nputs \"done\"",
 		},
 		{

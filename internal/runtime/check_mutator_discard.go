@@ -114,6 +114,27 @@ func (c *scriptChecker) enterMutatorDiscardBlock(block *BlockLiteral, facts muta
 	}
 }
 
+// currentBlockDiscardsStatement reports whether stmt sits in the innermost
+// enclosing block whose results this walk discards. The global
+// resultCarryingStatements set is sticky across reachable-call walks, so a
+// prior walk of a user each that consumes the block result must not suppress
+// a later builtin Array#each walk of the same body.
+func (c *scriptChecker) currentBlockDiscardsStatement(stmt *ExprStmt) bool {
+	if len(c.mutatorDiscardBlocks) == 0 {
+		return false
+	}
+	enclosing := &c.mutatorDiscardBlocks[len(c.mutatorDiscardBlocks)-1]
+	if !enclosing.discardsResults {
+		return false
+	}
+	for _, bodyStmt := range enclosing.block.Body {
+		if bodyStmt == Statement(stmt) {
+			return true
+		}
+	}
+	return false
+}
+
 // mutatorDiscardCallFacts reports whether call is a builtin iterator that
 // discards block results, and the types it yields into the block's
 // parameters when that is proven. A resolved script method of the same
@@ -204,6 +225,12 @@ func (c *scriptChecker) iteratorYieldTypes(receiver Expression, property string,
 		}
 		out[name] = paramYields[i]
 	}
+	if property == "each" && hashLike &&
+		len(block.Params)+len(block.ImplicitParams) < 2 && len(block.Params) == 1 {
+		if target, ok := block.Params[0].Target.(*DestructureTarget); ok {
+			projectHashPairOntoDestructure(out, target, recv)
+		}
+	}
 	if len(out) == 0 {
 		return nil
 	}
@@ -216,6 +243,31 @@ func projectYieldOntoParam(out map[string]*TypeExpr, param Param, yield *TypeExp
 	}
 	if target, ok := param.Target.(*DestructureTarget); ok {
 		projectYieldOntoDestructure(out, target, yield)
+	}
+}
+
+func projectHashPairOntoDestructure(out map[string]*TypeExpr, target *DestructureTarget, recv *TypeExpr) {
+	if out == nil || target == nil {
+		return
+	}
+	key := collectionIteratorKeyType(recv)
+	val := collectionIteratorValueType(recv)
+	idx := 0
+	for _, el := range target.Elements {
+		if el.Rest {
+			continue
+		}
+		var elType *TypeExpr
+		switch idx {
+		case 0:
+			elType = key
+		case 1:
+			elType = val
+		}
+		idx++
+		if ident, ok := el.Target.(*Identifier); ok && ident.Name != "" && elType != nil {
+			out[ident.Name] = elType
+		}
 	}
 }
 
@@ -361,7 +413,8 @@ func blockParamNames(block *BlockLiteral) map[string]struct{} {
 // legitimate statement -- a mutator on an addressable local -- never needs
 // it.
 func (c *scriptChecker) mutatorDiscardVerdict(function string, stmt *ExprStmt) func() {
-	if _, carriesResult := c.resultCarryingStatements[stmt]; carriesResult {
+	if _, carriesResult := c.resultCarryingStatements[stmt]; carriesResult &&
+		!c.currentBlockDiscardsStatement(stmt) {
 		return nil
 	}
 	member, call := discardedMemberCall(stmt.Expr)
@@ -530,7 +583,7 @@ func (c *scriptChecker) mutatorReceiverShape(expr Expression) (temporary bool, r
 // a zero-argument function rather than name a local slot. A scope binding
 // or option global wins, matching ordinary evaluation's lookup order.
 func (c *scriptChecker) identifierIsAutoInvokedTemporary(name string) bool {
-	if c.scopeHas(name) || c.optionGlobalSeeded(name) {
+	if c.scopeHas(name) || c.liveLocalNameHas(name) || c.optionGlobalSeeded(name) {
 		return false
 	}
 	if c.script == nil {
