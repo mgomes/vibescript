@@ -211,6 +211,11 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		return staticFetchValuesMayMiss(receiver, call)
 	case "fill":
 		return staticFillMayYield(receiver, call)
+	case "delete":
+		if staticDeleteMissBlockUnreachable(receiver, call) {
+			return false
+		}
+		return true
 	case "zip", "join", "transpose", "length", "size", "empty?",
 		"first", "last", "inspect", "to_s", "to_a", "hash", "itself",
 		"union", "difference", "intersection", "keys", "values", "slice",
@@ -456,6 +461,13 @@ func staticFillSelectorsActive(selectors []Expression, length int) bool {
 		if staticExclusiveEmptyRange(selectors[0]) {
 			return false
 		}
+		if _, isNil := selectors[1].(*NilLiteral); isNil {
+			begin, ok := staticFillResolvedStart(selectors[0], length)
+			if !ok {
+				return true
+			}
+			return begin < length
+		}
 		count, ok := integerLiteralValue(selectors[1])
 		if !ok || count.IsBigInt() {
 			return true
@@ -528,6 +540,13 @@ func staticFillMayYield(receiver Expression, call *CallExpr) bool {
 	}
 	if len(selectors) != 2 {
 		return true
+	}
+	if _, isNil := selectors[1].(*NilLiteral); isNil {
+		begin, ok := staticFillResolvedStart(selectors[0], length)
+		if !ok {
+			return true
+		}
+		return begin < length
 	}
 	start, okStart := integerLiteralValue(selectors[0])
 	count, okCount := integerLiteralValue(selectors[1])
@@ -1686,7 +1705,7 @@ func (c *scriptChecker) whileStmtFallsThrough(stmt *WhileStmt) bool {
 		return true
 	}
 	truthy, known := staticExpressionTruthiness(stmt.Condition)
-	if known && truthy && !statementsMayBreak(stmt.Body) {
+	if known && truthy && !c.statementsMayBreak(stmt.Body) {
 		return false
 	}
 	return true
@@ -1697,13 +1716,13 @@ func (c *scriptChecker) untilStmtFallsThrough(stmt *UntilStmt) bool {
 		return true
 	}
 	truthy, known := staticExpressionTruthiness(stmt.Condition)
-	if known && !truthy && !statementsMayBreak(stmt.Body) {
+	if known && !truthy && !c.statementsMayBreak(stmt.Body) {
 		return false
 	}
 	return true
 }
 
-func statementsMayBreak(stmts []Statement) bool {
+func (c *scriptChecker) statementsMayBreak(stmts []Statement) bool {
 	for _, stmt := range stmts {
 		switch typed := stmt.(type) {
 		case *BreakStmt:
@@ -1711,49 +1730,55 @@ func statementsMayBreak(stmts []Statement) bool {
 		case *RaiseStmt, *ReturnStmt, *NextStmt, *RetryStmt:
 			return false
 		case *IfStmt:
-			if ifStmtMayBreak(typed) {
+			if c.ifStmtMayBreak(typed) {
 				return true
 			}
+			if !c.ifStmtFallsThrough(typed) {
+				return false
+			}
 		case *TryStmt:
-			if statementsMayBreak(typed.Body) || statementsMayBreak(typed.Else) ||
-				statementsMayBreak(typed.Ensure) {
+			if c.statementsMayBreak(typed.Body) || c.statementsMayBreak(typed.Else) ||
+				c.statementsMayBreak(typed.Ensure) {
 				return true
 			}
 			for _, clause := range typed.Rescues {
-				if statementsMayBreak(clause.Body) {
+				if c.statementsMayBreak(clause.Body) {
 					return true
 				}
+			}
+			if !c.tryStmtFallsThrough(typed) {
+				return false
 			}
 		}
 	}
 	return false
 }
 
-func ifStmtMayBreak(stmt *IfStmt) bool {
+func (c *scriptChecker) ifStmtMayBreak(stmt *IfStmt) bool {
 	truthy, known := staticExpressionTruthiness(stmt.Condition)
 	if known && truthy {
-		return statementsMayBreak(stmt.Consequent)
+		return c.statementsMayBreak(stmt.Consequent)
 	}
 	if known && !truthy {
 		for _, branch := range stmt.ElseIf {
 			t, k := staticExpressionTruthiness(branch.Condition)
 			if !k {
-				if statementsMayBreak(branch.Consequent) {
+				if c.statementsMayBreak(branch.Consequent) {
 					return true
 				}
 				continue
 			}
 			if t {
-				return statementsMayBreak(branch.Consequent)
+				return c.statementsMayBreak(branch.Consequent)
 			}
 		}
-		return statementsMayBreak(stmt.Alternate)
+		return c.statementsMayBreak(stmt.Alternate)
 	}
-	if statementsMayBreak(stmt.Consequent) || statementsMayBreak(stmt.Alternate) {
+	if c.statementsMayBreak(stmt.Consequent) || c.statementsMayBreak(stmt.Alternate) {
 		return true
 	}
 	for _, branch := range stmt.ElseIf {
-		if statementsMayBreak(branch.Consequent) {
+		if c.statementsMayBreak(branch.Consequent) {
 			return true
 		}
 	}

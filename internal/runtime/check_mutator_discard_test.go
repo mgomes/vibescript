@@ -589,6 +589,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].fill(-1...0) { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
 		},
+		{
+			name:   "unreachable break after raising if is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); while true; if true; raise \"x\"; end; break; end; puts row }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
 	}
 
 	for _, tc := range tests {
@@ -941,6 +946,18 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "delete miss block of a range still observes",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].delete(1..2) { puts row } }\nputs \"done\"",
+		},
+		{
+			name:   "empty delete miss block still observes",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [].delete(1) { puts row } }\nputs \"done\"",
+		},
+		{
+			name:   "empty hash delete miss block still observes",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {}.delete(:a) { puts row } }\nputs \"done\"",
+		},
+		{
+			name:   "nil fill length past the end does not write a temporary",
+			source: "[1].fill(9, 2, nil)\nputs \"done\"",
 		},
 		{
 			name:   "raising prefix still observes in rescue",
