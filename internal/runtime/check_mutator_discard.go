@@ -230,6 +230,19 @@ func (c *scriptChecker) staticIteratorCallMayComplete(receiver Expression, prope
 		return len(call.Args) == 1 && len(call.KwArgs) == 0
 	case "reduce", "sum":
 		return len(call.Args) <= 1 && len(call.KwArgs) == 0
+	case "find":
+		if len(call.KwArgs) != 0 {
+			return false
+		}
+		switch len(call.Args) {
+		case 0:
+			return true
+		case 1:
+			_, isNil := call.Args[0].(*NilLiteral)
+			return isNil
+		default:
+			return false
+		}
 	default:
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
 	}
@@ -690,6 +703,22 @@ func collectionMutatorCallActuallyWrites(property string, call *CallExpr) bool {
 			expanded = got
 		}
 		return len(expanded.Args) >= 1
+	case "pop", "shift":
+		if call == nil {
+			return true
+		}
+		expanded := call
+		if got, ok := staticExpandedCall(call); ok {
+			expanded = got
+		}
+		if len(expanded.Args) != 1 {
+			return true
+		}
+		value, exact := integerLiteralValue(expanded.Args[0])
+		if exact && !value.IsBigInt() && value.Int() == 0 {
+			return false
+		}
+		return true
 	default:
 		return true
 	}
