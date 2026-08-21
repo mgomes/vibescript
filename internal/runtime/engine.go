@@ -389,6 +389,25 @@ func (e *Engine) builtinValueReadFails(name string) bool {
 	return builtin != nil && !builtin.AutoInvoke && builtin.checkSpec == nil
 }
 
+// builtinAutoInvokes reports whether a registered builtin auto-invokes on a
+// bare identifier read. Host AutoBuiltins carry the runtime flag without
+// publishing a checkSpec, so callers that need the dispatch itself cannot
+// go through builtinCallSpec.
+func (e *Engine) builtinAutoInvokes(name string) bool {
+	if e == nil {
+		return false
+	}
+	e.builtinsMu.RLock()
+	defer e.builtinsMu.RUnlock()
+
+	val, ok := e.builtins[name]
+	if !ok {
+		return false
+	}
+	builtin := valueBuiltin(val)
+	return builtin != nil && builtin.AutoInvoke
+}
+
 // Builtin contract type fragments shared by the registration tables below.
 // Every type here mirrors a kind check in the builtin's implementation; a
 // contract that overclaims turns valid scripts into checker false positives.
