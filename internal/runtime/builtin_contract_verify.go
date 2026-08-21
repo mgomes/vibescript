@@ -159,7 +159,8 @@ func (v contractVerification) check(exec *Execution, builtin *Builtin) {
 			"without advancing the mutation epoch: bytes %d -> %d, identity digest "+
 			"%#x -> %#x. An unobserved write behind that declaration leaves an "+
 			"execution's memory accounting short and lets it allocate past its quota",
-		builtin.Name, v.before.bytes, after.bytes, v.before.identities, after.identities))
+		builtin.Name, v.before.bytes, after.bytes, v.before.identities, after.identities,
+	))
 }
 
 // builtinGraphFingerprint walks the execution's whole reachable graph on a

@@ -2941,7 +2941,8 @@ func (exec *Execution) estimateGraphBaseFast(est *memoryEstimator) int {
 				"vibescript: dormant-frame estimator mismatch: fast=%d reference=%d "+
 					"(stackDepth=%d dormantSlots=%d dormantBytes=%d nonBaseParentDepth=%d)",
 				total, ref, len(exec.envStack), exec.dormantSlots, exec.dormantBytes,
-				exec.nonBaseParentDepth))
+				exec.nonBaseParentDepth,
+			))
 		}
 	}
 	return total

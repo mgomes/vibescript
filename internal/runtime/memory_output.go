@@ -324,6 +324,7 @@ func (exec *Execution) verifyRetainedOutputCommit(c *baseWalkCache) {
 	if memoized := c.graphBytes + c.outputBytes; memoized != reference {
 		panic(fmt.Sprintf(
 			"vibescript: retained-output commit diverged: memo holds %d bytes (graph=%d output=%d), reference walk %d",
-			memoized, c.graphBytes, c.outputBytes, reference))
+			memoized, c.graphBytes, c.outputBytes, reference,
+		))
 	}
 }

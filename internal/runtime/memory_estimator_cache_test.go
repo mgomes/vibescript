@@ -401,10 +401,12 @@ var memoQuotaThresholdScripts = func() map[string]string {
 		"hash_clear":         build(fmt.Sprintf("  h = {a: %q}\n  h.clear", payloadA)),
 		"hash_delete_if":     build(fmt.Sprintf("  h = {a: %q, b: %q}\n  h.delete_if { |k, v| k == :a }", payloadA, payloadB)),
 		"nested_path_mutation": build(fmt.Sprintf(
-			"  outer = {rows: [[1, 2], [3, 4]]}\n  outer[:rows][0].push(%q)", payloadA)),
+			"  outer = {rows: [[1, 2], [3, 4]]}\n  outer[:rows][0].push(%q)", payloadA,
+		)),
 		"self_referential_mutation": build(fmt.Sprintf("  a = []\n  a.push(a)\n  a.push(%q)", payloadA)),
 		"typed_hash_rows": build(fmt.Sprintf(
-			"  rows = []\n  i = 0\n  while i < 8\n    rows.push({id: i, name: \"row\" + i.to_s, tags: [\"a\", \"b\"]})\n    i = i + 1\n  end\n  rows[3][:blob] = %q", payloadA)),
+			"  rows = []\n  i = 0\n  while i < 8\n    rows.push({id: i, name: \"row\" + i.to_s, tags: [\"a\", \"b\"]})\n    i = i + 1\n  end\n  rows[3][:blob] = %q", payloadA,
+		)),
 		"string_growth": build(fmt.Sprintf("  s = %q\n  t = s.ljust(4000, \"y\")", payloadA)),
 	}
 	scripts["ivar_write"] = fmt.Sprintf(`class Box
