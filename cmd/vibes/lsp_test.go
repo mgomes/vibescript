@@ -3600,6 +3600,26 @@ func TestHoverIncludeExtendDirectiveIsContextual(t *testing.T) {
 	if got := hoverValue(t, rescueExpired, 6, 2); !strings.Contains(got, "Removed mixin") {
 		t.Fatalf("hover(include after rescue binding) = %q, want mixin-removal docs", got)
 	}
+	sameLineMethod := "class C; def run; include Naming; end; end\n"
+	if got := hoverValue(t, sameLineMethod, 0, 18); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include in same-line method) = %q, must not serve mixin-removal docs", got)
+	}
+	inArray := "class C\n  [include Naming]\nend\n"
+	if got := hoverValue(t, inArray, 1, 3); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include in array literal) = %q, must not serve mixin-removal docs", got)
+	}
+	assignedIfLater := "class C\n  def run\n    x = if false\n      1\n    end\n    include Naming\n  end\nend\n"
+	if got := hoverValue(t, assignedIfLater, 5, 4); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after assigned if) = %q, must not serve mixin-removal docs", got)
+	}
+	multilinePercent := "class C\n  def run\n    values = %w[\n[x]\nend\n]\n    include Naming\n  end\nend\n"
+	if got := hoverValue(t, multilinePercent, 6, 4); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after multiline percent) = %q, must not serve mixin-removal docs", got)
+	}
+	sameLineIdentAssign := "class C; x = y; include Naming; end\n"
+	if got := hoverValue(t, sameLineIdentAssign, 0, 16); !strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after x = y) = %q, want mixin-removal docs", got)
+	}
 }
 
 func TestHoverBareAssignmentIsNotASetterCall(t *testing.T) {
