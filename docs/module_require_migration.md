@@ -47,7 +47,8 @@ Aliases make import intent explicit and reduce global collisions.
 ## 3. Plan for conflict behavior
 
 - Existing globals are not overwritten by module exports.
-- Access conflicting functions through the returned/aliased module object.
+- Call conflicting functions through the returned or aliased module namespace;
+  exported functions cannot be detached as values.
 - Alias collisions raise runtime errors (`alias "<name>" already defined`).
 
 ## 4. Add policy boundaries in hosts

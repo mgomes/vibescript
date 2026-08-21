@@ -100,9 +100,11 @@ if p, ok := vibes.QuotaProfileByName(userChoice); ok {
 
 Set `Config.ModulePaths` to the directories that contain re-usable `.vibe`
 files. Scripts can then call `require("module_name")` to load another file.
-The `require` builtin returns an object containing the module's public
-functions and also defines any non-conflicting public functions on the global
-scope for convenient access.
+The `require` builtin returns a namespace object containing the module's public
+function names and also defines any non-conflicting public names on the global
+scope for convenient direct calls. Required functions are not values: call
+them through the namespace or injected name rather than trying to store or pass
+them.
 
 ```go
 engine, err := vibes.NewEngine(vibes.Config{ModulePaths: []string{"/app/workflows"}})
@@ -129,7 +131,7 @@ which modules may be loaded (`*` glob patterns against normalized module names,
 with deny-list rules taking precedence).
 When a circular module dependency is detected, the runtime reports a concise
 chain (for example `a -> b -> a`).
-Use the optional `as:` keyword to bind the loaded module object to a global
+Use the optional `as:` keyword to bind the loaded module namespace to a global
 alias.
 Inside a module, use explicit relative paths (`./` or `../`) to load siblings
 or parent-local helpers. Relative requires are resolved from the calling
@@ -142,7 +144,7 @@ outside configured module roots are blocked.
 
 ### Capability Adapters
 
-Use `CallOptions.Capabilities` to install first-class, typed integrations. The
+Use `CallOptions.Capabilities` to install typed host integrations. The
 `vibes.NewJobQueueCapability` helper wraps a host
 `jobqueue.JobQueue` implementation and exposes `enqueue` (and `retry` when
 supported) with automatic argument parsing and context propagation.

@@ -18,7 +18,8 @@ planning:
 - Assignment to variables, indexes, members, and destructuring targets.
 - Control flow: `if`/`elsif`/`else`, `unless`/`else`, `while`, `until`,
   `for ... in`, `break`, `next`, and `return`.
-- Block syntax (`do ... end`) and block arguments.
+- Synchronous call-attached blocks (`do ... end` or `{ ... }`) with yielded
+  parameters.
 - Structured error handling (`begin`/`rescue`/`ensure`) and `raise`.
 - Module loading via `require(...)` with keyword options.
 

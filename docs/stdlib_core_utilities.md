@@ -1214,7 +1214,8 @@ Global functions and namespaces available in every script. See
 - `to_float(value) -> float` – convert an int, float, or finite numeric
   string; errors otherwise.
 - `require(module_name, as: nil) -> object` – load a module and return its
-  exports; `as:` binds the module object to a name. See
+  namespace; `as:` binds that namespace to a name. Exported functions are
+  direct call targets, not detachable values. See
   [builtins.md](builtins.md#module-loading).
 
 `now` and `uuid` auto-invoke, so they can be called without parentheses.

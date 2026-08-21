@@ -79,7 +79,8 @@ JSON.stringify({ status: Status::Draft }) # {"status":"draft"}
 
 ## Modules
 
-Required modules export top-level enums alongside exported functions, so callers
-can use both the enum type and helper functions from the same module.
+Required modules export top-level enums alongside directly callable function
+names, so callers can use both the enum type and helper calls from the same
+namespace.
 
 See `examples/enums/` for runnable scripts exercised by the test suite.
