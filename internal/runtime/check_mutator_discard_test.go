@@ -329,8 +329,23 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "expanding empty fill window writes a temporary",
+			source: "[1].fill(9, 2, 0)\nputs \"done\"",
+			want:   "fill updates a temporary",
+		},
+		{
 			name:   "join ignores its block so it is not an observation",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].join { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "empty range fill is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].fill(0...0) { puts row } }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "transpose ignores its block so it is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [[1]].transpose { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
 		},
 		{
@@ -878,6 +893,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "empty fill window does not write a temporary",
 			source: "[1].fill(0, 0) { 9 }\nputs \"done\"",
+		},
+		{
+			name:   "handled raise still observes after the try",
+			source: "rows = [[1], [2]]\nrows.each { |row| begin; row.push(0); raise \"x\"; rescue; nil; end; puts row }\nputs \"done\"",
 		},
 		{
 			name:   "raise before try overwrite still observes later",

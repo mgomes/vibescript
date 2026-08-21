@@ -211,7 +211,7 @@ func staticIteratorMayYield(property string, receiver Expression, call *CallExpr
 		return staticFetchValuesMayMiss(receiver, call)
 	case "fill":
 		return staticFillMayYield(receiver, call)
-	case "zip", "join":
+	case "zip", "join", "transpose":
 		return false
 	}
 	if length, ok := staticCollectionLength(receiver); ok {
@@ -331,16 +331,77 @@ func staticMergeMayConflict(receiver Expression, call *CallExpr) bool {
 }
 
 func staticFillWrites(receiver Expression, call *CallExpr) bool {
-	return staticFillMayYield(receiver, fillSelectorCall(call))
+	length, ok := staticCollectionLength(receiver)
+	if !ok {
+		return true
+	}
+	selectors := fillSelectors(call)
+	if staticFillSelectorsExpand(selectors, length) {
+		return true
+	}
+	return staticFillSelectorsActive(selectors, length)
 }
 
-func fillSelectorCall(call *CallExpr) *CallExpr {
-	if call == nil || call.Block != nil || len(call.Args) == 0 {
-		return call
+func fillSelectors(call *CallExpr) []Expression {
+	if call == nil {
+		return nil
 	}
-	out := *call
-	out.Args = call.Args[1:]
-	return &out
+	if call.Block != nil || len(call.Args) == 0 {
+		return call.Args
+	}
+	return call.Args[1:]
+}
+
+func staticFillSelectorsExpand(selectors []Expression, length int) bool {
+	if len(selectors) != 2 {
+		return false
+	}
+	start, okStart := integerLiteralValue(selectors[0])
+	count, okCount := integerLiteralValue(selectors[1])
+	if !okStart || !okCount || start.IsBigInt() || count.IsBigInt() {
+		return false
+	}
+	begin := int(start.Int())
+	if begin < 0 {
+		begin += length
+	}
+	return begin > length
+}
+
+func staticFillSelectorsActive(selectors []Expression, length int) bool {
+	switch len(selectors) {
+	case 0:
+		return length > 0
+	case 1:
+		if staticExclusiveEmptyRange(selectors[0]) {
+			return false
+		}
+		return true
+	case 2:
+		if staticExclusiveEmptyRange(selectors[0]) {
+			return false
+		}
+		count, ok := integerLiteralValue(selectors[1])
+		if !ok || count.IsBigInt() {
+			return true
+		}
+		return count.Int() > 0
+	default:
+		return true
+	}
+}
+
+func staticExclusiveEmptyRange(expr Expression) bool {
+	rng, ok := expr.(*RangeExpr)
+	if !ok || !rng.Exclusive {
+		return false
+	}
+	start, okStart := integerLiteralValue(rng.Start)
+	end, okEnd := integerLiteralValue(rng.End)
+	if !okStart || !okEnd || start.IsBigInt() || end.IsBigInt() {
+		return false
+	}
+	return start.Int() == end.Int()
 }
 
 func staticFillMayYield(receiver Expression, call *CallExpr) bool {
@@ -348,18 +409,29 @@ func staticFillMayYield(receiver Expression, call *CallExpr) bool {
 	if !ok {
 		return true
 	}
-	if call == nil || len(call.Args) == 0 {
+	selectors := fillSelectors(call)
+	if staticExclusiveEmptyRange(firstFillSelector(selectors)) {
+		return false
+	}
+	if len(selectors) == 0 {
 		return length > 0
 	}
-	if len(call.Args) != 2 {
+	if len(selectors) != 2 {
 		return true
 	}
-	start, okStart := integerLiteralValue(call.Args[0])
-	count, okCount := integerLiteralValue(call.Args[1])
+	start, okStart := integerLiteralValue(selectors[0])
+	count, okCount := integerLiteralValue(selectors[1])
 	if !okStart || !okCount || start.IsBigInt() || count.IsBigInt() {
 		return true
 	}
 	return count.Int() > 0
+}
+
+func firstFillSelector(selectors []Expression) Expression {
+	if len(selectors) == 0 {
+		return nil
+	}
+	return selectors[0]
 }
 
 func staticFetchValuesMayMiss(receiver Expression, call *CallExpr) bool {
@@ -1249,10 +1321,10 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 							observes = true
 						}
 					}
-					if pathContinues && c.statementsObserveName(stmts[i+1:], names) {
-						observes = true
-					}
-					if pathContinues {
+					if c.tryStmtFallsThrough(typed) || pathContinues {
+						if c.statementsObserveName(stmts[i+1:], names) {
+							observes = true
+						}
 						pathContinues = c.statementsMayCompleteNormally(stmts[i+1:])
 					}
 					return true
@@ -1569,9 +1641,10 @@ func ifStmtMayBreak(stmt *IfStmt) bool {
 }
 
 func (c *scriptChecker) tryStmtFallsThrough(stmt *TryStmt) bool {
-	if c.statementsMayCompleteNormally(stmt.Body) {
-		return c.statementsMayCompleteNormally(stmt.Else) &&
-			c.statementsMayCompleteNormally(stmt.Ensure)
+	if c.statementsMayCompleteNormally(stmt.Body) &&
+		c.statementsMayCompleteNormally(stmt.Else) &&
+		c.statementsMayCompleteNormally(stmt.Ensure) {
+		return true
 	}
 	if statementsProvenNonRaising(stmt.Body) {
 		return false
