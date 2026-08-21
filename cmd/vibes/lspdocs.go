@@ -1796,6 +1796,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			inPipes = false
 			inParamDefault = false
 			openers = append(openers, "def")
+			rescueBinds = append(rescueBinds, sourceRescueBind{})
 			atStmtStart = false
 			inLoopHeader = false
 		case "class", "module":
@@ -1873,7 +1874,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			if n := len(openers); n > 0 {
 				top := openers[n-1]
 				openers = openers[:n-1]
-				if top == "begin" && len(rescueBinds) > 0 {
+				if (top == "begin" || top == "def") && len(rescueBinds) > 0 {
 					restoreSourceRescueBind(&rescueBinds[len(rescueBinds)-1], locals)
 					rescueBinds = rescueBinds[:len(rescueBinds)-1]
 					inRescueHeader = false
