@@ -1081,7 +1081,7 @@ func mixinContainer(program *ast.Program, lines []string, hoverLine int) *ast.Cl
 		if hoverLine <= start || hoverLine > end {
 			return
 		}
-		if classMethodBodyContains(st, hoverLine, end) {
+		if classMethodBodyContains(st, lines, hoverLine, end) {
 			return
 		}
 		found = st
@@ -1105,10 +1105,10 @@ func mixinContainer(program *ast.Program, lines []string, hoverLine int) *ast.Cl
 	return nil
 }
 
-func classMethodBodyContains(st *ast.ClassStmt, hoverLine, classEnd int) bool {
+func classMethodBodyContains(st *ast.ClassStmt, lines []string, hoverLine, classEnd int) bool {
 	starts := classChildStarts(st)
 	check := func(m *ast.FunctionStmt) bool {
-		mEnd := classEnd
+		mEnd := methodSourceEndLine(lines, m, classEnd)
 		for _, sibling := range starts {
 			if sibling > m.Position.Line && sibling-1 < mEnd {
 				mEnd = sibling - 1
@@ -1185,7 +1185,7 @@ func statementsBindLocalOne(stmt ast.Statement, word string, hoverLine, hoverCol
 			return true
 		}
 		for _, clause := range s.Rescues {
-			if posBeforeHover(clause.Position, hoverLine, hoverColumn) && clause.Binding == word {
+			if clause.Binding == word && rescueBindingCovers(clause, hoverLine, hoverColumn) {
 				return true
 			}
 			if statementsBindLocal(clause.Body, word, hoverLine, hoverColumn) {
@@ -1194,6 +1194,106 @@ func statementsBindLocalOne(stmt ast.Statement, word string, hoverLine, hoverCol
 		}
 	}
 	return false
+}
+
+func methodSourceEndLine(lines []string, m *ast.FunctionStmt, classEnd int) int {
+	if m == nil || m.Position.Line < 1 {
+		return classEnd
+	}
+	defIdx := m.Position.Line - 1
+	if defIdx >= len(lines) {
+		return classEnd
+	}
+	defLine := lineAt(lines, defIdx)
+	if methodClosesOnDefLine(defLine) {
+		return m.Position.Line
+	}
+	indent := leadingIndent(defLine)
+	last := classEnd
+	if last > len(lines) {
+		last = len(lines)
+	}
+	for line := m.Position.Line + 1; line <= last; line++ {
+		text := lineAt(lines, line-1)
+		if strings.TrimSpace(text) != "end" {
+			continue
+		}
+		if leadingIndent(text) <= indent {
+			return line
+		}
+	}
+	return classEnd
+}
+
+func methodClosesOnDefLine(defLine string) bool {
+	trimmed := strings.TrimSpace(defLine)
+	if !strings.HasPrefix(trimmed, "def") {
+		return false
+	}
+	return strings.Contains(trimmed, ";") && strings.HasSuffix(trimmed, "end")
+}
+
+func leadingIndent(s string) int {
+	n := 0
+	for _, r := range s {
+		switch r {
+		case ' ', '\t':
+			n++
+		default:
+			return n
+		}
+	}
+	return n
+}
+
+func rescueBindingCovers(clause ast.RescueClause, hoverLine, hoverColumn int) bool {
+	start := clause.Position
+	if hoverLine < start.Line || (hoverLine == start.Line && hoverColumn < start.Column) {
+		return false
+	}
+	endLine := start.Line
+	for _, stmt := range clause.Body {
+		if line := statementLastLine(stmt); line > endLine {
+			endLine = line
+		}
+	}
+	return hoverLine <= endLine
+}
+
+func statementLastLine(stmt ast.Statement) int {
+	if stmt == nil {
+		return 0
+	}
+	last := stmt.Pos().Line
+	switch s := stmt.(type) {
+	case *ast.IfStmt:
+		last = max(last, statementsLastLine(s.Consequent), statementsLastLine(s.Alternate))
+		for _, branch := range s.ElseIf {
+			last = max(last, statementLastLine(branch))
+		}
+	case *ast.ForStmt:
+		last = max(last, statementsLastLine(s.Body))
+	case *ast.WhileStmt:
+		last = max(last, statementsLastLine(s.Body))
+	case *ast.UntilStmt:
+		last = max(last, statementsLastLine(s.Body))
+	case *ast.TryStmt:
+		last = max(last, statementsLastLine(s.Body), statementsLastLine(s.Else), statementsLastLine(s.Ensure))
+		for _, clause := range s.Rescues {
+			last = max(last, clause.Position.Line, statementsLastLine(clause.Body))
+		}
+	}
+	return last
+}
+
+func statementsLastLine(stmts []ast.Statement) int {
+	last := 0
+	for _, stmt := range stmts {
+		if line := statementLastLine(stmt); line > last {
+			last = line
+		}
+	}
+	return last
 }
 
 func assignmentBindsName(target ast.Expression, word string) bool {
