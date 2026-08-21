@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	vibescript "github.com/mgomes/vibescript"
 	"github.com/mgomes/vibescript/internal/ast"
@@ -1328,11 +1329,8 @@ func tokenIsValue(tok string) bool {
 	case "end", "true", "false", "nil", "self", ")", "]", "}":
 		return true
 	}
-	c := tok[0]
-	return c == '_' ||
-		c >= 'A' && c <= 'Z' ||
-		c >= 'a' && c <= 'z' ||
-		c >= '0' && c <= '9'
+	r, _ := utf8.DecodeRuneInString(tok)
+	return ast.IsIdentifierStart(r) || r >= '0' && r <= '9'
 }
 
 func slashStartsRegex(afterValue, afterSpace bool, s string, i int) bool {
@@ -1646,15 +1644,23 @@ func (sc *sourceScan) tokens(s string) []string {
 			afterDot = false
 			continue
 		}
-		if c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if size < 1 {
+			size = 1
+		}
+		identCont := start >= 0 && ast.IsIdentifierRune(r)
+		identStart := start < 0 && (ast.IsIdentifierStart(r) || r >= '0' && r <= '9')
+		if identStart || identCont {
 			if start < 0 {
 				start = i
 			}
+			i += size - 1
 			continue
 		}
 		flush(i)
 		switch c {
-		case '(', ')', '[', ']', '{', '}', ',':
+		case '(', ')', '[', ']', '{', '}', ',',
+			'+', '-', '*', '/', '%', '&', '|', '^', '<', '>', '!':
 			tokens = append(tokens, string(c))
 		}
 		afterValue = false
@@ -1729,6 +1735,23 @@ func nestedControlContains(stmts []ast.Statement, lines []string, hoverLine, hov
 				return true
 			}
 		case *ast.AssignStmt:
+			if expressionContainsHover(s.Value, hoverLine, hoverColumn) {
+				return true
+			}
+		case *ast.RaiseStmt:
+			if expressionContainsHover(s.Value, hoverLine, hoverColumn) ||
+				expressionContainsHover(s.Message, hoverLine, hoverColumn) {
+				return true
+			}
+		case *ast.ReturnStmt:
+			if expressionContainsHover(s.Value, hoverLine, hoverColumn) {
+				return true
+			}
+		case *ast.BreakStmt:
+			if expressionContainsHover(s.Value, hoverLine, hoverColumn) {
+				return true
+			}
+		case *ast.NextStmt:
 			if expressionContainsHover(s.Value, hoverLine, hoverColumn) {
 				return true
 			}
