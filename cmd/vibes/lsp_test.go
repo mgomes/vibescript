@@ -3976,6 +3976,22 @@ func TestHoverIncludeExtendDirectiveIsContextual(t *testing.T) {
 	if got := hoverValue(t, multilineTarget, 7, 2); !strings.Contains(got, "Removed mixin") {
 		t.Fatalf("hover(include after multiline destructure /2) = %q, want mixin-removal docs", got)
 	}
+	parenlessTyped := "class C; def run total: int; total /2; end; include Naming; end\n"
+	if got := hoverValue(t, parenlessTyped, 0, strings.Index(parenlessTyped, "include")); !strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include after parenless typed param /2) = %q, want mixin-removal docs", got)
+	}
+	memberScanRegex := "class C\n  def run(text)\n    text.scan /end/\n    include Naming\n  end\nend\n"
+	if got := hoverValue(t, memberScanRegex, 3, 4); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include in method after text.scan /end/) = %q, must not serve mixin-removal docs", got)
+	}
+	collectPercent := "class C\n  def run\n    collect %w[end]\n    include Naming\n  end\nend\n"
+	if got := hoverValue(t, collectPercent, 3, 4); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include in method after collect %%w[end]) = %q, must not serve mixin-removal docs", got)
+	}
+	memberScanPercent := "class C\n  def run(text)\n    text.scan %w[end]\n    include Naming\n  end\nend\n"
+	if got := hoverValue(t, memberScanPercent, 3, 4); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include in method after text.scan %%w[end]) = %q, must not serve mixin-removal docs", got)
+	}
 }
 
 func TestHoverBareAssignmentIsNotASetterCall(t *testing.T) {

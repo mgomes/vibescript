@@ -1538,6 +1538,21 @@ func identCanBeLocal(tok string) bool {
 	return ast.IsIdentifierStart(r)
 }
 
+func commandCalleeTakesLiteralArg(lastIdent string, locals map[string]struct{}) bool {
+	name := strings.TrimPrefix(lastIdent, ".")
+	if !identCanBeLocal(name) {
+		return false
+	}
+	if strings.HasPrefix(lastIdent, ".") {
+		return true
+	}
+	if lastIdent == "self" || lastIdent == "nil" || lastIdent == "true" || lastIdent == "false" {
+		return false
+	}
+	_, isLocal := locals[lastIdent]
+	return !isLocal
+}
+
 func slashStartsRegex(afterValue, afterSpace bool, s string, i int, lastIdent string, locals map[string]struct{}) bool {
 	if !afterValue {
 		return true
@@ -1549,17 +1564,18 @@ func slashStartsRegex(afterValue, afterSpace bool, s string, i int, lastIdent st
 	case ' ', '\t', '\r', '\n':
 		return false
 	default:
-		if !identCanBeLocal(lastIdent) {
-			return false
-		}
-		if lastIdent == "self" || lastIdent == "nil" || lastIdent == "true" || lastIdent == "false" {
-			return false
-		}
-		if _, ok := locals[lastIdent]; ok {
-			return false
-		}
+		return commandCalleeTakesLiteralArg(lastIdent, locals)
+	}
+}
+
+func percentStartsArray(afterValue, afterSpace bool, lastIdent string, locals map[string]struct{}) bool {
+	if !afterValue {
 		return true
 	}
+	if !afterSpace {
+		return false
+	}
+	return commandCalleeTakesLiteralArg(lastIdent, locals)
 }
 
 func posixClassAt(s string, i int) bool {
@@ -1959,9 +1975,16 @@ func (sc *sourceScan) tokens(s string) []string {
 				inRescueHeader = false
 			} else if inForTargets && identCanBeLocal(tok) && tok != "in" && !isControlKeyword(tok) {
 				locals[tok] = struct{}{}
-			} else if afterDef && !inParams && identCanBeLocal(tok) && !isControlKeyword(tok) {
+			} else if afterDef && !inParams && identCanBeLocal(strings.TrimSuffix(tok, ":")) &&
+				!isControlKeyword(strings.TrimSuffix(tok, ":")) {
+				name := strings.TrimSuffix(tok, ":")
 				if afterDefName {
-					locals[tok] = struct{}{}
+					if !inParamDefault {
+						locals[name] = struct{}{}
+						if strings.HasSuffix(tok, ":") {
+							inParamDefault = true
+						}
+					}
 				} else {
 					afterDefName = true
 				}
@@ -2028,8 +2051,8 @@ func (sc *sourceScan) tokens(s string) []string {
 					afterSpace = false
 					continue
 				}
-				afterSpace = false
-				if !afterValue && c == '%' && i+2 < len(s) && strings.ContainsRune("wWiI", rune(s[i+1])) {
+				if percentStartsArray(afterValue, afterSpace, lastIdent, locals) &&
+					c == '%' && i+2 < len(s) && strings.ContainsRune("wWiI", rune(s[i+1])) {
 					open := s[i+2]
 					close := percentLiteralCloser(open)
 					end, depth, closed := skipPercentArrayFrom(s, i+3, open, close, 1)
@@ -2043,6 +2066,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					interpPercentDepth = depth
 					break
 				}
+				afterSpace = false
 				if c == '#' {
 					break
 				}
@@ -2152,8 +2176,8 @@ func (sc *sourceScan) tokens(s string) []string {
 					afterSpace = false
 					continue
 				}
-				afterSpace = false
-				if !afterValue && c == '%' && i+2 < len(s) && strings.ContainsRune("wWiI", rune(s[i+1])) {
+				if percentStartsArray(afterValue, afterSpace, lastIdent, locals) &&
+					c == '%' && i+2 < len(s) && strings.ContainsRune("wWiI", rune(s[i+1])) {
 					open := s[i+2]
 					close := percentLiteralCloser(open)
 					end, depth, closed := skipPercentArrayFrom(s, i+3, open, close, 1)
@@ -2167,6 +2191,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					interpPercentDepth = depth
 					break
 				}
+				afterSpace = false
 				if c == '#' {
 					break
 				}
@@ -2285,7 +2310,8 @@ func (sc *sourceScan) tokens(s string) []string {
 		}
 		if c == '%' && i+1 < len(s) {
 			kind := s[i+1]
-			if !afterValue && strings.ContainsRune("wWiI", rune(kind)) && i+2 < len(s) {
+			if percentStartsArray(afterValue, afterSpace, lastIdent, locals) &&
+				strings.ContainsRune("wWiI", rune(kind)) && i+2 < len(s) {
 				open := s[i+2]
 				close := percentLiteralCloser(open)
 				flush(i)
