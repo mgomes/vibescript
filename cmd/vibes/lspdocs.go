@@ -2066,6 +2066,11 @@ func (sc *sourceScan) tokens(s string) []string {
 					i += extra
 					continue
 				}
+				if c == ')' || c == ']' {
+					afterValue = true
+					lastIdent = ""
+					continue
+				}
 				afterValue = false
 				lastIdent = ""
 				continue
@@ -2182,6 +2187,11 @@ func (sc *sourceScan) tokens(s string) []string {
 					afterValue = true
 					lastIdent = name
 					i += extra
+					continue
+				}
+				if c == ')' || c == ']' {
+					afterValue = true
+					lastIdent = ""
 					continue
 				}
 				afterValue = false
@@ -2623,6 +2633,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			afterValue = true
 			afterDot = false
 			afterBrace = false
+			lastIdent = ""
 			continue
 		case '<':
 			if inParams && inParamDefault && !fromEqualsDefault {
@@ -2649,6 +2660,7 @@ func (sc *sourceScan) tokens(s string) []string {
 			afterValue = true
 			afterDot = false
 			afterBrace = false
+			lastIdent = ""
 			continue
 		case '|':
 			if inPipes {
