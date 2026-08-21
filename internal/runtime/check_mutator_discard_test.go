@@ -194,6 +194,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "typed rescue that cannot match a later raise is not an observation",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  begin\n    row.push(0)\n    raise TypeError, \"x\"\n  rescue ArgumentError\n    puts row\n  rescue TypeError\n    nil\n  end\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "union of shape collection fields",
 			source: "def f(rows: array<{items: array<int>}> | array<{items: array<string>}>)\n  rows.each { |row| row.items.clear }\n  nil\nend\nf([{items: [1]}])\nputs \"done\"",
 			want:   "mutating block parameter row",

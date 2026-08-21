@@ -919,17 +919,15 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 				}
 				if inBody || inElse || inRescue || inEnsure {
 					if inBody && statementsAfterMayRaise(typed.Body, stmt) {
-						stringRaise := remainderIsStringRaise(typed.Body, stmt)
+						raisedName, knownRaise := remainderRaisedTypeName(typed.Body, stmt)
 						for _, clause := range typed.Rescues {
-							if stringRaise && clause.Ty != nil {
+							if !rescueClauseMayMatch(clause, raisedName, knownRaise) {
 								continue
 							}
 							if c.statementsObserveName(clause.Body, names) {
 								observes = true
 							}
-							if clause.Ty == nil {
-								break
-							}
+							break
 						}
 					}
 					if inBody && c.statementsObserveName(typed.Else, names) {
@@ -1033,17 +1031,36 @@ func copyNameSet(names map[string]struct{}) map[string]struct{} {
 	return out
 }
 
-func remainderIsStringRaise(body []Statement, stmt *ExprStmt) bool {
+func remainderRaisedTypeName(body []Statement, stmt *ExprStmt) (string, bool) {
 	rest, ok := statementsAfter(body, stmt)
 	if !ok || len(rest) != 1 {
-		return false
+		return "", false
 	}
 	raise, ok := rest[0].(*RaiseStmt)
 	if !ok {
+		return "", false
+	}
+	switch typed := raise.Value.(type) {
+	case *Identifier:
+		return typed.Name, true
+	case *StringLiteral:
+		return "", true
+	default:
+		return "", false
+	}
+}
+
+func rescueClauseMayMatch(clause RescueClause, raisedName string, known bool) bool {
+	if !known {
+		return true
+	}
+	if clause.Ty == nil {
+		return true
+	}
+	if raisedName == "" {
 		return false
 	}
-	_, isString := raise.Value.(*StringLiteral)
-	return isString
+	return clause.Ty.Name == raisedName
 }
 
 func statementsAfter(body []Statement, stmt *ExprStmt) ([]Statement, bool) {
