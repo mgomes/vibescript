@@ -1236,6 +1236,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 			name:   "ensure nested try rescue observes the suffix",
 			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each { |row| while true; row.push(0); begin; break; ensure; begin; raise \"x\" if flag; rescue; nil; else; raise \"y\"; end; end; end; puts row }\nend\nf(true)\nputs \"done\"",
 		},
+		{
+			name:   "rescue retry observes the protected body",
+			source: "rows = [[1], [2]]\nrows.each { |row| tries = 0; begin; puts row; raise \"x\" if tries == 0; rescue; row.push(0); tries += 1; retry; end }\nputs \"done\"",
+		},
 	}
 
 	for _, tc := range tests {

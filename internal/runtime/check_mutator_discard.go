@@ -1471,6 +1471,16 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 						c.statementsObserveName(typed.Else, names) {
 						observes = true
 					}
+					if inRescue {
+						for _, clause := range typed.Rescues {
+							if c.remainderMayRetry(clause.Body, stmt) {
+								if c.statementsObserveName(typed.Body, names) {
+									observes = true
+								}
+								break
+							}
+						}
+					}
 					if inBody || inElse || inRescue {
 						ensureNames := copyNameSet(names)
 						if inBody {
@@ -1747,6 +1757,14 @@ func (c *scriptChecker) remainderMayBreak(body []Statement, stmt *ExprStmt) bool
 	return c.statementsMayBreak(rest)
 }
 
+func (c *scriptChecker) remainderMayRetry(body []Statement, stmt *ExprStmt) bool {
+	rest, ok := statementsAfter(body, stmt)
+	if !ok {
+		return false
+	}
+	return remainderContainsRetry(rest)
+}
+
 func (c *scriptChecker) remainderMayNext(body []Statement, stmt *ExprStmt) bool {
 	rest, ok := statementsAfter(body, stmt)
 	if !ok {
@@ -1854,6 +1872,69 @@ func remainderContainsNext(stmts []Statement) bool {
 					return true
 				}
 			}
+		}
+	}
+	return false
+}
+
+func remainderContainsRetry(stmts []Statement) bool {
+	for _, stmt := range stmts {
+		switch typed := stmt.(type) {
+		case *RetryStmt:
+			return true
+		case *RaiseStmt, *ReturnStmt, *BreakStmt, *NextStmt:
+			return false
+		case *IfStmt:
+			if remainderContainsRetryIf(typed) {
+				return true
+			}
+			if !ensureIfMayComplete(typed) {
+				return false
+			}
+		case *TryStmt:
+			if tryEnsureAborts(typed.Ensure) {
+				return remainderContainsRetry(typed.Ensure)
+			}
+			if remainderContainsRetry(typed.Body) || remainderContainsRetry(typed.Else) ||
+				remainderContainsRetry(typed.Ensure) {
+				return true
+			}
+			for _, clause := range typed.Rescues {
+				if remainderContainsRetry(clause.Body) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func remainderContainsRetryIf(stmt *IfStmt) bool {
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if known && truthy {
+		return remainderContainsRetry(stmt.Consequent)
+	}
+	if known && !truthy {
+		for _, branch := range stmt.ElseIf {
+			t, k := staticExpressionTruthiness(branch.Condition)
+			if k && t {
+				return remainderContainsRetry(branch.Consequent)
+			}
+			if !k {
+				if remainderContainsRetry(branch.Consequent) {
+					return true
+				}
+				continue
+			}
+		}
+		return remainderContainsRetry(stmt.Alternate)
+	}
+	if remainderContainsRetry(stmt.Consequent) || remainderContainsRetry(stmt.Alternate) {
+		return true
+	}
+	for _, branch := range stmt.ElseIf {
+		if remainderContainsRetry(branch.Consequent) {
+			return true
 		}
 	}
 	return false
