@@ -184,6 +184,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later read after return is not an observation",
+			source: "def f\n  rows = [[1], [2]]\n  rows.each do |row|\n    row.push(0)\n    return nil\n    puts row\n  end\nend\nf()\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "union of shape collection fields",
 			source: "def f(rows: array<{items: array<int>}> | array<{items: array<string>}>)\n  rows.each { |row| row.items.clear }\n  nil\nend\nf([{items: [1]}])\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -552,6 +557,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "later rescue after a raising body observes the rebound parameter",
 			source: "rows = [[1], [2]]\nrows.each do |row|\n  begin\n    row.push(0)\n    raise \"x\"\n  rescue\n    puts row\n  end\nend\nputs \"done\"",
+		},
+		{
+			name:   "later rescue after a nested raising path observes the rebound parameter",
+			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each do |row|\n    begin\n      if flag\n        row.push(0)\n        raise \"x\"\n      end\n    rescue\n      puts row\n    end\n  end\n  nil\nend\nf(true)\nputs \"done\"",
 		},
 		{
 			name:   "hash store with an unsupported key cannot update",

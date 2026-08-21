@@ -916,7 +916,7 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 					inEnsure = search(typed.Ensure)
 				}
 				if inBody || inElse || inRescue || inEnsure {
-					if inBody && tryBodyAfterMayRaise(typed.Body, stmt) {
+					if inBody && statementsAfterMayRaise(typed.Body, stmt) {
 						for _, clause := range typed.Rescues {
 							if c.statementsObserveName(clause.Body, names) {
 								observes = true
@@ -981,44 +981,44 @@ func (c *scriptChecker) statementsObserveNameExcept(statements []Statement, name
 		if except != nil && statement == Statement(except) {
 			continue
 		}
+		observed := false
 		switch typed := statement.(type) {
 		case *AssignStmt:
-			if assignmentTargetObservesName(typed.Target, names) ||
-				c.expressionObservesName(typed.Value, names) {
-				return true
-			}
+			observed = assignmentTargetObservesName(typed.Target, names) ||
+				c.expressionObservesName(typed.Value, names)
 		case *ExprStmt:
-			if c.expressionObservesName(typed.Expr, names) {
-				return true
-			}
+			observed = c.expressionObservesName(typed.Expr, names)
 		case *IfStmt:
-			if c.ifStmtObservesName(typed, names, except) {
-				return true
-			}
+			observed = c.ifStmtObservesName(typed, names, except)
 		case *WhileStmt:
-			if c.whileStmtObservesName(typed, names, except) {
-				return true
-			}
+			observed = c.whileStmtObservesName(typed, names, except)
 		case *UntilStmt:
-			if c.untilStmtObservesName(typed, names, except) {
-				return true
-			}
+			observed = c.untilStmtObservesName(typed, names, except)
 		case *ReturnStmt:
-			if c.expressionObservesName(typed.Value, names) {
-				return true
-			}
+			observed = c.expressionObservesName(typed.Value, names)
 		case *RaiseStmt:
-			if c.expressionObservesName(typed.Value, names) ||
-				c.expressionObservesName(typed.Message, names) {
-				return true
-			}
+			observed = c.expressionObservesName(typed.Value, names) ||
+				c.expressionObservesName(typed.Message, names)
 		default:
-			if statementsReferenceAnyName([]Statement{statement}, names) {
-				return true
-			}
+			observed = statementsReferenceAnyName([]Statement{statement}, names)
+		}
+		if observed {
+			return true
+		}
+		if !statementFallsThrough(statement) {
+			return false
 		}
 	}
 	return false
+}
+
+func statementFallsThrough(stmt Statement) bool {
+	switch stmt.(type) {
+	case *ReturnStmt, *RaiseStmt, *BreakStmt, *NextStmt, *RetryStmt:
+		return false
+	default:
+		return true
+	}
 }
 
 func (c *scriptChecker) ifStmtObservesName(stmt *IfStmt, names map[string]struct{}, except *ExprStmt) bool {
@@ -1492,19 +1492,76 @@ func staticCaseWhenCandidateMatches(expr *CaseExpr, candidate Expression, splat 
 	return err == nil && matched
 }
 
-func tryBodyAfterMayRaise(body []Statement, stmt *ExprStmt) bool {
-	found := false
-	var rest []Statement
-	for _, s := range body {
-		if found {
-			rest = append(rest, s)
-			continue
-		}
+func statementsAfterMayRaise(body []Statement, stmt *ExprStmt) bool {
+	for i, s := range body {
 		if s == Statement(stmt) {
-			found = true
+			return !statementsProvenNonRaising(body[i+1:])
+		}
+		if inner, ok := statementBodyContaining(s, stmt); ok {
+			if statementsAfterMayRaise(inner, stmt) {
+				return true
+			}
+			return !statementsProvenNonRaising(body[i+1:])
 		}
 	}
-	return found && !statementsProvenNonRaising(rest)
+	return false
+}
+
+func statementBodyContaining(s Statement, stmt *ExprStmt) ([]Statement, bool) {
+	switch typed := s.(type) {
+	case *IfStmt:
+		if statementsContainExprStmt(typed.Consequent, stmt) {
+			return typed.Consequent, true
+		}
+		for _, branch := range typed.ElseIf {
+			if statementsContainExprStmt(branch.Consequent, stmt) {
+				return branch.Consequent, true
+			}
+		}
+		if statementsContainExprStmt(typed.Alternate, stmt) {
+			return typed.Alternate, true
+		}
+	case *WhileStmt:
+		if statementsContainExprStmt(typed.Body, stmt) {
+			return typed.Body, true
+		}
+	case *UntilStmt:
+		if statementsContainExprStmt(typed.Body, stmt) {
+			return typed.Body, true
+		}
+	case *ForStmt:
+		if statementsContainExprStmt(typed.Body, stmt) {
+			return typed.Body, true
+		}
+	case *TryStmt:
+		if statementsContainExprStmt(typed.Body, stmt) {
+			return typed.Body, true
+		}
+		if statementsContainExprStmt(typed.Else, stmt) {
+			return typed.Else, true
+		}
+		for _, clause := range typed.Rescues {
+			if statementsContainExprStmt(clause.Body, stmt) {
+				return clause.Body, true
+			}
+		}
+		if statementsContainExprStmt(typed.Ensure, stmt) {
+			return typed.Ensure, true
+		}
+	}
+	return nil, false
+}
+
+func statementsContainExprStmt(body []Statement, stmt *ExprStmt) bool {
+	for _, s := range body {
+		if s == Statement(stmt) {
+			return true
+		}
+		if _, ok := statementBodyContaining(s, stmt); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *scriptChecker) receiverIsHashLike(expr Expression) bool {
