@@ -202,6 +202,9 @@ func staticIteratorCallMayComplete(property string, call *CallExpr) bool {
 	if call == nil {
 		return true
 	}
+	if expanded, ok := staticExpandedCall(call); ok {
+		call = expanded
+	}
 	switch property {
 	case "each", "each_key", "each_value", "reverse_each":
 		return len(call.Args) == 0 && len(call.KwArgs) == 0
@@ -1119,6 +1122,24 @@ func (c *scriptChecker) statementsMayCompleteNormally(stmts []Statement) bool {
 	return true
 }
 
+func statementsRaisedTypeName(body []Statement) (string, bool) {
+	if len(body) != 1 {
+		return "", false
+	}
+	raise, ok := body[0].(*RaiseStmt)
+	if !ok {
+		return "", false
+	}
+	switch typed := raise.Value.(type) {
+	case *Identifier:
+		return typed.Name, true
+	case *StringLiteral:
+		return "", true
+	default:
+		return "", false
+	}
+}
+
 func remainderRaisedTypeName(body []Statement, stmt *ExprStmt) (string, bool) {
 	rest, ok := statementsAfter(body, stmt)
 	if !ok || len(rest) != 1 {
@@ -1182,9 +1203,25 @@ func (c *scriptChecker) statementFallsThrough(stmt Statement) bool {
 		return c.expressionProvablyCompletes(typed.Expr)
 	case *IfStmt:
 		return c.ifStmtFallsThrough(typed)
+	case *TryStmt:
+		return c.tryStmtFallsThrough(typed)
 	default:
 		return true
 	}
+}
+
+func (c *scriptChecker) tryStmtFallsThrough(stmt *TryStmt) bool {
+	if c.statementsMayCompleteNormally(stmt.Body) {
+		return c.statementsMayCompleteNormally(stmt.Else) &&
+			c.statementsMayCompleteNormally(stmt.Ensure)
+	}
+	for _, clause := range stmt.Rescues {
+		if c.statementsMayCompleteNormally(clause.Body) &&
+			c.statementsMayCompleteNormally(stmt.Ensure) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *scriptChecker) ifStmtFallsThrough(stmt *IfStmt) bool {
@@ -1275,7 +1312,11 @@ func (c *scriptChecker) tryStmtObservesName(stmt *TryStmt, names map[string]stru
 		return true
 	}
 	if !statementsProvenNonRaising(stmt.Body) {
+		raisedName, knownRaise := statementsRaisedTypeName(stmt.Body)
 		for _, clause := range stmt.Rescues {
+			if !rescueClauseMayMatch(clause, raisedName, knownRaise) {
+				continue
+			}
 			if c.statementsObserveNameExcept(clause.Body, names, except) {
 				return true
 			}

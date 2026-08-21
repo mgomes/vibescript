@@ -259,6 +259,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later mismatched try rescue is not an observation",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  begin\n    raise TypeError, \"x\"\n  rescue ArgumentError\n    puts row\n  end\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later try that returns is not an observation",
+			source: "def f\n  rows = [[1], [2]]\n  rows.each do |row|\n    row.push(0)\n    begin\n      return nil\n    ensure\n      nil\n    end\n    puts row\n  end\nend\nf()\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "later read after a nested return is not an observation",
 			source: "def f(flag)\n  rows = [[1], [2]]\n  rows.each do |row|\n    if flag\n      row.push(0)\n      return nil\n    end\n    puts row\n  end\nend\nf(true)\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -662,6 +672,10 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "empty for loop still observes the mutated binding",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); for row in []; nil; end; puts row }\nputs \"done\"",
+		},
+		{
+			name:   "empty splat iterator still observes in the block",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); {a: 1}.each(*[]) { puts row } }\nputs \"done\"",
 		},
 		{
 			name:   "raise before try overwrite still observes later",
