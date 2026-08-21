@@ -1714,6 +1714,7 @@ type sourceScan struct {
 	inPipes             bool
 	inParamDefault      bool
 	genericDepth        int
+	collectionDepth     int
 	inForTargets        bool
 	inRescueHeader      bool
 	pendingRescueBind   bool
@@ -1771,6 +1772,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	inPipes := sc.inPipes
 	inParamDefault := sc.inParamDefault
 	genericDepth := sc.genericDepth
+	collectionDepth := sc.collectionDepth
 	inForTargets := sc.inForTargets
 	inRescueHeader := sc.inRescueHeader
 	pendingRescueBind := sc.pendingRescueBind
@@ -2598,6 +2600,7 @@ func (sc *sourceScan) tokens(s string) []string {
 					inParams = false
 					inParamDefault = false
 					genericDepth = 0
+					collectionDepth = 0
 				}
 			} else if inPipes && paramDepth > 0 {
 				paramDepth--
@@ -2615,10 +2618,18 @@ func (sc *sourceScan) tokens(s string) []string {
 				genericDepth--
 			}
 		case ',':
-			if genericDepth == 0 && ((inParams && paramDepth <= 1) || (inPipes && paramDepth == 0)) {
+			if genericDepth == 0 && collectionDepth == 0 &&
+				((inParams && paramDepth <= 1) || (inPipes && paramDepth == 0)) {
 				inParamDefault = false
 			}
+		case '[':
+			if inParams || inPipes || inParamDefault {
+				collectionDepth++
+			}
 		case ']':
+			if collectionDepth > 0 {
+				collectionDepth--
+			}
 			afterValue = true
 			afterDot = false
 			afterBrace = false
@@ -2646,21 +2657,28 @@ func (sc *sourceScan) tokens(s string) []string {
 			afterBrace = false
 		case '{':
 			afterDef = false
-			afterBrace = true
-			if afterValue {
-				afterBlockPipes = true
-				openers = append(openers, "brace")
-				localsStack = append(localsStack, locals)
-				cloned := make(map[string]struct{}, len(locals))
-				for name := range locals {
-					cloned[name] = struct{}{}
+			if inParamDefault {
+				collectionDepth++
+				afterBrace = false
+			} else {
+				afterBrace = true
+				if afterValue {
+					afterBlockPipes = true
+					openers = append(openers, "brace")
+					localsStack = append(localsStack, locals)
+					cloned := make(map[string]struct{}, len(locals))
+					for name := range locals {
+						cloned[name] = struct{}{}
+					}
+					seedImplicitBlockLocals(cloned)
+					locals = cloned
 				}
-				seedImplicitBlockLocals(cloned)
-				locals = cloned
 			}
 		case '}':
 			afterBrace = false
-			if n := len(openers); n > 0 && openers[n-1] == "brace" {
+			if inParamDefault && collectionDepth > 0 {
+				collectionDepth--
+			} else if n := len(openers); n > 0 && openers[n-1] == "brace" {
 				openers = openers[:n-1]
 				if len(localsStack) > 0 {
 					locals = localsStack[len(localsStack)-1]
@@ -2703,6 +2721,7 @@ func (sc *sourceScan) tokens(s string) []string {
 	sc.inPipes = inPipes
 	sc.inParamDefault = inParamDefault
 	sc.genericDepth = genericDepth
+	sc.collectionDepth = collectionDepth
 	sc.inForTargets = inForTargets
 	sc.inRescueHeader = inRescueHeader
 	sc.pendingRescueBind = pendingRescueBind

@@ -3928,6 +3928,10 @@ func TestHoverIncludeExtendDirectiveIsContextual(t *testing.T) {
 	if got := hoverValue(t, genericComma, 0, 51); strings.Contains(got, "Removed mixin") {
 		t.Fatalf("hover(include in method after generic type comma) = %q, must not serve mixin-removal docs", got)
 	}
+	arrayDefault := "class C; def run(x = [other, helper]); helper /end/; include Naming; end; end\n"
+	if got := hoverValue(t, arrayDefault, 0, 53); strings.Contains(got, "Removed mixin") {
+		t.Fatalf("hover(include in method after array default comma) = %q, must not serve mixin-removal docs", got)
+	}
 }
 
 func TestHoverBareAssignmentIsNotASetterCall(t *testing.T) {
