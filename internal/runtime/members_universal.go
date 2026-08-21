@@ -15,9 +15,9 @@ import (
 //     frozen? reports true because Vibescript does not model mutable freeze state.
 //   - nil? — true only for the nil receiver and false for every other value
 //     (Ruby's Object#nil?).
-//   - eql?/equal? — the equality predicates: `eql?` reports hash-key equality and
-//     `equal?` reports object identity for scalars and instances, content
-//     equality for collections (ADR-006 item 2).
+//   - eql?/equal? — the equality predicates: `eql?` reports hash-key equality;
+//     `equal?` reports value identity for scalars, backing identity for runtime
+//     objects, and content equality for collections (ADR-006 item 2).
 //   - send/public_send — dynamic dispatch helpers that invoke a method named by
 //     a symbol or string.
 //   - tap/yield_self — the block helpers: `tap` yields the receiver to its block

@@ -486,10 +486,10 @@ type capabilityReturnProof struct {
 }
 
 // covers reports whether the proof vouches for exactly this method returning
-// exactly this value. Identity comparison keeps the proof bound to the value
-// the first-party builtin actually validated: returning any other value —
-// even an equal one rebuilt from unvalidated state — falls back to the
-// contract's ValidateReturn.
+// exactly this value. Representation identity for collections keeps the proof
+// bound to the wrapper the first-party builtin actually validated: returning
+// any other value — even an equal one rebuilt from unvalidated state — falls
+// back to the contract's ValidateReturn.
 func (p capabilityReturnProof) covers(method string, result Value) bool {
 	return p.recorded && p.method == method && capabilityProofMatchesValue(p.result, result)
 }
