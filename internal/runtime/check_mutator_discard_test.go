@@ -64,6 +64,11 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "push updates a temporary",
 		},
 		{
+			name:   "empty splat still completes a zero-arg mutator",
+			source: "[1].clear(*[])\nputs \"done\"",
+			want:   "clear updates a temporary",
+		},
+		{
 			name:   "discarded ternary mutators",
 			source: "def f(flag)\n  flag ? [1].push(2) : [3].clear\n  nil\nend\nf(true)\nputs \"done\"",
 			want:   "push updates a temporary",
@@ -191,6 +196,21 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 		{
 			name:   "later read after overwriting the parameter is not an observation",
 			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  row = []\n  puts row\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later read after a definite if overwrite is not an observation",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  row.push(0)\n  if true\n    row = []\n  end\n  puts row\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later read in an unreachable try else is not an observation",
+			source: "rows = [[1], [2]]\nrows.each do |row|\n  begin\n    row.push(0)\n    raise \"x\"\n  rescue\n    nil\n  else\n    puts row\n  end\nend\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later delete hit block is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [1].delete(1) { puts row } }\nputs \"done\"",
 			want:   "mutating block parameter row",
 		},
 		{

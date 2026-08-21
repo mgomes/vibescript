@@ -638,6 +638,9 @@ func (c *scriptChecker) collectionMutatorCallShapeMayComplete(receiver Expressio
 	if call == nil {
 		return true
 	}
+	if expanded, ok := staticExpandedCall(call); ok {
+		call = expanded
+	}
 	n := len(call.Args)
 	kwargs := len(call.KwArgs) > 0
 	block := call.Block != nil
@@ -936,7 +939,8 @@ func (c *scriptChecker) statementsAfterObserveName(body []Statement, stmt *ExprS
 							}
 						}
 					}
-					if inBody && c.statementsObserveName(typed.Else, names) {
+					if inBody && c.remainderMayCompleteNormally(typed.Body, stmt) &&
+						c.statementsObserveName(typed.Else, names) {
 						observes = true
 					}
 					if (inBody || inElse || inRescue) &&
@@ -1007,6 +1011,9 @@ func (c *scriptChecker) statementsObserveNameExcept(statements []Statement, name
 			observed = c.expressionObservesName(typed.Expr, names)
 		case *IfStmt:
 			observed = c.ifStmtObservesName(typed, names, except)
+			if !observed {
+				c.applyDefiniteIfBindingKills(typed, names)
+			}
 		case *WhileStmt:
 			observed = c.whileStmtObservesName(typed, names, except)
 		case *UntilStmt:
@@ -1035,6 +1042,19 @@ func copyNameSet(names map[string]struct{}) map[string]struct{} {
 		out[name] = struct{}{}
 	}
 	return out
+}
+
+func (c *scriptChecker) remainderMayCompleteNormally(body []Statement, stmt *ExprStmt) bool {
+	rest, ok := statementsAfter(body, stmt)
+	if !ok {
+		return true
+	}
+	for _, statement := range rest {
+		if !c.statementFallsThrough(statement) {
+			return false
+		}
+	}
+	return true
 }
 
 func remainderRaisedTypeName(body []Statement, stmt *ExprStmt) (string, bool) {
@@ -1131,6 +1151,42 @@ func (c *scriptChecker) ifStmtObservesName(stmt *IfStmt, names map[string]struct
 		}
 	}
 	return c.statementsObserveNameExcept(stmt.Alternate, names, except)
+}
+
+func (c *scriptChecker) applyDefiniteIfBindingKills(stmt *IfStmt, names map[string]struct{}) {
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if known && truthy {
+		c.applyDefiniteBindingKills(stmt.Consequent, names)
+		return
+	}
+	if !known {
+		return
+	}
+	for _, branch := range stmt.ElseIf {
+		truthy, known = staticExpressionTruthiness(branch.Condition)
+		if !known {
+			return
+		}
+		if truthy {
+			c.applyDefiniteBindingKills(branch.Consequent, names)
+			return
+		}
+	}
+	c.applyDefiniteBindingKills(stmt.Alternate, names)
+}
+
+func (c *scriptChecker) applyDefiniteBindingKills(statements []Statement, names map[string]struct{}) {
+	for _, statement := range statements {
+		switch typed := statement.(type) {
+		case *AssignStmt:
+			removeBindingTargetNames(typed.Target, names)
+		case *IfStmt:
+			c.applyDefiniteIfBindingKills(typed, names)
+		}
+		if !c.statementFallsThrough(statement) {
+			return
+		}
+	}
 }
 
 func (c *scriptChecker) whileStmtObservesName(stmt *WhileStmt, names map[string]struct{}, except *ExprStmt) bool {
@@ -1288,6 +1344,9 @@ func (c *scriptChecker) expressionObservesName(expr Expression, names map[string
 			}
 			if blockResultDiscardingIterator(member.Property) &&
 				!staticIteratorMayYield(member.Property, member.Object, typed) {
+				return false
+			}
+			if member.Property == "delete" && staticDeleteMissBlockUnreachable(member.Object, typed) {
 				return false
 			}
 		}
@@ -1550,6 +1609,122 @@ func mutatorIgnoresSuppliedBlock(property string) bool {
 	case "push", "append", "prepend", "unshift", "pop", "shift",
 		"insert", "clear", "store", "replace":
 		return true
+	default:
+		return false
+	}
+}
+
+func staticExpandedCall(call *CallExpr) (*CallExpr, bool) {
+	if call == nil {
+		return nil, true
+	}
+	if !callExpandsArguments(call) {
+		return call, true
+	}
+	args := make([]Expression, 0, len(call.Args))
+	for _, arg := range call.Args {
+		elements, ok := staticExpandedPositionalArg(arg)
+		if !ok {
+			return nil, false
+		}
+		args = append(args, elements...)
+	}
+	kwargs := make([]KeywordArg, 0, len(call.KwArgs))
+	for _, kwarg := range call.KwArgs {
+		expanded, ok := staticExpandedKeywordArg(kwarg)
+		if !ok {
+			return nil, false
+		}
+		kwargs = append(kwargs, expanded...)
+	}
+	out := *call
+	out.Args = args
+	out.KwArgs = kwargs
+	return &out, true
+}
+
+func staticExpandedPositionalArg(arg Expression) ([]Expression, bool) {
+	splat, ok := arg.(*SplatArg)
+	if !ok {
+		return []Expression{arg}, true
+	}
+	return staticSplatArrayElements(splat.Value)
+}
+
+func staticSplatArrayElements(expr Expression) ([]Expression, bool) {
+	array, ok := expr.(*ArrayLiteral)
+	if !ok {
+		return nil, false
+	}
+	out := make([]Expression, 0, len(array.Elements))
+	for _, element := range array.Elements {
+		elements, ok := staticExpandedPositionalArg(element)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, elements...)
+	}
+	return out, true
+}
+
+func staticExpandedKeywordArg(kwarg KeywordArg) ([]KeywordArg, bool) {
+	if !kwarg.Splat {
+		return []KeywordArg{kwarg}, true
+	}
+	hash, ok := kwarg.Value.(*HashLiteral)
+	if !ok || hash.ShapeType != nil {
+		return nil, false
+	}
+	out := make([]KeywordArg, 0, len(hash.Pairs))
+	for _, pair := range hash.Pairs {
+		name, ok := staticLiteralHashKey(pair.Key)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, KeywordArg{Name: name, Value: pair.Value})
+	}
+	return out, true
+}
+
+func staticDeleteMissBlockUnreachable(receiver Expression, call *CallExpr) bool {
+	if call == nil || len(call.Args) != 1 {
+		return false
+	}
+	target, ok := staticLiteralValue(call.Args[0])
+	if !ok {
+		return false
+	}
+	switch recv := receiver.(type) {
+	case *ArrayLiteral:
+		for _, element := range recv.Elements {
+			value, ok := staticLiteralValue(element)
+			if !ok {
+				return false
+			}
+			matched, err := caseCandidateMatches(nil, value, target)
+			if err != nil {
+				return false
+			}
+			if matched {
+				return true
+			}
+		}
+		return false
+	case *HashLiteral:
+		key, err := hashKeyString(target)
+		if err != nil {
+			return false
+		}
+		for _, pair := range recv.Pairs {
+			pairKey, ok := staticLiteralHashKey(pair.Key)
+			if !ok {
+				return false
+			}
+			if pairKey == key {
+				return true
+			}
+		}
+		return false
 	default:
 		return false
 	}
