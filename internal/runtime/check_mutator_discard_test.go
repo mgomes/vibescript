@@ -289,6 +289,16 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later aborting array element is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); [[1].clear(2), row] }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "ensure after overwrite then raise is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); begin; row = []; raise \"x\"; rescue; nil; ensure; puts row; end }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "rescue binding is not an observation of the mutated parameter",
 			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); begin; raise \"x\"; rescue => row; puts row; end }\nputs \"done\"",
 			want:   "mutating block parameter row",

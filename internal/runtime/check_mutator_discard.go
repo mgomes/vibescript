@@ -1533,9 +1533,7 @@ func (c *scriptChecker) tryStmtObservesName(stmt *TryStmt, names map[string]stru
 	if c.statementsObserveNameExcept(stmt.Body, names, except) {
 		return true
 	}
-	if tryBodyDefinitelyRuns(stmt.Body) {
-		c.applyDefiniteBindingKills(stmt.Body, live)
-	}
+	c.applyDefiniteBindingKills(stmt.Body, live)
 	if !statementsProvenNonRaising(stmt.Body) {
 		raisedName, knownRaise := statementsRaisedTypeName(stmt.Body)
 		for _, clause := range stmt.Rescues {
@@ -1559,29 +1557,8 @@ func (c *scriptChecker) tryStmtObservesName(stmt *TryStmt, names map[string]stru
 }
 
 func (c *scriptChecker) applyDefiniteTryBindingKills(stmt *TryStmt, names map[string]struct{}) {
-	if tryBodyDefinitelyRuns(stmt.Body) {
-		c.applyDefiniteBindingKills(stmt.Body, names)
-	}
+	c.applyDefiniteBindingKills(stmt.Body, names)
 	c.applyDefiniteBindingKills(stmt.Ensure, names)
-}
-
-func tryBodyDefinitelyRuns(body []Statement) bool {
-	for _, stmt := range body {
-		switch typed := stmt.(type) {
-		case *AssignStmt:
-			if !expressionProvenNonRaising(typed.Value) {
-				return false
-			}
-			continue
-		case *ExprStmt:
-			if !expressionProvenNonRaising(typed.Expr) {
-				return false
-			}
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 func (c *scriptChecker) applyDefiniteBindingKills(statements []Statement, names map[string]struct{}) {
@@ -1822,6 +1799,48 @@ func (c *scriptChecker) expressionObservesName(expr Expression, names map[string
 			return false
 		}
 		return c.expressionObservesName(typed.Right, names)
+	case *ArrayLiteral:
+		for _, el := range typed.Elements {
+			if c.expressionObservesName(el, names) {
+				return true
+			}
+			if !c.expressionProvablyCompletes(el) {
+				return false
+			}
+		}
+		return false
+	case *HashLiteral:
+		for _, pair := range typed.Pairs {
+			if c.expressionObservesName(pair.Key, names) {
+				return true
+			}
+			if !c.expressionProvablyCompletes(pair.Key) {
+				return false
+			}
+			if c.expressionObservesName(pair.Value, names) {
+				return true
+			}
+			if !c.expressionProvablyCompletes(pair.Value) {
+				return false
+			}
+		}
+		return false
+	case *IndexExpr:
+		if c.expressionObservesName(typed.Object, names) {
+			return true
+		}
+		if !c.expressionProvablyCompletes(typed.Object) {
+			return false
+		}
+		for _, index := range typed.Indices {
+			if c.expressionObservesName(index, names) {
+				return true
+			}
+			if !c.expressionProvablyCompletes(index) {
+				return false
+			}
+		}
+		return false
 	default:
 		return expressionReferencesAnyName(expr, names)
 	}
