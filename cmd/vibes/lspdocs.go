@@ -1028,7 +1028,7 @@ func mixinDirectiveContext(program *ast.Program, lines []string, line, character
 	for i < len(runes) && (runes[i] == ' ' || runes[i] == '\t') {
 		i++
 	}
-	if i >= len(runes) {
+	if i >= len(runes) || runes[i] == '#' || runes[i] == ';' {
 		return !classBodyHasLocal(st, word, line+1)
 	}
 	switch runes[i] {
@@ -1128,9 +1128,22 @@ func classBodyHasLocal(st *ast.ClassStmt, word string, hoverLine int) bool {
 		if !ok {
 			continue
 		}
-		id, ok := as.Target.(*ast.Identifier)
-		if ok && id.Name == word {
+		if assignmentBindsName(as.Target, word) {
 			return true
+		}
+	}
+	return false
+}
+
+func assignmentBindsName(target ast.Expression, word string) bool {
+	switch typed := target.(type) {
+	case *ast.Identifier:
+		return typed.Name == word
+	case *ast.DestructureTarget:
+		for _, el := range typed.Elements {
+			if assignmentBindsName(el.Target, word) {
+				return true
+			}
 		}
 	}
 	return false
@@ -1372,6 +1385,11 @@ func classChildStarts(st *ast.ClassStmt) []int {
 	}
 	for _, alias := range st.Aliases {
 		starts = append(starts, alias.Position.Line)
+	}
+	for _, prop := range st.Properties {
+		if prop.Position.Line > 0 {
+			starts = append(starts, prop.Position.Line)
+		}
 	}
 	for _, stmt := range st.Body {
 		if pos := stmt.Pos(); pos.Line > 0 {
