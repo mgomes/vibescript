@@ -129,6 +129,21 @@ func TestDiscardedMutatorOnTemporaryIsReported(t *testing.T) {
 			want:   "mutating block parameter row",
 		},
 		{
+			name:   "later read behind a short-circuit or is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); true || puts(row) }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "later read behind a short-circuit and is not an observation",
+			source: "rows = [[1], [2]]\nrows.each { |row| row.push(0); false && puts(row) }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
+			name:   "each_cons that yields still warns",
+			source: "[1, 2].each_cons(2) { |row| row.push(1) }\nputs \"done\"",
+			want:   "mutating block parameter row",
+		},
+		{
 			name:   "union of shape collection fields",
 			source: "def f(rows: array<{items: array<int>}> | array<{items: array<string>}>)\n  rows.each { |row| row.items.clear }\n  nil\nend\nf([{items: [1]}])\nputs \"done\"",
 			want:   "mutating block parameter row",
@@ -447,6 +462,18 @@ func TestLegitimateMutationsAreNotReported(t *testing.T) {
 		{
 			name:   "cycle negative never runs the block",
 			source: "[[]].cycle(-1) { |row| row.push(1) }\nputs \"done\"",
+		},
+		{
+			name:   "each_cons window larger than receiver never runs the block",
+			source: "[[]].each_cons(2) { |row| row.push(1) }\nputs \"done\"",
+		},
+		{
+			name:   "each_slice on an empty receiver never runs the block",
+			source: "[].each_slice(2) { |row| row.push(1) }\nputs \"done\"",
+		},
+		{
+			name:   "each on an empty receiver never runs the block",
+			source: "[].each { |row| row.push(1) }\nputs \"done\"",
 		},
 		{
 			name:   "case later clause after aborting match",

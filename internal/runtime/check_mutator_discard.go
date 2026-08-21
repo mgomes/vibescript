@@ -152,12 +152,76 @@ func (c *scriptChecker) mutatorDiscardCallFacts(call *CallExpr, target staticCal
 	if !c.receiverOwnsBuiltinIterator(member.Object, member.Property) {
 		return mutatorDiscardCall{}
 	}
-	if member.Property == "cycle" && !staticCycleMayYield(call) {
+	if !staticIteratorMayYield(member.Property, member.Object, call) {
 		return mutatorDiscardCall{}
 	}
 	return mutatorDiscardCall{
 		discardsResults: true,
 		yieldTypes:      c.iteratorYieldTypes(member.Object, member.Property, call.Block),
+	}
+}
+
+// staticIteratorMayYield reports whether a builtin iterator can invoke its
+// block. cycle with a nonpositive count never iterates; each_cons and
+// each_slice error or yield nothing when the window cannot run; an empty
+// literal receiver never yields.
+func staticIteratorMayYield(property string, receiver Expression, call *CallExpr) bool {
+	switch property {
+	case "cycle":
+		if !staticCycleMayYield(call) {
+			return false
+		}
+	case "each_cons", "each_slice":
+		if !staticWindowSizeMayRun(call) {
+			return false
+		}
+		if property == "each_cons" {
+			if size, ok := staticPositiveWindowSize(call); ok {
+				if length, okLen := staticCollectionLength(receiver); okLen {
+					return size <= length
+				}
+			}
+		}
+	}
+	if length, ok := staticCollectionLength(receiver); ok {
+		return length > 0
+	}
+	return true
+}
+
+func staticWindowSizeMayRun(call *CallExpr) bool {
+	if call == nil || len(call.Args) != 1 {
+		return false
+	}
+	value, exact := integerLiteralValue(call.Args[0])
+	if !exact {
+		return true
+	}
+	return !value.IsBigInt() && value.Int() > 0
+}
+
+func staticPositiveWindowSize(call *CallExpr) (int, bool) {
+	if call == nil || len(call.Args) != 1 {
+		return 0, false
+	}
+	value, exact := integerLiteralValue(call.Args[0])
+	if !exact || value.IsBigInt() || value.Int() <= 0 {
+		return 0, false
+	}
+	return int(value.Int()), true
+}
+
+func staticCollectionLength(expr Expression) (int, bool) {
+	switch typed := expr.(type) {
+	case *ArrayLiteral:
+		return len(typed.Elements), true
+	case *HashLiteral:
+		if typed.ShapeType != nil && len(typed.Pairs) == 0 {
+			return 0, false
+		}
+		return len(typed.Pairs), true
+	default:
+		return 0, false
 	}
 }
 
@@ -1083,8 +1147,14 @@ func expressionObservesName(expr Expression, names map[string]struct{}) bool {
 		}
 		return expressionObservesName(typed.ElseExpr, names)
 	case *BinaryExpr:
-		return expressionObservesName(typed.Left, names) ||
-			expressionObservesName(typed.Right, names)
+		if expressionObservesName(typed.Left, names) {
+			return true
+		}
+		if (typed.Operator == tokenAnd || typed.Operator == tokenOr) &&
+			!binaryRightMayEvaluate(typed) {
+			return false
+		}
+		return expressionObservesName(typed.Right, names)
 	default:
 		return expressionReferencesAnyName(expr, names)
 	}
