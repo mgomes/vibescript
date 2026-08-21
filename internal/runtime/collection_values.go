@@ -896,14 +896,26 @@ const (
 	mutableRootLocal
 	mutableRootIvar
 	mutableRootClassVar
+	// mutableRootCall marks a path that begins at an explicit call
+	// (`a.last()[0]`, `geta().k`). The call's result is a temporary the
+	// runtime cannot rebind, so the path is never addressable; the kind
+	// exists so a write through it is classified as a temporary and
+	// detached, rather than falling to the ordinary-evaluation fallback,
+	// which writes with no isolation (#1221).
+	mutableRootCall
 )
 
-// mutableRoot is the rebindable slot a mutable path starts at.
+// mutableRoot is the rebindable slot a mutable path starts at. A call root
+// names no slot: expr carries the expression whose one evaluation stands in
+// for the root read, and get and rebind treat it as unresolved. A local root
+// keeps its source expression too, so a bare name that turns out to denote a
+// call (see identifierRootAutoInvokes) can be evaluated the same way.
 type mutableRoot struct {
 	kind mutableRootKind
 	name string
 	env  *Env
 	vars map[string]Value
+	expr Expression
 }
 
 func (root mutableRoot) get() (Value, bool) {
@@ -1015,9 +1027,19 @@ func (exec *Execution) resolveMutableReceiver(expr Expression, env *Env) (Value,
 		return NewNil(), targetTemporary, err
 	}
 	if !resolved {
-		// The walk read nothing the caller can use -- a bare name bound to a
-		// function is invoked where a receiver is expected, so what the slot
-		// holds is not what the expression denotes. Ordinary evaluation owns it.
+		// The walk read nothing the caller can use -- the root name is unbound
+		// or auto-invokes, so what the slot holds is not what the expression
+		// denotes. A name that denotes a call is read here and classified as a
+		// temporary, like an explicit call root; anything else is left to
+		// ordinary evaluation.
+		leaf, claimed, err := exec.readAutoInvokedRootPath(path, env)
+		if err != nil {
+			return NewNil(), targetTemporary, err
+		}
+		if claimed {
+			exec.withdrawAddressed()
+			return leaf, targetTemporary, nil
+		}
 		return NewNil(), targetUnresolved, nil
 	}
 	// A path that left collection storage -- a member of a class instance, an
@@ -1041,7 +1063,11 @@ func (exec *Execution) resolveMutableReceiver(expr Expression, env *Env) (Value,
 // mutator may not write at all (`a.push()`, `a.pop(0)`, a rejected call).
 func (exec *Execution) addressMutableReceiver(expr Expression, env *Env) (Value, bool, error) {
 	path, ok := exec.mutablePathFor(expr, env)
-	if !ok {
+	if !ok || path.root.kind == mutableRootCall {
+		// A call-rooted receiver stays with ordinary evaluation: mutators are
+		// already guarded by writableCollection, which copies a published
+		// receiver no addressed record vouches for. The claim exists for the
+		// assignment funnel, which has no such guard.
 		return NewNil(), false, nil
 	}
 	leaf, chain, addressable, resolved, err := exec.readAddressablePath(path, env, true)
@@ -1102,6 +1128,16 @@ func (exec *Execution) resolveMutableTarget(expr Expression, env *Env) (Value, m
 		return NewNil(), mutablePath{}, targetTemporary, err
 	}
 	if !resolved {
+		// A root name that denotes a call is read here and classified as a
+		// temporary, like an explicit call root (see resolveMutableReceiver);
+		// anything else is left to ordinary evaluation.
+		leaf, claimed, err := exec.readAutoInvokedRootPath(path, env)
+		if err != nil {
+			return NewNil(), mutablePath{}, targetTemporary, err
+		}
+		if claimed {
+			return leaf, mutablePath{}, targetTemporary, nil
+		}
 		return NewNil(), mutablePath{}, targetUnresolved, nil
 	}
 	if !addressable {
@@ -1158,7 +1194,7 @@ func (exec *Execution) mutablePathFor(expr Expression, env *Env) (mutablePath, b
 			// Whether the name is bound is left to the root read below: asking
 			// here would look the binding up twice on every write.
 			return mutablePath{
-				root:  mutableRoot{kind: mutableRootLocal, name: t.Name, env: env},
+				root:  mutableRoot{kind: mutableRootLocal, name: t.Name, env: env, expr: t},
 				steps: reverseSteps(steps),
 			}, true
 		case *IvarExpr:
@@ -1186,6 +1222,17 @@ func (exec *Execution) mutablePathFor(expr Expression, env *Env) (mutablePath, b
 			}
 			return mutablePath{
 				root:  mutableRoot{kind: mutableRootClassVar, name: t.Name, vars: vars},
+				steps: reverseSteps(steps),
+			}, true
+		case *CallExpr:
+			// An explicit call roots a path that is never addressable: its
+			// result is a temporary, possibly a live handout (`a.last()`, a
+			// getter's ivar), and a write through it must detach. Claiming
+			// the expression here routes the write through the temporary
+			// classification instead of the ordinary-evaluation fallback,
+			// which writes with no isolation.
+			return mutablePath{
+				root:  mutableRoot{kind: mutableRootCall, expr: t},
 				steps: reverseSteps(steps),
 			}, true
 		case *IndexExpr:
@@ -1227,6 +1274,10 @@ func reverseSteps(steps []mutablePathStep) []mutablePathStep {
 // after the copy both wrappers name the same child, and only one of them may go
 // on writing through it.
 func (exec *Execution) walkMutablePath(path mutablePath, env *Env) (Value, []uintptr, bool, bool, error) {
+	if path.root.kind == mutableRootCall {
+		leaf, err := exec.readCallRootedPath(path, env)
+		return leaf, nil, false, true, err
+	}
 	if len(path.steps) == 0 {
 		// A bare local, instance variable, or class variable is the common
 		// case -- `a.push(x)`, `@rows << row` -- and needs neither the reading
@@ -1271,6 +1322,10 @@ func (exec *Execution) walkMutablePath(path mutablePath, env *Env) (Value, []uin
 // missing indexed slot reads through evalIndexValue with its cached index,
 // exactly as evaluating the expression would.
 func (exec *Execution) readAddressablePath(path mutablePath, env *Env, wantChain bool) (Value, []uintptr, bool, bool, error) {
+	if path.root.kind == mutableRootCall {
+		leaf, err := exec.readCallRootedPath(path, env)
+		return leaf, nil, false, true, err
+	}
 	if len(path.steps) == 0 {
 		current, ok := path.root.get()
 		if !ok || rootAutoInvokes(current) {
@@ -1638,6 +1693,80 @@ func (exec *Execution) readPathTailAsTemporary(current Value, prefix mutablePath
 	return exec.readPathTailOrdinarily(current, steps, env)
 }
 
+// readCallRootedPath reads a path whose root is a call: an explicit call
+// expression, or a bare name ordinary evaluation auto-invokes (see
+// identifierRootAutoInvokes). The root runs exactly as ordinary evaluation
+// would, once, and every remaining hop dispatches on its result -- a
+// temporary no durable slot names -- so the permission is withdrawn
+// throughout: neither the root's own script code nor a mutator hop may write
+// through a record an enclosing mutator still holds. Tail hops still
+// consume a step each, matching the MemberExpr/IndexExpr nodes ordinary
+// evaluation would have charged.
+func (exec *Execution) readCallRootedPath(path mutablePath, env *Env) (Value, error) {
+	saved := exec.savedAddressedScope()
+	defer exec.restore(saved)
+	exec.withdrawAddressed()
+	current, err := exec.evalExpression(path.root.expr, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	return exec.readPathTailOrdinarily(current, path.steps, env)
+}
+
+// readAutoInvokedRootPath claims a local-rooted path the walk reported
+// unresolved when its bare name denotes a call rather than a slot -- an
+// implicit self method (`geta[0] = 9`) or a binding holding a callable. What
+// such a name yields is a call result, exactly like an explicit call root, so
+// the path reads through readCallRootedPath and the caller classifies the
+// leaf as a temporary. A name that denotes no call -- undefined, a class
+// constant, ivar-named data on self -- is left unclaimed, so its route and
+// error identity stay exactly as they were.
+func (exec *Execution) readAutoInvokedRootPath(path mutablePath, env *Env) (Value, bool, error) {
+	if path.root.kind != mutableRootLocal || !exec.identifierRootAutoInvokes(path.root) {
+		return NewNil(), false, nil
+	}
+	leaf, err := exec.readCallRootedPath(path, env)
+	return leaf, true, err
+}
+
+// identifierRootAutoInvokes reports whether ordinary evaluation of this bare
+// name reaches autoInvokeIfNeeded with a callable -- the condition under
+// which the name denotes a call, not a slot. It mirrors the evaluator's
+// Identifier resolution order exactly, with pure lookups only: block_given?
+// is a special form, a call-local or env binding answers for itself, a class
+// constant is a plain value read, and an unbound name resolves as an implicit
+// member of self, where a callable member auto-invokes and anything else --
+// a data member, a resolution error -- is a value read or an error the
+// unclaimed route reproduces unchanged.
+func (exec *Execution) identifierRootAutoInvokes(root mutableRoot) bool {
+	name, env := root.name, root.env
+	if name == blockGivenName {
+		return false
+	}
+	if isConstantIdentifier(name) {
+		if val, ok := env.getCallLocal(name); ok {
+			return rootAutoInvokes(val)
+		}
+		if self, ok := env.Get("self"); ok && (self.Kind() == KindInstance || self.Kind() == KindClass) {
+			if _, ok := classConstant(self, name); ok {
+				return false
+			}
+		}
+	}
+	if val, ok := env.Get(name); ok {
+		return rootAutoInvokes(val)
+	}
+	self, ok := env.Get("self")
+	if !ok || (self.Kind() != KindInstance && self.Kind() != KindClass) {
+		return false
+	}
+	member, err := exec.getMember(self, name, root.expr.Pos())
+	if err != nil {
+		return false
+	}
+	return rootAutoInvokes(member)
+}
+
 // readTailMemberHop reads one member hop the way ordinary evaluation would:
 // resolve the public member and auto-invoke it against the receiver.
 func (exec *Execution) readTailMemberHop(current Value, step *mutablePathStep) (Value, error) {
@@ -1653,11 +1782,25 @@ func (exec *Execution) readTailMemberHop(current Value, step *mutablePathStep) (
 
 // readPathTailOrdinarily reads remaining hops on a temporary, each exactly as
 // evaluating the expression would. It runs once, in the reading pass, so a
-// getter it invokes runs once. The caller has already withdrawn the
-// addressability permission, so a mutator hop writes the temporary, never a
-// value an enclosing mutator's record still vouches for.
+// getter it invokes runs once. Each hop charges exec.step and the
+// receiver's memory the way the corresponding MemberExpr or IndexExpr
+// node would under ordinary evaluation, so a long tail after a call
+// root cannot skip the step or memory quota.
+// The caller has already withdrawn the addressability permission, so a
+// mutator hop writes the temporary, never a value an enclosing mutator's
+// record still vouches for.
 func (exec *Execution) readPathTailOrdinarily(current Value, steps []mutablePathStep, env *Env) (Value, error) {
 	for i := range steps {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		// Ordinary MemberExpr/IndexExpr evaluation charges the receiver
+		// before the hop (finishMemberExpr, evalIndexExpr). Do the same
+		// here so a large intermediate after a call root cannot vanish
+		// from the live-base walk before the next hop selects a small leaf.
+		if err := exec.checkMemoryValue(current); err != nil {
+			return NewNil(), err
+		}
 		step := &steps[i]
 		if step.member != nil {
 			var err error
@@ -1671,10 +1814,20 @@ func (exec *Execution) readPathTailOrdinarily(current Value, steps []mutablePath
 		if err != nil {
 			return NewNil(), err
 		}
-		current, err = exec.evalIndexValue(step.expr, current, indices)
+		result, err := exec.evalIndexValue(step.expr, current, indices)
 		if err != nil {
 			return NewNil(), err
 		}
+		if exec.memoryQuota > 0 {
+			chargeable := make([]Value, 0, len(indices)+2)
+			chargeable = append(chargeable, current)
+			chargeable = append(chargeable, indices...)
+			chargeable = append(chargeable, result)
+			if err := exec.checkMemoryWith(chargeable...); err != nil {
+				return NewNil(), err
+			}
+		}
+		current = result
 	}
 	return current, nil
 }
